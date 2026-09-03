@@ -43,7 +43,7 @@
 - Stock SKU จริงในคลัง
 - stock movement ledger
 - stock card
-- ยอดคงเหลือและต้นทุนเฉลี่ยเบื้องต้น
+- ยอดคงเหลือ ต้นทุนต่อหน่วย และมูลค่าสต๊อก
 
 ไม่รับผิดชอบ:
 
@@ -133,6 +133,7 @@ Fields:
 - `color`
 - `size`
 - `barcode`
+- `default_unit_cost`
 - `status`
 - `created_at`
 - `updated_at`
@@ -173,6 +174,8 @@ Rules:
 
 - `quantity` เก็บเป็นจำนวนบวกเสมอ
 - direction ตีความจาก `movement_type`
+- movement รับเข้าจากการซื้อสินค้าต้องมี `unit_cost` และ `total_cost`
+- `total_cost` ควรเท่ากับ `quantity * unit_cost` ยกเว้นกรณี rounding ที่ระบบคุมไว้
 - movement ที่เกิดจากเอกสารต้องมี `reference_type` และ `reference_no`
 
 ### sale_skus
@@ -241,9 +244,10 @@ Constraints:
 2. กรอกวันที่รับเข้า
 3. กรอกจำนวน
 4. กรอกต้นทุนต่อหน่วย
-5. ระบุ reference เช่น `manual` หรือเลขเอกสารในอนาคต
-6. ระบบสร้าง `stock_movements` ประเภท `purchase_in`
-7. หน้า balance และ stock card แสดงยอดใหม่ทันที
+5. ระบบคำนวณต้นทุนรวมของรายการรับเข้า
+6. ระบุ reference เช่น `manual` หรือเลขเอกสารในอนาคต
+7. ระบบสร้าง `stock_movements` ประเภท `purchase_in`
+8. หน้า balance และ stock card แสดงยอดใหม่ ต้นทุนเฉลี่ย และมูลค่าสต๊อกทันที
 
 ## Balance Calculation
 
@@ -252,8 +256,11 @@ Constraints:
 - movement เข้าเพิ่มยอด
 - movement ออกลดยอด
 - ต้นทุนเฉลี่ยเบื้องต้นคำนวณจาก purchase-in movements ที่มีต้นทุน
+- มูลค่าสต๊อกเบื้องต้นคำนวณจาก `quantity_on_hand * average_unit_cost`
 
 เฟสแรกสามารถคำนวณ balance แบบ query-time จาก movement ledger เพื่อความถูกต้องและลดความเสี่ยงเรื่อง cache เพี้ยน ถ้าข้อมูลโตขึ้นจึงค่อยเพิ่มตาราง snapshot/cache
+
+เฟสแรกใช้ต้นทุนเฉลี่ยแบบง่ายจาก movement รับเข้าที่มีต้นทุน เพื่อให้ผู้ใช้เห็นต้นทุนสินค้าได้ทันที ส่วน costing แบบ FIFO หรือ weighted average รายงวดเต็มรูปแบบยังอยู่นอก scope เฟสแรก
 
 ## Future Expense Integration
 
@@ -262,10 +269,11 @@ Constraints:
 1. ผู้ใช้เลือกประเภทเอกสารเป็นใบรับรองแทนใบเสร็จรับเงิน
 2. ถ้าเลือกประเภทค่าใช้จ่ายเป็นซื้อสินค้าเพื่อขาย ระบบแสดงส่วนเลือก Stock SKU
 3. ผู้ใช้เลือก SKU, สี, ไซซ์, จำนวน, ต้นทุนต่อหน่วย
-4. ระบบสร้าง PDF ใบรับรองแทนใบเสร็จรับเงิน
-5. ระบบรวม raw evidence เข้า PDF packet เดียวกัน
-6. ระบบเก็บ raw evidence ในโฟลเดอร์เอกสาร
-7. ระบบเรียก inventory module เพื่อสร้าง `purchase_in` movement โดยอ้างอิงเลขเอกสาร
+4. ระบบคำนวณต้นทุนรวมของ SKU แต่ละรายการ
+5. ระบบสร้าง PDF ใบรับรองแทนใบเสร็จรับเงิน
+6. ระบบรวม raw evidence เข้า PDF packet เดียวกัน
+7. ระบบเก็บ raw evidence ในโฟลเดอร์เอกสาร
+8. ระบบเรียก inventory module เพื่อสร้าง `purchase_in` movement โดยอ้างอิงเลขเอกสารพร้อมต้นทุนต่อหน่วยและต้นทุนรวม
 
 ต้องป้องกันการบันทึกซ้ำเมื่อแก้ไขเอกสารเดิม โดย movement ที่มาจากเอกสารควรใช้ `reference_type + reference_no` เพื่อ identify และ regenerate/update อย่างมีหลักเกณฑ์ในเฟส integration
 
@@ -292,6 +300,8 @@ Constraints:
 - product หายหรือถูกปิดใช้งาน
 - quantity ไม่มากกว่า 0
 - unit cost ติดลบ
+- purchase-in ไม่มีต้นทุนต่อหน่วย
+- total cost ไม่ตรงกับ quantity และ unit cost ในกรณีที่ผู้ใช้ส่งค่ามาเอง
 - movement type ไม่ถูกต้อง
 - reference ซ้ำในกรณี integration จากเอกสารในอนาคต
 
@@ -305,8 +315,9 @@ API ส่ง JSON error ที่อ่านง่ายเหมือน end
 - create product และ SKU สำเร็จ
 - ป้องกัน SKU ซ้ำ
 - purchase-in movement เพิ่ม balance
+- purchase-in movement เก็บ unit cost และ total cost
 - stock card เรียง movement ตามวันที่/เวลา
-- balance คำนวณจาก movement เข้า/ออกถูกต้อง
+- balance คำนวณจาก movement เข้า/ออก ต้นทุนเฉลี่ย และมูลค่าสต๊อกถูกต้อง
 - bundle schema รองรับ sale SKU กับ components แม้ยังไม่มี UI
 
 ## Out Of Scope For First Slice
