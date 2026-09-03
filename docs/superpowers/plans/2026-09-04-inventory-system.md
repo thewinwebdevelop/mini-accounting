@@ -4,15 +4,16 @@
 
 **Goal:** Build the first working inventory module for clothing Stock SKUs with color, size, purchase-in cost, stock cards, balances, and schema support for future Sale SKU / Bundle SKU deduction.
 
-**Architecture:** Add SQLite as the local relational data store while keeping existing PDF/raw-file storage unchanged. Put inventory database setup and business logic in focused CommonJS modules under `forms/`, expose JSON APIs through the existing local server, and add one inventory HTML page with product/SKU management, purchase-in entry, balance, and stock card views.
+**Architecture:** Add SQLite as the local relational data store while keeping existing PDF/raw-file storage unchanged. Use Node's built-in `node:sqlite` module from the bundled Node 24 runtime to avoid native npm SQLite bindings, put inventory database setup and business logic in focused CommonJS modules under `forms/`, expose JSON APIs through the existing local server, and add one inventory HTML page with product/SKU management, purchase-in entry, balance, and stock card views.
 
-**Tech Stack:** Node.js v16.15.0, `better-sqlite3@8.7.0`, built-in `node:test`, existing local HTTP server in `local-server.mjs`, plain HTML/CSS/JS matching the existing form pages.
+**Tech Stack:** Bundled Node.js v24.19.0 at `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node`, built-in `node:sqlite`, built-in `node:test`, existing local HTTP server in `local-server.mjs`, plain HTML/CSS/JS matching the existing form pages.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-inventory-system-design.md`
 
 ## Global Constraints
 
 - Use SQLite for inventory data.
+- Use bundled Node.js v24.19.0 for tests and server execution because system Node.js v16.15.0 does not provide `node:test` or `node:sqlite`.
 - Store the SQLite file at `data/sweet-house.sqlite`.
 - Keep PDF and raw attachments as files; database rows only store references/paths when needed later.
 - Stock movements attach to Stock SKU, not Sale SKU.
@@ -27,7 +28,7 @@
 
 ## File Structure
 
-- Create `package.json`: pins `better-sqlite3@8.7.0` and adds test scripts for the existing Node test suite.
+- Create `scripts/test.sh`: runs the existing Node test suite with the bundled Node 24 runtime.
 - Create `forms/inventory-db.logic.js`: owns database file path, connection creation, schema bootstrap, migrations, and test database helpers.
 - Create `forms/inventory.logic.js`: owns product/SKU CRUD, stock movement validation, purchase-in, stock card, balance, and future bundle schema helper functions.
 - Create `tests/inventory-db.logic.test.mjs`: verifies schema bootstrap and future bundle tables.
@@ -40,10 +41,10 @@
 
 ---
 
-### Task 1: SQLite Dependency And Schema Bootstrap
+### Task 1: SQLite Runtime And Schema Bootstrap
 
 **Files:**
-- Create: `package.json`
+- Create: `scripts/test.sh`
 - Create: `forms/inventory-db.logic.js`
 - Create: `tests/inventory-db.logic.test.mjs`
 - Modify: `.gitignore`
@@ -149,38 +150,37 @@ test("bundle schema enforces sale SKU to Stock SKU component uniqueness", async 
 Run:
 
 ```bash
-node --test tests/inventory-db.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory-db.logic.test.mjs
 ```
 
 Expected: FAIL because `forms/inventory-db.logic.js` does not exist.
 
-- [ ] **Step 3: Add dependency metadata**
+- [ ] **Step 3: Add project test runner**
 
-Create `package.json`:
+Create `scripts/test.sh`:
 
-```json
-{
-  "name": "sweet-house-accounting-local-app",
-  "version": "0.1.0",
-  "private": true,
-  "type": "commonjs",
-  "scripts": {
-    "test": "node --test tests/*.mjs",
-    "test:inventory": "node --test tests/inventory-db.logic.test.mjs tests/inventory.logic.test.mjs"
-  },
-  "dependencies": {
-    "better-sqlite3": "8.7.0"
-  }
-}
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+NODE_BIN="/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+
+if [ ! -x "$NODE_BIN" ]; then
+  echo "Bundled Node runtime not found: $NODE_BIN" >&2
+  exit 1
+fi
+
+exec "$NODE_BIN" --test tests/*.mjs
 ```
 
 Run:
 
 ```bash
-npm install
+chmod +x scripts/test.sh
+./scripts/test.sh
 ```
 
-Expected: `package-lock.json` and `node_modules/` are created.
+Expected: existing tests pass before inventory implementation continues.
 
 - [ ] **Step 4: Ignore local generated data and dependencies**
 
@@ -200,7 +200,7 @@ Create `forms/inventory-db.logic.js`:
 ```js
 const { mkdirSync } = require("node:fs");
 const path = require("node:path");
-const Database = require("better-sqlite3");
+const { DatabaseSync } = require("node:sqlite");
 
 const SCHEMA_VERSION = 1;
 
@@ -211,9 +211,9 @@ function getInventoryDbPath(rootDir) {
 function openInventoryDatabase(rootDir, options = {}) {
   const dbPath = options.dbPath || getInventoryDbPath(rootDir);
   mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
-  db.pragma("foreign_keys = ON");
-  db.pragma("journal_mode = WAL");
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
   return db;
 }
 
@@ -333,7 +333,7 @@ module.exports = {
 Run:
 
 ```bash
-node --test tests/inventory-db.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory-db.logic.test.mjs
 ```
 
 Expected: PASS.
@@ -341,7 +341,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add package.json package-lock.json .gitignore forms/inventory-db.logic.js tests/inventory-db.logic.test.mjs
+git add scripts/test.sh .gitignore forms/inventory-db.logic.js tests/inventory-db.logic.test.mjs
 git commit -m "Add inventory SQLite schema"
 ```
 
@@ -458,7 +458,7 @@ test("createStockSku rejects duplicate SKU codes", async () => {
 Run:
 
 ```bash
-node --test tests/inventory.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.logic.test.mjs
 ```
 
 Expected: FAIL because `forms/inventory.logic.js` does not exist.
@@ -639,7 +639,7 @@ module.exports = {
 Run:
 
 ```bash
-node --test tests/inventory.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.logic.test.mjs
 ```
 
 Expected: PASS for the two tests currently in the file.
@@ -742,7 +742,7 @@ test("stock card lists movements in chronological order with running balance", a
 Run:
 
 ```bash
-node --test tests/inventory.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.logic.test.mjs
 ```
 
 Expected: FAIL because movement/balance functions are not exported yet.
@@ -922,7 +922,7 @@ module.exports = {
 Run:
 
 ```bash
-node --test tests/inventory.logic.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.logic.test.mjs
 ```
 
 Expected: PASS.
@@ -1118,7 +1118,7 @@ Expected: JSON responses contain no `error`, balance quantity is `5`, average un
 Run:
 
 ```bash
-npm test
+./scripts/test.sh
 ```
 
 Expected: PASS.
@@ -1172,7 +1172,7 @@ test("inventory page provides SKU, purchase-in, balance, and stock card work are
 Run:
 
 ```bash
-node --test tests/inventory.html.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.html.test.mjs
 ```
 
 Expected: FAIL because `forms/inventory.html` does not exist.
@@ -1603,7 +1603,7 @@ window.addEventListener("DOMContentLoaded", () => {
 Run:
 
 ```bash
-node --test tests/inventory.html.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/inventory.html.test.mjs
 ```
 
 Expected: PASS.
@@ -1613,7 +1613,7 @@ Expected: PASS.
 Start:
 
 ```bash
-PORT=8787 node local-server.mjs
+PORT=8787 /Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node local-server.mjs
 ```
 
 Open:
@@ -1636,7 +1636,7 @@ Manual expected result:
 Run:
 
 ```bash
-npm test
+./scripts/test.sh
 ```
 
 Expected: PASS.
@@ -1685,7 +1685,7 @@ assert.match(html, /href="\/inventory"/);
 Run:
 
 ```bash
-node --test tests/index.html.test.mjs tests/expense-request.html.test.mjs tests/expense-requests.html.test.mjs tests/company-settings.html.test.mjs tests/google-drive.html.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/index.html.test.mjs tests/expense-request.html.test.mjs tests/expense-requests.html.test.mjs tests/company-settings.html.test.mjs tests/google-drive.html.test.mjs
 ```
 
 Expected: FAIL on pages that do not yet link to `/inventory`.
@@ -1718,7 +1718,7 @@ to:
 Run:
 
 ```bash
-node --test tests/index.html.test.mjs tests/expense-request.html.test.mjs tests/expense-requests.html.test.mjs tests/company-settings.html.test.mjs tests/google-drive.html.test.mjs
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/index.html.test.mjs tests/expense-request.html.test.mjs tests/expense-requests.html.test.mjs tests/company-settings.html.test.mjs tests/google-drive.html.test.mjs
 ```
 
 Expected: PASS.
@@ -1728,7 +1728,7 @@ Expected: PASS.
 Run:
 
 ```bash
-npm test
+./scripts/test.sh
 ```
 
 Expected: PASS.
@@ -1736,7 +1736,7 @@ Expected: PASS.
 Then start the app:
 
 ```bash
-PORT=8787 node local-server.mjs
+PORT=8787 /Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node local-server.mjs
 ```
 
 Open:
@@ -1766,7 +1766,7 @@ git commit -m "Add inventory navigation"
 Run:
 
 ```bash
-npm test
+./scripts/test.sh
 ```
 
 Expected: all tests pass.
@@ -1774,7 +1774,7 @@ Expected: all tests pass.
 Run:
 
 ```bash
-PORT=8787 node local-server.mjs
+PORT=8787 /Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node local-server.mjs
 ```
 
 Open:
