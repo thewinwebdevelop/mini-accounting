@@ -15,6 +15,8 @@ test("landing page introduces the accounting system and links to expense routes"
   assert.match(html, /\.menu-panel \{[\s\S]*?left: 0;/);
   assert.match(html, /href="\/expense-requests"/);
   assert.match(html, /href="\/expense-request"/);
+  assert.match(html, /href="\/inventory"/);
+  assert.match(html, /สินค้าและสต๊อก/);
   assert.match(html, /href="\/google-drive"/);
   assert.match(html, /href="\/company-settings"/);
   assert.doesNotMatch(html, /class="quick-actions"/);

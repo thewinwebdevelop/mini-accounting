@@ -11,6 +11,7 @@ test("expense request list page supports filtering and creating a new request", 
   assert.match(html, /<title>รายการใบเบิกจ่าย - หจก\.สวีทเฮาส์<\/title>/);
   assert.match(html, /class="app-menu"/);
   assert.match(html, /href="\/expense-request"/);
+  assert.match(html, /href="\/inventory"/);
   assert.match(html, /id="statusFilter"/);
   assert.match(html, /value="draft"/);
   assert.match(html, /value="submitted"/);
