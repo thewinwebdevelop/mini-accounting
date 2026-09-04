@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sale SKU / Bundle SKU - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    button, input, select { font: inherit; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+    .page {
+      display: grid;
+      grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
+      gap: 16px;
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .section {
+      align-self: start;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+    .section-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .section-body { display: grid; gap: 11px; padding: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 9px; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-12 { grid-column: span 12; }
+    .field { display: grid; gap: 5px; }
+    label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button.danger { color: #ffffff; background: var(--danger); }
+    .button.small { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+    .status-box {
+      display: none;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-weight: 800;
+    }
+    .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+    .component-list { display: grid; gap: 8px; }
+    .component-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 86px 36px;
+      gap: 8px;
+      align-items: end;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+    .icon-button {
+      width: 36px;
+      min-height: 38px;
+      border: 1px solid #fecaca;
+      border-radius: 6px;
+      color: var(--danger);
+      background: #ffffff;
+      cursor: pointer;
+      font-weight: 900;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .search { max-width: 320px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td {
+      padding: 10px 11px;
+      border-bottom: 1px solid #e4e7eb;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+    th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .pill {
+      display: inline-flex;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #155e75;
+      background: #cffafe;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .component-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .mobile-label { display: none; }
+    @media (max-width: 860px) {
+      .page { grid-template-columns: 1fr; padding: 12px; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .search { max-width: none; }
+      .component-row { grid-template-columns: 1fr 74px 36px; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tr { padding: 10px 12px; border-bottom: 1px solid #e4e7eb; }
+      td {
+        display: grid;
+        grid-template-columns: 104px 1fr;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 0;
+      }
+      .mobile-label { display: inline; color: var(--brand); font-size: 12px; font-weight: 800; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+          <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+          <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">Sale SKU / Bundle SKU</h1>
+      <p class="brand-subtitle">จับคู่ SKU หน้าร้านกับของจริงในคลังสำหรับ Shopee, TikTok และชุดสินค้า</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">ตั้งค่า Sale SKU</h2>
+      </div>
+      <form class="section-body" id="saleSkuForm">
+        <input id="saleSkuRecordId" name="id" type="hidden">
+        <div class="grid">
+          <div class="field span-6">
+            <label for="saleSkuCode">Sale SKU *</label>
+            <input id="saleSkuCode" name="saleSku" required>
+          </div>
+          <div class="field span-6">
+            <label for="salePlatform">Platform</label>
+            <select id="salePlatform" name="platform">
+              <option value="manual">Manual</option>
+              <option value="shopee">Shopee</option>
+              <option value="tiktok">TikTok</option>
+            </select>
+          </div>
+          <div class="field span-12">
+            <label for="saleDisplayName">ชื่อที่ขาย *</label>
+            <input id="saleDisplayName" name="displayName" required>
+          </div>
+          <div class="field span-6">
+            <label for="platformProductId">Platform Product ID</label>
+            <input id="platformProductId" name="platformProductId">
+          </div>
+          <div class="field span-6">
+            <label for="platformVariationId">Platform Variation ID</label>
+            <input id="platformVariationId" name="platformVariationId">
+          </div>
+          <div class="field span-12">
+            <label for="saleStatus">สถานะ</label>
+            <select id="saleStatus" name="status">
+              <option value="active">ใช้งาน</option>
+              <option value="inactive">ปิดใช้</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Stock SKU Components *</label>
+          <div class="component-list" id="componentRows"></div>
+          <button class="button secondary" type="button" id="addComponent">เพิ่ม Stock SKU</button>
+        </div>
+
+        <div class="actions">
+          <button class="button primary" type="submit" id="saleSkuSubmitLabel">บันทึก Sale SKU</button>
+          <button class="button secondary" type="button" id="cancelSaleSkuEdit">ยกเลิกแก้ไข</button>
+          <a class="button secondary" href="/inventory">กลับไปสต๊อก</a>
+        </div>
+        <div class="status-box" id="saleSkuStatus"></div>
+      </form>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">รายการ Sale SKU</h2>
+      </div>
+      <div class="section-body">
+        <div class="toolbar">
+          <input class="search" id="saleSkuSearch" placeholder="ค้นหา Sale SKU, platform, สินค้า, Stock SKU">
+          <span class="muted" id="saleSkuListStatus">กำลังโหลดรายการ...</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 18%;">Sale SKU</th>
+              <th>ชื่อ/Platform</th>
+              <th>Components</th>
+              <th style="width: 14%;">สถานะ</th>
+              <th style="width: 12%;">จัดการ</th>
+            </tr>
+          </thead>
+          <tbody id="saleSkuRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <template id="componentTemplate">
+    <div class="component-row">
+      <div class="field">
+        <label>Stock SKU</label>
+        <select name="stockSkuId" required></select>
+      </div>
+      <div class="field">
+        <label>จำนวน</label>
+        <input name="quantity" inputmode="numeric" value="1" required>
+      </div>
+      <button class="icon-button" type="button" title="ลบ component" data-remove-component>×</button>
+    </div>
+  </template>
+
+  <script src="./sale-skus.logic.browser.js"></script>
+</body>
+</html>

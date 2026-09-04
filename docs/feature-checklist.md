@@ -16,16 +16,16 @@
   - Next suggested task after completion: approve-to-Google-Sheets monthly expense ledger.
 - [x] Approve-to-Google-Sheets monthly expense ledger: approved expense requests and substitute receipts record or update monthly Google Sheet rows with retry status.
   - Next suggested task after completion: Sale SKU / Bundle SKU mapping.
+- [x] Sale SKU / Bundle SKU mapping for Shopee/TikTok listings and sets.
+  - Next suggested task after completion: substitute receipt vendor presets.
 
 ## Current
 
-- [ ] Sale SKU / Bundle SKU mapping for Shopee/TikTok listings and sets.
-  - Next suggested task after completion: import platform orders and deduct stock.
+- [ ] Substitute receipt vendor presets: vendor/payee master settings page, selectable preset in substitute receipt form, and manual entry fallback.
+  - Next suggested task after completion: mobile-friendly substitute receipt line item editing.
 
 ## Requested Next
 
-- [ ] Substitute receipt vendor presets: vendor/payee master settings page, selectable preset in substitute receipt form, and manual entry fallback.
-  - Next suggested task after completion: mobile-friendly substitute receipt line item editing.
 - [ ] Substitute receipt mobile line item UX: collapse/expand each added line on mobile like the expense request form.
   - Next suggested task after completion: split hamburger document sections.
 - [ ] Hamburger menu document grouping: separate substitute receipt links into their own menu section instead of grouping them under expense requests.
@@ -48,5 +48,7 @@
 
 ## Upcoming
 
+- [ ] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
+  - Next suggested task after completion: Shopee/TikTok fee summary.
 - [ ] Shopee/TikTok order import, fee summary, and automatic stock deduction.
   - Next suggested task after completion: monthly revenue, platform fee, and tax-ready accounting reports.

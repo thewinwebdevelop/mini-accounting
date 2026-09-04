@@ -9,12 +9,16 @@ import inventory from "../forms/inventory.logic.js";
 const {
   createProductCategory,
   createProduct,
+  createSaleSku,
   createStockSku,
+  getSaleSku,
+  listSaleSkus,
   listProductCategories,
   listProducts,
   listStockSkus,
   updateProductCategory,
   updateProduct,
+  updateSaleSku,
   updateStockSku,
 } = inventory;
 
@@ -122,6 +126,89 @@ test("createStockSku rejects duplicate SKU codes", async () => {
         defaultUnitCost: "150",
       });
     }, /SKU นี้มีอยู่แล้ว/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("createSaleSku stores platform sale SKU mapping to stock SKU bundle components", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sale-sku-"));
+
+  try {
+    const top = createProduct(rootDir, { productCode: "TOP-A", name: "เสื้อ A", category: "เสื้อ" });
+    const skirt = createProduct(rootDir, { productCode: "SKIRT-B", name: "กระโปรง B", category: "กระโปรง" });
+    const topSku = createStockSku(rootDir, { productId: top.id, sku: "TOP-A-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "120" });
+    const skirtSku = createStockSku(rootDir, { productId: skirt.id, sku: "SKIRT-B-BLACK-M", color: "ดำ", size: "M", defaultUnitCost: "150" });
+
+    const saleSku = createSaleSku(rootDir, {
+      saleSku: "SET-A-SKIRT-B",
+      displayName: "เสื้อ A + กระโปรง B",
+      platform: "shopee",
+      platformProductId: "SP-PRODUCT-1",
+      platformVariationId: "SP-VARIATION-SET",
+      components: [
+        { stockSkuId: topSku.id, quantity: "1" },
+        { stockSkuId: skirtSku.id, quantity: "1" },
+      ],
+    }, {
+      now: () => "2026-09-05T08:00:00.000Z",
+    });
+
+    assert.equal(saleSku.saleSku, "SET-A-SKIRT-B");
+    assert.equal(saleSku.platform, "shopee");
+    assert.equal(saleSku.componentCount, 2);
+    assert.deepEqual(saleSku.components.map((component) => ({
+      sku: component.sku,
+      quantity: component.quantity,
+      productCode: component.productCode,
+    })), [
+      { sku: "TOP-A-WHITE-M", quantity: 1, productCode: "TOP-A" },
+      { sku: "SKIRT-B-BLACK-M", quantity: 1, productCode: "SKIRT-B" },
+    ]);
+
+    const listed = listSaleSkus(rootDir, { search: "กระโปรง" });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].saleSku, "SET-A-SKIRT-B");
+    assert.deepEqual(listed[0].components.map((component) => component.stockSkuId), [topSku.id, skirtSku.id]);
+
+    const loaded = getSaleSku(rootDir, saleSku.id);
+    assert.equal(loaded.displayName, "เสื้อ A + กระโปรง B");
+    assert.equal(loaded.components[1].productName, "กระโปรง B");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("updateSaleSku replaces bundle components without duplicating old stock SKU mappings", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sale-sku-update-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "TOP-C", name: "เสื้อ C", category: "เสื้อ" });
+    const white = createStockSku(rootDir, { productId: product.id, sku: "TOP-C-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    const black = createStockSku(rootDir, { productId: product.id, sku: "TOP-C-BLACK-M", color: "ดำ", size: "M", defaultUnitCost: "100" });
+    const saleSku = createSaleSku(rootDir, {
+      saleSku: "TOP-C-PICK",
+      displayName: "เสื้อ C สีขาว",
+      platform: "tiktok",
+      components: [{ stockSkuId: white.id, quantity: "1" }],
+    });
+
+    const updated = updateSaleSku(rootDir, saleSku.id, {
+      saleSku: "TOP-C-PICK",
+      displayName: "เสื้อ C สีดำ แพ็กคู่",
+      platform: "tiktok",
+      platformProductId: "TT-PRODUCT-1",
+      platformVariationId: "TT-BLACK-2",
+      status: "active",
+      components: [{ stockSkuId: black.id, quantity: "2" }],
+    });
+
+    assert.equal(updated.displayName, "เสื้อ C สีดำ แพ็กคู่");
+    assert.deepEqual(updated.components.map((component) => ({
+      stockSkuId: component.stockSkuId,
+      quantity: component.quantity,
+    })), [{ stockSkuId: black.id, quantity: 2 }]);
+    assert.deepEqual(getSaleSku(rootDir, saleSku.id).components.map((component) => component.stockSkuId), [black.id]);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

@@ -42,14 +42,18 @@ const {
   createProductCategory,
   createProduct,
   createPurchaseInMovement,
+  createSaleSku,
   createStockSku,
+  getSaleSku,
   getStockCard,
   listInventoryBalances,
   listProductCategories,
   listProducts,
+  listSaleSkus,
   listStockSkus,
   updateProductCategory,
   updateProduct,
+  updateSaleSku,
   updateStockSku,
 } = require("./forms/inventory.logic.js");
 
@@ -94,6 +98,8 @@ function safeStaticPath(urlPath) {
     "/inventory/": "/inventory.html",
     "/inventory-settings": "/inventory-settings.html",
     "/inventory-settings/": "/inventory-settings.html",
+    "/sale-skus": "/sale-skus.html",
+    "/sale-skus/": "/sale-skus.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
@@ -629,6 +635,40 @@ async function handleInventoryStockSkuUpdate(stockSkuId, request, response) {
   }
 }
 
+async function handleInventorySaleSkuList(url, response) {
+  try {
+    sendJson(response, 200, { saleSkus: listSaleSkus(rootDir, { search: url.searchParams.get("search") || "" }) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list sale SKUs" });
+  }
+}
+
+async function handleInventorySaleSkuGet(saleSkuId, response) {
+  try {
+    sendJson(response, 200, { saleSku: getSaleSku(rootDir, saleSkuId) });
+  } catch (error) {
+    sendJson(response, 404, { error: error.message || "Cannot load sale SKU" });
+  }
+}
+
+async function handleInventorySaleSkuCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { saleSku: createSaleSku(rootDir, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot create sale SKU" });
+  }
+}
+
+async function handleInventorySaleSkuUpdate(saleSkuId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { saleSku: updateSaleSku(rootDir, saleSkuId, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot update sale SKU" });
+  }
+}
+
 async function handleInventoryPurchaseIn(request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -697,6 +737,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/inventory/sale-skus") {
+    await handleInventorySaleSkuCreate(request, response);
+    return;
+  }
+
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
     const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
     await handleInventoryProductUpdate(productId, request, response);
@@ -712,6 +757,12 @@ const server = createServer(async (request, response) => {
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/stock-skus/")) {
     const stockSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/stock-skus/", ""));
     await handleInventoryStockSkuUpdate(stockSkuId, request, response);
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/sale-skus/")) {
+    const saleSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/sale-skus/", ""));
+    await handleInventorySaleSkuUpdate(saleSkuId, request, response);
     return;
   }
 
@@ -813,6 +864,17 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/inventory/stock-skus") {
       await handleInventoryStockSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/sale-skus") {
+      await handleInventorySaleSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/inventory/sale-skus/")) {
+      const saleSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/sale-skus/", ""));
+      await handleInventorySaleSkuGet(saleSkuId, response);
       return;
     }
 

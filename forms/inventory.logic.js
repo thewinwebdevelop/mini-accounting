@@ -72,6 +72,12 @@ function mapStockSku(row) {
   };
 }
 
+function normalizePlatform(value) {
+  const platform = cleanText(value).toLowerCase() || "manual";
+  if (!["manual", "shopee", "tiktok"].includes(platform)) throw new Error("Platform ไม่ถูกต้อง");
+  return platform;
+}
+
 function normalizeStatus(value) {
   const status = cleanText(value) || "active";
   if (!["active", "inactive"].includes(status)) throw new Error("สถานะไม่ถูกต้อง");
@@ -281,6 +287,216 @@ function listStockSkus(rootDir, filters = {}) {
       ORDER BY stock_skus.sku ASC
     `).all(search, search, search, search, search, search);
     return rows.map(mapStockSku);
+  });
+}
+
+function mapSaleSku(row, components = []) {
+  return {
+    id: row.id,
+    saleSku: row.sale_sku,
+    displayName: row.display_name,
+    platform: row.platform,
+    platformProductId: row.platform_product_id,
+    platformVariationId: row.platform_variation_id,
+    status: row.status,
+    componentCount: components.length,
+    components,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapBundleComponent(row) {
+  return {
+    id: row.id,
+    saleSkuId: row.sale_sku_id,
+    stockSkuId: row.stock_sku_id,
+    quantity: row.quantity,
+    sku: row.sku,
+    color: row.color,
+    size: row.size,
+    productId: row.product_id,
+    productCode: row.product_code,
+    productName: row.product_name,
+    defaultUnitCost: money(row.default_unit_cost),
+    createdAt: row.created_at,
+  };
+}
+
+function listSaleSkuComponents(db, saleSkuId) {
+  return db.prepare(`
+    SELECT
+      bundle_components.*,
+      stock_skus.product_id,
+      stock_skus.sku,
+      stock_skus.color,
+      stock_skus.size,
+      stock_skus.default_unit_cost,
+      products.product_code,
+      products.name AS product_name
+    FROM bundle_components
+    JOIN stock_skus ON stock_skus.id = bundle_components.stock_sku_id
+    JOIN products ON products.id = stock_skus.product_id
+    WHERE bundle_components.sale_sku_id = ?
+    ORDER BY bundle_components.id ASC
+  `).all(Number(saleSkuId)).map(mapBundleComponent);
+}
+
+function getSaleSkuById(db, saleSkuId) {
+  const row = db.prepare("SELECT * FROM sale_skus WHERE id = ?").get(Number(saleSkuId));
+  if (!row) throw new Error("ไม่พบ Sale SKU");
+  return mapSaleSku(row, listSaleSkuComponents(db, row.id));
+}
+
+function normalizeSaleSkuData(db, data = {}) {
+  const saleSku = cleanText(data.saleSku).toUpperCase();
+  const displayName = cleanText(data.displayName);
+  if (!saleSku) throw new Error("ระบุ Sale SKU");
+  if (!displayName) throw new Error("ระบุชื่อที่ขาย");
+
+  const components = Array.isArray(data.components) ? data.components : [];
+  if (!components.length) throw new Error("เพิ่ม Stock SKU component อย่างน้อย 1 รายการ");
+  const normalizedComponents = components.map((component) => {
+    const stockSkuId = Number(component.stockSkuId);
+    if (!Number.isInteger(stockSkuId) || stockSkuId <= 0) throw new Error("เลือก Stock SKU ให้ครบ");
+    const stockSku = db.prepare("SELECT id FROM stock_skus WHERE id = ? AND status = 'active'").get(stockSkuId);
+    if (!stockSku) throw new Error("ไม่พบ Stock SKU ที่ใช้งานอยู่");
+    return {
+      stockSkuId,
+      quantity: parseQuantity(component.quantity),
+    };
+  });
+  const duplicate = normalizedComponents.find((component, index) => (
+    normalizedComponents.findIndex((item) => item.stockSkuId === component.stockSkuId) !== index
+  ));
+  if (duplicate) throw new Error("Stock SKU component ซ้ำ");
+
+  return {
+    saleSku,
+    displayName,
+    platform: normalizePlatform(data.platform),
+    platformProductId: cleanText(data.platformProductId),
+    platformVariationId: cleanText(data.platformVariationId),
+    status: normalizeStatus(data.status || "active"),
+    components: normalizedComponents,
+  };
+}
+
+function writeSaleSkuComponents(db, saleSkuId, components, timestamp) {
+  const insert = db.prepare(`
+    INSERT INTO bundle_components (sale_sku_id, stock_sku_id, quantity, created_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  for (const component of components) {
+    insert.run(saleSkuId, component.stockSkuId, component.quantity, timestamp);
+  }
+}
+
+function createSaleSku(rootDir, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const timestamp = nowIso(options);
+    const normalized = normalizeSaleSkuData(db, data);
+
+    try {
+      db.exec("BEGIN");
+      const row = db.prepare(`
+        INSERT INTO sale_skus (
+          sale_sku, display_name, platform, platform_product_id,
+          platform_variation_id, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING *
+      `).get(
+        normalized.saleSku,
+        normalized.displayName,
+        normalized.platform,
+        normalized.platformProductId,
+        normalized.platformVariationId,
+        normalized.status,
+        timestamp,
+        timestamp,
+      );
+      writeSaleSkuComponents(db, row.id, normalized.components, timestamp);
+      const result = getSaleSkuById(db, row.id);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      if (String(error.message).includes("UNIQUE")) throw new Error("Sale SKU นี้มีอยู่แล้ว");
+      throw error;
+    }
+  });
+}
+
+function updateSaleSku(rootDir, saleSkuId, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const id = Number(saleSkuId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบ Sale SKU");
+    const timestamp = nowIso(options);
+    const normalized = normalizeSaleSkuData(db, data);
+
+    try {
+      db.exec("BEGIN");
+      const row = db.prepare(`
+        UPDATE sale_skus
+        SET sale_sku = ?,
+            display_name = ?,
+            platform = ?,
+            platform_product_id = ?,
+            platform_variation_id = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+        RETURNING *
+      `).get(
+        normalized.saleSku,
+        normalized.displayName,
+        normalized.platform,
+        normalized.platformProductId,
+        normalized.platformVariationId,
+        normalized.status,
+        timestamp,
+        id,
+      );
+      if (!row) throw new Error("ไม่พบ Sale SKU");
+      db.prepare("DELETE FROM bundle_components WHERE sale_sku_id = ?").run(id);
+      writeSaleSkuComponents(db, id, normalized.components, timestamp);
+      const result = getSaleSkuById(db, id);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      if (String(error.message).includes("UNIQUE")) throw new Error("Sale SKU นี้มีอยู่แล้ว");
+      throw error;
+    }
+  });
+}
+
+function getSaleSku(rootDir, saleSkuId) {
+  return withInventoryDatabase(rootDir, (db) => getSaleSkuById(db, saleSkuId));
+}
+
+function listSaleSkus(rootDir, filters = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const search = `%${cleanText(filters.search)}%`;
+    const rows = db.prepare(`
+      SELECT DISTINCT sale_skus.*
+      FROM sale_skus
+      LEFT JOIN bundle_components ON bundle_components.sale_sku_id = sale_skus.id
+      LEFT JOIN stock_skus ON stock_skus.id = bundle_components.stock_sku_id
+      LEFT JOIN products ON products.id = stock_skus.product_id
+      WHERE (? = '%%'
+        OR sale_skus.sale_sku LIKE ?
+        OR sale_skus.display_name LIKE ?
+        OR sale_skus.platform LIKE ?
+        OR sale_skus.platform_product_id LIKE ?
+        OR sale_skus.platform_variation_id LIKE ?
+        OR stock_skus.sku LIKE ?
+        OR products.product_code LIKE ?
+        OR products.name LIKE ?)
+      ORDER BY sale_skus.sale_sku ASC
+    `).all(search, search, search, search, search, search, search, search, search);
+    return rows.map((row) => mapSaleSku(row, listSaleSkuComponents(db, row.id)));
   });
 }
 
@@ -496,14 +712,18 @@ module.exports = {
   createProductCategory,
   createProduct,
   createPurchaseInMovement,
+  createSaleSku,
   createStockSku,
+  getSaleSku,
   getStockCard,
   listInventoryBalances,
   listProductCategories,
   listProducts,
+  listSaleSkus,
   listStockMovementsByReference,
   listStockSkus,
   updateProductCategory,
   updateProduct,
+  updateSaleSku,
   updateStockSku,
 };

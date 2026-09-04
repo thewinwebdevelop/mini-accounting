@@ -122,6 +122,24 @@ test("inventory APIs create product, SKU, purchase-in, balance, and stock card r
     const stockCard = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
     assert.equal(stockCard.sku.color, "ดำสนิท");
     assert.deepEqual(stockCard.movements.map((movement) => movement.referenceNo), ["RCV-API-001"]);
+
+    const { saleSku } = await requestJson(baseUrl, "/api/inventory/sale-skus", {
+      method: "POST",
+      body: JSON.stringify({
+        saleSku: "SHIRT-A-SHOPEE-BLACK-M",
+        displayName: "เสื้อ A สีดำ M Shopee",
+        platform: "shopee",
+        platformProductId: "SP-PRODUCT-1",
+        platformVariationId: "SP-BLACK-M",
+        components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+      }),
+    });
+    assert.equal(saleSku.saleSku, "SHIRT-A-SHOPEE-BLACK-M");
+    assert.equal(saleSku.components[0].sku, "SHIRT-A-BLACK-M");
+
+    const saleSkus = await requestJson(baseUrl, "/api/inventory/sale-skus?search=Shopee");
+    assert.equal(saleSkus.saleSkus.length, 1);
+    assert.equal(saleSkus.saleSkus[0].platformVariationId, "SP-BLACK-M");
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));
