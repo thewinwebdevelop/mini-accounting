@@ -7,13 +7,56 @@ import test from "node:test";
 import inventory from "../forms/inventory.logic.js";
 
 const {
+  createProductCategory,
   createProduct,
   createStockSku,
+  listProductCategories,
   listProducts,
   listStockSkus,
+  updateProductCategory,
   updateProduct,
   updateStockSku,
 } = inventory;
+
+test("product category config seeds defaults and controls allowed product categories", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-"));
+
+  try {
+    assert.deepEqual(listProductCategories(rootDir).map((category) => category.name).slice(0, 6), [
+      "เสื้อ",
+      "กระโปรง",
+      "กางเกง",
+      "เดรส",
+      "เซต",
+      "เครื่องประดับ",
+    ]);
+
+    const category = createProductCategory(rootDir, { name: "เสื้อแฟชั่น", sortOrder: "15" }, {
+      now: () => "2026-09-04T00:00:00.000Z",
+    });
+    assert.equal(category.name, "เสื้อแฟชั่น");
+    assert.equal(category.sortOrder, 15);
+
+    const updated = updateProductCategory(rootDir, category.id, {
+      name: "เสื้อแฟชั่นเกาหลี",
+      sortOrder: "16",
+      status: "inactive",
+    }, {
+      now: () => "2026-09-05T00:00:00.000Z",
+    });
+    assert.equal(updated.name, "เสื้อแฟชั่นเกาหลี");
+    assert.equal(updated.status, "inactive");
+    assert.equal(updated.updatedAt, "2026-09-05T00:00:00.000Z");
+    assert.equal(listProductCategories(rootDir).some((item) => item.name === "เสื้อแฟชั่นเกาหลี"), false);
+    assert.equal(listProductCategories(rootDir, { includeInactive: true }).some((item) => item.name === "เสื้อแฟชั่นเกาหลี"), true);
+
+    assert.throws(() => {
+      createProduct(rootDir, { productCode: "UNKNOWN-CAT", name: "สินค้าหมวดไม่ตั้งค่า", category: "หมวดไม่มีใน config" });
+    }, /เลือกหมวดจาก config/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 
 test("createProduct and createStockSku store clothing SKU attributes and default cost", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-"));
@@ -107,6 +150,7 @@ test("updateProduct and updateStockSku edit master data without changing movemen
       now: () => "2026-09-04T00:00:00.000Z",
     });
 
+    createProductCategory(rootDir, { name: "เสื้อแฟชั่น" });
     const updatedProduct = updateProduct(rootDir, product.id, {
       productCode: "TOP-E",
       name: "เสื้อสายเดี่ยว E รุ่นปรับชื่อ",

@@ -64,6 +64,7 @@ test("expense form exposes navigation menu and bottom submit bar", async () => {
   assert.match(topbar, /href="\/expense-requests"/);
   assert.match(topbar, /href="\/expense-request"/);
   assert.match(topbar, /href="\/inventory"/);
+  assert.match(topbar, /href="\/inventory-settings"/);
   assert.match(topbar, /href="\/google-drive"/);
   assert.match(topbar, /href="\/company-settings"/);
   assert.match(topbar, /id="resetForm"/);

@@ -28,13 +28,16 @@ const {
   syncExpenseRequestToDrive,
 } = require("./forms/local-server.logic.js");
 const {
+  createProductCategory,
   createProduct,
   createPurchaseInMovement,
   createStockSku,
   getStockCard,
   listInventoryBalances,
+  listProductCategories,
   listProducts,
   listStockSkus,
+  updateProductCategory,
   updateProduct,
   updateStockSku,
 } = require("./forms/inventory.logic.js");
@@ -74,6 +77,8 @@ function safeStaticPath(urlPath) {
     "/company-settings/": "/company-settings.html",
     "/inventory": "/inventory.html",
     "/inventory/": "/inventory.html",
+    "/inventory-settings": "/inventory-settings.html",
+    "/inventory-settings/": "/inventory-settings.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
@@ -352,6 +357,33 @@ async function handleInventoryProductList(url, response) {
   }
 }
 
+async function handleInventoryCategoryList(url, response) {
+  try {
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
+    sendJson(response, 200, { categories: listProductCategories(rootDir, { includeInactive }) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list product categories" });
+  }
+}
+
+async function handleInventoryCategoryCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { category: createProductCategory(rootDir, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot create product category" });
+  }
+}
+
+async function handleInventoryCategoryUpdate(categoryId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { category: updateProductCategory(rootDir, categoryId, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot update product category" });
+  }
+}
+
 async function handleInventoryProductCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -449,6 +481,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/inventory/categories") {
+    await handleInventoryCategoryCreate(request, response);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/inventory/stock-skus") {
     await handleInventoryStockSkuCreate(request, response);
     return;
@@ -462,6 +499,12 @@ const server = createServer(async (request, response) => {
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
     const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
     await handleInventoryProductUpdate(productId, request, response);
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/categories/")) {
+    const categoryId = decodeURIComponent(url.pathname.replace("/api/inventory/categories/", ""));
+    await handleInventoryCategoryUpdate(categoryId, request, response);
     return;
   }
 
@@ -512,6 +555,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/inventory/products") {
       await handleInventoryProductList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/categories") {
+      await handleInventoryCategoryList(url, response);
       return;
     }
 

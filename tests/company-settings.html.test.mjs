@@ -11,6 +11,7 @@ test("company settings page supports editing company master data", async () => {
   assert.match(html, /<title>ตั้งค่าบริษัท - หจก\.สวีทเฮาส์<\/title>/);
   assert.match(topbar.trim(), /^<details class="app-menu">/);
   assert.match(topbar, /href="\/inventory"/);
+  assert.match(topbar, /href="\/inventory-settings"/);
   assert.match(html, /id="legalName"/);
   assert.match(html, /id="taxId"/);
   assert.match(html, /id="branch"/);

@@ -2,7 +2,8 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
   return path.join(rootDir, "data", "sweet-house.sqlite");
@@ -30,6 +31,16 @@ function ensureInventorySchema(db) {
       name TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('active', 'inactive'))
+    );
+
+    CREATE TABLE IF NOT EXISTS product_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -108,6 +119,22 @@ function ensureInventorySchema(db) {
     INSERT OR IGNORE INTO inventory_schema_migrations (version, applied_at)
     VALUES (?, ?)
   `).run(SCHEMA_VERSION, new Date().toISOString());
+
+  const timestamp = new Date().toISOString();
+  const insertCategory = db.prepare(`
+    INSERT OR IGNORE INTO product_categories (name, sort_order, status, created_at, updated_at)
+    VALUES (?, ?, 'active', ?, ?)
+  `);
+  DEFAULT_PRODUCT_CATEGORIES.forEach((name, index) => {
+    insertCategory.run(name, (index + 1) * 10, timestamp, timestamp);
+  });
+
+  db.prepare(`
+    INSERT OR IGNORE INTO product_categories (name, sort_order, status, created_at, updated_at)
+    SELECT DISTINCT TRIM(category), 1000, 'active', ?, ?
+    FROM products
+    WHERE TRIM(category) <> ''
+  `).run(timestamp, timestamp);
 }
 
 function withInventoryDatabase(rootDir, callback) {
@@ -121,6 +148,7 @@ function withInventoryDatabase(rootDir, callback) {
 }
 
 module.exports = {
+  DEFAULT_PRODUCT_CATEGORIES,
   ensureInventorySchema,
   getInventoryDbPath,
   openInventoryDatabase,

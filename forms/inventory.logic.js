@@ -44,6 +44,17 @@ function mapProduct(row) {
   };
 }
 
+function mapProductCategory(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    sortOrder: row.sort_order,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function mapStockSku(row) {
   return {
     id: row.id,
@@ -67,6 +78,81 @@ function normalizeStatus(value) {
   return status;
 }
 
+function parseSortOrder(value) {
+  const text = cleanText(value);
+  if (!text) return 0;
+  const parsed = Number.parseInt(text, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error("ลำดับหมวดต้องไม่ติดลบ");
+  return parsed;
+}
+
+function assertActiveProductCategory(db, value) {
+  const category = cleanText(value);
+  if (!category) throw new Error("เลือกหมวดสินค้า");
+  const found = db.prepare("SELECT id FROM product_categories WHERE name = ? AND status = 'active'").get(category);
+  if (!found) throw new Error("เลือกหมวดจาก config");
+  return category;
+}
+
+function listProductCategories(rootDir, filters = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const includeInactive = Boolean(filters.includeInactive);
+    const rows = db.prepare(`
+      SELECT *
+      FROM product_categories
+      WHERE (? = 1 OR status = 'active')
+      ORDER BY sort_order ASC, name ASC
+    `).all(includeInactive ? 1 : 0);
+    return rows.map(mapProductCategory);
+  });
+}
+
+function createProductCategory(rootDir, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const name = cleanText(data.name);
+    if (!name) throw new Error("ระบุชื่อหมวด");
+    const timestamp = nowIso(options);
+
+    try {
+      const row = db.prepare(`
+        INSERT INTO product_categories (name, sort_order, status, created_at, updated_at)
+        VALUES (?, ?, 'active', ?, ?)
+        RETURNING *
+      `).get(name, parseSortOrder(data.sortOrder), timestamp, timestamp);
+      return mapProductCategory(row);
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE")) throw new Error("หมวดนี้มีอยู่แล้ว");
+      throw error;
+    }
+  });
+}
+
+function updateProductCategory(rootDir, categoryId, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const id = Number(categoryId);
+    const name = cleanText(data.name);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบหมวดสินค้า");
+    if (!name) throw new Error("ระบุชื่อหมวด");
+
+    try {
+      const row = db.prepare(`
+        UPDATE product_categories
+        SET name = ?,
+            sort_order = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+        RETURNING *
+      `).get(name, parseSortOrder(data.sortOrder), normalizeStatus(data.status), nowIso(options), id);
+      if (!row) throw new Error("ไม่พบหมวดสินค้า");
+      return mapProductCategory(row);
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE")) throw new Error("หมวดนี้มีอยู่แล้ว");
+      throw error;
+    }
+  });
+}
+
 function createProduct(rootDir, data = {}, options = {}) {
   return withInventoryDatabase(rootDir, (db) => {
     const timestamp = nowIso(options);
@@ -74,13 +160,14 @@ function createProduct(rootDir, data = {}, options = {}) {
     const name = cleanText(data.name);
     if (!productCode) throw new Error("ระบุรหัสสินค้าแม่");
     if (!name) throw new Error("ระบุชื่อสินค้า");
+    const category = assertActiveProductCategory(db, data.category);
 
     try {
       const row = db.prepare(`
         INSERT INTO products (product_code, name, category, description, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, 'active', ?, ?)
         RETURNING *
-      `).get(productCode, name, cleanText(data.category), cleanText(data.description), timestamp, timestamp);
+      `).get(productCode, name, category, cleanText(data.description), timestamp, timestamp);
       return mapProduct(row);
     } catch (error) {
       if (String(error.message).includes("UNIQUE")) throw new Error("รหัสสินค้าแม่นี้มีอยู่แล้ว");
@@ -110,6 +197,7 @@ function updateProduct(rootDir, productId, data = {}, options = {}) {
     if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบสินค้าแม่");
     if (!productCode) throw new Error("ระบุรหัสสินค้าแม่");
     if (!name) throw new Error("ระบุชื่อสินค้า");
+    const category = assertActiveProductCategory(db, data.category);
 
     try {
       const row = db.prepare(`
@@ -125,7 +213,7 @@ function updateProduct(rootDir, productId, data = {}, options = {}) {
       `).get(
         productCode,
         name,
-        cleanText(data.category),
+        category,
         cleanText(data.description),
         normalizeStatus(data.status),
         nowIso(options),
@@ -392,13 +480,16 @@ function getStockCard(rootDir, stockSkuId) {
 }
 
 module.exports = {
+  createProductCategory,
   createProduct,
   createPurchaseInMovement,
   createStockSku,
   getStockCard,
   listInventoryBalances,
+  listProductCategories,
   listProducts,
   listStockSkus,
+  updateProductCategory,
   updateProduct,
   updateStockSku,
 };

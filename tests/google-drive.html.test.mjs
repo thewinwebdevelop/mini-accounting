@@ -11,6 +11,7 @@ test("google drive settings page supports OAuth setup from the UI", async () => 
   assert.match(html, /<title>ตั้งค่า Google Drive - หจก\.สวีทเฮาส์<\/title>/);
   assert.match(topbar.trim(), /^<details class="app-menu">/);
   assert.match(topbar, /href="\/inventory"/);
+  assert.match(topbar, /href="\/inventory-settings"/);
   assert.match(html, /id="clientId"/);
   assert.match(html, /id="clientSecret"/);
   assert.match(html, /id="driveBasePath"/);

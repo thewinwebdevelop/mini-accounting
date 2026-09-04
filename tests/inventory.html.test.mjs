@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const htmlPath = new URL("../forms/inventory.html", import.meta.url);
+const settingsPath = new URL("../forms/inventory-settings.html", import.meta.url);
 
 test("inventory page provides product, SKU, purchase-in, balance, and stock card work areas", async () => {
   const html = await readFile(htmlPath, "utf8");
@@ -17,5 +18,19 @@ test("inventory page provides product, SKU, purchase-in, balance, and stock card
   assert.match(html, /id="stockCardRows"/);
   assert.match(html, /id="productRecordId"/);
   assert.match(html, /id="skuRecordId"/);
+  assert.match(html, /href="\/inventory-settings"/);
+  assert.match(html, /<select id="productCategory" name="category" required><\/select>/);
+  assert.doesNotMatch(html, /<input id="productCategory"/);
   assert.match(html, /src="\.\/inventory\.logic\.browser\.js"/);
+});
+
+test("inventory settings page manages product category options", async () => {
+  const html = await readFile(settingsPath, "utf8");
+
+  assert.match(html, /<title>ตั้งค่าหมวดสินค้า - หจก\.สวีทเฮาส์<\/title>/);
+  assert.match(html, /id="categoryForm"/);
+  assert.match(html, /id="categoryName"/);
+  assert.match(html, /id="categorySortOrder"/);
+  assert.match(html, /id="categoryRows"/);
+  assert.match(html, /src="\.\/inventory-settings\.logic\.browser\.js"/);
 });

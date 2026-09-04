@@ -58,9 +58,24 @@ test("inventory APIs create product, SKU, purchase-in, balance, and stock card r
   try {
     await waitForServer(child);
 
+    const initialCategories = await requestJson(baseUrl, "/api/inventory/categories");
+    assert.equal(initialCategories.categories.some((category) => category.name === "เสื้อ"), true);
+
+    const createdCategory = await requestJson(baseUrl, "/api/inventory/categories", {
+      method: "POST",
+      body: JSON.stringify({ name: "เสื้อคลุม", sortOrder: "25" }),
+    });
+    assert.equal(createdCategory.category.name, "เสื้อคลุม");
+
+    const updatedCategory = await requestJson(baseUrl, `/api/inventory/categories/${createdCategory.category.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name: "เสื้อคลุมแฟชั่น", sortOrder: "26", status: "active" }),
+    });
+    assert.equal(updatedCategory.category.name, "เสื้อคลุมแฟชั่น");
+
     const { product } = await requestJson(baseUrl, "/api/inventory/products", {
       method: "POST",
-      body: JSON.stringify({ productCode: "SHIRT-A", name: "เสื้อ A", category: "เสื้อ" }),
+      body: JSON.stringify({ productCode: "SHIRT-A", name: "เสื้อ A", category: "เสื้อคลุมแฟชั่น" }),
     });
     const { stockSku } = await requestJson(baseUrl, "/api/inventory/stock-skus", {
       method: "POST",

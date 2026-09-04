@@ -333,6 +333,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบสต๊อก</div>
           <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
         </div>
         <div class="menu-group">
           <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
@@ -371,8 +372,8 @@
               <input id="productName" name="name" required>
             </div>
             <div class="field span-6">
-              <label for="productCategory">หมวด</label>
-              <input id="productCategory" name="category" placeholder="เช่น เสื้อ / กระโปรง">
+              <label for="productCategory">หมวด *</label>
+              <select id="productCategory" name="category" required></select>
             </div>
             <div class="field span-6">
               <label for="productStatus">สถานะ</label>

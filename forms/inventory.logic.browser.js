@@ -1,5 +1,6 @@
 window.addEventListener("DOMContentLoaded", () => {
   const state = {
+    productCategories: [],
     products: [],
     stockSkus: [],
   };
@@ -13,6 +14,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const balanceRows = document.querySelector("#balanceRows");
   const stockCardRows = document.querySelector("#stockCardRows");
   const skuProductSelect = document.querySelector("#skuProductSelect");
+  const productCategorySelect = document.querySelector("#productCategory");
   const purchaseSkuSelect = document.querySelector("#purchaseSkuSelect");
   const stockCardSkuSelect = document.querySelector("#stockCardSkuSelect");
   const productSubmitLabel = document.querySelector("#productSubmitLabel");
@@ -116,6 +118,14 @@ window.addEventListener("DOMContentLoaded", () => {
     );
   }
 
+  function renderProductCategoryOptions() {
+    const activeCategories = state.productCategories.filter((category) => category.status !== "inactive");
+    productCategorySelect.replaceChildren(
+      option("เลือกหมวดสินค้า", ""),
+      ...activeCategories.map((category) => option(category.name, category.name)),
+    );
+  }
+
   function renderSkuOptions() {
     const activeSkus = state.stockSkus.filter((sku) => sku.status !== "inactive");
     const options = [option("เลือก SKU", ""), ...activeSkus.map((sku) => option(skuLabel(sku), sku.id))];
@@ -140,6 +150,7 @@ window.addEventListener("DOMContentLoaded", () => {
   function resetProductForm() {
     productForm.reset();
     productForm.elements.id.value = "";
+    renderProductCategoryOptions();
     productSubmitLabel.textContent = "บันทึกสินค้าแม่";
   }
 
@@ -182,6 +193,12 @@ window.addEventListener("DOMContentLoaded", () => {
     renderProductOptions();
   }
 
+  async function refreshProductCategories() {
+    const { categories } = await api("/api/inventory/categories");
+    state.productCategories = categories;
+    renderProductCategoryOptions();
+  }
+
   async function refreshSkus() {
     const { stockSkus } = await api("/api/inventory/stock-skus");
     state.stockSkus = stockSkus;
@@ -217,6 +234,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function refreshAll() {
+    await refreshProductCategories();
     await refreshProducts();
     await refreshSkus();
     await refreshBalances();
