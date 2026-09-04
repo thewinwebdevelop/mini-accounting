@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ตั้งค่าหมวดสินค้า - หจก.สวีทเฮาส์</title>
+  <title>ตั้งค่าผู้ขายใบรับรองแทนใบเสร็จ - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
@@ -30,11 +30,7 @@
       line-height: 1.5;
     }
 
-    button,
-    input,
-    select {
-      font: inherit;
-    }
+    button, input, select, textarea { font: inherit; }
 
     .topbar {
       position: sticky;
@@ -49,20 +45,9 @@
       box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
     }
 
-    .brand-title {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 800;
-    }
-
-    .brand-subtitle {
-      margin: 2px 0 0;
-      color: #d9e2ec;
-      font-size: 12px;
-    }
-
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
     .app-menu { position: relative; }
-
     .menu-button {
       display: grid;
       width: 38px;
@@ -75,14 +60,12 @@
       font-weight: 900;
       list-style: none;
     }
-
     .menu-button::-webkit-details-marker { display: none; }
-
     .menu-panel {
       position: absolute;
       top: 48px;
       left: 0;
-      width: min(320px, calc(100vw - 32px));
+      width: min(330px, calc(100vw - 32px));
       padding: 10px;
       color: var(--ink);
       background: #ffffff;
@@ -90,20 +73,8 @@
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
-
-    .menu-group + .menu-group {
-      margin-top: 8px;
-      padding-top: 8px;
-      border-top: 1px solid #eef2f6;
-    }
-
-    .menu-group-title {
-      margin: 5px 8px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 900;
-    }
-
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
     .menu-item {
       display: block;
       width: 100%;
@@ -117,7 +88,6 @@
       text-decoration: none;
       font-weight: 800;
     }
-
     .menu-item:hover { background: var(--soft); }
 
     .page {
@@ -148,40 +118,15 @@
       background: var(--brand);
     }
 
-    .section-title {
-      margin: 0;
-      font-size: 14px;
-      font-weight: 800;
-    }
-
-    .section-body {
-      display: grid;
-      gap: 10px;
-      padding: 14px;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(12, 1fr);
-      gap: 9px;
-    }
-
+    .section-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .section-body { display: grid; gap: 10px; padding: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 9px; }
     .span-6 { grid-column: span 6; }
     .span-12 { grid-column: span 12; }
+    .field { display: grid; gap: 5px; }
 
-    .field {
-      display: grid;
-      gap: 5px;
-    }
-
-    label {
-      color: var(--brand);
-      font-size: 12px;
-      font-weight: 800;
-    }
-
-    input,
-    select {
+    label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    input, select, textarea {
       width: 100%;
       min-height: 38px;
       padding: 8px 10px;
@@ -191,19 +136,13 @@
       border-radius: 6px;
       outline: none;
     }
-
-    input:focus,
-    select:focus {
+    textarea { min-height: 76px; resize: vertical; }
+    input:focus, select:focus, textarea:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
     }
 
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button {
       min-height: 38px;
       padding: 8px 12px;
@@ -212,18 +151,8 @@
       cursor: pointer;
       font-weight: 800;
     }
-
-    .button.primary {
-      color: #ffffff;
-      background: var(--accent);
-    }
-
-    .button.secondary {
-      color: var(--brand-strong);
-      background: #ffffff;
-      border-color: #bcccdc;
-    }
-
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
     .icon-button {
       min-width: 34px;
       min-height: 34px;
@@ -234,36 +163,16 @@
       cursor: pointer;
       font-weight: 900;
     }
-
     .table-wrap {
       overflow-x: auto;
       border: 1px solid #d9e2ec;
       border-radius: 8px;
       background: #ffffff;
     }
-
-    table {
-      width: 100%;
-      min-width: 620px;
-      border-collapse: collapse;
-    }
-
-    th,
-    td {
-      padding: 8px 9px;
-      border-bottom: 1px solid #eef2f6;
-      text-align: left;
-      vertical-align: top;
-    }
-
-    th {
-      color: #ffffff;
-      background: var(--brand);
-      font-size: 12px;
-    }
-
-    .number { text-align: right; white-space: nowrap; }
-
+    table { width: 100%; min-width: 780px; border-collapse: collapse; }
+    th, td { padding: 8px 9px; border-bottom: 1px solid #eef2f6; text-align: left; vertical-align: top; }
+    th { color: #ffffff; background: var(--brand); font-size: 12px; }
+    .muted { color: var(--muted); font-size: 12px; }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -275,12 +184,7 @@
       font-size: 12px;
       font-weight: 800;
     }
-
-    .status-pill.inactive {
-      background: #fef2f2;
-      color: var(--danger);
-    }
-
+    .status-pill.inactive { background: #fef2f2; color: var(--danger); }
     .status-box {
       display: none;
       padding: 10px;
@@ -290,7 +194,6 @@
       color: var(--brand-strong);
       font-size: 12px;
     }
-
     .status-box.active { display: block; }
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
@@ -316,6 +219,9 @@
           <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
           <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
           <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบรับรองแทนใบเสร็จ</div>
           <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
           <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
           <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
@@ -329,66 +235,83 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">ตั้งค่าหมวดสินค้า</h1>
-      <p class="brand-subtitle">กำหนดตัวเลือกหมวดสำหรับสินค้าแม่ในระบบสต๊อก</p>
+      <h1 class="brand-title">ตั้งค่าผู้ขายใบรับรอง</h1>
+      <p class="brand-subtitle">บันทึกข้อมูลผู้ขายที่ใช้ซ้ำในใบรับรองแทนใบเสร็จรับเงิน</p>
     </div>
   </header>
 
   <main class="page">
     <section class="section">
       <div class="section-header">
-        <h2 class="section-title">หมวดสินค้า</h2>
+        <h2 class="section-title">ผู้ขาย</h2>
       </div>
-      <form class="section-body" id="categoryForm">
-        <input id="categoryRecordId" name="id" type="hidden">
+      <form class="section-body" id="vendorForm">
+        <input id="vendorRecordId" name="id" type="hidden">
         <div class="grid">
           <div class="field span-12">
-            <label for="categoryName">ชื่อหมวด *</label>
-            <input id="categoryName" name="name" required>
+            <label for="vendorName">ชื่อผู้ขาย *</label>
+            <input id="vendorName" name="name" required>
           </div>
           <div class="field span-6">
-            <label for="categorySortOrder">ลำดับ</label>
-            <input id="categorySortOrder" name="sortOrder" inputmode="numeric" placeholder="เช่น 10">
+            <label for="vendorTaxId">เลขประจำตัวผู้เสียภาษี</label>
+            <input id="vendorTaxId" name="taxId">
           </div>
           <div class="field span-6">
-            <label for="categoryStatus">สถานะ</label>
-            <select id="categoryStatus" name="status">
+            <label for="vendorStatus">สถานะ</label>
+            <select id="vendorStatus" name="status">
               <option value="active">ใช้งาน</option>
               <option value="inactive">ปิดใช้</option>
             </select>
           </div>
+          <div class="field span-6">
+            <label for="vendorPaymentChannel">ช่องทางชำระเงิน</label>
+            <input id="vendorPaymentChannel" name="paymentChannel" value="โอนผ่านบัญชีบริษัท">
+          </div>
+          <div class="field span-6">
+            <label for="vendorPaymentReference">เลขอ้างอิง/บัญชีปลายทาง</label>
+            <input id="vendorPaymentReference" name="paymentReference">
+          </div>
+          <div class="field span-12">
+            <label for="vendorDefaultBusinessPurpose">วัตถุประสงค์เริ่มต้น</label>
+            <textarea id="vendorDefaultBusinessPurpose" name="defaultBusinessPurpose"></textarea>
+          </div>
+          <div class="field span-12">
+            <label for="vendorNote">หมายเหตุ</label>
+            <textarea id="vendorNote" name="note"></textarea>
+          </div>
         </div>
         <div class="actions">
-          <button class="button primary" type="submit" id="categorySubmitLabel">บันทึกหมวด</button>
-          <button class="button secondary" type="button" id="cancelCategoryEdit">ยกเลิกแก้ไข</button>
+          <button class="button primary" type="submit" id="vendorSubmitLabel">บันทึกผู้ขาย</button>
+          <button class="button secondary" type="button" id="cancelVendorEdit">ยกเลิกแก้ไข</button>
         </div>
-        <div class="status-box" id="categoryStatusBox"></div>
+        <div class="status-box" id="vendorStatusBox"></div>
       </form>
     </section>
 
     <section class="section">
       <div class="section-header">
-        <h2 class="section-title">รายการหมวด</h2>
-        <button class="button secondary" type="button" id="refreshCategories">รีเฟรช</button>
+        <h2 class="section-title">รายการผู้ขาย</h2>
+        <button class="button secondary" type="button" id="refreshVendors">รีเฟรช</button>
       </div>
       <div class="section-body">
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>ชื่อหมวด</th>
-                <th class="number">ลำดับ</th>
+                <th>ผู้ขาย</th>
+                <th>การชำระเงิน</th>
+                <th>วัตถุประสงค์เริ่มต้น</th>
                 <th>สถานะ</th>
                 <th>จัดการ</th>
               </tr>
             </thead>
-            <tbody id="categoryRows"></tbody>
+            <tbody id="vendorRows"></tbody>
           </table>
         </div>
       </div>
     </section>
   </main>
 
-  <script src="./inventory-settings.logic.browser.js"></script>
+  <script src="./substitute-receipt-vendors.logic.browser.js"></script>
 </body>
 </html>

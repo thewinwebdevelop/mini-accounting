@@ -10,6 +10,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const state = {
     stockSkus: [],
+    vendors: [],
     nextReceipt: null,
     draftId: "",
     receiptNo: "",
@@ -34,6 +35,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const totalAmountPreview = document.querySelector("#totalAmountPreview");
   const evidenceCountPreview = document.querySelector("#evidenceCountPreview");
   const stockReceiptNotice = document.querySelector("#stockReceiptNotice");
+  const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -106,6 +108,18 @@ window.addEventListener("DOMContentLoaded", () => {
     select.replaceChildren(
       option("เลือก Stock SKU", ""),
       ...activeSkus.map((sku) => option(skuLabel(sku), sku.id, sku)),
+    );
+  }
+
+  function vendorLabel(vendor) {
+    return vendor.taxId ? `${vendor.name} (${vendor.taxId})` : vendor.name;
+  }
+
+  function renderVendorOptions() {
+    if (!vendorPresetSelect) return;
+    vendorPresetSelect.replaceChildren(
+      option("กรอกเอง / ไม่ใช้ preset", ""),
+      ...state.vendors.map((vendor) => option(vendorLabel(vendor), vendor.id)),
     );
   }
 
@@ -281,6 +295,25 @@ window.addEventListener("DOMContentLoaded", () => {
     refreshAllSkuSelects();
   }
 
+  async function refreshVendors() {
+    const { vendors } = await api("/api/substitute-receipt-vendors");
+    state.vendors = vendors;
+    renderVendorOptions();
+  }
+
+  function applyVendorPreset(vendorId) {
+    const vendor = state.vendors.find((item) => item.id === vendorId);
+    if (!vendor) return;
+    form.elements.payeeName.value = vendor.name || "";
+    form.elements.payeeTaxId.value = vendor.taxId || "";
+    form.elements.paymentChannel.value = vendor.paymentChannel || "โอนผ่านบัญชีบริษัท";
+    form.elements.paymentReference.value = vendor.paymentReference || "";
+    if (vendor.defaultBusinessPurpose) {
+      form.elements.businessPurpose.value = vendor.defaultBusinessPurpose;
+    }
+    updatePreview();
+  }
+
   function fillForm(payload = {}) {
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
     form.elements.receiptDate.value = payload.receiptDate || todayInputValue();
@@ -292,6 +325,7 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
     form.elements.paymentReference.value = payload.paymentReference || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
+    if (vendorPresetSelect) vendorPresetSelect.value = "";
     state.existingEvidenceFiles = payload.evidenceFiles || {};
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
@@ -419,6 +453,7 @@ window.addEventListener("DOMContentLoaded", () => {
     applyReceiptTypeState();
     updatePreview();
   });
+  vendorPresetSelect?.addEventListener("change", () => applyVendorPreset(vendorPresetSelect.value));
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);
   form.addEventListener("submit", (event) => {
@@ -430,7 +465,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   fillForm();
-  Promise.all([refreshStockSkus(), refreshNextReceipt()])
+  Promise.all([refreshStockSkus(), refreshVendors(), refreshNextReceipt()])
     .then(async () => {
       if (queryDraftId) {
         await loadDraft(queryDraftId);

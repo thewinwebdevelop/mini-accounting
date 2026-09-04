@@ -13,6 +13,7 @@ const pages = [
   "sale-skus.html",
   "substitute-receipt.html",
   "substitute-receipts.html",
+  "substitute-receipt-vendors.html",
 ];
 
 test("main pages link to substitute receipt creation from the document menu", async () => {
@@ -23,6 +24,8 @@ test("main pages link to substitute receipt creation from the document menu", as
     assert.match(menu, /สร้างใบรับรองแทนใบเสร็จ/, page);
     assert.match(menu, /href="\/substitute-receipts"/, page);
     assert.match(menu, /รายการใบรับรองแทนใบเสร็จ/, page);
+    assert.match(menu, /href="\/substitute-receipt-vendors"/, page);
+    assert.match(menu, /ตั้งค่าผู้ขายใบรับรอง/, page);
     assert.match(menu, /href="\/sale-skus"/, page);
     assert.match(menu, /Sale SKU \/ Bundle SKU/, page);
   }

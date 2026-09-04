@@ -18,16 +18,16 @@
   - Next suggested task after completion: Sale SKU / Bundle SKU mapping.
 - [x] Sale SKU / Bundle SKU mapping for Shopee/TikTok listings and sets.
   - Next suggested task after completion: substitute receipt vendor presets.
+- [x] Substitute receipt vendor presets: vendor/payee master settings page, selectable preset in substitute receipt form, and manual entry fallback.
+  - Next suggested task after completion: mobile-friendly substitute receipt line item editing.
 
 ## Current
 
-- [ ] Substitute receipt vendor presets: vendor/payee master settings page, selectable preset in substitute receipt form, and manual entry fallback.
-  - Next suggested task after completion: mobile-friendly substitute receipt line item editing.
+- [ ] Substitute receipt mobile line item UX: collapse/expand each added line on mobile like the expense request form.
+  - Next suggested task after completion: split hamburger document sections.
 
 ## Requested Next
 
-- [ ] Substitute receipt mobile line item UX: collapse/expand each added line on mobile like the expense request form.
-  - Next suggested task after completion: split hamburger document sections.
 - [ ] Hamburger menu document grouping: separate substitute receipt links into their own menu section instead of grouping them under expense requests.
   - Next suggested task after completion: inventory dashboard.
 - [ ] Inventory dashboard: total inventory value, current stock PDF export for tax/accounting evidence, and latest stock-in report with at least 10 rows plus see-more detail.

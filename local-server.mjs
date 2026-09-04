@@ -56,6 +56,11 @@ const {
   updateSaleSku,
   updateStockSku,
 } = require("./forms/inventory.logic.js");
+const {
+  createSubstituteReceiptVendor,
+  listSubstituteReceiptVendors,
+  updateSubstituteReceiptVendor,
+} = require("./forms/substitute-receipt-vendors.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -90,6 +95,8 @@ function safeStaticPath(urlPath) {
     "/substitute-receipt/": "/substitute-receipt.html",
     "/substitute-receipts": "/substitute-receipts.html",
     "/substitute-receipts/": "/substitute-receipts.html",
+    "/substitute-receipt-vendors": "/substitute-receipt-vendors.html",
+    "/substitute-receipt-vendors/": "/substitute-receipt-vendors.html",
     "/google-drive": "/google-drive.html",
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
@@ -669,6 +676,33 @@ async function handleInventorySaleSkuUpdate(saleSkuId, request, response) {
   }
 }
 
+async function handleSubstituteReceiptVendorList(url, response) {
+  try {
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
+    sendJson(response, 200, { vendors: await listSubstituteReceiptVendors(rootDir, { includeInactive }) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list substitute receipt vendors" });
+  }
+}
+
+async function handleSubstituteReceiptVendorCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { vendor: await createSubstituteReceiptVendor(rootDir, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot create substitute receipt vendor" });
+  }
+}
+
+async function handleSubstituteReceiptVendorUpdate(vendorId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { vendor: await updateSubstituteReceiptVendor(rootDir, vendorId, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot update substitute receipt vendor" });
+  }
+}
+
 async function handleInventoryPurchaseIn(request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -742,6 +776,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/substitute-receipt-vendors") {
+    await handleSubstituteReceiptVendorCreate(request, response);
+    return;
+  }
+
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
     const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
     await handleInventoryProductUpdate(productId, request, response);
@@ -763,6 +802,12 @@ const server = createServer(async (request, response) => {
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/sale-skus/")) {
     const saleSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/sale-skus/", ""));
     await handleInventorySaleSkuUpdate(saleSkuId, request, response);
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/substitute-receipt-vendors/")) {
+    const vendorId = decodeURIComponent(url.pathname.replace("/api/substitute-receipt-vendors/", ""));
+    await handleSubstituteReceiptVendorUpdate(vendorId, request, response);
     return;
   }
 
@@ -869,6 +914,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/inventory/sale-skus") {
       await handleInventorySaleSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/substitute-receipt-vendors") {
+      await handleSubstituteReceiptVendorList(url, response);
       return;
     }
 

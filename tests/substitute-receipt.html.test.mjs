@@ -13,6 +13,7 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /id="receiptNoPreview"/);
   assert.match(html, /name="receiptType"/);
   assert.match(html, /value="stock_purchase"/);
+  assert.match(html, /id="vendorPresetSelect"/);
   assert.match(html, /id="stockLineItems"/);
   assert.match(html, /id="addStockLine"/);
   assert.match(html, /name="stockSkuId"/);
@@ -37,6 +38,7 @@ test("substitute receipt browser controller loads draft and submitted receipt qu
   assert.match(browserLogic, /new URLSearchParams\(location\.search\)\.get\("draftId"\)/);
   assert.match(browserLogic, /new URLSearchParams\(location\.search\)\.get\("receiptNo"\)/);
   assert.match(browserLogic, /\/api\/substitute-receipt-drafts\//);
+  assert.match(browserLogic, /\/api\/substitute-receipt-vendors/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/approve/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/receive-stock/);
 });
