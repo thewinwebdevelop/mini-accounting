@@ -26,6 +26,13 @@ function statusLabel(receipt) {
   }[receipt.status] || receipt.status || "-";
 }
 
+function syncStatusLabel(syncStatus) {
+  if (syncStatus === "synced") return "Sync แล้ว";
+  if (syncStatus === "needs_resync") return "ต้อง Sync ใหม่";
+  if (syncStatus === "sync_failed") return "Sync ไม่สำเร็จ";
+  return "รอ Sync";
+}
+
 function formatAmount(value) {
   if (value === undefined || value === null || value === "") return "-";
   return Number(value).toLocaleString("th-TH", {
@@ -64,12 +71,26 @@ function actionHtml(receipt) {
   const actionLabel = receipt.nextAction || "ดูเอกสาร";
   const pdfMenu = fileMenu("PDF", receipt.pdfFiles);
   const rawMenu = fileMenu("Raw", receipt.rawFiles);
+  const receiptNo = receipt.receiptNo || "";
+  const driveTarget = receipt.driveFolderUrl
+    ? `<a class="button secondary small" href="${escapeHtml(receipt.driveFolderUrl)}" target="_blank" rel="noreferrer">เปิด Drive</a>`
+    : "";
+  const drivePath = receipt.drivePath
+    ? `<span class="muted">${escapeHtml(receipt.drivePath)}</span>`
+    : "";
+  const syncButtonLabel = receipt.syncStatus === "synced" ? "Sync อีกครั้ง" : "Sync to Google Drive";
+  const syncButton = receipt.status === "draft" || !receiptNo
+    ? ""
+    : `<button class="button secondary small" type="button" data-sync-drive="${escapeHtml(receiptNo)}">${syncButtonLabel}</button>`;
 
   return `
     <div class="actions">
       <a class="button primary small" href="${escapeHtml(editUrl)}">${escapeHtml(actionLabel)}</a>
       ${pdfMenu}
       ${rawMenu}
+      ${driveTarget}
+      ${syncButton}
+      ${drivePath}
     </div>
   `;
 }
@@ -90,7 +111,13 @@ function render() {
   for (const receipt of receipts) {
     const row = document.createElement("tr");
     row.innerHTML = `
-      <td><span class="mobile-label">สถานะ</span><span class="status ${escapeHtml(receipt.status)}">${escapeHtml(statusLabel(receipt))}</span></td>
+      <td>
+        <span class="mobile-label">สถานะ</span>
+        <div class="actions">
+          <span class="status ${escapeHtml(receipt.status)}">${escapeHtml(statusLabel(receipt))}</span>
+          ${receipt.status === "draft" ? "" : `<span class="status ${escapeHtml(receipt.syncStatus || "not_synced")}">${syncStatusLabel(receipt.syncStatus)}</span>`}
+        </div>
+      </td>
       <td><span class="mobile-label">เลข/เดือน</span>${escapeHtml(receipt.receiptNo || receipt.draftId || receipt.accountingMonth || "-")}</td>
       <td>
         <span class="mobile-label">รายการ</span>
@@ -102,6 +129,28 @@ function render() {
       <td><span class="mobile-label">จัดการ</span>${actionHtml(receipt)}</td>
     `;
     rows.append(row);
+  }
+}
+
+async function syncDrive(receiptNo, button) {
+  if (!receiptNo) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "กำลัง Sync...";
+  listStatus.textContent = `กำลัง Sync ${receiptNo} ขึ้น Google Drive...`;
+
+  try {
+    const response = await fetch(`/api/substitute-receipts/${encodeURIComponent(receiptNo)}/sync-drive`, {
+      method: "POST",
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Sync ไม่สำเร็จ");
+    await loadReceipts();
+    listStatus.textContent = `Sync แล้ว: ${receiptNo}`;
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalText;
+    listStatus.textContent = error.message || "Sync ไม่สำเร็จ";
   }
 }
 
@@ -128,4 +177,9 @@ if (["all", "draft", "pending_approval", "approved", "received", "cancelled"].in
 }
 statusFilter.addEventListener("change", render);
 searchText.addEventListener("input", render);
+rows.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-sync-drive]");
+  if (!button) return;
+  syncDrive(button.dataset.syncDrive, button);
+});
 loadReceipts();

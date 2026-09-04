@@ -41,6 +41,20 @@ async function requestJson(baseUrl, route, options = {}) {
   return body;
 }
 
+async function requestJsonResponse(baseUrl, route, options = {}) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { "content-type": "application/json" }),
+      ...(options.headers || {}),
+    },
+  });
+  return {
+    response,
+    body: await response.json(),
+  };
+}
+
 test("substitute receipt APIs return next number and submit stock purchase receipts", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-api-"));
   const port = 19190;
@@ -126,6 +140,12 @@ test("substitute receipt APIs return next number and submit stock purchase recei
     const stockCardAfterReceive = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
     assert.equal(stockCardAfterReceive.balance.quantityOnHand, 3);
     assert.deepEqual(stockCardAfterReceive.movements.map((movement) => movement.referenceNo), ["SR-2026-09-0001"]);
+
+    const syncAttempt = await requestJsonResponse(baseUrl, `/api/substitute-receipts/${submitted.receiptNo}/sync-drive`, {
+      method: "POST",
+    });
+    assert.equal(syncAttempt.response.status, 400);
+    assert.match(syncAttempt.body.error, /Google Drive is not configured/);
 
     const nextAfterSubmit = await requestJson(baseUrl, "/api/substitute-receipts/next?accountingMonth=2026-09");
     assert.deepEqual(nextAfterSubmit, { sequence: "2", receiptNo: "SR-2026-09-0002" });

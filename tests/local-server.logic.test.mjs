@@ -36,6 +36,7 @@ const {
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
+  syncSubstituteReceiptToDrive,
   syncExpenseRequestToDrive,
 } = serverLogic;
 
@@ -1165,6 +1166,56 @@ test("syncExpenseRequestToDrive uploads a submitted request folder with Google D
 
     const requests = await listExpenseRequests(rootDir);
     const submittedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
+    assert.equal(submittedRecord.syncStatus, "synced");
+    assert.equal(submittedRecord.driveFolderUrl, result.driveFolderUrl);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("syncSubstituteReceiptToDrive uploads a submitted receipt folder with Google Drive API and records metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-sync-"));
+  const calls = [];
+
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({ receiptTitle: "ซื้อสต๊อก sync" }),
+      uploads: validSlipUpload(),
+    });
+
+    const result = await syncSubstituteReceiptToDrive({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      now: () => "2026-09-02T10:00:00.000Z",
+      driveUploader: async (options) => {
+        calls.push(options);
+        return {
+          driveFolderId: "drive-folder-sr-123",
+          driveFolderUrl: "https://drive.google.com/drive/folders/drive-folder-sr-123",
+          drivePath: "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี/2026/09/ใบรับรองแทนใบเสร็จ/SR-2026-09-0001_ซื้อสต๊อก-sync",
+          uploadedFileCount: 5,
+          syncStatus: "synced",
+        };
+      },
+    });
+
+    assert.equal(result.syncStatus, "synced");
+    assert.equal(result.syncedAt, "2026-09-02T10:00:00.000Z");
+    assert.equal(result.receiptNo, submitted.receiptNo);
+    assert.equal(result.driveFolderId, "drive-folder-sr-123");
+    assert.equal(result.driveFolderUrl, "https://drive.google.com/drive/folders/drive-folder-sr-123");
+    assert.equal(result.uploadedFileCount, 5);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].rootDir, rootDir);
+    assert.equal(calls[0].folderPath, submitted.folderPath);
+
+    const metadata = JSON.parse(await readFile(join(submitted.absoluteFolderPath, "data", "drive-sync.json"), "utf8"));
+    assert.equal(metadata.syncStatus, "synced");
+    assert.equal(metadata.driveFolderUrl, result.driveFolderUrl);
+
+    const receipts = await listSubstituteReceipts(rootDir);
+    const submittedRecord = receipts.find((receipt) => receipt.receiptNo === submitted.receiptNo);
     assert.equal(submittedRecord.syncStatus, "synced");
     assert.equal(submittedRecord.driveFolderUrl, result.driveFolderUrl);
   } finally {

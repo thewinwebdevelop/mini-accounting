@@ -12,16 +12,16 @@
   - Next suggested task after completion: add Sale SKU / Bundle SKU mapping.
 - [x] Substitute receipt state workflow: draft, pending approval, approved, and received states with separate stock receiving.
   - Next suggested task after completion: Google Drive sync for substitute receipt packets.
+- [x] Google Drive sync for substitute receipt packets.
+  - Next suggested task after completion: monthly stock purchase report.
 
 ## Current
 
-- [ ] Google Drive sync for substitute receipt packets.
-  - Next suggested task after completion: monthly stock purchase report.
+- [ ] Monthly stock purchase report for accounting review.
+  - Next suggested task after completion: Sale SKU / Bundle SKU mapping.
 
 ## Upcoming
 
-- [ ] Monthly stock purchase report for accounting review.
-  - Next suggested task after completion: Sale SKU / Bundle SKU mapping.
 - [ ] Sale SKU / Bundle SKU mapping for Shopee/TikTok listings and sets.
   - Next suggested task after completion: import platform orders and deduct stock.
 - [ ] Shopee/TikTok order import, fee summary, and automatic stock deduction.

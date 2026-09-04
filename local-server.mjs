@@ -35,6 +35,7 @@ const {
   receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
+  syncSubstituteReceiptToDrive,
 } = require("./forms/local-server.logic.js");
 const {
   createProductCategory,
@@ -271,6 +272,21 @@ async function handleExpenseDriveSync(requestNo, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot sync expense request to Google Drive",
+    });
+  }
+}
+
+async function handleSubstituteReceiptDriveSync(receiptNo, response) {
+  try {
+    const result = await syncSubstituteReceiptToDrive({
+      rootDir,
+      receiptNo,
+    });
+
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot sync substitute receipt to Google Drive",
     });
   }
 }
@@ -710,6 +726,14 @@ const server = createServer(async (request, response) => {
       .replace("/api/substitute-receipts/", "")
       .replace("/receive-stock", ""));
     await handleSubstituteReceiptReceiveStock(receiptNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/sync-drive")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/sync-drive", ""));
+    await handleSubstituteReceiptDriveSync(receiptNo, response);
     return;
   }
 

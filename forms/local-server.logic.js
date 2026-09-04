@@ -1047,6 +1047,7 @@ async function findSubmittedSubstituteReceipts(rootDir) {
       const status = normalizeSubstituteReceiptStatus(payload.status || inferredStatus);
       const rawFiles = await listSubstituteReceiptRawFiles(rootDir, folderPath, payload.receiptNo);
       const pdfFiles = await listSubstituteReceiptPdfFiles(rootDir, folderPath, payload.receiptNo);
+      const syncMetadata = await readDriveSyncMetadata(rootDir, folderPath);
       records.push({
         id: payload.receiptNo,
         receiptNo: payload.receiptNo,
@@ -1061,6 +1062,13 @@ async function findSubmittedSubstituteReceipts(rootDir) {
         rawFileCount: rawFiles.length,
         rawFiles,
         pdfFiles,
+        syncStatus: syncMetadata?.syncStatus || "not_synced",
+        driveFolderUrl: syncMetadata?.driveFolderUrl || "",
+        driveFolderId: syncMetadata?.driveFolderId || "",
+        drivePath: syncMetadata?.drivePath || "",
+        uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
+        syncedAt: syncMetadata?.syncedAt || "",
+        syncError: syncMetadata?.error || "",
         payload: {
           ...payload,
           status,
@@ -1105,6 +1113,13 @@ async function listSubstituteReceipts(rootDir) {
       pdfFiles: [],
       editUrl: `/substitute-receipt?draftId=${encodeURIComponent(draft.draftId)}`,
       nextAction: getSubstituteReceiptNextAction("draft"),
+      syncStatus: "",
+      driveFolderUrl: "",
+      driveFolderId: "",
+      drivePath: "",
+      uploadedFileCount: 0,
+      syncedAt: "",
+      syncError: "",
     };
   });
   const submittedRecords = await findSubmittedSubstituteReceipts(rootDir);
@@ -1128,6 +1143,13 @@ async function listSubstituteReceipts(rootDir) {
       pdfFiles: receipt.pdfFiles,
       editUrl: `/substitute-receipt?receiptNo=${encodeURIComponent(receipt.receiptNo)}`,
       nextAction: getSubstituteReceiptNextAction(receipt.status),
+      syncStatus: receipt.syncStatus,
+      driveFolderUrl: receipt.driveFolderUrl,
+      driveFolderId: receipt.driveFolderId,
+      drivePath: receipt.drivePath,
+      uploadedFileCount: receipt.uploadedFileCount,
+      syncedAt: receipt.syncedAt,
+      syncError: receipt.syncError,
     })),
   ].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
@@ -1323,6 +1345,51 @@ async function syncExpenseRequestToDrive({
   return metadata;
 }
 
+async function syncSubstituteReceiptToDrive({
+  rootDir,
+  receiptNo,
+  driveUploader = uploadFolderToGoogleDrive,
+  now = () => new Date().toISOString(),
+}) {
+  if (!receiptNo) throw new Error("Missing substitute receipt number");
+
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  let uploadResult;
+
+  try {
+    uploadResult = await driveUploader({
+      rootDir,
+      folderPath: receipt.folderPath,
+    });
+  } catch (error) {
+    const failedAt = now();
+    const failedMetadata = {
+      receiptNo,
+      syncStatus: "sync_failed",
+      error: error.message || "Google Drive sync failed",
+      syncedAt: "",
+      updatedAt: failedAt,
+    };
+    await writeDriveSyncMetadata(rootDir, receipt.folderPath, failedMetadata);
+    throw error;
+  }
+
+  const syncedAt = now();
+  const metadata = {
+    receiptNo,
+    syncStatus: "synced",
+    driveFolderId: uploadResult.driveFolderId,
+    driveFolderUrl: uploadResult.driveFolderUrl,
+    drivePath: uploadResult.drivePath,
+    uploadedFileCount: uploadResult.uploadedFileCount,
+    syncedAt,
+    updatedAt: syncedAt,
+  };
+  await writeDriveSyncMetadata(rootDir, receipt.folderPath, metadata);
+
+  return metadata;
+}
+
 module.exports = {
   approveSubstituteReceipt,
   getExpenseDraft,
@@ -1344,4 +1411,5 @@ module.exports = {
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   syncExpenseRequestToDrive,
+  syncSubstituteReceiptToDrive,
 };
