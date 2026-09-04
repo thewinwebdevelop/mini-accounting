@@ -27,10 +27,22 @@ const {
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
 } = require("./forms/local-server.logic.js");
+const {
+  createProduct,
+  createPurchaseInMovement,
+  createStockSku,
+  getStockCard,
+  listInventoryBalances,
+  listProducts,
+  listStockSkus,
+  updateProduct,
+  updateStockSku,
+} = require("./forms/inventory.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = __dirname;
-const formsDir = path.join(rootDir, "forms");
+const appDir = __dirname;
+const rootDir = process.env.SWEET_HOUSE_ROOT_DIR || appDir;
+const formsDir = path.join(appDir, "forms");
 const port = Number(process.env.PORT || 8787);
 const maxBodyBytes = 80 * 1024 * 1024;
 
@@ -60,6 +72,8 @@ function safeStaticPath(urlPath) {
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
     "/company-settings/": "/company-settings.html",
+    "/inventory": "/inventory.html",
+    "/inventory/": "/inventory.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
@@ -330,6 +344,83 @@ async function handleNextExpenseRequest(url, response) {
   }
 }
 
+async function handleInventoryProductList(url, response) {
+  try {
+    sendJson(response, 200, { products: listProducts(rootDir, { search: url.searchParams.get("search") || "" }) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list products" });
+  }
+}
+
+async function handleInventoryProductCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { product: createProduct(rootDir, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot create product" });
+  }
+}
+
+async function handleInventoryProductUpdate(productId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { product: updateProduct(rootDir, productId, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot update product" });
+  }
+}
+
+async function handleInventoryStockSkuList(url, response) {
+  try {
+    sendJson(response, 200, { stockSkus: listStockSkus(rootDir, { search: url.searchParams.get("search") || "" }) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list stock SKUs" });
+  }
+}
+
+async function handleInventoryStockSkuCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { stockSku: createStockSku(rootDir, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot create stock SKU" });
+  }
+}
+
+async function handleInventoryStockSkuUpdate(stockSkuId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { stockSku: updateStockSku(rootDir, stockSkuId, payload) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot update stock SKU" });
+  }
+}
+
+async function handleInventoryPurchaseIn(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    sendJson(response, 200, { movement: createPurchaseInMovement(rootDir, payload), balances: listInventoryBalances(rootDir) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot receive inventory" });
+  }
+}
+
+async function handleInventoryBalanceList(response) {
+  try {
+    sendJson(response, 200, { balances: listInventoryBalances(rootDir) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list inventory balances" });
+  }
+}
+
+async function handleInventoryStockCard(url, response) {
+  try {
+    sendJson(response, 200, getStockCard(rootDir, url.searchParams.get("stockSkuId")));
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot load stock card" });
+  }
+}
+
 async function handleStaticFile(request, response) {
   try {
     const url = new URL(request.url, `http://${request.headers.host}`);
@@ -352,6 +443,33 @@ async function handleStaticFile(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "POST" && request.url === "/api/inventory/products") {
+    await handleInventoryProductCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/inventory/stock-skus") {
+    await handleInventoryStockSkuCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/inventory/purchase-in") {
+    await handleInventoryPurchaseIn(request, response);
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
+    const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
+    await handleInventoryProductUpdate(productId, request, response);
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/stock-skus/")) {
+    const stockSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/stock-skus/", ""));
+    await handleInventoryStockSkuUpdate(stockSkuId, request, response);
+    return;
+  }
 
   if (request.method === "POST" && request.url === "/api/expense-requests") {
     await handleExpenseSubmission(request, response);
@@ -389,6 +507,26 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/expense-requests/next") {
       await handleNextExpenseRequest(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/products") {
+      await handleInventoryProductList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/stock-skus") {
+      await handleInventoryStockSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/balances") {
+      await handleInventoryBalanceList(response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/stock-card") {
+      await handleInventoryStockCard(url, response);
       return;
     }
 

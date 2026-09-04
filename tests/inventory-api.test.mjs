@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+async function waitForServer(child) {
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("local server did not start"));
+    }, 5000);
+
+    child.stdout.on("data", (chunk) => {
+      if (chunk.toString("utf8").includes("Expense request local web app")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`local server exited early with code ${code}`));
+    });
+  });
+}
+
+async function requestJson(baseUrl, route, options = {}) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    ...options,
+    headers: {
+      "content-type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const body = await response.json();
+  assert.equal(response.ok, true, body.error || `HTTP ${response.status}`);
+  return body;
+}
+
+test("inventory APIs create product, SKU, purchase-in, balance, and stock card records", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-api-"));
+  const port = 19187;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { product } = await requestJson(baseUrl, "/api/inventory/products", {
+      method: "POST",
+      body: JSON.stringify({ productCode: "SHIRT-A", name: "เสื้อ A", category: "เสื้อ" }),
+    });
+    const { stockSku } = await requestJson(baseUrl, "/api/inventory/stock-skus", {
+      method: "POST",
+      body: JSON.stringify({
+        productId: product.id,
+        sku: "SHIRT-A-BLACK-M",
+        color: "ดำ",
+        size: "M",
+        defaultUnitCost: "120",
+      }),
+    });
+
+    const updatedSkuResponse = await requestJson(baseUrl, `/api/inventory/stock-skus/${stockSku.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        productId: product.id,
+        sku: "SHIRT-A-BLACK-M",
+        color: "ดำสนิท",
+        size: "M",
+        defaultUnitCost: "125",
+        status: "active",
+      }),
+    });
+    assert.equal(updatedSkuResponse.stockSku.color, "ดำสนิท");
+
+    await requestJson(baseUrl, "/api/inventory/purchase-in", {
+      method: "POST",
+      body: JSON.stringify({
+        stockSkuId: stockSku.id,
+        movementDate: "2026-09-04",
+        quantity: "5",
+        unitCost: "120",
+        referenceType: "manual",
+        referenceNo: "RCV-API-001",
+      }),
+    });
+
+    const { balances } = await requestJson(baseUrl, "/api/inventory/balances");
+    assert.equal(balances[0].sku, "SHIRT-A-BLACK-M");
+    assert.equal(balances[0].quantityOnHand, 5);
+    assert.equal(balances[0].averageUnitCost, "120.00");
+    assert.equal(balances[0].inventoryValue, "600.00");
+
+    const stockCard = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
+    assert.equal(stockCard.sku.color, "ดำสนิท");
+    assert.deepEqual(stockCard.movements.map((movement) => movement.referenceNo), ["RCV-API-001"]);
+  } finally {
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
