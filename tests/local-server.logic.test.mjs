@@ -23,12 +23,14 @@ const {
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
+  getSubstituteReceiptDraft,
   getSubmittedExpenseRequest,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   syncExpenseRequestToDrive,
 } = serverLogic;
@@ -221,6 +223,37 @@ test("saveExpenseDraft updates an existing draft and keeps previous raw files", 
     ]);
     assert.equal(await readFile(join(updated.absoluteFolderPath, "raw", "A1_receipt_001.jpg"), "utf8"), "receipt image");
     assert.equal(await readFile(join(updated.absoluteFolderPath, "raw", "A1_receipt_002.jpg"), "utf8"), "receipt image 2");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptDraft writes editable drafts without consuming SR numbers or stock", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-draft-"));
+
+  try {
+    const draft = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-04",
+        receiptTitle: "รอของจากผู้ขาย",
+        receiptType: "stock_purchase",
+        payeeName: "บริษัทขายส่งตัวอย่าง",
+        businessPurpose: "ซื้อสินค้าเพื่อขาย",
+        lines: [{ stockSkuId: "1", sku: "TOP-A", description: "เสื้อ A", quantity: "2", unitCost: "100" }],
+      },
+      uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+    });
+
+    assert.match(draft.draftId, /^SR-DRAFT-2026-09-/);
+    assert.match(draft.folderPath, /^drafts\/2026\/09\/substitute-receipts\//);
+    assert.equal((await getNextSubstituteReceiptInfo(rootDir, "2026-09")).receiptNo, "SR-2026-09-0001");
+    assert.deepEqual(draft.rawFiles.map((file) => file.storedName), ["B1_payment-slip_001.jpg"]);
+
+    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId);
+    assert.equal(loaded.status, "draft");
+    assert.equal(loaded.payload.receiptTitle, "รอของจากผู้ขาย");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

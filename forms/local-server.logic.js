@@ -61,6 +61,17 @@ function getDraftFolderPath(accountingMonth, draftId) {
   return path.join("drafts", year, month, draftId);
 }
 
+function createSubstituteReceiptDraftId(accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `SR-DRAFT-${year}-${month}-${unique}`;
+}
+
+function getSubstituteReceiptDraftFolderPath(accountingMonth, draftId) {
+  const { year, month } = getMonthParts(accountingMonth);
+  return path.join("drafts", year, month, "substitute-receipts", draftId);
+}
+
 async function getNextExpenseRequestInfo(rootDir, accountingMonth) {
   const { year, month } = getMonthParts(accountingMonth);
   const monthDir = getExpenseMonthDir(rootDir, accountingMonth);
@@ -592,6 +603,109 @@ async function writeDraftRecord(rootDir, record) {
   );
 }
 
+async function findSubstituteReceiptDraftRecords(rootDir, includeSubmitted = false) {
+  const draftsRoot = path.join(rootDir, "drafts");
+  const records = [];
+
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (entry.name !== "draft.json") continue;
+      const record = JSON.parse(await readFile(absolutePath, "utf8"));
+      if (!String(record.draftId || "").startsWith("SR-DRAFT-")) continue;
+      if (!includeSubmitted && record.status === "submitted") continue;
+      records.push({
+        ...record,
+        absoluteFolderPath: path.join(rootDir, record.folderPath),
+      });
+    }
+  }
+
+  await walk(draftsRoot);
+  return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+async function getSubstituteReceiptDraft(rootDir, draftId, options = {}) {
+  const records = await findSubstituteReceiptDraftRecords(rootDir, options.includeSubmitted);
+  const draft = records.find((record) => record.draftId === draftId);
+  if (!draft) throw new Error("Substitute receipt draft not found");
+  return draft;
+}
+
+async function writeSubstituteReceiptDraftRecord(rootDir, record) {
+  const absoluteFolderPath = path.join(rootDir, record.folderPath);
+  await mkdir(path.join(absoluteFolderPath, "data"), { recursive: true });
+  await writeFile(
+    path.join(absoluteFolderPath, "data", "draft.json"),
+    `${JSON.stringify(record, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
+  const accountingMonth = payload.accountingMonth;
+  getMonthParts(accountingMonth);
+
+  let existingDraft = null;
+  if (payload.draftId) {
+    existingDraft = await getSubstituteReceiptDraft(rootDir, payload.draftId, { includeSubmitted: true });
+    if (existingDraft.status === "submitted") {
+      throw new Error("Submitted substitute receipt drafts cannot be edited");
+    }
+  }
+
+  const draftId = existingDraft?.draftId || createSubstituteReceiptDraftId(accountingMonth);
+  const folderPath = existingDraft?.folderPath || getSubstituteReceiptDraftFolderPath(accountingMonth, draftId);
+  const absoluteFolderPath = path.join(rootDir, folderPath);
+  const rawDir = path.join(absoluteFolderPath, "raw");
+  const existingEvidenceFiles = existingDraft?.evidenceFiles ?? {};
+  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
+  const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+  const now = new Date().toISOString();
+  const record = {
+    draftId,
+    status: "draft",
+    folderPath,
+    payload: {
+      ...payload,
+      draftId,
+      status: "draft",
+      evidenceFiles,
+    },
+    evidenceFiles,
+    rawFiles: flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName),
+    createdAt: existingDraft?.createdAt || now,
+    updatedAt: now,
+  };
+
+  await mkdir(rawDir, { recursive: true });
+  for (const write of preparedUploads.writes) {
+    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
+  }
+  await writeSubstituteReceiptDraftRecord(rootDir, record);
+
+  return {
+    draftId,
+    folderPath,
+    absoluteFolderPath,
+    rawFiles: flattenEvidenceFiles(evidenceFiles),
+    updatedAt: record.updatedAt,
+  };
+}
+
 async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
   const accountingMonth = payload.accountingMonth;
   getMonthParts(accountingMonth);
@@ -895,12 +1009,14 @@ module.exports = {
   getSubmittedExpenseRequest,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
+  getSubstituteReceiptDraft,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   syncExpenseRequestToDrive,
 };
