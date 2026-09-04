@@ -101,13 +101,14 @@ test("substitute receipt APIs return next number and submit stock purchase recei
       body: formData,
     });
     assert.equal(submitted.receiptNo, "SR-2026-09-0001");
+    assert.equal(submitted.status, "pending_approval");
     assert.equal(submitted.rawFiles[0].storedName, "B1_payment-slip_001.txt");
     assert.equal(submitted.pdfFiles.length, 2);
-    assert.equal(submitted.stockMovements.length, 1);
+    assert.equal(submitted.stockMovements.length, 0);
 
     const stockCard = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
-    assert.equal(stockCard.balance.quantityOnHand, 3);
-    assert.deepEqual(stockCard.movements.map((movement) => movement.referenceNo), ["SR-2026-09-0001"]);
+    assert.equal(stockCard.balance.quantityOnHand, 0);
+    assert.deepEqual(stockCard.movements.map((movement) => movement.referenceNo), []);
 
     const nextAfterSubmit = await requestJson(baseUrl, "/api/substitute-receipts/next?accountingMonth=2026-09");
     assert.deepEqual(nextAfterSubmit, { sequence: "2", receiptNo: "SR-2026-09-0002" });

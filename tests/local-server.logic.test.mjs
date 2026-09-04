@@ -65,6 +65,33 @@ async function extractPdfText(pdfPath) {
   return stdout;
 }
 
+function validSubstituteReceiptPayload(overrides = {}) {
+  return {
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-04",
+    receiptTitle: "ซื้อเสื้อไม่มีใบเสร็จ",
+    receiptType: "stock_purchase",
+    payeeName: "บริษัทขายส่งตัวอย่าง",
+    paymentChannel: "โอนผ่านบัญชีบริษัท",
+    paymentReference: "KBANK-TR-001",
+    businessPurpose: "ซื้อสินค้าเพื่อขาย",
+    lines: [
+      {
+        stockSkuId: "1",
+        sku: "TOP-A-WHITE-M",
+        description: "เสื้อ A สีขาว M",
+        quantity: "2",
+        unitCost: "100",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function validSlipUpload() {
+  return [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }];
+}
+
 test("parseMultipartForm extracts payload fields and uploaded evidence files", () => {
   const boundary = "----sweet-house-test";
   const body = Buffer.from(
@@ -377,6 +404,7 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
     });
 
     assert.equal(result.receiptNo, "SR-2026-09-0001");
+    assert.equal(result.status, "pending_approval");
     assert.match(result.folderPath, /documents\/2026\/09\/ใบรับรองแทนใบเสร็จ/);
     assert.deepEqual(result.rawFiles.map((file) => file.storedName), [
       "B1_payment-slip_001.jpg",
@@ -390,6 +418,8 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
 
     const savedJson = JSON.parse(await readFile(join(result.absoluteFolderPath, "data", "substitute-receipt.json"), "utf8"));
     assert.equal(savedJson.receiptNo, "SR-2026-09-0001");
+    assert.equal(savedJson.status, "pending_approval");
+    assert.equal(savedJson.statusHistory[0].toStatus, "pending_approval");
     assert.equal(savedJson.totals.totalAmount, "200.00");
     assert.equal(savedJson.evidence.paymentSlip.status, "มี");
     assert.equal(await readFile(join(result.absoluteFolderPath, "raw", "B1_payment-slip_001.jpg"), "utf8"), "payment slip image");
@@ -405,7 +435,7 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
   }
 });
 
-test("saveSubstituteReceiptSubmission creates purchase-in stock movements for stock receipts", async () => {
+test("saveSubstituteReceiptSubmission submits stock purchases without receiving stock", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
 
   try {
@@ -448,16 +478,38 @@ test("saveSubstituteReceiptSubmission creates purchase-in stock movements for st
       uploads: [],
     });
 
-    assert.equal(result.stockMovements.length, 1);
-    assert.equal(result.stockMovements[0].referenceType, "substitute_receipt");
-    assert.equal(result.stockMovements[0].referenceNo, result.receiptNo);
-    assert.equal(result.stockMovements[0].quantity, 4);
-    assert.equal(result.stockMovements[0].unitCost, "125.50");
+    assert.equal(result.status, "pending_approval");
+    assert.equal(result.stockMovements.length, 0);
 
     const card = getStockCard(rootDir, sku.id);
-    assert.equal(card.balance.quantityOnHand, 4);
-    assert.equal(card.balance.inventoryValue, "502.00");
-    assert.deepEqual(card.movements.map((movement) => movement.referenceNo), [result.receiptNo]);
+    assert.equal(card.balance.quantityOnHand, 0);
+    assert.equal(card.balance.inventoryValue, "0.00");
+    assert.deepEqual(card.movements.map((movement) => movement.referenceNo), []);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission submits a draft into pending approval", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-submit-draft-"));
+
+  try {
+    const draft = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+    const result = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: { draftId: draft.draftId },
+    });
+
+    assert.equal(result.receiptNo, "SR-2026-09-0001");
+    assert.equal(result.status, "pending_approval");
+    assert.equal(result.stockMovements.length, 0);
+    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId, { includeSubmitted: true });
+    assert.equal(loaded.status, "submitted");
+    assert.equal(loaded.submittedReceiptNo, "SR-2026-09-0001");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

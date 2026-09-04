@@ -11,6 +11,7 @@ const {
   formatPayloadMarkdown,
 } = require("./expense-request.logic.js");
 const {
+  SUBSTITUTE_RECEIPT_STATUS_LABELS,
   buildSubstituteReceiptPayload,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
@@ -860,12 +861,25 @@ async function saveSubstituteReceiptSubmission({
 }) {
   if (payload.receiptNo) throw new Error("Submitted substitute receipts cannot be edited");
 
-  const nextReceipt = await getNextSubstituteReceiptInfo(rootDir, payload.accountingMonth);
-  const existingEvidenceFiles = payload.evidenceFiles ?? {};
+  let draft = null;
+  if (payload.draftId) {
+    draft = await getSubstituteReceiptDraft(rootDir, payload.draftId, { includeSubmitted: true });
+    if (draft.status === "submitted") {
+      throw new Error("Submitted substitute receipt drafts cannot be submitted again");
+    }
+  }
+
+  const submissionPayload = {
+    ...draft?.payload,
+    ...payload,
+    draftId: payload.draftId || draft?.draftId,
+  };
+  const nextReceipt = await getNextSubstituteReceiptInfo(rootDir, submissionPayload.accountingMonth);
+  const existingEvidenceFiles = draft?.evidenceFiles ?? submissionPayload.evidenceFiles ?? {};
   const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
   const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
   const errors = validateSubstituteReceipt({
-    ...payload,
+    ...submissionPayload,
     sequence: nextReceipt.sequence,
     receiptNo: nextReceipt.receiptNo,
     evidenceFiles,
@@ -873,13 +887,25 @@ async function saveSubstituteReceiptSubmission({
   if (errors.length) throw new Error(errors.join(", "));
 
   const company = await getCompanySettings(rootDir);
+  const now = new Date().toISOString();
   const receiptPayload = buildSubstituteReceiptPayload({
-    ...payload,
+    ...submissionPayload,
     company,
     receiptNo: nextReceipt.receiptNo,
     sequence: nextReceipt.sequence,
     evidenceFiles,
+    createdAt: now,
   });
+  receiptPayload.status = "pending_approval";
+  receiptPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.pending_approval;
+  receiptPayload.statusHistory = [{
+    fromStatus: "",
+    toStatus: "pending_approval",
+    changedAt: now,
+    note: "submitted",
+  }];
+  receiptPayload.stockReceipt = null;
+  receiptPayload.revisions = [];
 
   const absoluteFolderPath = path.join(rootDir, receiptPayload.folderPath);
   const rawDir = path.join(absoluteFolderPath, "raw");
@@ -893,6 +919,13 @@ async function saveSubstituteReceiptSubmission({
   await mkdir(pdfDir, { recursive: true });
 
   const rawFiles = flattenEvidenceFiles(existingEvidenceFiles);
+  if (draft) {
+    const draftRawDir = path.join(rootDir, draft.folderPath, "raw");
+    for (const fileRecord of rawFiles) {
+      await copyFile(path.join(draftRawDir, fileRecord.storedName), path.join(rawDir, fileRecord.storedName));
+    }
+  }
+
   for (const write of preparedUploads.writes) {
     await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
     rawFiles.push(write.fileRecord);
@@ -908,22 +941,20 @@ async function saveSubstituteReceiptSubmission({
   });
 
   const stockMovements = [];
-  if (createStockMovements && receiptPayload.receiptType === "stock_purchase") {
-    for (const line of receiptPayload.lines) {
-      stockMovements.push(createPurchaseInMovement(rootDir, {
-        stockSkuId: line.stockSkuId,
-        movementDate: receiptPayload.receiptDate,
-        quantity: line.quantity,
-        unitCost: line.unitCost,
-        referenceType: "substitute_receipt",
-        referenceNo: receiptPayload.receiptNo,
-        note: line.description,
-      }));
-    }
+
+  if (draft) {
+    await writeSubstituteReceiptDraftRecord(rootDir, {
+      ...draft,
+      status: "submitted",
+      submittedReceiptNo: receiptPayload.receiptNo,
+      submittedAt: now,
+      updatedAt: now,
+    });
   }
 
   return {
     receiptNo: receiptPayload.receiptNo,
+    status: receiptPayload.status,
     folderPath: receiptPayload.folderPath,
     absoluteFolderPath,
     pdfFiles,
