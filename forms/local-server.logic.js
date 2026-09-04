@@ -12,14 +12,19 @@ const {
 } = require("./expense-request.logic.js");
 const {
   SUBSTITUTE_RECEIPT_STATUS_LABELS,
+  assertSubstituteReceiptTransition,
   buildSubstituteReceiptPayload,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
+  normalizeSubstituteReceiptStatus,
   validateSubstituteReceipt,
 } = require("./substitute-receipt.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
-const { createPurchaseInMovement } = require("./inventory.logic.js");
+const {
+  createPurchaseInMovement,
+  listStockMovementsByReference,
+} = require("./inventory.logic.js");
 
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
@@ -363,6 +368,11 @@ async function listExpenseDrafts(rootDir) {
 
 function getAccountingMonthFromRequestNo(requestNo = "") {
   const match = String(requestNo).match(/^REQ-(\d{4})-(\d{2})-/);
+  return match ? `${match[1]}-${match[2]}` : "";
+}
+
+function getAccountingMonthFromReceiptNo(receiptNo = "") {
+  const match = String(receiptNo).match(/^SR-(\d{4})-(\d{2})-/);
   return match ? `${match[1]}-${match[2]}` : "";
 }
 
@@ -963,6 +973,176 @@ async function saveSubstituteReceiptSubmission({
   };
 }
 
+async function writeSubmittedSubstituteReceiptFiles(rootDir, receiptPayload) {
+  const absoluteFolderPath = path.join(rootDir, receiptPayload.folderPath);
+  const rawDir = path.join(absoluteFolderPath, "raw");
+  const dataDir = path.join(absoluteFolderPath, "data");
+  const workingMdDir = path.join(absoluteFolderPath, "working-md");
+  const pdfDir = path.join(absoluteFolderPath, "pdf");
+  const submissionJsonPath = path.join(dataDir, "substitute-receipt.json");
+
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(workingMdDir, { recursive: true });
+  await mkdir(pdfDir, { recursive: true });
+  await writeFile(submissionJsonPath, `${JSON.stringify(receiptPayload, null, 2)}\n`, "utf8");
+  await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(receiptPayload), "utf8");
+  const pdfFiles = await generateSubstituteReceiptPdfs({
+    payloadPath: submissionJsonPath,
+    outputDir: pdfDir,
+    rawDir,
+  });
+
+  return {
+    absoluteFolderPath,
+    pdfFiles,
+  };
+}
+
+async function findSubmittedSubstituteReceipts(rootDir) {
+  const documentsRoot = path.join(rootDir, "documents");
+  const records = [];
+
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (entry.name !== "substitute-receipt.json") continue;
+      const payload = JSON.parse(await readFile(absolutePath, "utf8"));
+      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
+      const status = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+      records.push({
+        id: payload.receiptNo,
+        receiptNo: payload.receiptNo,
+        status,
+        folderPath,
+        absoluteFolderPath: path.join(rootDir, folderPath),
+        accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
+        updatedAt: payload.updatedAt || payload.createdAt || "",
+        payload: {
+          ...payload,
+          status,
+          statusLabel: payload.statusLabel || SUBSTITUTE_RECEIPT_STATUS_LABELS[status],
+          folderPath: payload.folderPath || folderPath,
+        },
+      });
+    }
+  }
+
+  await walk(documentsRoot);
+  return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+async function getSubmittedSubstituteReceipt(rootDir, receiptNo) {
+  if (!receiptNo) throw new Error("Missing substitute receipt number");
+  const receipts = await findSubmittedSubstituteReceipts(rootDir);
+  const receipt = receipts.find((record) => record.receiptNo === receiptNo);
+  if (!receipt) throw new Error("Substitute receipt not found");
+  return receipt;
+}
+
+function appendSubstituteReceiptStatus(payload, toStatus, note, actor) {
+  const fromStatus = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+  assertSubstituteReceiptTransition(fromStatus, toStatus);
+  const changedAt = new Date().toISOString();
+  payload.status = toStatus;
+  payload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS[toStatus];
+  payload.updatedAt = changedAt;
+  payload.statusHistory = [
+    ...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []),
+    {
+      fromStatus,
+      toStatus,
+      changedAt,
+      note,
+      actor: actor || "",
+    },
+  ];
+}
+
+async function approveSubstituteReceipt({ rootDir, receiptNo, approvedBy = "" }) {
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  const payload = {
+    ...receipt.payload,
+    folderPath: receipt.folderPath,
+  };
+  appendSubstituteReceiptStatus(payload, "approved", "approved", approvedBy);
+  const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+
+  return {
+    receiptNo: payload.receiptNo,
+    status: payload.status,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
+async function receiveSubstituteReceiptStock({
+  rootDir,
+  receiptNo,
+  receivedDate,
+  receivedBy = "",
+}) {
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  const payload = {
+    ...receipt.payload,
+    folderPath: receipt.folderPath,
+  };
+  const currentStatus = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+  if (currentStatus !== "approved" && currentStatus !== "received") {
+    assertSubstituteReceiptTransition(currentStatus, "received");
+  }
+  if (payload.receiptType !== "stock_purchase") {
+    throw new Error("Only stock purchase receipts can be received into inventory");
+  }
+  if (!receivedDate) throw new Error("ระบุวันที่รับสินค้า");
+
+  let stockMovements = listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo);
+  if (!stockMovements.length) {
+    stockMovements = (payload.lines || []).map((line) => createPurchaseInMovement(rootDir, {
+      stockSkuId: line.stockSkuId,
+      movementDate: receivedDate,
+      quantity: line.quantity,
+      unitCost: line.unitCost,
+      referenceType: "substitute_receipt",
+      referenceNo: payload.receiptNo,
+      note: line.description,
+    }));
+  }
+
+  if (currentStatus !== "received") {
+    appendSubstituteReceiptStatus(payload, "received", "received stock", receivedBy);
+  } else {
+    payload.updatedAt = new Date().toISOString();
+  }
+  payload.stockReceipt = {
+    receivedAt: payload.updatedAt,
+    receivedDate,
+    receivedBy,
+    movementIds: stockMovements.map((movement) => movement.id),
+  };
+  const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+
+  return {
+    receiptNo: payload.receiptNo,
+    status: payload.status,
+    folderPath: payload.folderPath,
+    pdfFiles,
+    stockMovements,
+  };
+}
+
 async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) {
   if (!requestNo) throw new Error("Missing expense request number");
   if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
@@ -1035,16 +1215,19 @@ async function syncExpenseRequestToDrive({
 }
 
 module.exports = {
+  approveSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubmittedExpenseRequest,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getSubstituteReceiptDraft,
+  getSubmittedSubstituteReceipt,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
+  receiveSubstituteReceiptStock,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,

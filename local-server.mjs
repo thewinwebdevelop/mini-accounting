@@ -16,6 +16,7 @@ const {
   saveCompanySettings,
 } = require("./forms/company-settings.logic.js");
 const {
+  approveSubstituteReceipt,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getExpenseDraft,
@@ -26,6 +27,7 @@ const {
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptSubmission,
+  receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
 } = require("./forms/local-server.logic.js");
@@ -175,6 +177,39 @@ async function handleSubstituteReceiptSubmission(request, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot save substitute receipt",
+    });
+  }
+}
+
+async function handleSubstituteReceiptApprove(receiptNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await approveSubstituteReceipt({
+      rootDir,
+      receiptNo,
+      approvedBy: payload.approvedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot approve substitute receipt",
+    });
+  }
+}
+
+async function handleSubstituteReceiptReceiveStock(receiptNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo,
+      receivedDate: payload.receivedDate,
+      receivedBy: payload.receivedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot receive substitute receipt stock",
     });
   }
 }
@@ -556,6 +591,22 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && request.url === "/api/substitute-receipts") {
     await handleSubstituteReceiptSubmission(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/approve")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/approve", ""));
+    await handleSubstituteReceiptApprove(receiptNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/receive-stock")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/receive-stock", ""));
+    await handleSubstituteReceiptReceiveStock(receiptNo, request, response);
     return;
   }
 

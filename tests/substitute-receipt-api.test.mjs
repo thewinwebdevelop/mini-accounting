@@ -110,6 +110,23 @@ test("substitute receipt APIs return next number and submit stock purchase recei
     assert.equal(stockCard.balance.quantityOnHand, 0);
     assert.deepEqual(stockCard.movements.map((movement) => movement.referenceNo), []);
 
+    const approved = await requestJson(baseUrl, `/api/substitute-receipts/${submitted.receiptNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+    assert.equal(approved.status, "approved");
+
+    const received = await requestJson(baseUrl, `/api/substitute-receipts/${submitted.receiptNo}/receive-stock`, {
+      method: "POST",
+      body: JSON.stringify({ receivedDate: "2026-09-05", receivedBy: "คลัง" }),
+    });
+    assert.equal(received.status, "received");
+    assert.equal(received.stockMovements.length, 1);
+
+    const stockCardAfterReceive = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
+    assert.equal(stockCardAfterReceive.balance.quantityOnHand, 3);
+    assert.deepEqual(stockCardAfterReceive.movements.map((movement) => movement.referenceNo), ["SR-2026-09-0001"]);
+
     const nextAfterSubmit = await requestJson(baseUrl, "/api/substitute-receipts/next?accountingMonth=2026-09");
     assert.deepEqual(nextAfterSubmit, { sequence: "2", receiptNo: "SR-2026-09-0002" });
   } finally {

@@ -19,15 +19,18 @@ const {
   getStockCard,
 } = inventoryLogic;
 const {
+  approveSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getSubstituteReceiptDraft,
+  getSubmittedSubstituteReceipt,
   getSubmittedExpenseRequest,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
+  receiveSubstituteReceiptStock,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
@@ -510,6 +513,57 @@ test("saveSubstituteReceiptSubmission submits a draft into pending approval", as
     const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId, { includeSubmitted: true });
     assert.equal(loaded.status, "submitted");
     assert.equal(loaded.submittedReceiptNo, "SR-2026-09-0001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("approve and receive substitute receipt stock are separate idempotent transitions", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-receive-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "APR", name: "เสื้อ APR", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "APR-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "125",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ APR", quantity: "4", unitCost: "125" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+
+    const approved = await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    assert.equal(approved.status, "approved");
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 0);
+
+    const received = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+    assert.equal(received.status, "received");
+    assert.equal(received.stockMovements.length, 1);
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 4);
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.stockReceipt.receivedDate, "2026-09-05");
+    assert.deepEqual(loaded.payload.stockReceipt.movementIds, received.stockMovements.map((movement) => movement.id));
+
+    const receivedAgain = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+    assert.equal(receivedAgain.stockMovements.length, 1);
+    assert.equal(getStockCard(rootDir, stockSku.id).movements.length, 1);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
