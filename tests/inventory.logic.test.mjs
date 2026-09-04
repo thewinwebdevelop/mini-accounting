@@ -189,6 +189,7 @@ const {
   createPurchaseInMovement,
   getStockCard,
   listInventoryBalances,
+  listStockMovementsByReference,
 } = inventory;
 
 test("createPurchaseInMovement stores unit cost, total cost, and increases balance", async () => {
@@ -227,6 +228,28 @@ test("createPurchaseInMovement stores unit cost, total cost, and increases balan
     assert.equal(balances[0].quantityOnHand, 10);
     assert.equal(balances[0].averageUnitCost, "225.75");
     assert.equal(balances[0].inventoryValue, "2257.50");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("listStockMovementsByReference returns movements for idempotent document receiving", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-ref-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "REF", name: "เสื้อ REF", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "REF-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-04",
+      quantity: "2",
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0001",
+    });
+
+    const movements = listStockMovementsByReference(rootDir, "substitute_receipt", "SR-2026-09-0001");
+    assert.equal(movements.length, 1);
+    assert.equal(movements[0].referenceNo, "SR-2026-09-0001");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

@@ -4,9 +4,13 @@ import test from "node:test";
 import substituteReceipt from "../forms/substitute-receipt.logic.js";
 
 const {
+  SUBSTITUTE_RECEIPT_STATUS_LABELS,
   buildSubstituteReceiptPayload,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
+  assertStockLinesUnchanged,
+  assertSubstituteReceiptTransition,
+  normalizeSubstituteReceiptStatus,
   validateSubstituteReceipt,
 } = substituteReceipt;
 
@@ -91,6 +95,26 @@ test("buildSubstituteReceiptRawFileName creates stable evidence filenames", () =
   assert.equal(buildSubstituteReceiptRawFileName("paymentSlip", "transfer.JPG", 0), "B1_payment-slip_001.jpg");
   assert.equal(buildSubstituteReceiptRawFileName("purchaseOrder", "order.PDF", 2), "B2_purchase-order_003.pdf");
   assert.equal(buildSubstituteReceiptRawFileName("unknownKey", "note.txt", 0), "BX_unknownkey_001.txt");
+});
+
+test("substitute receipt state helpers validate transitions and lock stock lines", () => {
+  assert.equal(normalizeSubstituteReceiptStatus(""), "draft");
+  assert.equal(SUBSTITUTE_RECEIPT_STATUS_LABELS.approved, "อนุมัติแล้ว");
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("pending_approval", "approved"));
+  assert.throws(() => assertSubstituteReceiptTransition("draft", "received"), /Invalid substitute receipt status transition/);
+
+  const original = {
+    receiptType: "stock_purchase",
+    lines: [{ stockSkuId: "1", quantity: 2, unitCost: "100.00" }],
+  };
+  assert.doesNotThrow(() => assertStockLinesUnchanged(original, {
+    receiptType: "stock_purchase",
+    lines: [{ stockSkuId: "1", quantity: "2", unitCost: "100" }],
+  }));
+  assert.throws(() => assertStockLinesUnchanged(original, {
+    receiptType: "stock_purchase",
+    lines: [{ stockSkuId: "1", quantity: "3", unitCost: "100" }],
+  }), /Stock lines cannot be edited/);
 });
 
 test("formatSubstituteReceiptMarkdown includes stock lines and raw evidence names", () => {

@@ -479,6 +479,19 @@ function getStockCard(rootDir, stockSkuId) {
   });
 }
 
+function listStockMovementsByReference(rootDir, referenceType, referenceNo) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const rows = db.prepare(`
+      SELECT *
+      FROM stock_movements
+      WHERE reference_type = ?
+        AND reference_no = ?
+      ORDER BY movement_date ASC, id ASC
+    `).all(cleanText(referenceType), cleanText(referenceNo));
+    return rows.map((row) => mapMovement(row));
+  });
+}
+
 module.exports = {
   createProductCategory,
   createProduct,
@@ -488,6 +501,7 @@ module.exports = {
   listInventoryBalances,
   listProductCategories,
   listProducts,
+  listStockMovementsByReference,
   listStockSkus,
   updateProductCategory,
   updateProduct,

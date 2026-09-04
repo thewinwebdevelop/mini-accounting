@@ -17,6 +17,25 @@ const EVIDENCE_SLUGS = {
   otherEvidence: "other-evidence",
 };
 
+const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "cancelled", "voided"];
+const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
+  draft: "แบบร่าง",
+  pending_approval: "รอตรวจอนุมัติ",
+  approved: "อนุมัติแล้ว",
+  received: "รับเข้าคลังแล้ว",
+  cancelled: "ยกเลิก",
+  voided: "ยกเลิกหลังรับรู้",
+};
+
+const SUBSTITUTE_RECEIPT_TRANSITIONS = {
+  draft: new Set(["draft", "pending_approval", "cancelled"]),
+  pending_approval: new Set(["draft", "pending_approval", "approved", "cancelled"]),
+  approved: new Set(["approved", "received", "cancelled"]),
+  received: new Set(["received", "voided"]),
+  cancelled: new Set(["cancelled"]),
+  voided: new Set(["voided"]),
+};
+
 function cleanText(value) {
   return String(value ?? "").trim();
 }
@@ -66,6 +85,53 @@ function buildSubstituteReceiptRawFileName(evidenceKey, originalName, index = 0)
 function parsePositiveInteger(value) {
   const parsed = Number.parseInt(cleanText(value), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function normalizeSubstituteReceiptStatus(status) {
+  const normalized = cleanText(status) || "draft";
+  if (!SUBSTITUTE_RECEIPT_STATUSES.includes(normalized)) {
+    throw new Error(`Invalid substitute receipt status: ${normalized}`);
+  }
+  return normalized;
+}
+
+function assertSubstituteReceiptTransition(fromStatus, toStatus) {
+  const from = normalizeSubstituteReceiptStatus(fromStatus);
+  const to = normalizeSubstituteReceiptStatus(toStatus);
+  if (!SUBSTITUTE_RECEIPT_TRANSITIONS[from]?.has(to)) {
+    throw new Error(`Invalid substitute receipt status transition: ${from} -> ${to}`);
+  }
+}
+
+function normalizeLockedStockLine(line = {}) {
+  return {
+    stockSkuId: cleanText(line.stockSkuId),
+    quantity: parsePositiveInteger(line.quantity),
+    unitCost: money(toCents(line.unitCost)),
+  };
+}
+
+function assertStockLinesUnchanged(originalPayload = {}, nextPayload = {}) {
+  const originalReceiptType = cleanText(originalPayload.receiptType) || "stock_purchase";
+  const nextReceiptType = cleanText(nextPayload.receiptType) || "stock_purchase";
+  const originalLines = Array.isArray(originalPayload.lines) ? originalPayload.lines : [];
+  const nextLines = Array.isArray(nextPayload.lines) ? nextPayload.lines : [];
+
+  if (originalReceiptType !== nextReceiptType || originalLines.length !== nextLines.length) {
+    throw new Error("Stock lines cannot be edited after approval or receiving");
+  }
+
+  originalLines.forEach((line, index) => {
+    const original = normalizeLockedStockLine(line);
+    const next = normalizeLockedStockLine(nextLines[index]);
+    if (
+      original.stockSkuId !== next.stockSkuId
+      || original.quantity !== next.quantity
+      || original.unitCost !== next.unitCost
+    ) {
+      throw new Error("Stock lines cannot be edited after approval or receiving");
+    }
+  });
 }
 
 function normalizeLine(line = {}, receiptType = "stock_purchase") {
@@ -238,9 +304,14 @@ ${evidence}
 }
 
 const SubstituteReceiptLogic = {
+  SUBSTITUTE_RECEIPT_STATUSES,
+  SUBSTITUTE_RECEIPT_STATUS_LABELS,
+  assertStockLinesUnchanged,
+  assertSubstituteReceiptTransition,
   buildSubstituteReceiptPayload,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
+  normalizeSubstituteReceiptStatus,
   validateSubstituteReceipt,
 };
 
