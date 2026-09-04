@@ -271,6 +271,10 @@
       border-color: #bcccdc;
     }
 
+    .button[hidden] {
+      display: none;
+    }
+
     .icon-button {
       width: 38px;
       height: 38px;
@@ -376,7 +380,7 @@
     </details>
     <div>
       <h1 class="brand-title">ใบรับรองแทนใบเสร็จรับเงิน</h1>
-      <p class="brand-subtitle">กรอกเอกสาร แนบหลักฐาน และรับ Stock SKU เข้าคลังอัตโนมัติ</p>
+      <p class="brand-subtitle">กรอกเอกสาร แนบหลักฐาน อนุมัติ และรับ Stock SKU เข้าคลังเป็นคนละขั้น</p>
     </div>
   </header>
 
@@ -476,7 +480,11 @@
       </section>
 
       <div class="actions">
-        <button class="button primary" type="submit" id="submitSubstituteReceipt">บันทึกและออก PDF</button>
+        <button class="button secondary" type="button" id="saveDraft">บันทึกแบบร่าง</button>
+        <button class="button primary" type="submit" id="submitForApproval">ส่งตรวจอนุมัติ</button>
+        <button class="button primary" type="button" id="approveReceipt" hidden>อนุมัติ</button>
+        <button class="button primary" type="button" id="receiveStock" hidden>รับสินค้าเข้าคลัง</button>
+        <button hidden type="submit" id="submitSubstituteReceipt" aria-hidden="true" tabindex="-1"></button>
         <button class="button secondary" type="reset">ล้างฟอร์ม</button>
       </div>
       <div class="status-box" id="substituteReceiptStatus"></div>
@@ -489,6 +497,10 @@
         </div>
         <div class="section-body">
           <dl class="summary-list">
+            <div class="summary-row">
+              <dt>สถานะเอกสาร</dt>
+              <dd id="receiptStatus">แบบร่าง</dd>
+            </div>
             <div class="summary-row">
               <dt>เลขที่เอกสารถัดไป</dt>
               <dd id="receiptNoPreview">-</dd>
