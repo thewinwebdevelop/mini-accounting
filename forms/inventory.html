@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ระบบสต๊อกสินค้า - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #cbd2d9;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --accent-soft: #dcfce7;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .brand-subtitle {
+      margin: 2px 0 0;
+      color: #d9e2ec;
+      font-size: 12px;
+    }
+
+    .app-menu { position: relative; }
+
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    .menu-button::-webkit-details-marker { display: none; }
+
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .menu-group + .menu-group {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #eef2f6;
+    }
+
+    .menu-group-title {
+      margin: 5px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 16px;
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+      align-self: start;
+    }
+
+    .section {
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .section-body {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 9px;
+    }
+
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-12 { grid-column: span 12; }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+
+    .button.primary {
+      color: #ffffff;
+      background: var(--accent);
+    }
+
+    .button.secondary {
+      color: var(--brand-strong);
+      background: #ffffff;
+      border-color: #bcccdc;
+    }
+
+    .icon-button {
+      min-width: 34px;
+      min-height: 34px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--brand);
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .icon-button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 8px 9px;
+      border-bottom: 1px solid #eef2f6;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #ffffff;
+      background: var(--brand);
+      font-size: 12px;
+    }
+
+    td.number,
+    th.number {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: #065f46;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .status-pill.inactive {
+      background: #fef2f2;
+      color: var(--danger);
+    }
+
+    .status-box {
+      display: none;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #d9e2ec;
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+    }
+
+    .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+
+    @media (max-width: 980px) {
+      .page { grid-template-columns: 1fr; }
+      .span-4,
+      .span-6 { grid-column: span 12; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">ระบบสต๊อกสินค้า</h1>
+      <p class="brand-subtitle">หจก.สวีทเฮาส์ - Stock SKU สี ไซซ์ ต้นทุน และ stock card</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="stack">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">สินค้าแม่</h2>
+        </div>
+        <form class="section-body" id="productForm">
+          <input id="productRecordId" name="id" type="hidden">
+          <div class="grid">
+            <div class="field span-6">
+              <label for="productCode">รหัสสินค้าแม่ *</label>
+              <input id="productCode" name="productCode" required>
+            </div>
+            <div class="field span-6">
+              <label for="productName">ชื่อสินค้า *</label>
+              <input id="productName" name="name" required>
+            </div>
+            <div class="field span-6">
+              <label for="productCategory">หมวด</label>
+              <input id="productCategory" name="category" placeholder="เช่น เสื้อ / กระโปรง">
+            </div>
+            <div class="field span-6">
+              <label for="productStatus">สถานะ</label>
+              <select id="productStatus" name="status">
+                <option value="active">ใช้งาน</option>
+                <option value="inactive">ปิดใช้</option>
+              </select>
+            </div>
+            <div class="field span-12">
+              <label for="productDescription">รายละเอียด</label>
+              <textarea id="productDescription" name="description"></textarea>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="button primary" type="submit" id="productSubmitLabel">บันทึกสินค้าแม่</button>
+            <button class="button secondary" type="button" id="cancelProductEdit">ยกเลิกแก้ไข</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Stock SKU</h2>
+        </div>
+        <form class="section-body" id="skuForm">
+          <input id="skuRecordId" name="id" type="hidden">
+          <div class="grid">
+            <div class="field span-12">
+              <label for="skuProductSelect">สินค้าแม่ *</label>
+              <select id="skuProductSelect" name="productId" required></select>
+            </div>
+            <div class="field span-6">
+              <label for="skuCode">SKU *</label>
+              <input id="skuCode" name="sku" required>
+            </div>
+            <div class="field span-6">
+              <label for="skuBarcode">บาร์โค้ด</label>
+              <input id="skuBarcode" name="barcode">
+            </div>
+            <div class="field span-4">
+              <label for="skuColor">สี</label>
+              <input id="skuColor" name="color">
+            </div>
+            <div class="field span-4">
+              <label for="skuSize">ไซซ์</label>
+              <input id="skuSize" name="size">
+            </div>
+            <div class="field span-4">
+              <label for="skuDefaultCost">ต้นทุนตั้งต้น</label>
+              <input id="skuDefaultCost" name="defaultUnitCost" inputmode="decimal">
+            </div>
+            <div class="field span-12">
+              <label for="skuStatus">สถานะ</label>
+              <select id="skuStatus" name="status">
+                <option value="active">ใช้งาน</option>
+                <option value="inactive">ปิดใช้</option>
+              </select>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="button primary" type="submit" id="skuSubmitLabel">บันทึก SKU</button>
+            <button class="button secondary" type="button" id="cancelSkuEdit">ยกเลิกแก้ไข</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รับสินค้าเข้าคลัง</h2>
+        </div>
+        <form class="section-body" id="purchaseInForm">
+          <div class="grid">
+            <div class="field span-12">
+              <label for="purchaseSkuSelect">Stock SKU *</label>
+              <select id="purchaseSkuSelect" name="stockSkuId" required></select>
+            </div>
+            <div class="field span-4">
+              <label for="movementDate">วันที่รับเข้า *</label>
+              <input id="movementDate" name="movementDate" type="date" required>
+            </div>
+            <div class="field span-4">
+              <label for="quantity">จำนวน *</label>
+              <input id="quantity" name="quantity" inputmode="numeric" required>
+            </div>
+            <div class="field span-4">
+              <label for="unitCost">ต้นทุนต่อหน่วย *</label>
+              <input id="unitCost" name="unitCost" inputmode="decimal" required>
+            </div>
+            <div class="field span-6">
+              <label for="referenceType">ประเภทอ้างอิง</label>
+              <input id="referenceType" name="referenceType" value="manual">
+            </div>
+            <div class="field span-6">
+              <label for="referenceNo">เลขอ้างอิง</label>
+              <input id="referenceNo" name="referenceNo">
+            </div>
+            <div class="field span-12">
+              <label for="movementNote">หมายเหตุ</label>
+              <textarea id="movementNote" name="note"></textarea>
+            </div>
+          </div>
+          <button class="button primary" type="submit">รับเข้าคลัง</button>
+        </form>
+      </section>
+
+      <div class="status-box" id="inventoryStatus"></div>
+    </div>
+
+    <div class="stack">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">ยอดคงเหลือ</h2>
+          <button class="button secondary" type="button" id="refreshInventory">รีเฟรช</button>
+        </div>
+        <div class="section-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>สินค้า</th>
+                  <th>สี</th>
+                  <th>ไซซ์</th>
+                  <th class="number">คงเหลือ</th>
+                  <th class="number">ต้นทุนเฉลี่ย</th>
+                  <th class="number">มูลค่า</th>
+                </tr>
+              </thead>
+              <tbody id="balanceRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รายการสินค้าแม่</h2>
+        </div>
+        <div class="section-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>รหัส</th>
+                  <th>ชื่อสินค้า</th>
+                  <th>หมวด</th>
+                  <th>สถานะ</th>
+                  <th>จัดการ</th>
+                </tr>
+              </thead>
+              <tbody id="productRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รายการ Stock SKU</h2>
+        </div>
+        <div class="section-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>สินค้า</th>
+                  <th>สี</th>
+                  <th>ไซซ์</th>
+                  <th class="number">ต้นทุนตั้งต้น</th>
+                  <th>สถานะ</th>
+                  <th>จัดการ</th>
+                </tr>
+              </thead>
+              <tbody id="skuRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Stock Card</h2>
+        </div>
+        <div class="section-body">
+          <div class="field">
+            <label for="stockCardSkuSelect">เลือก SKU</label>
+            <select id="stockCardSkuSelect"></select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>วันที่</th>
+                  <th>เลข Movement</th>
+                  <th>ประเภท</th>
+                  <th class="number">จำนวน</th>
+                  <th class="number">ต้นทุน/หน่วย</th>
+                  <th class="number">ต้นทุนรวม</th>
+                  <th class="number">คงเหลือ</th>
+                  <th>อ้างอิง</th>
+                </tr>
+              </thead>
+              <tbody id="stockCardRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="./inventory.logic.browser.js"></script>
+</body>
+</html>
