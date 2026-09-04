@@ -17,6 +17,7 @@ const {
 } = require("./forms/company-settings.logic.js");
 const {
   getNextExpenseRequestInfo,
+  getNextSubstituteReceiptInfo,
   getExpenseDraft,
   getExpenseRequestFile,
   listExpenseDrafts,
@@ -24,6 +25,7 @@ const {
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptSubmission,
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
 } = require("./forms/local-server.logic.js");
@@ -71,6 +73,8 @@ function safeStaticPath(urlPath) {
     "/expense-request/": "/expense-request.html",
     "/expense-requests": "/expense-requests.html",
     "/expense-requests/": "/expense-requests.html",
+    "/substitute-receipt": "/substitute-receipt.html",
+    "/substitute-receipt/": "/substitute-receipt.html",
     "/google-drive": "/google-drive.html",
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
@@ -152,6 +156,25 @@ async function handleExpenseSubmission(request, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot save expense request",
+    });
+  }
+}
+
+async function handleSubstituteReceiptSubmission(request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
+    const payload = JSON.parse(fields.payload || "{}");
+    const result = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload,
+      uploads: files,
+    });
+
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot save substitute receipt",
     });
   }
 }
@@ -349,6 +372,18 @@ async function handleNextExpenseRequest(url, response) {
   }
 }
 
+async function handleNextSubstituteReceipt(url, response) {
+  try {
+    const accountingMonth = url.searchParams.get("accountingMonth");
+    const result = await getNextSubstituteReceiptInfo(rootDir, accountingMonth);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot calculate next substitute receipt number",
+    });
+  }
+}
+
 async function handleInventoryProductList(url, response) {
   try {
     sendJson(response, 200, { products: listProducts(rootDir, { search: url.searchParams.get("search") || "" }) });
@@ -519,6 +554,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/substitute-receipts") {
+    await handleSubstituteReceiptSubmission(request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/sync-drive")) {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
@@ -550,6 +590,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/expense-requests/next") {
       await handleNextExpenseRequest(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/substitute-receipts/next") {
+      await handleNextSubstituteReceipt(url, response);
       return;
     }
 

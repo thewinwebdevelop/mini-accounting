@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ใบรับรองแทนใบเสร็จรับเงิน - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #cbd2d9;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --accent-soft: #dcfce7;
+      --danger: #b91c1c;
+      --warning: #92400e;
+      --warning-soft: #fffbeb;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .brand-subtitle {
+      margin: 2px 0 0;
+      color: #d9e2ec;
+      font-size: 12px;
+    }
+
+    .app-menu { position: relative; }
+
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    .menu-button::-webkit-details-marker { display: none; }
+
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(330px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .menu-group + .menu-group {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #eef2f6;
+    }
+
+    .menu-group-title {
+      margin: 5px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+      gap: 16px;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+      align-self: start;
+    }
+
+    .section {
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .section-body {
+      display: grid;
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 9px;
+    }
+
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 76px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .stock-line {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 1fr) 86px 118px 38px;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .file-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .file-card {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .file-card strong {
+      color: var(--brand-strong);
+      font-size: 12px;
+    }
+
+    .file-card input { min-height: 42px; }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+
+    .button.primary {
+      color: #ffffff;
+      background: var(--accent);
+    }
+
+    .button.secondary {
+      color: var(--brand-strong);
+      background: #ffffff;
+      border-color: #bcccdc;
+    }
+
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--brand);
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .icon-button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .status-box {
+      display: none;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #d9e2ec;
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+      white-space: pre-line;
+    }
+
+    .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+
+    .summary-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+    }
+
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #eef2f6;
+    }
+
+    .summary-row dt {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .summary-row dd {
+      margin: 0;
+      text-align: right;
+      font-weight: 900;
+    }
+
+    .notice {
+      padding: 10px;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+      background: var(--warning-soft);
+      color: var(--warning);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    @media (max-width: 980px) {
+      .page { grid-template-columns: 1fr; }
+      .span-3,
+      .span-4,
+      .span-6,
+      .span-8 { grid-column: span 12; }
+      .stock-line { grid-template-columns: 1fr; }
+      .file-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">ใบรับรองแทนใบเสร็จรับเงิน</h1>
+      <p class="brand-subtitle">กรอกเอกสาร แนบหลักฐาน และรับ Stock SKU เข้าคลังอัตโนมัติ</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <form class="stack" id="substituteReceiptForm">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">ข้อมูลเอกสาร</h2>
+        </div>
+        <div class="section-body">
+          <div class="grid">
+            <div class="field span-4">
+              <label for="accountingMonth">เดือนบัญชี *</label>
+              <input id="accountingMonth" name="accountingMonth" type="month" required>
+            </div>
+            <div class="field span-4">
+              <label for="receiptDate">วันที่เอกสาร *</label>
+              <input id="receiptDate" name="receiptDate" type="date" required>
+            </div>
+            <div class="field span-4">
+              <label for="receiptType">ประเภท *</label>
+              <select id="receiptType" name="receiptType" required>
+                <option value="stock_purchase">ซื้อสต๊อกสินค้า</option>
+                <option value="general_expense">รายจ่ายทั่วไป</option>
+              </select>
+            </div>
+            <div class="field span-12">
+              <label for="receiptTitle">ชื่อรายการ</label>
+              <input id="receiptTitle" name="receiptTitle" placeholder="เช่น ซื้อสต๊อกเสื้อผ้า Lot กันยายน">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">ผู้ขายและการชำระเงิน</h2>
+        </div>
+        <div class="section-body">
+          <div class="grid">
+            <div class="field span-6">
+              <label for="payeeName">ผู้ขาย/ผู้รับเงิน *</label>
+              <input id="payeeName" name="payeeName" required>
+            </div>
+            <div class="field span-6">
+              <label for="payeeTaxId">เลขประจำตัวผู้เสียภาษีผู้ขาย</label>
+              <input id="payeeTaxId" name="payeeTaxId">
+            </div>
+            <div class="field span-6">
+              <label for="paymentChannel">ช่องทางชำระเงิน</label>
+              <input id="paymentChannel" name="paymentChannel" value="โอนผ่านบัญชีบริษัท">
+            </div>
+            <div class="field span-6">
+              <label for="paymentReference">เลขอ้างอิง/บัญชีปลายทาง</label>
+              <input id="paymentReference" name="paymentReference">
+            </div>
+            <div class="field span-12">
+              <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
+              <textarea id="businessPurpose" name="businessPurpose" required>ซื้อสินค้าเพื่อขาย</textarea>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รายการสินค้า/ค่าใช้จ่าย</h2>
+          <button class="button secondary" type="button" id="addStockLine">เพิ่มรายการ</button>
+        </div>
+        <div class="section-body" id="stockLineItems"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">หลักฐานแนบ</h2>
+        </div>
+        <div class="section-body">
+          <div class="file-grid">
+            <label class="file-card">
+              <strong>สลิป/Statement/หลักฐานชำระเงิน</strong>
+              <input name="evidence_paymentSlip" type="file" multiple>
+            </label>
+            <label class="file-card">
+              <strong>หลักฐานสั่งซื้อ/แชท/ใบเสนอราคา</strong>
+              <input name="evidence_purchaseOrder" type="file" multiple>
+            </label>
+            <label class="file-card">
+              <strong>ใบรับสินค้าเข้าคลัง/รูปสินค้าที่รับ</strong>
+              <input name="evidence_goodsReceived" type="file" multiple>
+            </label>
+            <label class="file-card">
+              <strong>หลักฐานประกอบอื่น</strong>
+              <input name="evidence_otherEvidence" type="file" multiple>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button class="button primary" type="submit" id="submitSubstituteReceipt">บันทึกและออก PDF</button>
+        <button class="button secondary" type="reset">ล้างฟอร์ม</button>
+      </div>
+      <div class="status-box" id="substituteReceiptStatus"></div>
+    </form>
+
+    <aside class="stack">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">สรุปก่อนบันทึก</h2>
+        </div>
+        <div class="section-body">
+          <dl class="summary-list">
+            <div class="summary-row">
+              <dt>เลขที่เอกสารถัดไป</dt>
+              <dd id="receiptNoPreview">-</dd>
+            </div>
+            <div class="summary-row">
+              <dt>จำนวนรายการ</dt>
+              <dd id="lineCountPreview">0</dd>
+            </div>
+            <div class="summary-row">
+              <dt>ยอดรวม</dt>
+              <dd id="totalAmountPreview">0.00</dd>
+            </div>
+            <div class="summary-row">
+              <dt>ไฟล์หลักฐาน</dt>
+              <dd id="evidenceCountPreview">0</dd>
+            </div>
+          </dl>
+          <div class="notice" id="stockReceiptNotice">
+            ประเภทซื้อสต๊อกสินค้าจะสร้าง movement รับเข้าคลังอัตโนมัติหลังออกเอกสาร
+          </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <template id="stockLineTemplate">
+    <div class="stock-line">
+      <div class="field">
+        <label>Stock SKU *</label>
+        <select name="stockSkuId" required></select>
+      </div>
+      <div class="field">
+        <label>รายละเอียด</label>
+        <input name="description">
+        <input name="sku" type="hidden">
+      </div>
+      <div class="field">
+        <label>จำนวน *</label>
+        <input name="quantity" inputmode="numeric" required>
+      </div>
+      <div class="field">
+        <label>ต้นทุน/หน่วย *</label>
+        <input name="unitCost" inputmode="decimal" required>
+      </div>
+      <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
+    </div>
+  </template>
+
+  <script src="./substitute-receipt.logic.js"></script>
+  <script src="./substitute-receipt.logic.browser.js"></script>
+</body>
+</html>
