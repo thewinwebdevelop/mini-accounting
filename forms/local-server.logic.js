@@ -10,8 +10,15 @@ const {
   buildRawFileName,
   formatPayloadMarkdown,
 } = require("./expense-request.logic.js");
+const {
+  buildSubstituteReceiptPayload,
+  buildSubstituteReceiptRawFileName,
+  formatSubstituteReceiptMarkdown,
+  validateSubstituteReceipt,
+} = require("./substitute-receipt.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
+const { createPurchaseInMovement } = require("./inventory.logic.js");
 
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
@@ -31,6 +38,11 @@ function getMonthParts(accountingMonth = "") {
 function getExpenseMonthDir(rootDir, accountingMonth) {
   const { year, month } = getMonthParts(accountingMonth);
   return path.join(rootDir, "documents", year, month, "เบิกจ่าย");
+}
+
+function getSubstituteReceiptMonthDir(rootDir, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  return path.join(rootDir, "documents", year, month, "ใบรับรองแทนใบเสร็จ");
 }
 
 function getDraftMonthDir(rootDir, accountingMonth) {
@@ -72,6 +84,32 @@ async function getNextExpenseRequestInfo(rootDir, accountingMonth) {
   return {
     sequence,
     requestNo: `REQ-${year}-${month}-${padSequence(sequence)}`,
+  };
+}
+
+async function getNextSubstituteReceiptInfo(rootDir, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  const monthDir = getSubstituteReceiptMonthDir(rootDir, accountingMonth);
+  let folderNames = [];
+
+  try {
+    folderNames = await readdir(monthDir);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const prefix = `SR-${year}-${month}-`;
+  const latestSequence = folderNames.reduce((latest, name) => {
+    if (!name.startsWith(prefix)) return latest;
+    const match = name.slice(prefix.length).match(/^(\d{4})/);
+    if (!match) return latest;
+    return Math.max(latest, Number.parseInt(match[1], 10));
+  }, 0);
+  const sequence = String(latestSequence + 1);
+
+  return {
+    sequence,
+    receiptNo: `SR-${year}-${month}-${padSequence(sequence)}`,
   };
 }
 
@@ -162,7 +200,7 @@ function countEvidenceFiles(evidenceFiles = {}) {
   );
 }
 
-function prepareUploadRecords(uploads = [], existingEvidenceFiles = {}) {
+function prepareUploadRecords(uploads = [], existingEvidenceFiles = {}, fileNameBuilder = buildRawFileName) {
   const counts = countEvidenceFiles(existingEvidenceFiles);
   const evidenceFiles = {};
   const writes = [];
@@ -172,7 +210,7 @@ function prepareUploadRecords(uploads = [], existingEvidenceFiles = {}) {
     const nextIndex = counts[upload.evidenceKey] ?? 0;
     counts[upload.evidenceKey] = nextIndex + 1;
 
-    const storedName = buildRawFileName(upload.evidenceKey, upload.originalName, nextIndex);
+    const storedName = fileNameBuilder(upload.evidenceKey, upload.originalName, nextIndex);
     const fileRecord = {
       evidenceKey: upload.evidenceKey,
       originalName: upload.originalName,
@@ -252,6 +290,10 @@ async function generateExpensePdfs({ payloadPath, outputDir, rawDir }) {
   }
 
   return JSON.parse(stdout);
+}
+
+async function generateSubstituteReceiptPdfs({ payloadPath, outputDir, rawDir }) {
+  return generateExpensePdfs({ payloadPath, outputDir, rawDir });
 }
 
 async function findDraftRecords(rootDir, includeSubmitted = false) {
@@ -696,6 +738,86 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
   };
 }
 
+async function saveSubstituteReceiptSubmission({
+  rootDir,
+  payload,
+  uploads = [],
+  createStockMovements = true,
+}) {
+  if (payload.receiptNo) throw new Error("Submitted substitute receipts cannot be edited");
+
+  const nextReceipt = await getNextSubstituteReceiptInfo(rootDir, payload.accountingMonth);
+  const existingEvidenceFiles = payload.evidenceFiles ?? {};
+  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
+  const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+  const errors = validateSubstituteReceipt({
+    ...payload,
+    sequence: nextReceipt.sequence,
+    receiptNo: nextReceipt.receiptNo,
+    evidenceFiles,
+  });
+  if (errors.length) throw new Error(errors.join(", "));
+
+  const company = await getCompanySettings(rootDir);
+  const receiptPayload = buildSubstituteReceiptPayload({
+    ...payload,
+    company,
+    receiptNo: nextReceipt.receiptNo,
+    sequence: nextReceipt.sequence,
+    evidenceFiles,
+  });
+
+  const absoluteFolderPath = path.join(rootDir, receiptPayload.folderPath);
+  const rawDir = path.join(absoluteFolderPath, "raw");
+  const dataDir = path.join(absoluteFolderPath, "data");
+  const workingMdDir = path.join(absoluteFolderPath, "working-md");
+  const pdfDir = path.join(absoluteFolderPath, "pdf");
+
+  await mkdir(rawDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(workingMdDir, { recursive: true });
+  await mkdir(pdfDir, { recursive: true });
+
+  const rawFiles = flattenEvidenceFiles(existingEvidenceFiles);
+  for (const write of preparedUploads.writes) {
+    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
+    rawFiles.push(write.fileRecord);
+  }
+
+  const submissionJsonPath = path.join(dataDir, "substitute-receipt.json");
+  await writeFile(submissionJsonPath, `${JSON.stringify(receiptPayload, null, 2)}\n`, "utf8");
+  await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(receiptPayload), "utf8");
+  const pdfFiles = await generateSubstituteReceiptPdfs({
+    payloadPath: submissionJsonPath,
+    outputDir: pdfDir,
+    rawDir,
+  });
+
+  const stockMovements = [];
+  if (createStockMovements && receiptPayload.receiptType === "stock_purchase") {
+    for (const line of receiptPayload.lines) {
+      stockMovements.push(createPurchaseInMovement(rootDir, {
+        stockSkuId: line.stockSkuId,
+        movementDate: receiptPayload.receiptDate,
+        quantity: line.quantity,
+        unitCost: line.unitCost,
+        referenceType: "substitute_receipt",
+        referenceNo: receiptPayload.receiptNo,
+        note: line.description,
+      }));
+    }
+  }
+
+  return {
+    receiptNo: receiptPayload.receiptNo,
+    folderPath: receiptPayload.folderPath,
+    absoluteFolderPath,
+    pdfFiles,
+    rawFiles,
+    stockMovements,
+  };
+}
+
 async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) {
   if (!requestNo) throw new Error("Missing expense request number");
   if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
@@ -772,11 +894,13 @@ module.exports = {
   getExpenseRequestFile,
   getSubmittedExpenseRequest,
   getNextExpenseRequestInfo,
+  getNextSubstituteReceiptInfo,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptSubmission,
   syncExpenseRequestToDrive,
 };

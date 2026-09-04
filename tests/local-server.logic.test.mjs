@@ -8,20 +8,28 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import companySettingsLogic from "../forms/company-settings.logic.js";
+import inventoryLogic from "../forms/inventory.logic.js";
 import serverLogic from "../forms/local-server.logic.js";
 
 const execFileAsync = promisify(execFile);
 const { saveCompanySettings } = companySettingsLogic;
 const {
+  createProduct,
+  createStockSku,
+  getStockCard,
+} = inventoryLogic;
+const {
   getExpenseDraft,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
+  getNextSubstituteReceiptInfo,
   getSubmittedExpenseRequest,
   listExpenseRequests,
   listExpenseDrafts,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptSubmission,
   syncExpenseRequestToDrive,
 } = serverLogic;
 
@@ -98,6 +106,27 @@ test("getNextExpenseRequestInfo calculates the next sequence from saved request 
     assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-11"), {
       sequence: "1",
       requestNo: "REQ-2026-11-0001",
+    });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("getNextSubstituteReceiptInfo calculates the next SR sequence from saved receipt folders", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+
+  try {
+    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0002_old"), { recursive: true });
+    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0010_latest"), { recursive: true });
+    await mkdir(join(rootDir, "documents", "2026", "10", "ใบรับรองแทนใบเสร็จ", "SR-2026-10-0004_other-month"), { recursive: true });
+
+    assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
+      sequence: "11",
+      receiptNo: "SR-2026-09-0011",
+    });
+    assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-11"), {
+      sequence: "1",
+      receiptNo: "SR-2026-11-0001",
     });
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -266,6 +295,133 @@ test("saveExpenseSubmission writes uploaded raw files and workflow data into the
     const auditPacketPdf = await readFile(join(result.absoluteFolderPath, "pdf", "02_ชุดรวมส่งตรวจ_audit-packet.pdf"));
     assert.equal(reimbursementPdf.subarray(0, 5).toString("utf8"), "%PDF-");
     assert.equal(auditPacketPdf.subarray(0, 5).toString("utf8"), "%PDF-");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workflow data", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+
+  try {
+    const result = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        sequence: "3",
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-04",
+        receiptTitle: "ซื้อเสื้อไม่มีใบเสร็จ",
+        receiptType: "stock_purchase",
+        payeeName: "บริษัทขายส่งตัวอย่าง",
+        paymentChannel: "โอนผ่านบัญชีบริษัท",
+        paymentReference: "KBANK-TR-001",
+        businessPurpose: "ซื้อสินค้าเพื่อขาย",
+        lines: [
+          {
+            stockSkuId: "1",
+            sku: "TOP-A-WHITE-M",
+            description: "เสื้อ A สีขาว M",
+            quantity: "2",
+            unitCost: "100",
+          },
+        ],
+      },
+      uploads: [
+        {
+          evidenceKey: "paymentSlip",
+          originalName: "slip.jpg",
+          type: "image/jpeg",
+          buffer: Buffer.from("payment slip image"),
+        },
+        {
+          evidenceKey: "purchaseOrder",
+          originalName: "order.pdf",
+          type: "application/pdf",
+          buffer: Buffer.from("purchase order pdf"),
+        },
+      ],
+      createStockMovements: false,
+    });
+
+    assert.equal(result.receiptNo, "SR-2026-09-0001");
+    assert.match(result.folderPath, /documents\/2026\/09\/ใบรับรองแทนใบเสร็จ/);
+    assert.deepEqual(result.rawFiles.map((file) => file.storedName), [
+      "B1_payment-slip_001.jpg",
+      "B2_purchase-order_001.pdf",
+    ]);
+    assert.deepEqual(result.pdfFiles.map((file) => file.name), [
+      "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf",
+      "02_ชุดรวมส่งตรวจ_ใบรับรองแทนใบเสร็จ.pdf",
+    ]);
+    assert.equal(result.pdfFiles[1].annexedRawFiles, 2);
+
+    const savedJson = JSON.parse(await readFile(join(result.absoluteFolderPath, "data", "substitute-receipt.json"), "utf8"));
+    assert.equal(savedJson.receiptNo, "SR-2026-09-0001");
+    assert.equal(savedJson.totals.totalAmount, "200.00");
+    assert.equal(savedJson.evidence.paymentSlip.status, "มี");
+    assert.equal(await readFile(join(result.absoluteFolderPath, "raw", "B1_payment-slip_001.jpg"), "utf8"), "payment slip image");
+
+    const receiptText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
+    assert.match(receiptText, /ใบรับรองแทนใบเสร็จรับเงิน/);
+    assert.match(receiptText, /SR-2026-09-0001/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission creates purchase-in stock movements for stock receipts", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+
+  try {
+    const product = createProduct(rootDir, {
+      productCode: "TOP-A",
+      name: "เสื้อ A",
+      category: "เสื้อ",
+    });
+    const sku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "TOP-A-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+
+    const result = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-04",
+        receiptTitle: "ซื้อสต๊อกเสื้อ",
+        receiptType: "stock_purchase",
+        payeeName: "บริษัทขายส่งตัวอย่าง",
+        paymentChannel: "โอนผ่านบัญชีบริษัท",
+        businessPurpose: "ซื้อสินค้าเพื่อขาย",
+        lines: [
+          {
+            stockSkuId: String(sku.id),
+            sku: sku.sku,
+            description: "เสื้อ A สีขาว M",
+            quantity: "4",
+            unitCost: "125.50",
+          },
+        ],
+        evidenceFiles: {
+          paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }],
+        },
+      },
+      uploads: [],
+    });
+
+    assert.equal(result.stockMovements.length, 1);
+    assert.equal(result.stockMovements[0].referenceType, "substitute_receipt");
+    assert.equal(result.stockMovements[0].referenceNo, result.receiptNo);
+    assert.equal(result.stockMovements[0].quantity, 4);
+    assert.equal(result.stockMovements[0].unitCost, "125.50");
+
+    const card = getStockCard(rootDir, sku.id);
+    assert.equal(card.balance.quantityOnHand, 4);
+    assert.equal(card.balance.inventoryValue, "502.00");
+    assert.deepEqual(card.movements.map((movement) => movement.referenceNo), [result.receiptNo]);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

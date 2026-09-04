@@ -328,6 +328,76 @@ def build_reimbursement_story(payload):
     return story
 
 
+def build_substitute_receipt_story(payload):
+    lines = payload.get("lines") or []
+    totals = payload.get("totals") or {}
+    company = company_info(payload)
+    story = [
+        Paragraph("ใบรับรองแทนใบเสร็จรับเงิน", styles["DocTitle"]),
+        kv_table([
+            ("ชื่อนิติบุคคล", company["name"]),
+            ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
+            ("สำนักงานใหญ่/สาขา", company["branch"]),
+            ("ที่อยู่", company["address"]),
+            ("เลขที่เอกสาร", payload.get("receiptNo")),
+            ("วันที่เอกสาร", payload.get("receiptDate")),
+            ("ประเภทเอกสาร", payload.get("receiptTypeLabel")),
+            ("ผู้ขาย/ผู้รับเงิน", payload.get("payeeName")),
+            ("เลขผู้เสียภาษีผู้ขาย", payload.get("payeeTaxId")),
+            ("ช่องทางชำระเงิน", payload.get("paymentChannel")),
+            ("เลขอ้างอิงชำระเงิน", payload.get("paymentReference")),
+            ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
+        ]),
+        Paragraph("รายการที่รับรอง", styles["DocHeading"]),
+    ]
+
+    item_rows = [[
+        paragraph("ลำดับ"),
+        paragraph("Stock SKU"),
+        paragraph("รายละเอียด"),
+        paragraph("จำนวน"),
+        paragraph("ต้นทุน/หน่วย"),
+        paragraph("ยอดรวม"),
+    ]]
+    for index, line in enumerate(lines, 1):
+        item_rows.append([
+            paragraph(index),
+            paragraph(line.get("sku")),
+            paragraph(line.get("description")),
+            paragraph(line.get("quantity")),
+            money_paragraph(line.get("unitCost")),
+            money_paragraph(line.get("lineTotal")),
+        ])
+
+    story.extend([
+        styled_table(
+            item_rows,
+            col_widths=[13 * mm, 38 * mm, 73 * mm, 18 * mm, 25 * mm, 25 * mm],
+            align_right_cols=[3, 4, 5],
+        ),
+        Paragraph("สรุปยอด", styles["DocHeading"]),
+        kv_table([
+            ("ยอดรวมตามหลักฐาน", f"{baht(totals.get('totalAmount'))} บาท"),
+        ]),
+        Paragraph("คำรับรอง", styles["DocHeading"]),
+        Paragraph(
+            "ข้าพเจ้าขอรับรองว่ารายการข้างต้นเป็นค่าใช้จ่ายที่เกิดขึ้นจริงเพื่อกิจการ "
+            "ผู้ขายไม่ได้ออกใบเสร็จรับเงินให้ และได้แนบหลักฐานการชำระเงิน/การสั่งซื้อประกอบไว้ในชุดเอกสารนี้",
+            styles["DocBody"],
+        ),
+        Paragraph("Checklist หลักฐาน", styles["DocHeading"]),
+        styled_table(
+            [[paragraph("รหัส"), paragraph("หลักฐาน"), paragraph("สถานะ"), paragraph("ชื่อไฟล์ raw")]] + evidence_rows(payload),
+            col_widths=[16 * mm, 62 * mm, 30 * mm, 74 * mm],
+        ),
+        Paragraph("การลงนาม", styles["DocHeading"]),
+        signature_table({
+            "requesterName": payload.get("preparedBy") or payload.get("requesterName") or "",
+        }),
+    ])
+    return story
+
+
 def build_audit_story(payload, raw_dir):
     totals = payload.get("totals") or {}
     evidence = payload.get("evidence") or {}
@@ -386,6 +456,68 @@ def build_audit_story(payload, raw_dir):
         Paragraph(
             "หมายเหตุ: PDF ชุดรวมนี้เป็นแฟ้มสรุปสำหรับส่งตรวจและอ้างอิงไฟล์หลักฐานดิบ "
             "ไม่ทดแทนการเก็บใบกำกับภาษี/ใบเสร็จต้นฉบับตามรูปแบบที่ได้รับมา",
+            styles["DocSmall"],
+        ),
+    ])
+    return story
+
+
+def build_substitute_audit_story(payload, raw_dir):
+    totals = payload.get("totals") or {}
+    raw_files = payload.get("rawFiles") or []
+    company = company_info(payload)
+    story = [
+        Paragraph("ชุดรวมส่งตรวจใบรับรองแทนใบเสร็จ", styles["DocTitle"]),
+        kv_table([
+            ("ชื่อนิติบุคคล", company["name"]),
+            ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
+            ("สำนักงานใหญ่/สาขา", company["branch"]),
+            ("เลขที่เอกสาร", payload.get("receiptNo")),
+            ("ชื่อแฟ้ม", os.path.basename(payload.get("folderPath") or "")),
+            ("ประเภทเอกสาร", payload.get("receiptTypeLabel")),
+            ("ยอดรวม", f"{baht(totals.get('totalAmount'))} บาท"),
+            ("โฟลเดอร์ raw", "raw/"),
+            ("จำนวนไฟล์หลักฐาน", f"{len(raw_files)} ไฟล์"),
+        ]),
+        Paragraph("รายการเอกสารในชุดรวม", styles["DocHeading"]),
+        styled_table(
+            [[paragraph("รหัส"), paragraph("เอกสาร"), paragraph("สถานะ"), paragraph("ไฟล์อ้างอิง")]]
+            + [[
+                paragraph("FORM"),
+                paragraph("ใบรับรองแทนใบเสร็จรับเงิน"),
+                paragraph("มี"),
+                paragraph("01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"),
+            ]]
+            + evidence_rows(payload),
+            col_widths=[16 * mm, 64 * mm, 30 * mm, 72 * mm],
+        ),
+        Paragraph("Tax & Accounting Review เบื้องต้น", styles["DocHeading"]),
+        styled_table([
+            [paragraph("รายการตรวจ"), paragraph("ผลตรวจ"), paragraph("หมายเหตุ")],
+            [paragraph("ผู้ขายไม่ออกใบเสร็จ"), paragraph("รอตรวจ"), paragraph("ตรวจจากหมายเหตุและหลักฐานการสั่งซื้อ")],
+            [paragraph("จ่ายเงินจริงจากบัญชีบริษัท"), paragraph("รอตรวจ"), paragraph("ตรวจจากสลิปหรือ statement")],
+            [paragraph("สินค้ารับเข้าคลัง"), paragraph("รอตรวจ"), paragraph("ตรวจจากรายการ Stock SKU และ stock card")],
+            [paragraph("ไฟล์ raw ถูกจัดเก็บ"), paragraph("มี" if raw_files else "รอดำเนินการ"), paragraph(", ".join(raw_files) if raw_files else "ยังไม่มีไฟล์ raw")],
+        ], col_widths=[55 * mm, 32 * mm, 95 * mm]),
+        Paragraph("สารบัญไฟล์ raw", styles["DocHeading"]),
+    ]
+
+    raw_rows = [[paragraph("ลำดับ"), paragraph("ชื่อไฟล์"), paragraph("สถานะ")]]
+    for index, file_name in enumerate(raw_files, 1):
+        raw_path = os.path.join(raw_dir, file_name)
+        raw_rows.append([
+            paragraph(index),
+            paragraph(file_name),
+            paragraph("พบไฟล์" if os.path.exists(raw_path) else "ไม่พบไฟล์"),
+        ])
+    if len(raw_rows) == 1:
+        raw_rows.append([paragraph("-"), paragraph("ยังไม่มีไฟล์ raw"), paragraph("รอดำเนินการ")])
+    story.append(styled_table(raw_rows, col_widths=[18 * mm, 122 * mm, 42 * mm]))
+    story.extend([
+        Spacer(1, 6),
+        Paragraph(
+            "หมายเหตุ: PDF ชุดนี้รวมใบรับรองและหลักฐานประกอบเพื่อใช้ตรวจสอบภายใน "
+            "ควรเก็บไฟล์ raw ต้นฉบับไว้คู่กันตามโฟลเดอร์เอกสาร",
             styles["DocSmall"],
         ),
     ])
@@ -501,15 +633,15 @@ def append_raw_annex(writer, payload, raw_dir, file_name, temp_dir):
     return 1
 
 
-def build_audit_packet_with_annexes(path, payload, raw_dir, reimbursement_path):
+def build_audit_packet_with_annexes(path, payload, raw_dir, form_path, audit_story_builder=build_audit_story):
     raw_files = payload.get("rawFiles") or []
     with tempfile.TemporaryDirectory() as temp_dir:
         summary_path = os.path.join(temp_dir, "audit-summary.pdf")
-        build_doc(summary_path, "ชุดรวมส่งตรวจเอกสารเบิกจ่าย", payload, build_audit_story(payload, raw_dir))
+        build_doc(summary_path, "ชุดรวมส่งตรวจ", payload, audit_story_builder(payload, raw_dir))
 
         writer = PdfWriter()
         append_pdf(writer, summary_path)
-        append_pdf(writer, reimbursement_path)
+        append_pdf(writer, form_path)
         annexed_raw_files = 0
         for file_name in raw_files:
             annexed_raw_files += append_raw_annex(writer, payload, raw_dir, file_name, temp_dir)
@@ -519,9 +651,45 @@ def build_audit_packet_with_annexes(path, payload, raw_dir, reimbursement_path):
 
     return {
         "annexedRawFiles": annexed_raw_files,
-        "includedReimbursementPages": pdf_page_count(reimbursement_path),
+        "includedFormPages": pdf_page_count(form_path),
         "pageCount": pdf_page_count(path),
     }
+
+
+def build_reimbursement_outputs(payload, output_dir, raw_dir):
+    reimbursement_path = os.path.join(output_dir, "01_ใบเบิกจ่าย.pdf")
+    audit_path = os.path.join(output_dir, "02_ชุดรวมส่งตรวจ_audit-packet.pdf")
+
+    build_doc(
+        reimbursement_path,
+        "ใบเบิกจ่ายค่าใช้จ่าย",
+        payload,
+        build_reimbursement_story(payload),
+        page_size=landscape(A4),
+    )
+    audit_metadata = build_audit_packet_with_annexes(audit_path, payload, raw_dir, reimbursement_path)
+    return [reimbursement_path, audit_path], audit_path, audit_metadata
+
+
+def build_substitute_receipt_outputs(payload, output_dir, raw_dir):
+    receipt_path = os.path.join(output_dir, "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf")
+    audit_path = os.path.join(output_dir, "02_ชุดรวมส่งตรวจ_ใบรับรองแทนใบเสร็จ.pdf")
+
+    build_doc(
+        receipt_path,
+        "ใบรับรองแทนใบเสร็จรับเงิน",
+        payload,
+        build_substitute_receipt_story(payload),
+        page_size=A4,
+    )
+    audit_metadata = build_audit_packet_with_annexes(
+        audit_path,
+        payload,
+        raw_dir,
+        receipt_path,
+        audit_story_builder=build_substitute_audit_story,
+    )
+    return [receipt_path, audit_path], audit_path, audit_metadata
 
 
 def main():
@@ -535,20 +703,13 @@ def main():
         payload = json.load(handle)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    reimbursement_path = os.path.join(args.output_dir, "01_ใบเบิกจ่าย.pdf")
-    audit_path = os.path.join(args.output_dir, "02_ชุดรวมส่งตรวจ_audit-packet.pdf")
-
-    build_doc(
-        reimbursement_path,
-        "ใบเบิกจ่ายค่าใช้จ่าย",
-        payload,
-        build_reimbursement_story(payload),
-        page_size=landscape(A4),
-    )
-    audit_metadata = build_audit_packet_with_annexes(audit_path, payload, args.raw_dir, reimbursement_path)
+    if payload.get("documentKind") == "substitute_receipt":
+        output_paths, audit_path, audit_metadata = build_substitute_receipt_outputs(payload, args.output_dir, args.raw_dir)
+    else:
+        output_paths, audit_path, audit_metadata = build_reimbursement_outputs(payload, args.output_dir, args.raw_dir)
 
     result = []
-    for file_path in [reimbursement_path, audit_path]:
+    for file_path in output_paths:
         metadata = {
             "name": os.path.basename(file_path),
             "path": f"pdf/{os.path.basename(file_path)}",
