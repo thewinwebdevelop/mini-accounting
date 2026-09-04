@@ -11,6 +11,8 @@ const {
   createStockSku,
   listProducts,
   listStockSkus,
+  updateProduct,
+  updateStockSku,
 } = inventory;
 
 test("createProduct and createStockSku store clothing SKU attributes and default cost", async () => {
@@ -77,6 +79,63 @@ test("createStockSku rejects duplicate SKU codes", async () => {
         defaultUnitCost: "150",
       });
     }, /SKU นี้มีอยู่แล้ว/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("updateProduct and updateStockSku edit master data without changing movement history", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-"));
+
+  try {
+    const product = createProduct(rootDir, {
+      productCode: "TOP-E",
+      name: "เสื้อสายเดี่ยว E",
+      category: "เสื้อ",
+      description: "ชื่อเดิม",
+    }, {
+      now: () => "2026-09-04T00:00:00.000Z",
+    });
+    const sku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "TOP-E-PINK-F",
+      color: "ชมพู",
+      size: "F",
+      barcode: "885000000002",
+      defaultUnitCost: "95",
+    }, {
+      now: () => "2026-09-04T00:00:00.000Z",
+    });
+
+    const updatedProduct = updateProduct(rootDir, product.id, {
+      productCode: "TOP-E",
+      name: "เสื้อสายเดี่ยว E รุ่นปรับชื่อ",
+      category: "เสื้อแฟชั่น",
+      description: "ชื่อใหม่",
+      status: "active",
+    }, {
+      now: () => "2026-09-05T00:00:00.000Z",
+    });
+    const updatedSku = updateStockSku(rootDir, sku.id, {
+      productId: product.id,
+      sku: "TOP-E-PINK-F",
+      color: "ชมพูอ่อน",
+      size: "Free Size",
+      barcode: "885000000099",
+      defaultUnitCost: "99.50",
+      status: "active",
+    }, {
+      now: () => "2026-09-05T00:00:00.000Z",
+    });
+
+    assert.equal(updatedProduct.name, "เสื้อสายเดี่ยว E รุ่นปรับชื่อ");
+    assert.equal(updatedProduct.category, "เสื้อแฟชั่น");
+    assert.equal(updatedProduct.updatedAt, "2026-09-05T00:00:00.000Z");
+    assert.equal(updatedSku.color, "ชมพูอ่อน");
+    assert.equal(updatedSku.size, "Free Size");
+    assert.equal(updatedSku.defaultUnitCost, "99.50");
+    assert.equal(updatedSku.updatedAt, "2026-09-05T00:00:00.000Z");
+    assert.deepEqual(listStockSkus(rootDir).map((item) => item.color), ["ชมพูอ่อน"]);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

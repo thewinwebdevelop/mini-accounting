@@ -61,6 +61,12 @@ function mapStockSku(row) {
   };
 }
 
+function normalizeStatus(value) {
+  const status = cleanText(value) || "active";
+  if (!["active", "inactive"].includes(status)) throw new Error("สถานะไม่ถูกต้อง");
+  return status;
+}
+
 function createProduct(rootDir, data = {}, options = {}) {
   return withInventoryDatabase(rootDir, (db) => {
     const timestamp = nowIso(options);
@@ -93,6 +99,44 @@ function listProducts(rootDir, filters = {}) {
       ORDER BY product_code ASC
     `).all(search, search, search, search);
     return rows.map(mapProduct);
+  });
+}
+
+function updateProduct(rootDir, productId, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const id = Number(productId);
+    const productCode = cleanText(data.productCode).toUpperCase();
+    const name = cleanText(data.name);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบสินค้าแม่");
+    if (!productCode) throw new Error("ระบุรหัสสินค้าแม่");
+    if (!name) throw new Error("ระบุชื่อสินค้า");
+
+    try {
+      const row = db.prepare(`
+        UPDATE products
+        SET product_code = ?,
+            name = ?,
+            category = ?,
+            description = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+        RETURNING *
+      `).get(
+        productCode,
+        name,
+        cleanText(data.category),
+        cleanText(data.description),
+        normalizeStatus(data.status),
+        nowIso(options),
+        id,
+      );
+      if (!row) throw new Error("ไม่พบสินค้าแม่");
+      return mapProduct(row);
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE")) throw new Error("รหัสสินค้าแม่นี้มีอยู่แล้ว");
+      throw error;
+    }
   });
 }
 
@@ -149,6 +193,51 @@ function listStockSkus(rootDir, filters = {}) {
       ORDER BY stock_skus.sku ASC
     `).all(search, search, search, search, search, search);
     return rows.map(mapStockSku);
+  });
+}
+
+function updateStockSku(rootDir, stockSkuId, data = {}, options = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const id = Number(stockSkuId);
+    const productId = Number(data.productId);
+    const sku = cleanText(data.sku).toUpperCase();
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบ SKU");
+    if (!Number.isInteger(productId) || productId <= 0) throw new Error("เลือกสินค้าแม่");
+    if (!sku) throw new Error("ระบุ SKU");
+
+    const product = db.prepare("SELECT id FROM products WHERE id = ? AND status = 'active'").get(productId);
+    if (!product) throw new Error("ไม่พบสินค้าแม่ที่ใช้งานอยู่");
+
+    try {
+      const row = db.prepare(`
+        UPDATE stock_skus
+        SET product_id = ?,
+            sku = ?,
+            color = ?,
+            size = ?,
+            barcode = ?,
+            default_unit_cost = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+        RETURNING *
+      `).get(
+        productId,
+        sku,
+        cleanText(data.color),
+        cleanText(data.size),
+        cleanText(data.barcode),
+        parseMoney(data.defaultUnitCost, "ต้นทุนตั้งต้น"),
+        normalizeStatus(data.status),
+        nowIso(options),
+        id,
+      );
+      if (!row) throw new Error("ไม่พบ SKU");
+      return mapStockSku(row);
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE")) throw new Error("SKU นี้มีอยู่แล้ว");
+      throw error;
+    }
   });
 }
 
@@ -310,4 +399,6 @@ module.exports = {
   listInventoryBalances,
   listProducts,
   listStockSkus,
+  updateProduct,
+  updateStockSku,
 };
