@@ -1,5 +1,6 @@
 .DS_Store
 .superpowers/
+.worktrees/
 config/
 **/__pycache__/
 node_modules/
