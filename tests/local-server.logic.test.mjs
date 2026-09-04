@@ -364,6 +364,9 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
     const receiptText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
     assert.match(receiptText, /ใบรับรองแทนใบเสร็จรับเงิน/);
     assert.match(receiptText, /SR-2026-09-0001/);
+
+    const auditText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "02_ชุดรวมส่งตรวจ_ใบรับรองแทนใบเสร็จ.pdf"));
+    assert.doesNotMatch(auditText, /เลขที่เอกสาร\s*-\s*รหัส\/ประเภทหลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

@@ -103,6 +103,10 @@ def text(value, fallback="-"):
     return value or fallback
 
 
+def document_no(payload):
+    return payload.get("requestNo") or payload.get("receiptNo")
+
+
 def amount(value):
     try:
         return Decimal(str(value or "0").replace(",", ""))
@@ -146,7 +150,7 @@ def build_doc(path, title, payload, story, page_size=A4):
         leftMargin=14 * mm,
         topMargin=13 * mm,
         bottomMargin=13 * mm,
-        title=f"{payload.get('requestNo', '')} {title}",
+        title=f"{text(document_no(payload), '')} {title}",
         author=company["name"],
     )
 
@@ -155,7 +159,7 @@ def build_doc(path, title, payload, story, page_size=A4):
         canvas.saveState()
         canvas.setFont(FONT, 7)
         canvas.setFillColor(colors.HexColor("#52606d"))
-        canvas.drawString(14 * mm, 9 * mm, text(payload.get("requestNo")))
+        canvas.drawString(14 * mm, 9 * mm, text(document_no(payload)))
         canvas.drawRightString(page_width - (14 * mm), 9 * mm, f"หน้า {document.page}")
         canvas.restoreState()
 
@@ -536,7 +540,7 @@ def build_annex_story(payload, file_name, raw_path, status):
     return [
         Paragraph("เอกสารแนบท้ายชุดรวมส่งตรวจ", styles["DocTitle"]),
         kv_table([
-            ("เลขที่เอกสาร", payload.get("requestNo")),
+            ("เลขที่เอกสาร", document_no(payload)),
             ("รหัส/ประเภทหลักฐาน", raw_file_ref(payload, file_name)),
             ("ชื่อไฟล์ raw", file_name),
             ("สถานะ", status),
