@@ -3,6 +3,15 @@
 config/
 **/__pycache__/
 node_modules/
+documents/
+drafts/
+tmp/
+forms/preview/
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+forms/.DS_Store
+node_modules/
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal

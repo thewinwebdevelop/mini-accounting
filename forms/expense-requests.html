@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>รายการใบเบิกจ่าย - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --warn: #b45309;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, select { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    select {
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button.warn { color: #ffffff; background: var(--warn); }
+    .button.small { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+    .button:disabled { cursor: wait; opacity: 0.7; }
+
+    .panel {
+      overflow: visible;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid #e4e7eb;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    th {
+      color: var(--brand);
+      background: var(--soft);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    .title { font-weight: 800; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .status {
+      display: inline-flex;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status.draft { color: #78350f; background: #fef3c7; }
+    .status.submitted { color: #166534; background: #dcfce7; }
+    .status.not_synced { color: #7c2d12; background: #ffedd5; }
+    .status.synced { color: #155e75; background: #cffafe; }
+    .status.needs_resync { color: #7c2d12; background: #fef3c7; }
+    .status.sync_failed { color: #991b1b; background: #fee2e2; }
+    .status-stack, .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .status-stack { align-items: flex-start; }
+    .actions { align-items: center; }
+    .file-menu { position: relative; }
+    .file-menu[open] { z-index: 50; }
+    .file-menu > summary { list-style: none; }
+    .file-menu > summary::-webkit-details-marker { display: none; }
+    .file-menu[open] .file-list { z-index: 40; }
+    .file-list {
+      position: absolute;
+      right: 0;
+      z-index: 10;
+      display: grid;
+      min-width: 220px;
+      max-width: min(320px, calc(100vw - 32px));
+      max-height: 260px;
+      overflow: auto;
+      margin-top: 6px;
+      padding: 8px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .file-link {
+      padding: 7px 8px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 800;
+      word-break: break-word;
+    }
+    .file-link:hover { background: var(--soft); }
+    .empty, .error {
+      padding: 28px 18px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .mobile-label { display: none; }
+
+    @media (max-width: 780px) {
+      .topbar { align-items: flex-start; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tr { padding: 10px 12px; border-bottom: 1px solid #e4e7eb; }
+      td {
+        display: grid;
+        grid-template-columns: 108px 1fr;
+        gap: 10px;
+        padding: 5px 0;
+        border-bottom: 0;
+      }
+      .mobile-label { display: inline; color: var(--brand); font-size: 12px; font-weight: 800; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">รายการใบเบิกจ่าย</h1>
+      <p class="brand-subtitle">ติดตามแบบร่างและเอกสารที่บันทึกแล้ว</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="toolbar">
+      <div class="filters">
+        <label for="statusFilter">สถานะ</label>
+        <select id="statusFilter">
+          <option value="all">ทั้งหมด</option>
+          <option value="draft">แบบร่าง</option>
+          <option value="submitted">บันทึกแล้ว</option>
+        </select>
+        <span class="muted" id="listStatus">กำลังโหลดรายการ...</span>
+      </div>
+      <a class="button primary" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+    </div>
+
+    <section class="panel" aria-label="รายการใบเบิกจ่ายทั้งหมด">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 14%;">สถานะ</th>
+            <th style="width: 16%;">เลขเอกสาร/เดือน</th>
+            <th>รายการ</th>
+            <th style="width: 16%;">ผู้ขอ</th>
+            <th style="width: 14%;">ยอดสุทธิ</th>
+            <th style="width: 20%;">จัดการ</th>
+          </tr>
+        </thead>
+        <tbody id="requestTableBody"></tbody>
+      </table>
+      <div class="empty" id="emptyState" hidden>ยังไม่มีรายการในสถานะนี้</div>
+      <div class="error" id="errorState" hidden>โหลดรายการไม่สำเร็จ</div>
+    </section>
+  </main>
+
+  <script>
+    const requestTableBody = document.querySelector("#requestTableBody");
+    const statusFilter = document.querySelector("#statusFilter");
+    const listStatus = document.querySelector("#listStatus");
+    const emptyState = document.querySelector("#emptyState");
+    const errorState = document.querySelector("#errorState");
+    let allRequests = [];
+
+    function escapeHtml(value = "") {
+      return String(value).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;",
+      })[character]);
+    }
+
+    function statusLabel(status) {
+      return status === "draft" ? "แบบร่าง" : "บันทึกแล้ว";
+    }
+
+    function syncStatusLabel(syncStatus) {
+      if (syncStatus === "synced") return "Sync แล้ว";
+      if (syncStatus === "needs_resync") return "ต้อง Sync ใหม่";
+      if (syncStatus === "sync_failed") return "Sync ไม่สำเร็จ";
+      return "รอ Sync";
+    }
+
+    function statusHtml(request) {
+      const status = request.status || "";
+      if (status === "draft") {
+        return `<span class="status draft">${statusLabel(status)}</span>`;
+      }
+
+      const syncStatus = request.syncStatus || "not_synced";
+      return `
+        <div class="status-stack">
+          <span class="status submitted">${statusLabel(status)}</span>
+          <span class="status ${escapeHtml(syncStatus)}">${syncStatusLabel(syncStatus)}</span>
+        </div>
+      `;
+    }
+
+    function actionHtml(request) {
+      if (request.status === "draft") {
+        return `<a class="button primary" href="/expense-request?draftId=${encodeURIComponent(request.draftId)}">แก้ไขต่อ</a>`;
+      }
+
+      const requestNo = request.requestNo || "";
+      const editTarget = `<a class="button primary small" href="/expense-request?requestNo=${encodeURIComponent(requestNo)}">แก้ไข</a>`;
+      const reimbursementPdf = (request.pdfFiles || []).find((file) => file.name?.includes("ใบเบิกจ่าย"));
+      const auditPacket = (request.pdfFiles || []).find((file) => file.name?.includes("audit-packet"));
+      const reimbursementUrl = reimbursementPdf?.url || "";
+      const auditUrl = auditPacket?.url || "";
+      const rawFiles = Array.isArray(request.rawFiles) ? request.rawFiles : [];
+      const syncButtonLabel = request.syncStatus === "synced" ? "Sync อีกครั้ง" : "Sync to Google Drive";
+      const reimbursementTarget = reimbursementUrl
+        ? `<a class="button secondary small" href="${escapeHtml(reimbursementUrl)}" target="_blank" rel="noreferrer">เปิดใบเบิกจ่าย</a>`
+        : "";
+      const auditTarget = auditUrl
+        ? `<a class="button secondary small" href="${escapeHtml(auditUrl)}" target="_blank" rel="noreferrer">เปิดชุดรวม</a>`
+        : "";
+      const pdfTarget = reimbursementTarget || auditTarget
+        ? `${reimbursementTarget}${auditTarget}`
+        : `<span class="muted">ไม่มี PDF</span>`;
+      const rawTarget = rawFiles.length
+        ? `<details class="file-menu"><summary class="button secondary small">Raw files (${rawFiles.length})</summary><div class="file-list">${rawFiles.map((file) => `<a class="file-link" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.name || file.path || "raw file")}</a>`).join("")}</div></details>`
+        : `<span class="muted">ไม่มี raw files</span>`;
+      const driveTarget = request.driveFolderUrl
+        ? `<a class="button secondary small" href="${escapeHtml(request.driveFolderUrl)}" target="_blank" rel="noreferrer">เปิด Drive</a>`
+        : "";
+      const drivePath = request.drivePath
+        ? `<span class="muted">${escapeHtml(request.drivePath)}</span>`
+        : "";
+      const syncButton = `<button class="button warn small" type="button" data-sync-drive="${escapeHtml(requestNo)}">${syncButtonLabel}</button>`;
+
+      return `<div class="actions">${editTarget}${pdfTarget}${rawTarget}${driveTarget}${syncButton}${drivePath}</div>`;
+    }
+
+    function render() {
+      const filter = statusFilter.value;
+      const requests = allRequests.filter((request) => filter === "all" || request.status === filter);
+      requestTableBody.innerHTML = "";
+      emptyState.hidden = requests.length > 0;
+      errorState.hidden = true;
+      listStatus.textContent = requests.length ? `พบ ${requests.length} รายการ` : "ไม่พบรายการ";
+
+      for (const request of requests) {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td><span class="mobile-label">สถานะ</span>${statusHtml(request)}</td>
+          <td><span class="mobile-label">เลข/เดือน</span>${escapeHtml(request.requestNo || request.accountingMonth || "-")}</td>
+          <td>
+            <span class="mobile-label">รายการ</span>
+            <div class="title">${escapeHtml(request.requestTitle || "ยังไม่ได้ตั้งชื่อ")}</div>
+            <div class="muted">${escapeHtml(request.folderPath || request.draftId || "")}</div>
+          </td>
+          <td><span class="mobile-label">ผู้ขอ</span>${escapeHtml(request.requesterName || "-")}</td>
+          <td><span class="mobile-label">ยอดสุทธิ</span>${escapeHtml(request.netPayment || "-")}</td>
+          <td><span class="mobile-label">จัดการ</span>${actionHtml(request)}</td>
+        `;
+        requestTableBody.append(row);
+      }
+    }
+
+    async function loadRequests() {
+      listStatus.textContent = "กำลังโหลดรายการ...";
+      errorState.hidden = true;
+      try {
+        const response = await fetch("/api/expense-requests");
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Cannot load requests");
+        allRequests = Array.isArray(result.requests) ? result.requests : [];
+        render();
+      } catch {
+        requestTableBody.innerHTML = "";
+        emptyState.hidden = true;
+        errorState.hidden = false;
+        listStatus.textContent = "โหลดรายการไม่สำเร็จ";
+      }
+    }
+
+    async function syncDrive(requestNo, button) {
+      if (!requestNo) return;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "กำลัง Sync...";
+      listStatus.textContent = `กำลัง Sync ${requestNo} ขึ้น Google Drive...`;
+
+      try {
+        const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}/sync-drive`, {
+          method: "POST",
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Sync ไม่สำเร็จ");
+        await loadRequests();
+        listStatus.textContent = `Sync แล้ว: ${requestNo}`;
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = originalText;
+        listStatus.textContent = error.message || "Sync ไม่สำเร็จ";
+      }
+    }
+
+    const initialStatus = new URLSearchParams(location.search).get("status");
+    if (["all", "draft", "submitted"].includes(initialStatus)) {
+      statusFilter.value = initialStatus;
+    }
+    statusFilter.addEventListener("change", render);
+    requestTableBody.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-sync-drive]");
+      if (!button) return;
+      syncDrive(button.dataset.syncDrive, button);
+    });
+    loadRequests();
+  </script>
+</body>
+</html>

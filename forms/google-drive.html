@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ตั้งค่า Google Drive - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --warn: #b45309;
+      --danger: #991b1b;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .panel {
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .stack { display: grid; gap: 14px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .span-2 { grid-column: span 2; }
+    label { display: grid; gap: 6px; color: var(--brand); font-size: 12px; font-weight: 800; }
+    input {
+      min-height: 40px;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+    }
+    code {
+      display: block;
+      overflow-wrap: anywhere;
+      padding: 10px;
+      color: #102a43;
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 9px 13px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button:disabled { cursor: not-allowed; opacity: 0.65; }
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .status.ready { color: #166534; background: #dcfce7; }
+    .status.waiting { color: #7c2d12; background: #ffedd5; }
+    .status.error { color: var(--danger); background: #fee2e2; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .message { color: var(--muted); font-weight: 800; }
+
+    @media (max-width: 720px) {
+      .topbar, .page { padding-left: 12px; padding-right: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .span-2 { grid-column: span 1; }
+      .actions { flex-direction: column; }
+      .button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">ตั้งค่า Google Drive</h1>
+      <p class="brand-subtitle">เชื่อมบัญชี Google เพื่อ sync โฟลเดอร์เอกสารหลังตรวจทาน</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="panel stack">
+      <span class="status waiting" id="driveStatus">กำลังตรวจสอบสถานะ...</span>
+
+      <div class="stack">
+        <div class="muted">Authorized JavaScript origin</div>
+        <code>http://localhost:8787</code>
+        <div class="muted">Authorized redirect URI</div>
+        <code>http://localhost:8787/api/google-drive/oauth2callback</code>
+        <div class="muted">Test users</div>
+        <code>sweethousecute.manage@gmail.com</code>
+      </div>
+
+      <form class="grid" id="configForm">
+        <label>
+          Google OAuth Client ID
+          <input id="clientId" name="clientId" autocomplete="off" placeholder="เช่น 123456789-abc.apps.googleusercontent.com">
+        </label>
+        <label>
+          Google OAuth Client Secret
+          <input id="clientSecret" name="clientSecret" type="password" autocomplete="off" placeholder="ใส่ Client Secret จาก Google Cloud">
+        </label>
+        <label class="span-2">
+          Google Drive base folder
+          <input id="driveBasePath" name="driveBasePath" placeholder="หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี">
+        </label>
+        <div class="actions span-2">
+          <button class="button primary" type="submit" id="saveConfig">บันทึกการตั้งค่า</button>
+          <button class="button secondary" type="button" id="loginGoogle">Login with Google</button>
+        </div>
+      </form>
+
+      <div class="message" id="message"></div>
+    </section>
+  </main>
+
+  <script>
+    const driveStatus = document.querySelector("#driveStatus");
+    const configForm = document.querySelector("#configForm");
+    const clientId = document.querySelector("#clientId");
+    const clientSecret = document.querySelector("#clientSecret");
+    const driveBasePath = document.querySelector("#driveBasePath");
+    const loginGoogle = document.querySelector("#loginGoogle");
+    const message = document.querySelector("#message");
+
+    function setStatus(status) {
+      driveStatus.className = `status ${status.authenticated ? "ready" : status.configured ? "waiting" : "error"}`;
+      if (status.authenticated) {
+        driveStatus.textContent = "Login Google Drive แล้ว";
+      } else if (status.configured) {
+        driveStatus.textContent = "บันทึก Client แล้ว แต่ยังไม่ได้ Login Google";
+      } else {
+        driveStatus.textContent = "ยังไม่ได้ตั้งค่า Google Drive";
+      }
+      clientId.value = status.clientId || "";
+      driveBasePath.value = status.driveBasePath || "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี";
+      loginGoogle.disabled = !status.configured;
+    }
+
+    async function loadStatus() {
+      const response = await fetch("/api/google-drive/status");
+      const status = await response.json();
+      if (!response.ok) throw new Error(status.error || "โหลดสถานะไม่สำเร็จ");
+      setStatus(status);
+    }
+
+    configForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      message.textContent = "กำลังบันทึกการตั้งค่า...";
+      const response = await fetch("/api/google-drive/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: clientId.value,
+          clientSecret: clientSecret.value,
+          driveBasePath: driveBasePath.value,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        message.textContent = result.error || "บันทึกไม่สำเร็จ";
+        return;
+      }
+      clientSecret.value = "";
+      setStatus(result);
+      message.textContent = "บันทึกการตั้งค่าแล้ว";
+    });
+
+    loginGoogle.addEventListener("click", () => {
+      location.href = "/api/google-drive/login";
+    });
+
+    const params = new URLSearchParams(location.search);
+    if (params.get("auth") === "success") {
+      message.textContent = "Login Google Drive สำเร็จ";
+    } else if (params.get("error")) {
+      message.textContent = params.get("error");
+    }
+    loadStatus().catch((error) => {
+      driveStatus.className = "status error";
+      driveStatus.textContent = "โหลดสถานะไม่สำเร็จ";
+      message.textContent = error.message;
+    });
+  </script>
+</body>
+</html>

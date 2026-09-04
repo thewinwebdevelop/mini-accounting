@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ตั้งค่าบริษัท - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --danger: #991b1b;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, textarea { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .panel {
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .span-2 { grid-column: span 2; }
+    label { display: grid; gap: 6px; color: var(--brand); font-size: 12px; font-weight: 800; }
+    input, textarea {
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+    }
+    input { min-height: 40px; }
+    textarea { min-height: 96px; resize: vertical; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 9px 13px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .message { min-height: 22px; margin-top: 12px; color: var(--muted); font-weight: 800; }
+    .message.error { color: var(--danger); }
+
+    @media (max-width: 720px) {
+      .topbar, .page { padding-left: 12px; padding-right: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .span-2 { grid-column: span 1; }
+      .button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">ตั้งค่าบริษัท</h1>
+      <p class="brand-subtitle">ข้อมูลกลางสำหรับหัวกระดาษและเอกสารบัญชี</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="panel">
+      <form id="companySettingsForm">
+        <div class="grid">
+          <label>
+            ชื่อนิติบุคคล
+            <input id="legalName" name="legalName" autocomplete="organization" placeholder="หจก.สวีทเฮาส์ เดซี่">
+          </label>
+          <label>
+            เลขประจำตัวผู้เสียภาษี
+            <input id="taxId" name="taxId" inputmode="numeric" autocomplete="off" placeholder="เช่น 0103569007277">
+          </label>
+          <label>
+            สำนักงานใหญ่/สาขา
+            <input id="branch" name="branch" placeholder="สำนักงานใหญ่">
+          </label>
+          <label class="span-2">
+            ที่อยู่บริษัท
+            <textarea id="address" name="address" placeholder="ที่อยู่ตามทะเบียนหรือที่อยู่ที่ใช้ในเอกสารภาษี"></textarea>
+          </label>
+        </div>
+        <div class="actions">
+          <button class="button primary" type="submit" id="saveCompanySettings">บันทึกข้อมูลบริษัท</button>
+        </div>
+        <div class="message" id="message"></div>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector("#companySettingsForm");
+    const message = document.querySelector("#message");
+
+    function setMessage(text, kind = "") {
+      message.className = `message ${kind}`;
+      message.textContent = text;
+    }
+
+    function fillForm(settings) {
+      form.elements.legalName.value = settings.legalName || "";
+      form.elements.taxId.value = settings.taxId || "";
+      form.elements.branch.value = settings.branch || "";
+      form.elements.address.value = settings.address || "";
+    }
+
+    async function loadSettings() {
+      const response = await fetch("/api/company-settings");
+      const settings = await response.json();
+      if (!response.ok) throw new Error(settings.error || "โหลดข้อมูลบริษัทไม่สำเร็จ");
+      fillForm(settings);
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      setMessage("กำลังบันทึกข้อมูลบริษัท...");
+      const response = await fetch("/api/company-settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          legalName: form.elements.legalName.value,
+          taxId: form.elements.taxId.value,
+          branch: form.elements.branch.value,
+          address: form.elements.address.value,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setMessage(result.error || "บันทึกข้อมูลบริษัทไม่สำเร็จ", "error");
+        return;
+      }
+      fillForm(result);
+      setMessage("บันทึกข้อมูลบริษัทแล้ว");
+    });
+
+    loadSettings().catch((error) => setMessage(error.message, "error"));
+  </script>
+</body>
+</html>

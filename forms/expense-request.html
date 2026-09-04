@@ -1,0 +1,1444 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>แบบฟอร์มใบเบิกจ่าย - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #cbd2d9;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --accent-soft: #dcfce7;
+      --warn: #b45309;
+      --warn-soft: #fffbeb;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow-x: hidden;
+      padding-bottom: 86px;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .brand-subtitle {
+      margin: 2px 0 0;
+      color: #d9e2ec;
+      font-size: 12px;
+    }
+
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .app-menu {
+      position: relative;
+    }
+
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    .menu-button::-webkit-details-marker {
+      display: none;
+    }
+
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .menu-group + .menu-group {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #eef2f6;
+    }
+
+    .menu-group-title {
+      margin: 5px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .menu-item:hover {
+      background: var(--soft);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 18px;
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .form-stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .section,
+    .summary-panel {
+      background: var(--panel);
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    details.section {
+      overflow: hidden;
+    }
+
+    .backup-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 800;
+      list-style: none;
+    }
+
+    .backup-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .backup-summary::after {
+      content: "+";
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    details[open] .backup-summary::after {
+      content: "-";
+    }
+
+    .backup-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+      border-radius: 8px 8px 0 0;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .section-body {
+      padding: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 11px;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    .span-2 { grid-column: span 2; }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-5 { grid-column: span 5; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+
+    label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .request-type {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .choice {
+      position: relative;
+      display: flex;
+      min-height: 42px;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+      font-weight: 800;
+      color: var(--brand);
+    }
+
+    .choice input {
+      width: 16px;
+      min-height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .choice:has(input:checked) {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: #065f46;
+    }
+
+    .line-table {
+      display: grid;
+      gap: 8px;
+    }
+
+    .line-row {
+      overflow: hidden;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #fbfdff;
+    }
+
+    .line-summary {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      color: var(--brand-strong);
+      cursor: pointer;
+      font-weight: 800;
+      list-style: none;
+    }
+
+    .line-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .line-summary::before {
+      content: "+";
+      color: var(--accent);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .line-row[open] .line-summary::before {
+      content: "-";
+    }
+
+    .line-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .line-total {
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .line-fields {
+      display: grid;
+      grid-template-columns: 112px 150px minmax(190px, 1fr) 150px 116px 96px 110px 38px;
+      gap: 8px;
+      align-items: end;
+      border: 1px solid #d9e2ec;
+      border-width: 1px 0 0;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--brand);
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .icon-button:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .upload-card {
+      display: grid;
+      gap: 9px;
+      min-height: 168px;
+      padding: 11px;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #fbfdff;
+    }
+
+    .upload-card.dragging {
+      border-color: var(--accent);
+      background: #f0fdfa;
+    }
+
+    .upload-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    .upload-count {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .file-input {
+      padding: 7px;
+      background: #ffffff;
+      cursor: pointer;
+    }
+
+    .file-list {
+      display: grid;
+      gap: 7px;
+      min-height: 46px;
+    }
+
+    .file-pill {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      padding: 6px;
+      border: 1px solid #e4e7eb;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+
+    .file-thumb {
+      width: 42px;
+      height: 42px;
+      border-radius: 5px;
+      object-fit: cover;
+      background: var(--soft);
+      border: 1px solid #d9e2ec;
+    }
+
+    .file-icon {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid #d9e2ec;
+      border-radius: 5px;
+      color: var(--brand);
+      background: var(--soft);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .file-name {
+      overflow: hidden;
+      color: var(--brand-strong);
+      font-size: 12px;
+      font-weight: 800;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-meta {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .status-box {
+      display: none;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #d9e2ec;
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+    }
+
+    .status-box.active {
+      display: block;
+    }
+
+    .status-box.success {
+      border-color: #86efac;
+      background: #f0fdf4;
+      color: #166534;
+    }
+
+    .status-box.error {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: #991b1b;
+    }
+
+    .input-with-action {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 38px;
+      gap: 6px;
+    }
+
+    .button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+
+    .button.primary {
+      color: #ffffff;
+      background: var(--accent);
+    }
+
+    .button.secondary {
+      color: var(--brand-strong);
+      background: #ffffff;
+      border-color: #bcccdc;
+    }
+
+    .button.warn {
+      color: #78350f;
+      background: #fef3c7;
+      border-color: #f59e0b;
+    }
+
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+    }
+
+    .bottom-action-bar {
+      position: fixed;
+      z-index: 30;
+      right: 18px;
+      bottom: 16px;
+      left: 18px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: 0 16px 40px rgba(16, 42, 67, 0.18);
+      backdrop-filter: blur(8px);
+    }
+
+    .summary-panel {
+      position: sticky;
+      top: 78px;
+      align-self: start;
+      overflow: hidden;
+    }
+
+    .summary-head {
+      padding: 13px 14px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+
+    .summary-head h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .summary-body {
+      display: grid;
+      gap: 10px;
+      padding: 13px;
+    }
+
+    .doc-no {
+      padding: 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: var(--soft);
+      text-align: center;
+      font-size: 18px;
+      font-weight: 900;
+      color: var(--brand-strong);
+    }
+
+    .total-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 7px 0;
+      border-bottom: 1px solid #eef2f6;
+    }
+
+    .total-row strong {
+      color: var(--brand-strong);
+    }
+
+    .net {
+      padding: 12px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: #065f46;
+      text-align: center;
+    }
+
+    .net .amount {
+      display: block;
+      font-size: 24px;
+      font-weight: 900;
+    }
+
+    .errors {
+      display: none;
+      padding: 10px;
+      color: #7f1d1d;
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .errors.active {
+      display: block;
+    }
+
+    .output {
+      width: 100%;
+      min-height: 260px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1060px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-panel {
+        position: static;
+      }
+
+      .line-row {
+        grid-template-columns: 1fr;
+      }
+
+      .line-fields {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .line-row .icon-button {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar,
+      .layout {
+        padding-left: 12px;
+        padding-right: 12px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: row;
+      }
+
+      .grid,
+      .request-type,
+      .evidence-grid,
+      .line-fields {
+        grid-template-columns: 1fr;
+      }
+
+      .span-2,
+      .span-3,
+      .span-4,
+      .span-5,
+      .span-6,
+      .span-8,
+      .span-12 {
+        grid-column: span 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <details class="app-menu">
+        <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+        <nav class="menu-panel" aria-label="เมนูหลัก">
+          <div class="menu-group">
+            <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+            <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+            <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+          </div>
+          <div class="menu-group">
+            <div class="menu-group-title">ระบบ</div>
+            <a class="menu-item" href="/">หน้าหลัก</a>
+            <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+            <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+            <button class="menu-item" type="button" id="resetForm">ล้างฟอร์ม</button>
+          </div>
+        </nav>
+      </details>
+      <div>
+        <h1 class="brand-title">แบบฟอร์มใบเบิกจ่าย</h1>
+        <p class="brand-subtitle">หจก.สวีทเฮาส์ - เตรียมข้อมูลสำหรับสร้าง PDF ใบเบิกจ่ายและชุดรวมส่งตรวจ</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <form class="form-stack" id="expenseForm">
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">1. ข้อมูลเอกสาร</h2>
+          </div>
+          <div class="section-body">
+            <div class="grid">
+              <div class="field span-3">
+                <label for="accountingMonth">เดือนบัญชี *</label>
+                <input id="accountingMonth" name="accountingMonth" type="month" required>
+              </div>
+              <div class="field span-3">
+                <label for="requestNoPreview">เลขเอกสารถัดไป</label>
+                <div class="input-with-action">
+                  <input id="requestNoPreview" name="requestNoPreview" value="กำลังคำนวณ..." readonly>
+                  <button class="icon-button" type="button" title="คำนวณเลขเอกสารใหม่" id="refreshRequestNo">↻</button>
+                </div>
+              </div>
+              <div class="field span-6">
+                <label for="requestTitle">ชื่อรายการ/ชื่อโฟลเดอร์ *</label>
+                <input id="requestTitle" name="requestTitle" placeholder="เช่น ค่าแพ็คสินค้า" required>
+              </div>
+              <div class="field span-12">
+                <label>ประเภทคำขอ *</label>
+                <div class="request-type">
+                  <label class="choice"><input type="radio" name="requestType" value="reimbursement" checked> เบิกคืนพนักงาน</label>
+                  <label class="choice"><input type="radio" name="requestType" value="direct_payment"> บริษัทจ่ายตรงผู้ขาย</label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">2. ผู้ขอและวัตถุประสงค์</h2>
+          </div>
+          <div class="section-body">
+            <div class="grid">
+              <div class="field span-4">
+                <label for="requesterName">ชื่อผู้ขอ *</label>
+                <input id="requesterName" name="requesterName" placeholder="เช่น คุณสวีท เจ้าของบริษัท" required>
+              </div>
+              <div class="field span-4">
+                <label for="requesterRole">แผนก/ตำแหน่ง</label>
+                <select id="requesterRole" name="requesterRole">
+                  <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
+                  <option>เจ้าของบริษัท</option>
+                  <option>marketing</option>
+                </select>
+              </div>
+              <div class="field span-4">
+                <label for="requesterContact">ช่องทางติดต่อ</label>
+                <input id="requesterContact" name="requesterContact" placeholder="เช่น Line: sweet-house">
+              </div>
+              <div class="field span-4">
+                <label for="expenseDate">วันที่เกิดค่าใช้จ่าย</label>
+                <input id="expenseDate" name="expenseDate" type="date">
+              </div>
+              <div class="field span-8">
+                <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
+                <textarea id="businessPurpose" name="businessPurpose" placeholder="เช่น ซื้อซองไปรษณีย์และถุงแพ็คสินค้าเพื่อใช้จัดส่งออเดอร์ Shopee และ TikTok Shop" required></textarea>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">3. ข้อมูลการจ่าย</h2>
+          </div>
+          <div class="section-body">
+            <div class="grid">
+              <div class="field span-4">
+                <label for="paymentTargetName">ชื่อผู้รับเงิน/ผู้ขาย *</label>
+                <input id="paymentTargetName" name="paymentTargetName" placeholder="เช่น คุณสวีท / ร้านแพ็คกิ้งตัวอย่าง" required>
+              </div>
+              <div class="field span-4">
+                <label for="paymentBankName">ธนาคาร/ช่องทางจ่าย</label>
+                <input id="paymentBankName" name="paymentBankName" placeholder="เช่น กสิกรไทย / พร้อมเพย์">
+              </div>
+              <div class="field span-4">
+                <label for="paymentAccountNo">เลขบัญชี/รายละเอียดบัญชี</label>
+                <input id="paymentAccountNo" name="paymentAccountNo" placeholder="เช่น 123-4-56789-0">
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">4. รายการค่าใช้จ่าย</h2>
+            <button class="button secondary" type="button" id="addLine">เพิ่มรายการ</button>
+          </div>
+          <div class="section-body">
+            <div class="line-table" id="lineItems"></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">5. อัปโหลดหลักฐาน</h2>
+          </div>
+          <div class="section-body">
+            <div class="evidence-grid">
+              <div class="upload-card" data-evidence-card="receipt">
+                <div class="upload-head"><span>ใบเสร็จรับเงิน</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_receipt" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+              <div class="upload-card" data-evidence-card="fullTaxInvoice">
+                <div class="upload-head"><span>ใบกำกับภาษีเต็มรูป</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_fullTaxInvoice" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+              <div class="upload-card" data-evidence-card="vendorPaymentSlip">
+                <div class="upload-head"><span>สลิปจ่ายเงินให้ผู้ขาย</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_vendorPaymentSlip" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+              <div class="upload-card" data-evidence-card="reimbursementSlip">
+                <div class="upload-head"><span>สลิปโอนคืน/จ่ายตรง</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_reimbursementSlip" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+              <div class="upload-card" data-evidence-card="businessEvidence">
+                <div class="upload-head"><span>รูป/หลักฐานใช้งานจริง</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_businessEvidence" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+              <div class="upload-card" data-evidence-card="otherEvidence">
+                <div class="upload-head"><span>หลักฐานอื่น</span><span class="upload-count" data-upload-count>0 ไฟล์</span></div>
+                <input class="file-input" name="evidence_otherEvidence" type="file" accept="image/*,.pdf,.heic" multiple>
+                <div class="file-list" data-file-list></div>
+              </div>
+            </div>
+            <div class="hint" style="margin-top:11px">ลากไฟล์มาวางหรือกดเลือกไฟล์ได้ รองรับรูปและ PDF หลายไฟล์ต่อหมวด ตอนบันทึกระบบจะตั้งชื่อ raw files ให้อัตโนมัติ</div>
+          </div>
+        </section>
+
+        <details class="section backup-tools">
+          <summary class="backup-summary">เครื่องมือสำรอง / สำหรับตรวจสอบ</summary>
+          <div class="section-body">
+            <div class="backup-actions">
+              <button class="button warn" type="button" id="copyJson">Copy JSON</button>
+              <button class="button secondary" type="button" id="copyMarkdown">Copy Markdown</button>
+            </div>
+            <textarea class="output" id="output" readonly></textarea>
+            <div class="hint">ข้อมูลนี้คือวัตถุดิบให้ workflow สร้าง PDF ซ้ำได้ ไม่ใช่เอกสารภาษีที่ส่งสรรพากรโดยตรง</div>
+          </div>
+        </details>
+      </form>
+
+      <aside class="summary-panel">
+        <div class="summary-head">
+          <h2>สรุปก่อนสร้าง PDF</h2>
+        </div>
+        <div class="summary-body">
+          <div class="doc-no" id="docNo">REQ-2026-09-0001</div>
+          <div class="total-row"><span>ยอดก่อน VAT</span><strong id="sumBeforeVat">0.00</strong></div>
+          <div class="total-row"><span>VAT</span><strong id="sumVat">0.00</strong></div>
+          <div class="total-row"><span>ยอดรวม</span><strong id="sumGross">0.00</strong></div>
+          <div class="total-row"><span>หัก ณ ที่จ่าย</span><strong id="sumWht">0.00</strong></div>
+          <div class="net">
+            ยอดจ่ายสุทธิ
+            <span class="amount" id="sumNet">0.00</span>
+          </div>
+          <div class="errors" id="errors"></div>
+          <div class="status-box" id="saveStatus"></div>
+          <div class="hint">เปิดผ่าน http://localhost:8787/expense-request แล้วกด บันทึกใบเบิกจ่าย เพื่อเก็บข้อมูล PDF และ raw files ลงโฟลเดอร์มาตรฐาน ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น</div>
+        </div>
+      </aside>
+    </main>
+
+    <div class="bottom-action-bar">
+      <button class="button secondary" type="button" id="saveDraft">บันทึกแบบร่าง</button>
+      <button class="button primary" type="button" id="submitRequest">บันทึกใบเบิกจ่าย</button>
+    </div>
+  </div>
+
+  <template id="lineTemplate">
+    <details class="line-row" open>
+      <summary class="line-summary">
+        <span class="line-title" data-line-title>รายการ 1 - ยังไม่ได้กรอก</span>
+        <span class="line-total" data-line-total>0.00 บาท</span>
+      </summary>
+      <div class="line-fields">
+        <div class="field">
+          <label>วันที่</label>
+          <input name="lineDate" type="date">
+        </div>
+        <div class="field">
+          <label>หมวด</label>
+          <select name="lineCategory">
+            <option value="" selected disabled>เลือกหมวด</option>
+            <option>วัสดุแพ็คสินค้า</option>
+            <option>ค่าส่ง/ขนส่ง</option>
+            <option>ค่าโฆษณา</option>
+            <option>ค่าเช่า</option>
+            <option>ค่าบริการ</option>
+            <option>ซื้อสินค้าเพื่อขาย</option>
+            <option>อื่น ๆ</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>รายละเอียด</label>
+          <input name="lineDescription" placeholder="เช่น ซองไปรษณีย์ 100 ใบ และถุง OPP 200 ใบ">
+        </div>
+        <div class="field">
+          <label>ผู้ขาย</label>
+          <input name="lineVendor" placeholder="เช่น ร้านแพ็คกิ้งตัวอย่าง">
+        </div>
+        <div class="field">
+          <label>ก่อน VAT</label>
+          <input name="lineBeforeVat" inputmode="decimal" placeholder="เช่น 1869.16">
+        </div>
+        <div class="field">
+          <label>VAT</label>
+          <input name="lineVat" inputmode="decimal" placeholder="เช่น 130.84">
+        </div>
+        <div class="field">
+          <label>หัก ณ ที่จ่าย</label>
+          <input name="lineWht" inputmode="decimal" placeholder="เช่น 0">
+        </div>
+        <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
+      </div>
+    </details>
+  </template>
+
+  <script src="./expense-request.logic.js"></script>
+  <script>
+  window.addEventListener("DOMContentLoaded", async () => {
+    const {
+      buildRawFileName,
+      buildExpensePayload,
+      calculateExpenseTotals,
+      formatPayloadMarkdown,
+      validateExpenseRequest,
+    } = window.ExpenseRequestLogic;
+
+    const form = document.querySelector("#expenseForm");
+    const lineItems = document.querySelector("#lineItems");
+    const lineTemplate = document.querySelector("#lineTemplate");
+    const output = document.querySelector("#output");
+    const errorsBox = document.querySelector("#errors");
+    const saveStatus = document.querySelector("#saveStatus");
+    const uploadCards = [...document.querySelectorAll("[data-evidence-card]")];
+    const uploadedFileState = Object.fromEntries(uploadCards.map((card) => [card.dataset.evidenceCard, []]));
+    const savedEvidenceFileState = Object.fromEntries(uploadCards.map((card) => [card.dataset.evidenceCard, []]));
+    let currentDraftId = "";
+    let currentRequestNo = "";
+    let currentFolderPath = "";
+    let currentCreatedAt = "";
+    let nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
+    const moneyIds = {
+      amountBeforeVat: document.querySelector("#sumBeforeVat"),
+      vatAmount: document.querySelector("#sumVat"),
+      grossAmount: document.querySelector("#sumGross"),
+      withholdingTax: document.querySelector("#sumWht"),
+      netPayment: document.querySelector("#sumNet"),
+    };
+
+    function todayInputValue() {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function currentMonthInputValue() {
+      return todayInputValue().slice(0, 7);
+    }
+
+    function setDateDefaults() {
+      form.elements.accountingMonth.value = currentMonthInputValue();
+      form.elements.expenseDate.value = todayInputValue();
+    }
+
+    async function updateNextRequestNo() {
+      if (currentRequestNo) {
+        nextRequestInfo = { sequence: currentRequestNo.split("-").at(-1), requestNo: currentRequestNo };
+        document.querySelector("#requestNoPreview").value = currentRequestNo;
+        updatePreview();
+        return;
+      }
+
+      const accountingMonth = form.elements.accountingMonth.value;
+      if (!accountingMonth || location.protocol === "file:") {
+        nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
+        document.querySelector("#requestNoPreview").value = "เปิดผ่าน local server เพื่อคำนวณ";
+        return;
+      }
+
+      document.querySelector("#requestNoPreview").value = "กำลังคำนวณ...";
+      const response = await fetch(`/api/expense-requests/next?accountingMonth=${encodeURIComponent(accountingMonth)}`);
+      const result = await response.json();
+      if (!response.ok) {
+        document.querySelector("#requestNoPreview").value = "คำนวณเลขไม่ได้";
+        return;
+      }
+
+      nextRequestInfo = result;
+      document.querySelector("#requestNoPreview").value = result.requestNo;
+      updatePreview();
+    }
+
+    function addLine() {
+      lineItems.querySelectorAll(".line-row").forEach((row) => {
+        row.open = false;
+      });
+      const node = lineTemplate.content.firstElementChild.cloneNode(true);
+      node.querySelector('[name="lineDate"]').value = todayInputValue();
+      lineItems.append(node);
+      updatePreview();
+    }
+
+    function addLineFromData(line = {}, open = true) {
+      const node = lineTemplate.content.firstElementChild.cloneNode(true);
+      node.open = open;
+      node.querySelector('[name="lineDate"]').value = line.date || todayInputValue();
+      node.querySelector('[name="lineCategory"]').value = line.category || "";
+      node.querySelector('[name="lineDescription"]').value = line.description || "";
+      node.querySelector('[name="lineVendor"]').value = line.vendor || "";
+      node.querySelector('[name="lineBeforeVat"]').value = line.amountBeforeVat || "";
+      node.querySelector('[name="lineVat"]').value = line.vatAmount || "";
+      node.querySelector('[name="lineWht"]').value = line.withholdingTax || "";
+      lineItems.append(node);
+    }
+
+    function fileSizeLabel(bytes) {
+      if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function renderUploadCard(card) {
+      const evidenceKey = card.dataset.evidenceCard;
+      const savedFiles = savedEvidenceFileState[evidenceKey] ?? [];
+      const files = uploadedFileState[evidenceKey] ?? [];
+      card.querySelector("[data-upload-count]").textContent = `${savedFiles.length + files.length} ไฟล์`;
+      const fileList = card.querySelector("[data-file-list]");
+      const savedHtml = savedFiles.map((file) => (
+        `<div class="file-pill"><div class="file-icon">RAW</div><div><div class="file-name" title="${file.originalName || file.storedName}">${file.storedName}</div><div class="file-meta">บันทึกในแบบร่างแล้ว</div></div></div>`
+      )).join("");
+      const pendingHtml = files.map((file, index) => {
+        const storedName = buildRawFileName(evidenceKey, file.name, savedFiles.length + index);
+        const thumb = file.type.startsWith("image/")
+          ? `<img class="file-thumb" alt="" src="${URL.createObjectURL(file)}">`
+          : `<div class="file-icon">PDF</div>`;
+        return `<div class="file-pill">${thumb}<div><div class="file-name" title="${file.name}">${storedName}</div><div class="file-meta">${file.name} · ${fileSizeLabel(file.size)}</div></div></div>`;
+      }).join("") || `<div class="hint">ยังไม่มีไฟล์แนบ</div>`;
+      fileList.innerHTML = savedHtml + (files.length ? pendingHtml : savedFiles.length ? "" : `<div class="hint">ยังไม่มีไฟล์แนบ</div>`);
+    }
+
+    function setFiles(evidenceKey, files) {
+      uploadedFileState[evidenceKey] = [...files].filter((file) => file.size > 0);
+      const card = document.querySelector(`[data-evidence-card="${evidenceKey}"]`);
+      renderUploadCard(card);
+      updatePreview();
+    }
+
+    function collectEvidenceFiles() {
+      return Object.fromEntries(Object.entries(uploadedFileState).map(([evidenceKey, files]) => [
+        evidenceKey,
+        [...(savedEvidenceFileState[evidenceKey] ?? []), ...files.map((file, index) => ({
+          originalName: file.name,
+          storedName: buildRawFileName(evidenceKey, file.name, (savedEvidenceFileState[evidenceKey] ?? []).length + index),
+          size: file.size,
+          type: file.type || "application/octet-stream",
+        }))],
+      ]));
+    }
+
+    function collectData() {
+      const requestType = new FormData(form).get("requestType");
+      const expenseLines = [...lineItems.querySelectorAll(".line-row")].map((row) => ({
+        date: row.querySelector('[name="lineDate"]').value,
+        category: row.querySelector('[name="lineCategory"]').value,
+        description: row.querySelector('[name="lineDescription"]').value,
+        vendor: row.querySelector('[name="lineVendor"]').value,
+        amountBeforeVat: row.querySelector('[name="lineBeforeVat"]').value,
+        vatAmount: row.querySelector('[name="lineVat"]').value,
+        withholdingTax: row.querySelector('[name="lineWht"]').value,
+      }));
+
+      const fields = form.elements;
+      return {
+        draftId: currentDraftId,
+        requestNo: currentRequestNo,
+        folderPath: currentFolderPath,
+        createdAt: currentCreatedAt,
+        sequence: nextRequestInfo.sequence,
+        accountingMonth: fields.accountingMonth.value,
+        requestTitle: fields.requestTitle.value,
+        requestType,
+        requesterName: fields.requesterName.value,
+        requesterRole: fields.requesterRole.value,
+        requesterContact: fields.requesterContact.value,
+        expenseDate: fields.expenseDate.value,
+        businessPurpose: fields.businessPurpose.value,
+        paymentTargetName: fields.paymentTargetName.value,
+        paymentBankName: fields.paymentBankName.value,
+        paymentAccountNo: fields.paymentAccountNo.value,
+        expenseLines,
+        evidenceFiles: collectEvidenceFiles(),
+      };
+    }
+
+    function toLineCents(value) {
+      const parsed = Number(String(value ?? "").replace(/,/g, "").trim());
+      if (!Number.isFinite(parsed)) return 0;
+      return Math.round(parsed * 100);
+    }
+
+    function lineMoney(cents) {
+      return (cents / 100).toFixed(2);
+    }
+
+    function updateLineSummaries(expenseLines) {
+      [...lineItems.querySelectorAll(".line-row")].forEach((row, index) => {
+        const line = expenseLines[index] ?? {};
+        const titleText = [line.category, line.description].filter(Boolean).join(" - ");
+        const lineTotal = toLineCents(line.amountBeforeVat) + toLineCents(line.vatAmount) - toLineCents(line.withholdingTax);
+        row.querySelector("[data-line-title]").textContent = `รายการ ${index + 1} - ${titleText || "ยังไม่ได้กรอก"}`;
+        row.querySelector("[data-line-total]").textContent = `${lineMoney(lineTotal)} บาท`;
+      });
+    }
+
+    function updatePreview() {
+      const data = collectData();
+      const totals = calculateExpenseTotals(data.expenseLines);
+      updateLineSummaries(data.expenseLines);
+      for (const [key, element] of Object.entries(moneyIds)) {
+        element.textContent = totals[key];
+      }
+
+      const errors = validateExpenseRequest(data);
+      errorsBox.classList.toggle("active", errors.length > 0);
+      errorsBox.innerHTML = errors.map((error) => `<div>${error}</div>`).join("");
+
+      if (data.accountingMonth) {
+        const payload = buildExpensePayload(data);
+        document.querySelector("#docNo").textContent = nextRequestInfo.requestNo;
+        output.value = formatPayloadMarkdown(payload);
+      }
+    }
+
+    async function copyOutput(kind) {
+      const data = collectData();
+      const errors = validateExpenseRequest(data);
+      if (errors.length) {
+        updatePreview();
+        return;
+      }
+
+      const payload = buildExpensePayload(data);
+      const text = kind === "json" ? JSON.stringify(payload, null, 2) : formatPayloadMarkdown(payload);
+      output.value = text;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+
+      output.focus();
+      output.select();
+      document.execCommand("copy");
+    }
+
+    function setSaveStatus(message, kind = "") {
+      saveStatus.className = `status-box active ${kind}`;
+      saveStatus.textContent = message;
+    }
+
+    function appendUploadsToFormData(formData) {
+      for (const [evidenceKey, files] of Object.entries(uploadedFileState)) {
+        for (const file of files) {
+          formData.append(`evidence_${evidenceKey}`, file, file.name);
+        }
+      }
+    }
+
+    async function loadDraft(draftId) {
+      const response = await fetch(`/api/expense-drafts/${encodeURIComponent(draftId)}`);
+      const draft = await response.json();
+      if (!response.ok) {
+        setSaveStatus(draft.error || "โหลดแบบร่างไม่ได้", "error");
+        return;
+      }
+
+      currentDraftId = draft.draftId;
+      currentRequestNo = "";
+      currentFolderPath = "";
+      currentCreatedAt = "";
+      const payload = draft.payload ?? {};
+      form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
+      form.elements.requestTitle.value = payload.requestTitle || "";
+      form.elements.requesterName.value = payload.requesterName || "";
+      form.elements.requesterRole.value = payload.requesterRole || "";
+      form.elements.requesterContact.value = payload.requesterContact || "";
+      form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
+      form.elements.businessPurpose.value = payload.businessPurpose || "";
+      form.elements.paymentTargetName.value = payload.paymentTargetName || "";
+      form.elements.paymentBankName.value = payload.paymentBankName || "";
+      form.elements.paymentAccountNo.value = payload.paymentAccountNo || "";
+      const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
+      if (requestTypeInput) requestTypeInput.checked = true;
+
+      lineItems.innerHTML = "";
+      const lines = Array.isArray(payload.expenseLines) && payload.expenseLines.length ? payload.expenseLines : [{}];
+      lines.forEach((line, index) => addLineFromData(line, index === lines.length - 1));
+
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = draft.evidenceFiles?.[key] ?? [];
+      }
+      uploadCards.forEach(renderUploadCard);
+      await updateNextRequestNo();
+      updatePreview();
+      setSaveStatus(`โหลดแบบร่างแล้ว: ${draft.draftId}`, "success");
+    }
+
+    async function loadSubmittedRequest(requestNo) {
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}`);
+      const request = await response.json();
+      if (!response.ok) {
+        setSaveStatus(request.error || "โหลดใบเบิกจ่ายไม่ได้", "error");
+        return;
+      }
+
+      currentDraftId = "";
+      currentRequestNo = request.requestNo;
+      currentFolderPath = request.folderPath || request.payload?.folderPath || "";
+      currentCreatedAt = request.payload?.createdAt || "";
+      const payload = request.payload ?? {};
+      form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
+      form.elements.requestTitle.value = payload.requestTitle || "";
+      form.elements.requesterName.value = payload.requesterName || "";
+      form.elements.requesterRole.value = payload.requesterRole || "";
+      form.elements.requesterContact.value = payload.requesterContact || "";
+      form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
+      form.elements.businessPurpose.value = payload.businessPurpose || "";
+      form.elements.paymentTargetName.value = payload.paymentTargetName || "";
+      form.elements.paymentBankName.value = payload.paymentBankName || "";
+      form.elements.paymentAccountNo.value = payload.paymentAccountNo || "";
+      const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
+      if (requestTypeInput) requestTypeInput.checked = true;
+
+      lineItems.innerHTML = "";
+      const lines = Array.isArray(payload.expenseLines) && payload.expenseLines.length ? payload.expenseLines : [{}];
+      lines.forEach((line, index) => addLineFromData(line, index === lines.length - 1));
+
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = request.evidenceFiles?.[key] ?? [];
+      }
+      uploadCards.forEach(renderUploadCard);
+      await updateNextRequestNo();
+      updatePreview();
+      setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
+    }
+
+    async function saveDraft() {
+      if (location.protocol === "file:") {
+        setSaveStatus("ต้องเปิดผ่าน local server เช่น http://localhost:8787/ ก่อนจึงจะบันทึกแบบร่างได้", "error");
+        return;
+      }
+
+      const data = collectData();
+      if (!data.accountingMonth) {
+        setSaveStatus("ระบุเดือนบัญชีก่อนบันทึกแบบร่าง", "error");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("payload", JSON.stringify(data));
+      appendUploadsToFormData(formData);
+      setSaveStatus("กำลังบันทึกแบบร่าง...");
+      const response = await fetch("/api/expense-drafts", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setSaveStatus(result.error || "บันทึกแบบร่างไม่สำเร็จ", "error");
+        return;
+      }
+
+      await loadDraft(result.draftId);
+      setSaveStatus(`บันทึกแบบร่างแล้ว: ${result.draftId}`, "success");
+    }
+
+    async function submitRequest() {
+      const data = collectData();
+      const errors = validateExpenseRequest(data);
+      if (errors.length) {
+        updatePreview();
+        return;
+      }
+
+      if (location.protocol === "file:") {
+        setSaveStatus("ต้องเปิดผ่าน local server เช่น http://localhost:8787/ ก่อนจึงจะบันทึกไฟล์ได้", "error");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("payload", JSON.stringify(data));
+      appendUploadsToFormData(formData);
+
+      setSaveStatus("กำลังบันทึกไฟล์และข้อมูลใบเบิกจ่าย...");
+      const response = await fetch("/api/expense-requests", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setSaveStatus(result.error || "บันทึกไม่สำเร็จ", "error");
+        return;
+      }
+
+      const pdfCount = result.pdfFiles?.length || 0;
+      setSaveStatus(`บันทึกแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์ และเก็บ raw files ${result.rawFiles.length} ไฟล์`, "success");
+      output.value = JSON.stringify(result, null, 2);
+      if (currentRequestNo) {
+        await loadSubmittedRequest(result.requestNo);
+        return;
+      }
+
+      currentDraftId = "";
+      currentRequestNo = "";
+      currentFolderPath = "";
+      currentCreatedAt = "";
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = [];
+      }
+      await updateNextRequestNo();
+    }
+
+    document.querySelector("#addLine").addEventListener("click", addLine);
+    document.querySelector("#copyMarkdown").addEventListener("click", () => copyOutput("markdown"));
+    document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
+    document.querySelector("#saveDraft").addEventListener("click", saveDraft);
+    document.querySelector("#submitRequest").addEventListener("click", submitRequest);
+    document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
+    form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
+    document.querySelector("#resetForm").addEventListener("click", () => {
+      currentDraftId = "";
+      currentRequestNo = "";
+      currentFolderPath = "";
+      currentCreatedAt = "";
+      form.reset();
+      setDateDefaults();
+      lineItems.innerHTML = "";
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = [];
+      }
+      uploadCards.forEach(renderUploadCard);
+      updateNextRequestNo();
+      addLine();
+    });
+
+    uploadCards.forEach((card) => {
+      const evidenceKey = card.dataset.evidenceCard;
+      const input = card.querySelector(".file-input");
+      input.addEventListener("change", () => setFiles(evidenceKey, input.files));
+      card.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        card.classList.add("dragging");
+      });
+      card.addEventListener("dragleave", () => {
+        card.classList.remove("dragging");
+      });
+      card.addEventListener("drop", (event) => {
+        event.preventDefault();
+        card.classList.remove("dragging");
+        setFiles(evidenceKey, event.dataTransfer.files);
+      });
+      renderUploadCard(card);
+    });
+
+    form.addEventListener("input", updatePreview);
+    form.addEventListener("change", updatePreview);
+    lineItems.addEventListener("click", (event) => {
+      if (event.target.matches("[data-remove-line]")) {
+        event.target.closest(".line-row").remove();
+        updatePreview();
+      }
+    });
+
+    setDateDefaults();
+    await updateNextRequestNo();
+    const draftIdFromUrl = new URLSearchParams(location.search).get("draftId");
+    const requestNoFromUrl = new URLSearchParams(location.search).get("requestNo");
+    if (draftIdFromUrl) {
+      await loadDraft(draftIdFromUrl);
+    } else if (requestNoFromUrl) {
+      await loadSubmittedRequest(requestNoFromUrl);
+    } else {
+      addLine();
+    }
+  });
+  </script>
+</body>
+</html>
