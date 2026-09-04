@@ -10,10 +10,12 @@
   - Next suggested task after completion: add submitted substitute receipt list/search and Google Drive sync.
 - [x] Stock purchase automation from substitute receipts: when the document type is stock purchase, select Stock SKUs and create purchase-in movements using the substitute receipt number as reference.
   - Next suggested task after completion: add Sale SKU / Bundle SKU mapping.
+- [x] Substitute receipt state workflow: draft, pending approval, approved, and received states with separate stock receiving.
+  - Next suggested task after completion: Google Drive sync for substitute receipt packets.
 
 ## Current
 
-- [ ] Submitted substitute receipt list/search with links to PDF packet and raw files.
+- [ ] Google Drive sync for substitute receipt packets.
   - Next suggested task after completion: monthly stock purchase report.
 
 ## Upcoming

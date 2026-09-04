@@ -581,6 +581,10 @@ test("approve and receive substitute receipt stock are separate idempotent trans
     const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
     assert.equal(loaded.payload.stockReceipt.receivedDate, "2026-09-05");
     assert.deepEqual(loaded.payload.stockReceipt.movementIds, received.stockMovements.map((movement) => movement.id));
+    const pdfText = await extractPdfText(join(rootDir, loaded.folderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
+    assert.match(pdfText, /สถานะเอกสาร/);
+    assert.match(pdfText, /รับเข้าคลังแล้ว/);
+    assert.match(pdfText, /วันที่รับสินค้า/);
 
     const receivedAgain = await receiveSubstituteReceiptStock({
       rootDir,

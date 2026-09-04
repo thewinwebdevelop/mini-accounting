@@ -336,22 +336,30 @@ def build_substitute_receipt_story(payload):
     lines = payload.get("lines") or []
     totals = payload.get("totals") or {}
     company = company_info(payload)
+    stock_receipt = payload.get("stockReceipt") or {}
+    document_rows = [
+        ("ชื่อนิติบุคคล", company["name"]),
+        ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
+        ("สำนักงานใหญ่/สาขา", company["branch"]),
+        ("ที่อยู่", company["address"]),
+        ("เลขที่เอกสาร", payload.get("receiptNo")),
+        ("วันที่เอกสาร", payload.get("receiptDate")),
+        ("ประเภทเอกสาร", payload.get("receiptTypeLabel")),
+        ("สถานะเอกสาร", payload.get("statusLabel") or payload.get("status")),
+        ("ผู้ขาย/ผู้รับเงิน", payload.get("payeeName")),
+        ("เลขผู้เสียภาษีผู้ขาย", payload.get("payeeTaxId")),
+        ("ช่องทางชำระเงิน", payload.get("paymentChannel")),
+        ("เลขอ้างอิงชำระเงิน", payload.get("paymentReference")),
+        ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
+    ]
+    if stock_receipt.get("receivedDate"):
+        document_rows.extend([
+            ("วันที่รับสินค้า", stock_receipt.get("receivedDate")),
+            ("ผู้รับสินค้า", stock_receipt.get("receivedBy")),
+        ])
     story = [
         Paragraph("ใบรับรองแทนใบเสร็จรับเงิน", styles["DocTitle"]),
-        kv_table([
-            ("ชื่อนิติบุคคล", company["name"]),
-            ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
-            ("สำนักงานใหญ่/สาขา", company["branch"]),
-            ("ที่อยู่", company["address"]),
-            ("เลขที่เอกสาร", payload.get("receiptNo")),
-            ("วันที่เอกสาร", payload.get("receiptDate")),
-            ("ประเภทเอกสาร", payload.get("receiptTypeLabel")),
-            ("ผู้ขาย/ผู้รับเงิน", payload.get("payeeName")),
-            ("เลขผู้เสียภาษีผู้ขาย", payload.get("payeeTaxId")),
-            ("ช่องทางชำระเงิน", payload.get("paymentChannel")),
-            ("เลขอ้างอิงชำระเงิน", payload.get("paymentReference")),
-            ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
-        ]),
+        kv_table(document_rows),
         Paragraph("รายการที่รับรอง", styles["DocHeading"]),
     ]
 
