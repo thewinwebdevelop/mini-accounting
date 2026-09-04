@@ -33,6 +33,13 @@ function syncStatusLabel(syncStatus) {
   return "รอ Sync";
 }
 
+function sheetStatusLabel(syncStatus) {
+  if (syncStatus === "synced") return "ลง Sheet แล้ว";
+  if (syncStatus === "needs_resync") return "Sheet ต้องอัปเดต";
+  if (syncStatus === "sync_failed") return "Sheet ไม่สำเร็จ";
+  return "รอ Sheet";
+}
+
 function formatAmount(value) {
   if (value === undefined || value === null || value === "") return "-";
   return Number(value).toLocaleString("th-TH", {
@@ -78,10 +85,16 @@ function actionHtml(receipt) {
   const drivePath = receipt.drivePath
     ? `<span class="muted">${escapeHtml(receipt.drivePath)}</span>`
     : "";
+  const sheetTarget = receipt.sheetSpreadsheetUrl
+    ? `<a class="button secondary small" href="${escapeHtml(receipt.sheetSpreadsheetUrl)}" target="_blank" rel="noreferrer">เปิด Sheet</a>`
+    : "";
   const syncButtonLabel = receipt.syncStatus === "synced" ? "Sync อีกครั้ง" : "Sync to Google Drive";
   const syncButton = receipt.status === "draft" || !receiptNo
     ? ""
     : `<button class="button secondary small" type="button" data-sync-drive="${escapeHtml(receiptNo)}">${syncButtonLabel}</button>`;
+  const sheetButton = !receiptNo || receipt.status === "draft" || receipt.sheetSyncStatus === "synced"
+    ? ""
+    : `<button class="button secondary small" type="button" data-record-sheet="${escapeHtml(receiptNo)}">ลง Sheet อีกครั้ง</button>`;
 
   return `
     <div class="actions">
@@ -89,6 +102,8 @@ function actionHtml(receipt) {
       ${pdfMenu}
       ${rawMenu}
       ${driveTarget}
+      ${sheetTarget}
+      ${sheetButton}
       ${syncButton}
       ${drivePath}
     </div>
@@ -116,6 +131,7 @@ function render() {
         <div class="actions">
           <span class="status ${escapeHtml(receipt.status)}">${escapeHtml(statusLabel(receipt))}</span>
           ${receipt.status === "draft" ? "" : `<span class="status ${escapeHtml(receipt.syncStatus || "not_synced")}">${syncStatusLabel(receipt.syncStatus)}</span>`}
+          ${receipt.status === "draft" ? "" : `<span class="status ${escapeHtml(receipt.sheetSyncStatus || "not_synced")}">${sheetStatusLabel(receipt.sheetSyncStatus)}</span>`}
         </div>
       </td>
       <td><span class="mobile-label">เลข/เดือน</span>${escapeHtml(receipt.receiptNo || receipt.draftId || receipt.accountingMonth || "-")}</td>
@@ -154,6 +170,32 @@ async function syncDrive(receiptNo, button) {
   }
 }
 
+async function recordSheet(receiptNo, button) {
+  if (!receiptNo) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "กำลังลง Sheet...";
+  listStatus.textContent = `กำลังบันทึกรายจ่าย ${receiptNo} ลง Google Sheet...`;
+
+  try {
+    const response = await fetch(`/api/substitute-receipts/${encodeURIComponent(receiptNo)}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ approvedBy: "" }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "ลง Sheet ไม่สำเร็จ");
+    await loadReceipts();
+    listStatus.textContent = result.sheetSync?.syncStatus === "synced"
+      ? `ลง Sheet แล้ว: ${receiptNo}`
+      : `ยังลง Sheet ไม่สำเร็จ: ${receiptNo}`;
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalText;
+    listStatus.textContent = error.message || "ลง Sheet ไม่สำเร็จ";
+  }
+}
+
 async function loadReceipts() {
   listStatus.textContent = "กำลังโหลดรายการ...";
   errorState.hidden = true;
@@ -179,7 +221,12 @@ statusFilter.addEventListener("change", render);
 searchText.addEventListener("input", render);
 rows.addEventListener("click", (event) => {
   const button = event.target.closest("[data-sync-drive]");
-  if (!button) return;
-  syncDrive(button.dataset.syncDrive, button);
+  if (button) {
+    syncDrive(button.dataset.syncDrive, button);
+    return;
+  }
+  const sheetButton = event.target.closest("[data-record-sheet]");
+  if (!sheetButton) return;
+  recordSheet(sheetButton.dataset.recordSheet, sheetButton);
 });
 loadReceipts();

@@ -6,6 +6,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 
 const {
+  EXPENSE_REQUEST_STATUS_LABELS,
   buildExpensePayload,
   buildRawFileName,
   formatPayloadMarkdown,
@@ -21,6 +22,7 @@ const {
 } = require("./substitute-receipt.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
+const { recordMonthlyExpense } = require("./google-sheets.logic.js");
 const {
   createPurchaseInMovement,
   listStockMovementsByReference,
@@ -472,6 +474,90 @@ async function writeDriveSyncMetadata(rootDir, folderPath, metadata) {
   await writeFile(path.join(dataDir, "drive-sync.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 }
 
+function normalizeExpenseRequestStatus(status) {
+  const normalized = String(status || "submitted").trim();
+  if (!["submitted", "approved", "cancelled"].includes(normalized)) {
+    throw new Error(`Invalid expense request status: ${normalized}`);
+  }
+  return normalized;
+}
+
+function getExpenseRequestNextAction(status) {
+  if (status === "submitted") return "อนุมัติ";
+  if (status === "approved") return "บันทึกรายจ่ายแล้ว";
+  if (status === "cancelled") return "ยกเลิกแล้ว";
+  return "ดูเอกสาร";
+}
+
+function getFirstExpenseCategory(lines = []) {
+  const categories = [...new Set((Array.isArray(lines) ? lines : [])
+    .map((line) => String(line.category || "").trim())
+    .filter(Boolean))];
+  if (categories.length <= 1) return categories[0] || "";
+  return `${categories[0]} +${categories.length - 1}`;
+}
+
+function buildExpenseRequestSheetEntry(payload = {}, driveMetadata = {}, approvedAt = "") {
+  return {
+    sourceKey: `expense_request:${payload.requestNo}`,
+    approvedAt,
+    accountingMonth: payload.accountingMonth || getAccountingMonthFromRequestNo(payload.requestNo),
+    documentType: "ใบเบิกจ่าย",
+    documentNo: payload.requestNo,
+    payeeName: payload.paymentTargetName || payload.requesterName || "",
+    title: payload.requestTitle || payload.businessPurpose || "",
+    category: getFirstExpenseCategory(payload.expenseLines),
+    amountBeforeVat: payload.totals?.amountBeforeVat || "0.00",
+    vatAmount: payload.totals?.vatAmount || "0.00",
+    grossAmount: payload.totals?.grossAmount || "0.00",
+    withholdingTax: payload.totals?.withholdingTax || "0.00",
+    netPayment: payload.totals?.netPayment || "0.00",
+    documentUrl: driveMetadata?.driveFolderUrl || "",
+  };
+}
+
+function buildSubstituteReceiptSheetEntry(payload = {}, driveMetadata = {}, approvedAt = "") {
+  return {
+    sourceKey: `substitute_receipt:${payload.receiptNo}`,
+    approvedAt,
+    accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
+    documentType: "ใบรับรองแทนใบเสร็จรับเงิน",
+    documentNo: payload.receiptNo,
+    payeeName: payload.payeeName || "",
+    title: payload.receiptTitle || payload.businessPurpose || "",
+    category: payload.receiptTypeLabel || payload.receiptType || "",
+    amountBeforeVat: payload.totals?.totalAmount || "0.00",
+    vatAmount: "0.00",
+    grossAmount: payload.totals?.totalAmount || "0.00",
+    withholdingTax: "0.00",
+    netPayment: payload.totals?.totalAmount || "0.00",
+    documentUrl: driveMetadata?.driveFolderUrl || "",
+  };
+}
+
+async function recordExpenseSheetMetadata({
+  rootDir,
+  folderPath,
+  payload,
+  entry,
+  expenseRecorder = recordMonthlyExpense,
+  now = () => new Date().toISOString(),
+}) {
+  try {
+    payload.sheetSync = await expenseRecorder({ rootDir, entry, now });
+  } catch (error) {
+    const failedAt = now();
+    payload.sheetSync = {
+      syncStatus: "sync_failed",
+      error: error.message || "Google Sheets sync failed",
+      syncedAt: "",
+      updatedAt: failedAt,
+    };
+  }
+
+  return payload.sheetSync;
+}
+
 async function findSubmittedExpenseRequests(rootDir) {
   const documentsRoot = path.join(rootDir, "documents");
   const records = [];
@@ -496,9 +582,11 @@ async function findSubmittedExpenseRequests(rootDir) {
       const payload = JSON.parse(await readFile(absolutePath, "utf8"));
       const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
       const syncMetadata = await readDriveSyncMetadata(rootDir, folderPath);
+      const status = normalizeExpenseRequestStatus(payload.status || "submitted");
       records.push({
         id: payload.requestNo,
-        status: "submitted",
+        status,
+        statusLabel: payload.statusLabel || EXPENSE_REQUEST_STATUS_LABELS[status],
         requestNo: payload.requestNo,
         requestTitle: getRequestTitleFromFolderPath(folderPath, payload.requestNo),
         requesterName: payload.requesterName || "",
@@ -516,6 +604,14 @@ async function findSubmittedExpenseRequests(rootDir) {
         uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
         syncedAt: syncMetadata?.syncedAt || "",
         syncError: syncMetadata?.error || "",
+        sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
+        sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
+        sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
+        sheetName: payload.sheetSync?.sheetName || "",
+        sheetRowNumber: payload.sheetSync?.rowNumber || 0,
+        sheetSyncedAt: payload.sheetSync?.syncedAt || "",
+        sheetSyncError: payload.sheetSync?.error || "",
+        nextAction: getExpenseRequestNextAction(status),
       });
     }
   }
@@ -786,6 +882,31 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
   };
 }
 
+async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
+  const absoluteFolderPath = path.join(rootDir, expensePayload.folderPath);
+  const rawDir = path.join(absoluteFolderPath, "raw");
+  const dataDir = path.join(absoluteFolderPath, "data");
+  const workingMdDir = path.join(absoluteFolderPath, "working-md");
+  const pdfDir = path.join(absoluteFolderPath, "pdf");
+  const submissionJsonPath = path.join(dataDir, "submission.json");
+
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(workingMdDir, { recursive: true });
+  await mkdir(pdfDir, { recursive: true });
+  await writeFile(submissionJsonPath, `${JSON.stringify(expensePayload, null, 2)}\n`, "utf8");
+  await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(expensePayload), "utf8");
+  const pdfFiles = await generateExpensePdfs({
+    payloadPath: submissionJsonPath,
+    outputDir: pdfDir,
+    rawDir,
+  });
+
+  return {
+    absoluteFolderPath,
+    pdfFiles,
+  };
+}
+
 async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
   let draft = null;
   if (payload.draftId) {
@@ -812,7 +933,18 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     sequence: nextRequest.sequence,
     evidenceFiles,
     createdAt: existingRequest?.payload?.createdAt,
+    status: existingRequest?.payload?.status || "submitted",
+    statusHistory: existingRequest?.payload?.statusHistory,
+    sheetSync: existingRequest?.payload?.sheetSync,
   });
+
+  if (existingRequest?.payload?.sheetSync?.syncStatus === "synced") {
+    expensePayload.sheetSync = {
+      ...existingRequest.payload.sheetSync,
+      syncStatus: "needs_resync",
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
   const absoluteFolderPath = path.join(rootDir, expensePayload.folderPath);
   const rawDir = path.join(absoluteFolderPath, "raw");
@@ -1069,6 +1201,13 @@ async function findSubmittedSubstituteReceipts(rootDir) {
         uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
         syncedAt: syncMetadata?.syncedAt || "",
         syncError: syncMetadata?.error || "",
+        sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
+        sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
+        sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
+        sheetName: payload.sheetSync?.sheetName || "",
+        sheetRowNumber: payload.sheetSync?.rowNumber || 0,
+        sheetSyncedAt: payload.sheetSync?.syncedAt || "",
+        sheetSyncError: payload.sheetSync?.error || "",
         payload: {
           ...payload,
           status,
@@ -1150,6 +1289,13 @@ async function listSubstituteReceipts(rootDir) {
       uploadedFileCount: receipt.uploadedFileCount,
       syncedAt: receipt.syncedAt,
       syncError: receipt.syncError,
+      sheetSyncStatus: receipt.sheetSyncStatus,
+      sheetSpreadsheetUrl: receipt.sheetSpreadsheetUrl,
+      sheetSpreadsheetId: receipt.sheetSpreadsheetId,
+      sheetName: receipt.sheetName,
+      sheetRowNumber: receipt.sheetRowNumber,
+      sheetSyncedAt: receipt.sheetSyncedAt,
+      sheetSyncError: receipt.sheetSyncError,
     })),
   ].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
@@ -1202,13 +1348,89 @@ function appendSubstituteReceiptStatus(payload, toStatus, note, actor) {
   ];
 }
 
-async function approveSubstituteReceipt({ rootDir, receiptNo, approvedBy = "" }) {
+function appendExpenseRequestStatus(payload, toStatus, note, actor, now = () => new Date().toISOString()) {
+  const fromStatus = normalizeExpenseRequestStatus(payload.status || "submitted");
+  const targetStatus = normalizeExpenseRequestStatus(toStatus);
+  if (fromStatus === "cancelled" && targetStatus !== "cancelled") {
+    throw new Error(`Invalid expense request status transition: ${fromStatus} -> ${targetStatus}`);
+  }
+  const changedAt = now();
+  payload.status = targetStatus;
+  payload.statusLabel = EXPENSE_REQUEST_STATUS_LABELS[targetStatus];
+  payload.updatedAt = changedAt;
+  payload.statusHistory = [
+    ...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []),
+    {
+      fromStatus,
+      toStatus: targetStatus,
+      changedAt,
+      note,
+      actor: actor || "",
+    },
+  ];
+}
+
+async function approveExpenseRequest({
+  rootDir,
+  requestNo,
+  approvedBy = "",
+  expenseRecorder = recordMonthlyExpense,
+  now = () => new Date().toISOString(),
+}) {
+  const request = await getSubmittedExpenseRequest(rootDir, requestNo);
+  const payload = {
+    ...request.payload,
+    folderPath: request.folderPath,
+  };
+  const approvedAt = now();
+  appendExpenseRequestStatus(payload, "approved", "approved", approvedBy, () => approvedAt);
+  payload.approvedAt = approvedAt;
+  payload.approvedBy = approvedBy || "";
+  const driveMetadata = await readDriveSyncMetadata(rootDir, request.folderPath);
+  await recordExpenseSheetMetadata({
+    rootDir,
+    folderPath: request.folderPath,
+    payload,
+    entry: buildExpenseRequestSheetEntry(payload, driveMetadata, approvedAt),
+    expenseRecorder,
+    now,
+  });
+  const { pdfFiles } = await writeSubmittedExpenseRequestFiles(rootDir, payload);
+
+  return {
+    requestNo: payload.requestNo,
+    status: payload.status,
+    folderPath: payload.folderPath,
+    pdfFiles,
+    sheetSync: payload.sheetSync,
+  };
+}
+
+async function approveSubstituteReceipt({
+  rootDir,
+  receiptNo,
+  approvedBy = "",
+  expenseRecorder = recordMonthlyExpense,
+  now = () => new Date().toISOString(),
+}) {
   const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
   const payload = {
     ...receipt.payload,
     folderPath: receipt.folderPath,
   };
+  const approvedAt = now();
   appendSubstituteReceiptStatus(payload, "approved", "approved", approvedBy);
+  payload.approvedAt = approvedAt;
+  payload.approvedBy = approvedBy || "";
+  const driveMetadata = await readDriveSyncMetadata(rootDir, receipt.folderPath);
+  await recordExpenseSheetMetadata({
+    rootDir,
+    folderPath: receipt.folderPath,
+    payload,
+    entry: buildSubstituteReceiptSheetEntry(payload, driveMetadata, approvedAt),
+    expenseRecorder,
+    now,
+  });
   const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
 
   return {
@@ -1216,6 +1438,7 @@ async function approveSubstituteReceipt({ rootDir, receiptNo, approvedBy = "" })
     status: payload.status,
     folderPath: payload.folderPath,
     pdfFiles,
+    sheetSync: payload.sheetSync,
   };
 }
 
@@ -1391,6 +1614,7 @@ async function syncSubstituteReceiptToDrive({
 }
 
 module.exports = {
+  approveExpenseRequest,
   approveSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,

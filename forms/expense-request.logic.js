@@ -3,6 +3,12 @@ const REQUEST_TYPE_LABELS = {
   direct_payment: "บริษัทจ่ายตรงผู้ขาย",
 };
 
+const EXPENSE_REQUEST_STATUS_LABELS = {
+  submitted: "บันทึกแล้ว",
+  approved: "อนุมัติแล้ว",
+  cancelled: "ยกเลิก",
+};
+
 const EVIDENCE_LABELS = {
   receipt: "ใบเสร็จรับเงิน",
   fullTaxInvoice: "ใบกำกับภาษีเต็มรูป",
@@ -149,6 +155,10 @@ function buildExpensePayload(data = {}) {
       address: String(data.company.address ?? "").trim(),
     } : undefined,
     requestTypeLabel: REQUEST_TYPE_LABELS[data.requestType] ?? data.requestType,
+    status: data.status || "submitted",
+    statusLabel: EXPENSE_REQUEST_STATUS_LABELS[data.status] || EXPENSE_REQUEST_STATUS_LABELS.submitted,
+    statusHistory: Array.isArray(data.statusHistory) ? data.statusHistory : [],
+    sheetSync: data.sheetSync,
     requesterName: String(data.requesterName ?? "").trim(),
     requesterRole: String(data.requesterRole ?? "").trim(),
     requesterContact: String(data.requesterContact ?? "").trim(),
@@ -217,6 +227,7 @@ ${evidence}
 }
 
 const ExpenseRequestLogic = {
+  EXPENSE_REQUEST_STATUS_LABELS,
   buildRawFileName,
   buildExpensePayload,
   calculateExpenseTotals,

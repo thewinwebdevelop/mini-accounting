@@ -16,6 +16,7 @@ const {
   saveCompanySettings,
 } = require("./forms/company-settings.logic.js");
 const {
+  approveExpenseRequest,
   approveSubstituteReceipt,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
@@ -240,6 +241,22 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot approve substitute receipt",
+    });
+  }
+}
+
+async function handleExpenseRequestApprove(requestNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await approveExpenseRequest({
+      rootDir,
+      requestNo,
+      approvedBy: payload.approvedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot approve expense request",
     });
   }
 }
@@ -718,6 +735,14 @@ const server = createServer(async (request, response) => {
       .replace("/api/substitute-receipts/", "")
       .replace("/approve", ""));
     await handleSubstituteReceiptApprove(receiptNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/approve")) {
+    const requestNo = decodeURIComponent(url.pathname
+      .replace("/api/expense-requests/", "")
+      .replace("/approve", ""));
+    await handleExpenseRequestApprove(requestNo, request, response);
     return;
   }
 

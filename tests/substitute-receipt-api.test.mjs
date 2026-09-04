@@ -155,3 +155,64 @@ test("substitute receipt APIs return next number and submit stock purchase recei
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("expense request API approves submitted requests and reports sheet sync status", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-api-"));
+  const port = 19191;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const formData = new FormData();
+    formData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      requestTitle: "ค่าส่ง API",
+      requestType: "reimbursement",
+      requesterName: "คุณส่ง",
+      businessPurpose: "ค่าส่งสินค้า",
+      paymentTargetName: "ขนส่งตัวอย่าง",
+      expenseLines: [{
+        date: "2026-09-05",
+        category: "ค่าส่ง/ขนส่ง",
+        description: "ค่าส่งสินค้า",
+        vendor: "ขนส่งตัวอย่าง",
+        amountBeforeVat: "100",
+        vatAmount: "7",
+        withholdingTax: "0",
+      }],
+    }));
+
+    const submitted = await requestJson(baseUrl, "/api/expense-requests", {
+      method: "POST",
+      body: formData,
+    });
+    assert.equal(submitted.requestNo, "REQ-2026-09-0001");
+
+    const approved = await requestJson(baseUrl, `/api/expense-requests/${submitted.requestNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+    assert.equal(approved.status, "approved");
+    assert.equal(approved.sheetSync.syncStatus, "sync_failed");
+    assert.match(approved.sheetSync.error, /Google Drive is not configured/);
+
+    const list = await requestJson(baseUrl, "/api/expense-requests");
+    const approvedRecord = list.requests.find((request) => request.requestNo === submitted.requestNo);
+    assert.equal(approvedRecord.status, "approved");
+    assert.equal(approvedRecord.sheetSyncStatus, "sync_failed");
+  } finally {
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

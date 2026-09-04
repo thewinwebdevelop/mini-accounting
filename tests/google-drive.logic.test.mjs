@@ -88,7 +88,10 @@ test("buildGoogleOAuthUrl creates a consent URL for the local callback", async (
     assert.equal(authUrl.searchParams.get("client_id"), "client-id.apps.googleusercontent.com");
     assert.equal(authUrl.searchParams.get("redirect_uri"), "http://localhost:8787/api/google-drive/oauth2callback");
     assert.equal(authUrl.searchParams.get("response_type"), "code");
-    assert.equal(authUrl.searchParams.get("scope"), "https://www.googleapis.com/auth/drive.file");
+    assert.deepEqual(authUrl.searchParams.get("scope").split(/\s+/).sort(), [
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ].sort());
     assert.equal(authUrl.searchParams.get("access_type"), "offline");
     assert.equal(authUrl.searchParams.get("prompt"), "consent");
     assert.equal(authUrl.searchParams.get("state"), "state-123");

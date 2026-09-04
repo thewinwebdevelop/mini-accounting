@@ -19,6 +19,7 @@ const {
   getStockCard,
 } = inventoryLogic;
 const {
+  approveExpenseRequest,
   approveSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
@@ -595,6 +596,129 @@ test("approve and receive substitute receipt stock are separate idempotent trans
     });
     assert.equal(receivedAgain.stockMovements.length, 1);
     assert.equal(getStockCard(rootDir, stockSku.id).movements.length, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("approveSubstituteReceipt records an approved receipt into the monthly expense sheet", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-sheet-"));
+  const recordedEntries = [];
+
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptTitle: "ซื้อสต๊อกลงรายจ่าย",
+        payeeName: "บริษัทขายส่งตัวอย่าง",
+      }),
+      uploads: validSlipUpload(),
+    });
+
+    const approved = await approveSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async ({ entry }) => {
+        recordedEntries.push(entry);
+        return {
+          syncStatus: "synced",
+          spreadsheetId: "sheet-2026",
+          sheetName: "2026-09",
+          rowNumber: 2,
+          syncedAt: "2026-09-04T10:00:00.000Z",
+        };
+      },
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+
+    assert.equal(approved.status, "approved");
+    assert.equal(recordedEntries.length, 1);
+    assert.equal(recordedEntries[0].sourceKey, "substitute_receipt:SR-2026-09-0001");
+    assert.equal(recordedEntries[0].documentType, "ใบรับรองแทนใบเสร็จรับเงิน");
+    assert.equal(recordedEntries[0].documentNo, submitted.receiptNo);
+    assert.equal(recordedEntries[0].payeeName, "บริษัทขายส่งตัวอย่าง");
+    assert.equal(recordedEntries[0].category, "ซื้อสต๊อกสินค้า");
+    assert.equal(recordedEntries[0].grossAmount, "200.00");
+    assert.equal(recordedEntries[0].netPayment, "200.00");
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.sheetSync.syncStatus, "synced");
+    assert.equal(loaded.payload.sheetSync.spreadsheetId, "sheet-2026");
+    assert.equal(loaded.payload.sheetSync.sheetName, "2026-09");
+    assert.equal(loaded.payload.sheetSync.rowNumber, 2);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("approveExpenseRequest moves a submitted request to approved and records monthly expense", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-approve-"));
+  const recordedEntries = [];
+
+  try {
+    const submitted = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ค่าส่งพัสดุ",
+        requestType: "reimbursement",
+        requesterName: "คุณส่ง",
+        businessPurpose: "ค่าส่งสินค้า",
+        paymentTargetName: "ขนส่งตัวอย่าง",
+        expenseLines: [
+          {
+            date: "2026-09-05",
+            category: "ค่าส่ง/ขนส่ง",
+            description: "ค่าส่งสินค้า",
+            vendor: "ขนส่งตัวอย่าง",
+            amountBeforeVat: "100",
+            vatAmount: "7",
+            withholdingTax: "3",
+          },
+        ],
+      },
+      uploads: [],
+    });
+
+    const approved = await approveExpenseRequest({
+      rootDir,
+      requestNo: submitted.requestNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async ({ entry }) => {
+        recordedEntries.push(entry);
+        return {
+          syncStatus: "synced",
+          spreadsheetId: "sheet-2026",
+          sheetName: "2026-09",
+          rowNumber: 2,
+          syncedAt: "2026-09-04T10:00:00.000Z",
+        };
+      },
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+
+    assert.equal(approved.status, "approved");
+    assert.equal(recordedEntries.length, 1);
+    assert.equal(recordedEntries[0].sourceKey, "expense_request:REQ-2026-09-0001");
+    assert.equal(recordedEntries[0].documentType, "ใบเบิกจ่าย");
+    assert.equal(recordedEntries[0].documentNo, submitted.requestNo);
+    assert.equal(recordedEntries[0].payeeName, "ขนส่งตัวอย่าง");
+    assert.equal(recordedEntries[0].category, "ค่าส่ง/ขนส่ง");
+    assert.equal(recordedEntries[0].grossAmount, "107.00");
+    assert.equal(recordedEntries[0].withholdingTax, "3.00");
+    assert.equal(recordedEntries[0].netPayment, "104.00");
+
+    const loaded = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.equal(loaded.payload.status, "approved");
+    assert.equal(loaded.payload.statusLabel, "อนุมัติแล้ว");
+    assert.equal(loaded.payload.sheetSync.syncStatus, "synced");
+    assert.equal(loaded.payload.sheetSync.spreadsheetId, "sheet-2026");
+
+    const requests = await listExpenseRequests(rootDir);
+    const approvedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
+    assert.equal(approvedRecord.status, "approved");
+    assert.equal(approvedRecord.sheetSyncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

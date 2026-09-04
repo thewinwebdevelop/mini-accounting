@@ -16,10 +16,16 @@ test("expense request list page supports filtering and creating a new request", 
   assert.match(html, /id="statusFilter"/);
   assert.match(html, /value="draft"/);
   assert.match(html, /value="submitted"/);
+  assert.match(html, /value="approved"/);
   assert.match(html, /\/api\/expense-requests/);
+  assert.match(html, /\/api\/expense-requests\/\$\{encodeURIComponent\(requestNo\)\}\/approve/);
+  assert.match(html, /data-approve/);
+  assert.match(html, /ลง Sheet อีกครั้ง/);
   assert.match(html, /\/api\/expense-requests\/\$\{encodeURIComponent\(requestNo\)\}\/sync-drive/);
   assert.match(html, /Sync to Google Drive/);
   assert.match(html, /syncStatusLabel/);
+  assert.match(html, /sheetStatusLabel/);
+  assert.match(html, /เปิด Sheet/);
   assert.match(html, /เปิดใบเบิกจ่าย/);
   assert.match(html, /เปิดชุดรวม/);
   assert.match(html, /reimbursementPdf/);

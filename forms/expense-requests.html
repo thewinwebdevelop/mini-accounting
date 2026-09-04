@@ -175,6 +175,7 @@
     }
     .status.draft { color: #78350f; background: #fef3c7; }
     .status.submitted { color: #166534; background: #dcfce7; }
+    .status.approved { color: #155e75; background: #cffafe; }
     .status.not_synced { color: #7c2d12; background: #ffedd5; }
     .status.synced { color: #155e75; background: #cffafe; }
     .status.needs_resync { color: #7c2d12; background: #fef3c7; }
@@ -280,6 +281,7 @@
           <option value="all">ทั้งหมด</option>
           <option value="draft">แบบร่าง</option>
           <option value="submitted">บันทึกแล้ว</option>
+          <option value="approved">อนุมัติแล้ว</option>
         </select>
         <span class="muted" id="listStatus">กำลังโหลดรายการ...</span>
       </div>
@@ -324,7 +326,12 @@
     }
 
     function statusLabel(status) {
-      return status === "draft" ? "แบบร่าง" : "บันทึกแล้ว";
+      return {
+        draft: "แบบร่าง",
+        submitted: "บันทึกแล้ว",
+        approved: "อนุมัติแล้ว",
+        cancelled: "ยกเลิก",
+      }[status] || status || "-";
     }
 
     function syncStatusLabel(syncStatus) {
@@ -332,6 +339,13 @@
       if (syncStatus === "needs_resync") return "ต้อง Sync ใหม่";
       if (syncStatus === "sync_failed") return "Sync ไม่สำเร็จ";
       return "รอ Sync";
+    }
+
+    function sheetStatusLabel(syncStatus) {
+      if (syncStatus === "synced") return "ลง Sheet แล้ว";
+      if (syncStatus === "needs_resync") return "Sheet ต้องอัปเดต";
+      if (syncStatus === "sync_failed") return "Sheet ไม่สำเร็จ";
+      return "รอ Sheet";
     }
 
     function statusHtml(request) {
@@ -343,8 +357,9 @@
       const syncStatus = request.syncStatus || "not_synced";
       return `
         <div class="status-stack">
-          <span class="status submitted">${statusLabel(status)}</span>
+          <span class="status ${escapeHtml(status)}">${statusLabel(status)}</span>
           <span class="status ${escapeHtml(syncStatus)}">${syncStatusLabel(syncStatus)}</span>
+          <span class="status ${escapeHtml(request.sheetSyncStatus || "not_synced")}">${sheetStatusLabel(request.sheetSyncStatus)}</span>
         </div>
       `;
     }
@@ -380,9 +395,17 @@
       const drivePath = request.drivePath
         ? `<span class="muted">${escapeHtml(request.drivePath)}</span>`
         : "";
+      const sheetTarget = request.sheetSpreadsheetUrl
+        ? `<a class="button secondary small" href="${escapeHtml(request.sheetSpreadsheetUrl)}" target="_blank" rel="noreferrer">เปิด Sheet</a>`
+        : "";
       const syncButton = `<button class="button warn small" type="button" data-sync-drive="${escapeHtml(requestNo)}">${syncButtonLabel}</button>`;
+      const approveButton = request.status === "submitted"
+        ? `<button class="button primary small" type="button" data-approve="${escapeHtml(requestNo)}">อนุมัติ</button>`
+        : request.status === "approved" && request.sheetSyncStatus !== "synced"
+          ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}">ลง Sheet อีกครั้ง</button>`
+        : "";
 
-      return `<div class="actions">${editTarget}${pdfTarget}${rawTarget}${driveTarget}${syncButton}${drivePath}</div>`;
+      return `<div class="actions">${approveButton}${editTarget}${pdfTarget}${rawTarget}${driveTarget}${sheetTarget}${syncButton}${drivePath}</div>`;
     }
 
     function render() {
@@ -450,15 +473,46 @@
       }
     }
 
+    async function approveRequest(requestNo, button) {
+      if (!requestNo) return;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "กำลังอนุมัติ...";
+      listStatus.textContent = `กำลังอนุมัติ ${requestNo} และบันทึกรายจ่ายลง Sheet...`;
+
+      try {
+        const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ approvedBy: "" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "อนุมัติไม่สำเร็จ");
+        await loadRequests();
+        listStatus.textContent = result.sheetSync?.syncStatus === "synced"
+          ? `อนุมัติและลง Sheet แล้ว: ${requestNo}`
+          : `อนุมัติแล้ว แต่ยังลง Sheet ไม่สำเร็จ: ${requestNo}`;
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = originalText;
+        listStatus.textContent = error.message || "อนุมัติไม่สำเร็จ";
+      }
+    }
+
     const initialStatus = new URLSearchParams(location.search).get("status");
-    if (["all", "draft", "submitted"].includes(initialStatus)) {
+    if (["all", "draft", "submitted", "approved"].includes(initialStatus)) {
       statusFilter.value = initialStatus;
     }
     statusFilter.addEventListener("change", render);
     requestTableBody.addEventListener("click", (event) => {
       const button = event.target.closest("[data-sync-drive]");
-      if (!button) return;
-      syncDrive(button.dataset.syncDrive, button);
+      if (button) {
+        syncDrive(button.dataset.syncDrive, button);
+        return;
+      }
+      const approveButton = event.target.closest("[data-approve]");
+      if (!approveButton) return;
+      approveRequest(approveButton.dataset.approve, approveButton);
     });
     loadRequests();
   </script>

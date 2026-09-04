@@ -14,6 +14,10 @@ test("substitute receipt list page exposes filters and action columns", async ()
   assert.match(browserLogic, /\/api\/substitute-receipts\/\$\{encodeURIComponent\(receiptNo\)\}\/sync-drive/);
   assert.match(browserLogic, /Sync to Google Drive/);
   assert.match(browserLogic, /syncStatusLabel/);
+  assert.match(browserLogic, /sheetStatusLabel/);
+  assert.match(browserLogic, /เปิด Sheet/);
+  assert.match(browserLogic, /ลง Sheet อีกครั้ง/);
+  assert.match(browserLogic, /\/api\/substitute-receipts\/\$\{encodeURIComponent\(receiptNo\)\}\/approve/);
   assert.match(browserLogic, /driveFolderUrl/);
   assert.match(browserLogic, /needs_resync/);
 });

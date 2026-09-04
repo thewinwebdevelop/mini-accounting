@@ -2,7 +2,11 @@ const { mkdir, readdir, readFile, stat, writeFile } = require("node:fs/promises"
 const path = require("node:path");
 
 const driveFolderMimeType = "application/vnd.google-apps.folder";
-const driveScope = "https://www.googleapis.com/auth/drive.file";
+const driveScopes = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/spreadsheets",
+];
+const driveScope = driveScopes.join(" ");
 const defaultDriveBasePath = "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี";
 
 function getConfigDir(rootDir) {
@@ -367,7 +371,13 @@ async function uploadFolderToGoogleDrive({ rootDir, folderPath, fetchImpl = fetc
 module.exports = {
   buildGoogleOAuthUrl,
   exchangeGoogleOAuthCode,
+  driveFetchJson,
+  ensureDrivePath,
+  getGoogleDriveConfig,
+  getValidAccessToken,
   getGoogleDriveStatus,
+  normalizeDrivePath,
   saveGoogleDriveConfig,
+  splitDrivePath,
   uploadFolderToGoogleDrive,
 };
