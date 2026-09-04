@@ -217,10 +217,61 @@
     }
 
     .stock-line {
+      overflow: hidden;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .stock-line + .stock-line {
+      margin-top: 8px;
+    }
+
+    .stock-line-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 42px;
+      padding: 9px 11px;
+      color: var(--brand-strong);
+      background: var(--soft);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    .stock-line-summary::-webkit-details-marker { display: none; }
+
+    .stock-line-summary::before {
+      content: "▾";
+      color: var(--accent);
+    }
+
+    .stock-line:not([open]) .stock-line-summary::before {
+      content: "▸";
+    }
+
+    .stock-line-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .stock-line-total {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .stock-line-fields {
       display: grid;
       grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 1fr) 86px 118px 38px;
       gap: 8px;
       align-items: end;
+      padding: 10px;
     }
 
     .file-grid {
@@ -348,7 +399,7 @@
       .span-4,
       .span-6,
       .span-8 { grid-column: span 12; }
-      .stock-line { grid-template-columns: 1fr; }
+      .stock-line-fields { grid-template-columns: 1fr; }
       .file-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -535,26 +586,32 @@
   </main>
 
   <template id="stockLineTemplate">
-    <div class="stock-line">
-      <div class="field">
-        <label>Stock SKU *</label>
-        <select name="stockSkuId" required></select>
+    <details class="stock-line" open>
+      <summary class="stock-line-summary">
+        <span class="stock-line-title" data-stock-line-title>รายการ 1 - ยังไม่ได้กรอก</span>
+        <span class="stock-line-total" data-stock-line-total>0.00 บาท</span>
+      </summary>
+      <div class="stock-line-fields">
+        <div class="field">
+          <label>Stock SKU *</label>
+          <select name="stockSkuId" required></select>
+        </div>
+        <div class="field">
+          <label>รายละเอียด</label>
+          <input name="description">
+          <input name="sku" type="hidden">
+        </div>
+        <div class="field">
+          <label>จำนวน *</label>
+          <input name="quantity" inputmode="numeric" required>
+        </div>
+        <div class="field">
+          <label>ต้นทุน/หน่วย *</label>
+          <input name="unitCost" inputmode="decimal" required>
+        </div>
+        <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
       </div>
-      <div class="field">
-        <label>รายละเอียด</label>
-        <input name="description">
-        <input name="sku" type="hidden">
-      </div>
-      <div class="field">
-        <label>จำนวน *</label>
-        <input name="quantity" inputmode="numeric" required>
-      </div>
-      <div class="field">
-        <label>ต้นทุน/หน่วย *</label>
-        <input name="unitCost" inputmode="decimal" required>
-      </div>
-      <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
-    </div>
+    </details>
   </template>
 
   <script src="./substitute-receipt.logic.js"></script>

@@ -209,7 +209,7 @@ window.addEventListener("DOMContentLoaded", () => {
     updatePreview();
   }
 
-  function collectLines() {
+  function collectLineRows() {
     return [...lineItems.querySelectorAll(".stock-line")].map((row) => {
       const select = row.querySelector('select[name="stockSkuId"]');
       const selected = select.selectedOptions[0];
@@ -220,7 +220,11 @@ window.addEventListener("DOMContentLoaded", () => {
         quantity: row.querySelector('input[name="quantity"]').value,
         unitCost: row.querySelector('input[name="unitCost"]').value,
       };
-    }).filter((line) => line.stockSkuId || line.description || line.quantity || line.unitCost);
+    });
+  }
+
+  function collectLines() {
+    return collectLineRows().filter((line) => line.stockSkuId || line.description || line.quantity || line.unitCost);
   }
 
   function collectEvidenceFilesForValidation() {
@@ -265,8 +269,21 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function updateStockLineSummaries(lines) {
+    [...lineItems.querySelectorAll(".stock-line")].forEach((row, index) => {
+      const line = lines[index] || {};
+      const titleText = [line.sku, line.description].filter(Boolean).join(" - ");
+      const lineTotal = toNumber(line.quantity) * toNumber(line.unitCost);
+      const title = row.querySelector("[data-stock-line-title]");
+      const total = row.querySelector("[data-stock-line-total]");
+      if (title) title.textContent = `รายการ ${index + 1} - ${titleText || "ยังไม่ได้กรอก"}`;
+      if (total) total.textContent = `${money(lineTotal)} บาท`;
+    });
+  }
+
   function updatePreview() {
-    const lines = collectLines();
+    const lineRows = collectLineRows();
+    const lines = lineRows.filter((line) => line.stockSkuId || line.description || line.quantity || line.unitCost);
     const total = lines.reduce((sum, line) => sum + (toNumber(line.quantity) * toNumber(line.unitCost)), 0);
     const evidenceCount = evidenceKeys.reduce((sum, key) => {
       const input = form.querySelector(`[name="evidence_${key}"]`);
@@ -274,6 +291,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return sum + existing + (input?.files?.length || 0);
     }, 0);
 
+    updateStockLineSummaries(lineRows);
     receiptNoPreview.textContent = state.receiptNo || state.nextReceipt?.receiptNo || "-";
     lineCountPreview.textContent = String(lines.length);
     totalAmountPreview.textContent = money(total);

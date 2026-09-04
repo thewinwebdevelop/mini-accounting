@@ -32,6 +32,17 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /src="\.\/substitute-receipt\.logic\.browser\.js"/);
 });
 
+test("substitute receipt stock line template is collapsible with a running summary", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const template = html.match(/<template id="stockLineTemplate">([\s\S]*?)<\/template>/)?.[1] ?? "";
+
+  assert.match(template, /<details class="stock-line" open>/);
+  assert.match(template, /<summary class="stock-line-summary">/);
+  assert.match(template, /data-stock-line-title/);
+  assert.match(template, /data-stock-line-total/);
+  assert.match(template, /class="stock-line-fields"/);
+});
+
 test("substitute receipt browser controller loads draft and submitted receipt query targets", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
 
@@ -41,4 +52,12 @@ test("substitute receipt browser controller loads draft and submitted receipt qu
   assert.match(browserLogic, /\/api\/substitute-receipt-vendors/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/approve/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/receive-stock/);
+});
+
+test("substitute receipt browser controller updates stock line summaries", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+
+  assert.match(browserLogic, /function updateStockLineSummaries/);
+  assert.match(browserLogic, /data-stock-line-title/);
+  assert.match(browserLogic, /data-stock-line-total/);
 });
