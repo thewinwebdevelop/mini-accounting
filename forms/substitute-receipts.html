@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>รายการใบรับรองแทนใบเสร็จ - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --warn: #b45309;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, select { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(330px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 9px;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    input, select {
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button.small { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+
+    .panel {
+      overflow: visible;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid #e4e7eb;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    th {
+      color: var(--brand);
+      background: var(--soft);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    .title { font-weight: 800; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .status {
+      display: inline-flex;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status.draft { color: #78350f; background: #fef3c7; }
+    .status.pending_approval { color: #7c2d12; background: #ffedd5; }
+    .status.approved { color: #155e75; background: #cffafe; }
+    .status.received { color: #166534; background: #dcfce7; }
+    .status.cancelled { color: #991b1b; background: #fee2e2; }
+    .actions, .file-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .file-menu { position: relative; }
+    .file-menu[open] { z-index: 50; }
+    .file-menu > summary { list-style: none; }
+    .file-menu > summary::-webkit-details-marker { display: none; }
+    .file-list {
+      position: absolute;
+      right: 0;
+      z-index: 10;
+      display: grid;
+      min-width: 220px;
+      max-width: min(320px, calc(100vw - 32px));
+      max-height: 260px;
+      overflow: auto;
+      margin-top: 6px;
+      padding: 8px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .file-link {
+      padding: 7px 8px;
+      color: var(--brand-strong);
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 800;
+      word-break: break-word;
+    }
+    .file-link:hover { background: var(--soft); }
+    .empty, .error {
+      padding: 28px 18px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .mobile-label { display: none; }
+
+    @media (max-width: 820px) {
+      .topbar { align-items: flex-start; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .filters { display: grid; grid-template-columns: 1fr; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tr { padding: 10px 12px; border-bottom: 1px solid #e4e7eb; }
+      td {
+        display: grid;
+        grid-template-columns: 112px 1fr;
+        gap: 10px;
+        padding: 5px 0;
+        border-bottom: 0;
+      }
+      .mobile-label { display: inline; color: var(--brand); font-size: 12px; font-weight: 800; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+          <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">รายการใบรับรองแทนใบเสร็จ</h1>
+      <p class="brand-subtitle">ติดตามแบบร่าง เอกสารรออนุมัติ และสถานะรับเข้าคลัง</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="toolbar">
+      <div class="filters">
+        <div class="field">
+          <label for="statusFilter">สถานะ</label>
+          <select id="statusFilter">
+            <option value="all">ทั้งหมด</option>
+            <option value="draft">แบบร่าง</option>
+            <option value="pending_approval">รอตรวจอนุมัติ</option>
+            <option value="approved">อนุมัติแล้ว</option>
+            <option value="received">รับเข้าคลังแล้ว</option>
+            <option value="cancelled">ยกเลิก</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="searchText">ค้นหา</label>
+          <input id="searchText" type="search" placeholder="เลขเอกสาร ผู้ขาย หรือชื่อรายการ">
+        </div>
+        <span class="muted" id="listStatus">กำลังโหลดรายการ...</span>
+      </div>
+      <a class="button primary" href="/substitute-receipt">สร้างใบรับรองใหม่</a>
+    </div>
+
+    <section class="panel" aria-label="รายการใบรับรองแทนใบเสร็จทั้งหมด">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 14%;">สถานะ</th>
+            <th style="width: 17%;">เลขเอกสาร/เดือน</th>
+            <th>รายการ</th>
+            <th style="width: 16%;">ผู้รับเงิน</th>
+            <th style="width: 12%;">ยอดรวม</th>
+            <th style="width: 23%;">จัดการ</th>
+          </tr>
+        </thead>
+        <tbody id="substituteReceiptRows"></tbody>
+      </table>
+      <div class="empty" id="emptyState" hidden>ยังไม่มีรายการในเงื่อนไขนี้</div>
+      <div class="error" id="errorState" hidden>โหลดรายการไม่สำเร็จ</div>
+    </section>
+  </main>
+
+  <script src="./substitute-receipts.logic.browser.js"></script>
+</body>
+</html>

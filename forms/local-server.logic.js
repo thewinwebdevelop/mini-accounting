@@ -437,6 +437,26 @@ function buildRequestFileUrl(requestNo, section, fileName) {
   return `/api/expense-requests/${encodeURIComponent(requestNo)}/files/${encodeURIComponent(section)}/${encodeURIComponent(fileName)}`;
 }
 
+function buildSubstituteReceiptFileUrl(receiptNo, section, fileName) {
+  return `/api/substitute-receipts/${encodeURIComponent(receiptNo)}/files/${encodeURIComponent(section)}/${encodeURIComponent(fileName)}`;
+}
+
+async function listSubstituteReceiptPdfFiles(rootDir, folderPath, receiptNo) {
+  const files = await listPdfFiles(rootDir, folderPath);
+  return files.map((file) => ({
+    ...file,
+    url: buildSubstituteReceiptFileUrl(receiptNo, "pdf", file.name),
+  }));
+}
+
+async function listSubstituteReceiptRawFiles(rootDir, folderPath, receiptNo) {
+  const files = await listRawFiles(rootDir, folderPath);
+  return files.map((file) => ({
+    ...file,
+    url: buildSubstituteReceiptFileUrl(receiptNo, "raw", file.name),
+  }));
+}
+
 async function readDriveSyncMetadata(rootDir, folderPath) {
   try {
     return JSON.parse(await readFile(path.join(rootDir, folderPath, "data", "drive-sync.json"), "utf8"));
@@ -1021,15 +1041,26 @@ async function findSubmittedSubstituteReceipts(rootDir) {
       if (entry.name !== "substitute-receipt.json") continue;
       const payload = JSON.parse(await readFile(absolutePath, "utf8"));
       const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
-      const status = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+      const inferredStatus = listStockMovementsByReference(rootDir, "substitute_receipt", payload.receiptNo).length
+        ? "received"
+        : "pending_approval";
+      const status = normalizeSubstituteReceiptStatus(payload.status || inferredStatus);
+      const rawFiles = await listSubstituteReceiptRawFiles(rootDir, folderPath, payload.receiptNo);
+      const pdfFiles = await listSubstituteReceiptPdfFiles(rootDir, folderPath, payload.receiptNo);
       records.push({
         id: payload.receiptNo,
         receiptNo: payload.receiptNo,
         status,
+        receiptTitle: payload.receiptTitle || getRequestTitleFromFolderPath(folderPath, payload.receiptNo),
+        payeeName: payload.payeeName || "",
         folderPath,
         absoluteFolderPath: path.join(rootDir, folderPath),
         accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
         updatedAt: payload.updatedAt || payload.createdAt || "",
+        totalAmount: payload.totals?.totalAmount || "0.00",
+        rawFileCount: rawFiles.length,
+        rawFiles,
+        pdfFiles,
         payload: {
           ...payload,
           status,
@@ -1044,12 +1075,90 @@ async function findSubmittedSubstituteReceipts(rootDir) {
   return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
+function getSubstituteReceiptNextAction(status) {
+  if (status === "pending_approval") return "อนุมัติ";
+  if (status === "approved") return "รับสินค้าเข้าคลัง";
+  if (status === "received") return "ดูเอกสาร";
+  if (status === "draft") return "แก้ไขแบบร่าง";
+  if (status === "cancelled") return "ยกเลิกแล้ว";
+  return "ดูเอกสาร";
+}
+
+async function listSubstituteReceipts(rootDir) {
+  const draftRecords = (await findSubstituteReceiptDraftRecords(rootDir, false)).map((draft) => {
+    const payload = draft.payload || {};
+    const rawFileCount = flattenEvidenceFiles(draft.evidenceFiles).length;
+    return {
+      id: draft.draftId,
+      status: "draft",
+      statusLabel: SUBSTITUTE_RECEIPT_STATUS_LABELS.draft,
+      draftId: draft.draftId,
+      receiptNo: "",
+      receiptTitle: payload.receiptTitle || "ยังไม่ได้ตั้งชื่อ",
+      payeeName: payload.payeeName || "",
+      accountingMonth: payload.accountingMonth || "",
+      updatedAt: draft.updatedAt,
+      totalAmount: payload.totals?.totalAmount || "",
+      rawFileCount,
+      rawFiles: [],
+      folderPath: draft.folderPath,
+      pdfFiles: [],
+      editUrl: `/substitute-receipt?draftId=${encodeURIComponent(draft.draftId)}`,
+      nextAction: getSubstituteReceiptNextAction("draft"),
+    };
+  });
+  const submittedRecords = await findSubmittedSubstituteReceipts(rootDir);
+
+  return [
+    ...draftRecords,
+    ...submittedRecords.map((receipt) => ({
+      id: receipt.receiptNo,
+      status: receipt.status,
+      statusLabel: SUBSTITUTE_RECEIPT_STATUS_LABELS[receipt.status] || receipt.status,
+      draftId: "",
+      receiptNo: receipt.receiptNo,
+      receiptTitle: receipt.receiptTitle,
+      payeeName: receipt.payeeName,
+      accountingMonth: receipt.accountingMonth,
+      updatedAt: receipt.updatedAt,
+      totalAmount: receipt.totalAmount,
+      rawFileCount: receipt.rawFileCount,
+      rawFiles: receipt.rawFiles,
+      folderPath: receipt.folderPath,
+      pdfFiles: receipt.pdfFiles,
+      editUrl: `/substitute-receipt?receiptNo=${encodeURIComponent(receipt.receiptNo)}`,
+      nextAction: getSubstituteReceiptNextAction(receipt.status),
+    })),
+  ].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
 async function getSubmittedSubstituteReceipt(rootDir, receiptNo) {
   if (!receiptNo) throw new Error("Missing substitute receipt number");
   const receipts = await findSubmittedSubstituteReceipts(rootDir);
   const receipt = receipts.find((record) => record.receiptNo === receiptNo);
   if (!receipt) throw new Error("Substitute receipt not found");
   return receipt;
+}
+
+async function getSubstituteReceiptFile({ rootDir, receiptNo, section, fileName }) {
+  if (!receiptNo) throw new Error("Missing substitute receipt number");
+  if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Invalid file name");
+  }
+
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  const baseDir = path.resolve(rootDir, receipt.folderPath, section);
+  const absolutePath = path.resolve(baseDir, fileName);
+  if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    throw new Error("Invalid file name");
+  }
+
+  return {
+    absolutePath,
+    fileName,
+    section,
+  };
 }
 
 function appendSubstituteReceiptStatus(payload, toStatus, note, actor) {
@@ -1218,6 +1327,7 @@ module.exports = {
   approveSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
+  getSubstituteReceiptFile,
   getSubmittedExpenseRequest,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
@@ -1226,6 +1336,7 @@ module.exports = {
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
+  listSubstituteReceipts,
   parseMultipartForm,
   receiveSubstituteReceiptStock,
   saveExpenseDraft,

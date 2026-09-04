@@ -11,6 +11,7 @@ const pages = [
   "inventory.html",
   "inventory-settings.html",
   "substitute-receipt.html",
+  "substitute-receipts.html",
 ];
 
 test("main pages link to substitute receipt creation from the document menu", async () => {
@@ -19,5 +20,7 @@ test("main pages link to substitute receipt creation from the document menu", as
     const menu = html.match(/<nav class="menu-panel" aria-label="เมนูหลัก">([\s\S]*?)<\/nav>/)?.[1] ?? "";
     assert.match(menu, /href="\/substitute-receipt"/, page);
     assert.match(menu, /สร้างใบรับรองแทนใบเสร็จ/, page);
+    assert.match(menu, /href="\/substitute-receipts"/, page);
+    assert.match(menu, /รายการใบรับรองแทนใบเสร็จ/, page);
   }
 });

@@ -21,11 +21,16 @@ const {
   getNextSubstituteReceiptInfo,
   getExpenseDraft,
   getExpenseRequestFile,
+  getSubstituteReceiptDraft,
+  getSubstituteReceiptFile,
+  getSubmittedSubstituteReceipt,
   listExpenseDrafts,
   listExpenseRequests,
+  listSubstituteReceipts,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
+  saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
@@ -77,6 +82,8 @@ function safeStaticPath(urlPath) {
     "/expense-requests/": "/expense-requests.html",
     "/substitute-receipt": "/substitute-receipt.html",
     "/substitute-receipt/": "/substitute-receipt.html",
+    "/substitute-receipts": "/substitute-receipts.html",
+    "/substitute-receipts/": "/substitute-receipts.html",
     "/google-drive": "/google-drive.html",
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
@@ -143,6 +150,26 @@ function parseExpenseRequestFileRoute(urlPath) {
   };
 }
 
+function parseSubstituteReceiptFileRoute(urlPath) {
+  const prefix = "/api/substitute-receipts/";
+  const marker = "/files/";
+  if (!urlPath.startsWith(prefix)) return null;
+
+  const remainder = urlPath.slice(prefix.length);
+  const markerIndex = remainder.indexOf(marker);
+  if (markerIndex === -1) return null;
+
+  const fileRoute = remainder.slice(markerIndex + marker.length);
+  const sectionEnd = fileRoute.indexOf("/");
+  if (sectionEnd === -1) return null;
+
+  return {
+    receiptNo: decodeURIComponent(remainder.slice(0, markerIndex)),
+    section: decodeURIComponent(fileRoute.slice(0, sectionEnd)),
+    fileName: decodeURIComponent(fileRoute.slice(sectionEnd + 1)),
+  };
+}
+
 async function handleExpenseSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
@@ -177,6 +204,25 @@ async function handleSubstituteReceiptSubmission(request, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot save substitute receipt",
+    });
+  }
+}
+
+async function handleSubstituteReceiptDraftSave(request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
+    const payload = JSON.parse(fields.payload || "{}");
+    const result = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload,
+      uploads: files,
+    });
+
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot save substitute receipt draft",
     });
   }
 }
@@ -244,6 +290,25 @@ async function handleExpenseRequestFile(fileRoute, response) {
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "Cannot open expense request file",
+    });
+  }
+}
+
+async function handleSubstituteReceiptFile(fileRoute, response) {
+  try {
+    const file = await getSubstituteReceiptFile({
+      rootDir,
+      receiptNo: fileRoute.receiptNo,
+      section: fileRoute.section,
+      fileName: fileRoute.fileName,
+    });
+    const body = await readFile(file.absolutePath);
+    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "Cannot open substitute receipt file",
     });
   }
 }
@@ -373,6 +438,17 @@ async function handleExpenseRequestList(response) {
   }
 }
 
+async function handleSubstituteReceiptList(response) {
+  try {
+    const result = await listSubstituteReceipts(rootDir);
+    sendJson(response, 200, { receipts: result });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot list substitute receipts",
+    });
+  }
+}
+
 async function handleSubmittedExpenseRequestGet(requestNo, response) {
   try {
     const result = await getSubmittedExpenseRequest(rootDir, requestNo);
@@ -384,6 +460,17 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
   }
 }
 
+async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
+  try {
+    const result = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "Cannot load substitute receipt",
+    });
+  }
+}
+
 async function handleDraftGet(draftId, response) {
   try {
     const result = await getExpenseDraft(rootDir, draftId);
@@ -391,6 +478,17 @@ async function handleDraftGet(draftId, response) {
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "Cannot load draft",
+    });
+  }
+}
+
+async function handleSubstituteReceiptDraftGet(draftId, response) {
+  try {
+    const result = await getSubstituteReceiptDraft(rootDir, draftId);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "Cannot load substitute receipt draft",
     });
   }
 }
@@ -594,6 +692,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/substitute-receipt-drafts") {
+    await handleSubstituteReceiptDraftSave(request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/approve")) {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
@@ -679,6 +782,17 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === "/api/substitute-receipts") {
+      await handleSubstituteReceiptList(response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/substitute-receipts/") && !url.pathname.includes("/files/")) {
+      const receiptNo = decodeURIComponent(url.pathname.replace("/api/substitute-receipts/", ""));
+      await handleSubmittedSubstituteReceiptGet(receiptNo, response);
+      return;
+    }
+
     if (url.pathname.startsWith("/api/expense-requests/") && !url.pathname.includes("/files/")) {
       const requestNo = decodeURIComponent(url.pathname.replace("/api/expense-requests/", ""));
       await handleSubmittedExpenseRequestGet(requestNo, response);
@@ -688,6 +802,12 @@ const server = createServer(async (request, response) => {
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
       await handleExpenseRequestFile(fileRoute, response);
+      return;
+    }
+
+    const substituteReceiptFileRoute = parseSubstituteReceiptFileRoute(url.pathname);
+    if (substituteReceiptFileRoute) {
+      await handleSubstituteReceiptFile(substituteReceiptFileRoute, response);
       return;
     }
 
@@ -719,6 +839,12 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith("/api/expense-drafts/")) {
       const draftId = decodeURIComponent(url.pathname.replace("/api/expense-drafts/", ""));
       await handleDraftGet(draftId, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/substitute-receipt-drafts/")) {
+      const draftId = decodeURIComponent(url.pathname.replace("/api/substitute-receipt-drafts/", ""));
+      await handleSubstituteReceiptDraftGet(draftId, response);
       return;
     }
 

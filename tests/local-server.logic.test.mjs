@@ -29,6 +29,7 @@ const {
   getSubmittedExpenseRequest,
   listExpenseRequests,
   listExpenseDrafts,
+  listSubstituteReceipts,
   parseMultipartForm,
   receiveSubstituteReceiptStock,
   saveExpenseDraft,
@@ -513,6 +514,31 @@ test("saveSubstituteReceiptSubmission submits a draft into pending approval", as
     const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId, { includeSubmitted: true });
     assert.equal(loaded.status, "submitted");
     assert.equal(loaded.submittedReceiptNo, "SR-2026-09-0001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("listSubstituteReceipts combines drafts and submitted state records", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-list-"));
+
+  try {
+    const draft = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({ receiptTitle: "ส่งตรวจแล้ว" }),
+      uploads: validSlipUpload(),
+    });
+
+    const records = await listSubstituteReceipts(rootDir);
+
+    assert.deepEqual(records.map((record) => record.status).sort(), ["draft", "pending_approval"]);
+    assert.equal(records.some((record) => record.draftId === draft.draftId), true);
+    assert.equal(records.some((record) => record.receiptNo === submitted.receiptNo), true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
