@@ -17,6 +17,10 @@ function cleanText(value) {
   return String(value ?? "").trim();
 }
 
+function normalizeSaleSkuCode(value) {
+  return cleanText(value).toUpperCase();
+}
+
 function normalizeHeader(value) {
   return cleanText(value).toLowerCase().replace(/\s+/g, " ");
 }
@@ -191,6 +195,29 @@ function findSaleSku(db, saleSkuCode, platform) {
   return sameRank.length === 1 ? best : null;
 }
 
+function refreshImportSummary(db, importId, timestamp) {
+  const rows = db.prepare(`
+    SELECT match_status
+    FROM platform_order_lines
+    WHERE import_id = ?
+  `).all(importId);
+  const matchedLineCount = rows.filter((line) => line.match_status === "matched").length;
+  const issueCount = rows.filter((line) => (
+    line.match_status !== "matched" && line.match_status !== "skipped_status"
+  )).length;
+  const postableLines = rows.filter((line) => line.match_status !== "skipped_status");
+  const status = postableLines.every((line) => line.match_status === "matched") ? "ready" : "has_issues";
+
+  db.prepare(`
+    UPDATE platform_order_imports
+    SET status = ?,
+        matched_line_count = ?,
+        issue_count = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(status, matchedLineCount, issueCount, timestamp, importId);
+}
+
 function getSaleSkuComponents(db, saleSkuId, lineQuantity) {
   const rows = db.prepare(`
     SELECT
@@ -338,6 +365,40 @@ function assertNoPostedOrderConflicts(db, rows) {
   }
 }
 
+function findUnpostedImportIdsForRows(db, rows) {
+  const importIds = new Set();
+  const checkedOrders = new Set();
+  for (const row of rows) {
+    const key = `${row.platform}:${row.orderNo}`;
+    if (checkedOrders.has(key)) continue;
+    checkedOrders.add(key);
+
+    const existing = db.prepare(`
+      SELECT platform_orders.import_id
+      FROM platform_orders
+      JOIN platform_order_imports ON platform_order_imports.id = platform_orders.import_id
+      WHERE platform_orders.platform = ?
+        AND platform_orders.order_no = ?
+        AND platform_order_imports.status <> 'posted'
+    `).get(row.platform, row.orderNo);
+    if (existing) importIds.add(existing.import_id);
+  }
+  return [...importIds];
+}
+
+function supersedeImports(db, importIds, timestamp) {
+  for (const importId of importIds) {
+    db.prepare(`
+      UPDATE platform_order_imports
+      SET status = 'has_issues',
+          issue_count = CASE WHEN issue_count = 0 THEN 1 ELSE issue_count END,
+          updated_at = ?
+      WHERE id = ?
+        AND status <> 'posted'
+    `).run(timestamp, importId);
+  }
+}
+
 function parsePlatformOrderFile(fileBuffer, options = {}) {
   const text = Buffer.isBuffer(fileBuffer) ? fileBuffer.toString("utf8") : String(fileBuffer ?? "");
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
@@ -357,7 +418,7 @@ function parsePlatformOrderFile(fileBuffer, options = {}) {
     const cells = parseDelimitedLine(line, delimiter);
     const platform = normalizePlatform(cell(cells, headerMap, "platform") || selectedPlatform);
     const orderNo = cell(cells, headerMap, "orderNo");
-    const saleSku = cell(cells, headerMap, "saleSku");
+    const saleSku = normalizeSaleSkuCode(cell(cells, headerMap, "saleSku"));
     const orderCount = (perOrderCounts.get(orderNo) || 0) + 1;
     perOrderCounts.set(orderNo, orderCount);
     const lineNo = cell(cells, headerMap, "lineNo") || String(orderCount);
@@ -469,6 +530,54 @@ function getPostedMovementsForLines(db, lines) {
   return lines.flatMap((line) => getPostedMovementsForLine(db, line));
 }
 
+function existingPlatformOrderMovement(db, referenceNo, stockSkuId) {
+  return db.prepare(`
+    SELECT *
+    FROM stock_movements
+    WHERE reference_type = 'platform_order'
+      AND reference_no = ?
+      AND stock_sku_id = ?
+  `).get(referenceNo, stockSkuId);
+}
+
+function pendingRequirementsForLine(db, line) {
+  const requirements = new Map();
+  const referenceNo = platformOrderReferenceNo(line);
+  for (const component of line.components) {
+    if (existingPlatformOrderMovement(db, referenceNo, component.stockSkuId)) continue;
+    requirements.set(
+      component.stockSkuId,
+      (requirements.get(component.stockSkuId) || 0) + component.requiredQuantity,
+    );
+  }
+  return requirements;
+}
+
+function findInsufficientLinesForPosting(db, lines) {
+  const remainingStockBySku = new Map();
+  const insufficientLineIds = new Set();
+  for (const line of lines) {
+    const requirements = pendingRequirementsForLine(db, line);
+    const entries = [...requirements.entries()];
+    const hasInsufficientStock = entries.some(([stockSkuId, requiredQuantity]) => {
+      if (!remainingStockBySku.has(stockSkuId)) {
+        remainingStockBySku.set(stockSkuId, getQuantityOnHand(db, stockSkuId));
+      }
+      return requiredQuantity > remainingStockBySku.get(stockSkuId);
+    });
+
+    if (hasInsufficientStock) {
+      insufficientLineIds.add(line.id);
+      continue;
+    }
+
+    for (const [stockSkuId, requiredQuantity] of entries) {
+      remainingStockBySku.set(stockSkuId, remainingStockBySku.get(stockSkuId) - requiredQuantity);
+    }
+  }
+  return [...insufficientLineIds];
+}
+
 function postPlatformOrderImport(rootDir, importId, options = {}) {
   return withPlatformDb(rootDir, (db) => {
     const detail = getPlatformOrderImportFromDb(db, importId);
@@ -479,16 +588,38 @@ function postPlatformOrderImport(rootDir, importId, options = {}) {
       };
     }
 
+    if (detail.import.status !== "ready") throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
+
     const blockers = detail.lines.filter((line) => line.postable && line.matchStatus !== "matched");
     if (blockers.length) throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
 
+    let transactionOpen = false;
     try {
       db.exec("BEGIN");
+      transactionOpen = true;
       const timestamp = nowIso(options);
       const movementDate = timestamp.slice(0, 10);
       const postedMovements = [];
+      const matchedLines = detail.lines.filter((item) => item.postable && item.matchStatus === "matched");
+      const insufficientLineIds = findInsufficientLinesForPosting(db, matchedLines.filter((line) => !line.postedAt));
+      if (insufficientLineIds.length) {
+        const updateLine = db.prepare(`
+          UPDATE platform_order_lines
+          SET match_status = 'insufficient_stock',
+              issue_message = ?
+          WHERE id = ?
+            AND posted_at = ''
+        `);
+        for (const lineId of insufficientLineIds) {
+          updateLine.run(issueMessageFor("insufficient_stock"), lineId);
+        }
+        refreshImportSummary(db, detail.import.id, timestamp);
+        db.exec("COMMIT");
+        transactionOpen = false;
+        throw new Error("สต๊อกไม่พอสำหรับรายการที่เลือก");
+      }
 
-      for (const line of detail.lines.filter((item) => item.postable && item.matchStatus === "matched")) {
+      for (const line of matchedLines) {
         if (line.postedAt) {
           postedMovements.push(...getPostedMovementsForLine(db, line));
           continue;
@@ -496,13 +627,7 @@ function postPlatformOrderImport(rootDir, importId, options = {}) {
 
         const referenceNo = platformOrderReferenceNo(line);
         for (const component of line.components) {
-          const existing = db.prepare(`
-            SELECT *
-            FROM stock_movements
-            WHERE reference_type = 'platform_order'
-              AND reference_no = ?
-              AND stock_sku_id = ?
-          `).get(referenceNo, component.stockSkuId);
+          const existing = existingPlatformOrderMovement(db, referenceNo, component.stockSkuId);
           if (existing) {
             postedMovements.push(mapMovement(existing));
             continue;
@@ -548,9 +673,10 @@ function postPlatformOrderImport(rootDir, importId, options = {}) {
         postedMovements,
       };
       db.exec("COMMIT");
+      transactionOpen = false;
       return posted;
     } catch (error) {
-      db.exec("ROLLBACK");
+      if (transactionOpen) db.exec("ROLLBACK");
       throw error;
     }
   });
@@ -561,11 +687,15 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
     const timestamp = nowIso(options);
     const platform = normalizePlatform(file.platform || "manual");
     const parsed = parsePlatformOrderFile(file.fileBuffer, { platform });
+    if (parsed.duplicateKeys.length) {
+      throw new Error(`ไฟล์มีรายการซ้ำ: ${parsed.duplicateKeys.join(", ")}`);
+    }
     const importNo = createImportNo(timestamp, db);
 
     try {
       db.exec("BEGIN");
       assertNoPostedOrderConflicts(db, parsed.rows);
+      const supersededImportIds = findUnpostedImportIdsForRows(db, parsed.rows);
       const importRow = db.prepare(`
         INSERT INTO platform_order_imports (
           import_no, platform, file_name, status, row_count,
@@ -574,6 +704,7 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
         VALUES (?, ?, ?, 'imported', ?, 0, 0, ?, ?)
         RETURNING *
       `).get(importNo, platform, cleanText(file.fileName), parsed.rows.length, timestamp, timestamp);
+      supersedeImports(db, supersededImportIds, timestamp);
 
       const lineRows = [];
       const remainingStockBySku = new Map();
@@ -584,21 +715,7 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
         if (line) lineRows.push(line);
       }
 
-      const matchedLineCount = lineRows.filter((line) => line.match_status === "matched").length;
-      const issueCount = lineRows.filter((line) => (
-        line.match_status !== "matched" && line.match_status !== "skipped_status"
-      )).length;
-      const postableLines = lineRows.filter((line) => line.match_status !== "skipped_status");
-      const status = postableLines.every((line) => line.match_status === "matched") ? "ready" : "has_issues";
-
-      db.prepare(`
-        UPDATE platform_order_imports
-        SET status = ?,
-            matched_line_count = ?,
-            issue_count = ?,
-            updated_at = ?
-        WHERE id = ?
-      `).run(status, matchedLineCount, issueCount, timestamp, importRow.id);
+      refreshImportSummary(db, importRow.id, timestamp);
 
       const detail = getPlatformOrderImportFromDb(db, importRow.id);
       db.exec("COMMIT");

@@ -312,6 +312,104 @@ test("importPlatformOrders rejects re-imports that conflict with posted order li
   }
 });
 
+test("importPlatformOrders rejects duplicate order-line keys before creating an import", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-duplicate-reject-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "DUP-REJECT", name: "เสื้อซ้ำ", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "DUP-REJECT-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "10", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "DUP-REJECT-SALE",
+      displayName: "เสื้อซ้ำ",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const fileBuffer = Buffer.from([
+      "order_no,sale_sku,quantity,line_no",
+      "SP-DUP-001,DUP-REJECT-SALE,1,1",
+      "SP-DUP-001,DUP-REJECT-SALE,1,1",
+    ].join("\n"), "utf8");
+
+    assert.throws(() => importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "duplicate-lines.csv",
+      fileBuffer,
+    }), /duplicate|ซ้ำ/i);
+
+    assert.equal(listPlatformOrderImports(rootDir).length, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders supersedes an older unposted import for the same order", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-supersede-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "SUPERSEDE", name: "เสื้อแทนที่", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "SUPERSEDE-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "SUPERSEDE-SALE",
+      displayName: "เสื้อแทนที่",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const fileBuffer = Buffer.from("order_no,sale_sku,quantity\nSP-SUPERSEDE-001,SUPERSEDE-SALE,1", "utf8");
+    const first = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "first.csv",
+      fileBuffer,
+    }, { now: () => "2026-09-05T09:00:00.000Z" });
+    const second = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "second.csv",
+      fileBuffer,
+    }, { now: () => "2026-09-05T09:10:00.000Z" });
+
+    assert.equal(second.import.status, "ready");
+    assert.equal(getPlatformOrderImport(rootDir, first.import.id).import.status, "has_issues");
+    assert.throws(() => postPlatformOrderImport(rootDir, first.import.id), /ต้องแก้ไข|ready|post/i);
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 5);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders matches lowercase Sale SKU imports to uppercase master codes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-sale-sku-normalize-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "CASE-SALE", name: "เสื้อตัวพิมพ์", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "CASE-SALE-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "3", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "CASE-SALE-SKU",
+      displayName: "เสื้อตัวพิมพ์",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const detail = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "lowercase.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-CASE-001,case-sale-sku,1", "utf8"),
+    });
+    const posted = postPlatformOrderImport(rootDir, detail.import.id, {
+      now: () => "2026-09-05T13:00:00.000Z",
+    });
+
+    assert.equal(detail.import.status, "ready");
+    assert.equal(detail.lines[0].saleSku, "CASE-SALE-SKU");
+    assert.equal(posted.postedMovements[0].referenceNo, "shopee:SP-CASE-001:1:CASE-SALE-SKU");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("postPlatformOrderImport creates sale_out movements for bundle components", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-post-"));
 
@@ -374,6 +472,60 @@ test("postPlatformOrderImport creates sale_out movements for bundle components",
         referenceNo: "tiktok:TT-9001:1:POST-SET",
       },
     ]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("postPlatformOrderImport rechecks shared stock before posting stale ready imports", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-post-recheck-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "POST-RECHECK", name: "เสื้อเช็คซ้ำ", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "POST-RECHECK-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "POST-RECHECK-SALE",
+      displayName: "เสื้อเช็คซ้ำ",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const first = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "first-ready.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-RECHECK-001,POST-RECHECK-SALE,3", "utf8"),
+    });
+    const second = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "second-ready.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-RECHECK-002,POST-RECHECK-SALE,3", "utf8"),
+    });
+
+    assert.equal(first.import.status, "ready");
+    assert.equal(second.import.status, "ready");
+    postPlatformOrderImport(rootDir, first.import.id, {
+      now: () => "2026-09-05T14:00:00.000Z",
+    });
+
+    assert.throws(() => postPlatformOrderImport(rootDir, second.import.id, {
+      now: () => "2026-09-05T14:05:00.000Z",
+    }), /สต๊อกไม่พอ|stock/i);
+
+    const reloadedSecond = getPlatformOrderImport(rootDir, second.import.id);
+    assert.equal(reloadedSecond.import.status, "has_issues");
+    assert.equal(reloadedSecond.lines[0].matchStatus, "insufficient_stock");
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 2);
+    withInventoryDatabase(rootDir, (db) => {
+      const secondSaleOutCount = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM stock_movements
+        WHERE reference_type = 'platform_order'
+          AND reference_no = 'shopee:SP-RECHECK-002:1:POST-RECHECK-SALE'
+          AND movement_type = 'sale_out'
+      `).get().count;
+      assert.equal(secondSaleOutCount, 0);
+    });
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
