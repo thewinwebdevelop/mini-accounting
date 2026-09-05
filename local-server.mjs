@@ -70,6 +70,12 @@ const {
 const {
   generateCurrentStockPdf,
 } = require("./forms/inventory-report.logic.js");
+const {
+  getPlatformOrderImport,
+  importPlatformOrders,
+  listPlatformOrderImports,
+  postPlatformOrderImport,
+} = require("./forms/platform-orders.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -124,6 +130,8 @@ function safeStaticPath(urlPath) {
     "/inventory-settings/": "/inventory-settings.html",
     "/sale-skus": "/sale-skus.html",
     "/sale-skus/": "/sale-skus.html",
+    "/platform-orders": "/platform-orders.html",
+    "/platform-orders/": "/platform-orders.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
@@ -723,6 +731,48 @@ async function handleInventorySaleSkuUpdate(saleSkuId, request, response) {
   }
 }
 
+async function handlePlatformOrderImportList(response) {
+  try {
+    sendJson(response, 200, { imports: listPlatformOrderImports(rootDir) });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot list platform order imports" });
+  }
+}
+
+async function handlePlatformOrderImportDetail(importId, response) {
+  try {
+    sendJson(response, 200, getPlatformOrderImport(rootDir, importId));
+  } catch (error) {
+    sendJson(response, 404, { error: error.message || "Cannot load platform order import" });
+  }
+}
+
+async function handlePlatformOrderImportCreate(request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
+    const file = files.find((upload) => upload.evidenceKey === "file") || files[0];
+    if (!file?.buffer?.length) throw new Error("เลือกไฟล์ order");
+    const platform = fields.platform || request.headers["x-platform"] || "manual";
+    const result = importPlatformOrders(rootDir, {
+      platform,
+      fileName: file.originalName || "orders.csv",
+      fileBuffer: file.buffer,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot import platform orders" });
+  }
+}
+
+async function handlePlatformOrderImportPost(importId, response) {
+  try {
+    sendJson(response, 200, postPlatformOrderImport(rootDir, importId));
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot post platform order import" });
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -903,6 +953,17 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/platform-orders/imports") {
+    await handlePlatformOrderImportCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/platform-orders/imports/") && url.pathname.endsWith("/post")) {
+    const importId = decodeURIComponent(url.pathname.replace("/api/platform-orders/imports/", "").replace("/post", ""));
+    await handlePlatformOrderImportPost(importId, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname.startsWith("/api/inventory/products/") && url.pathname.endsWith("/image")) {
     const productId = decodeURIComponent(url.pathname
       .replace("/api/inventory/products/", "")
@@ -1065,6 +1126,17 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/inventory/sale-skus") {
       await handleInventorySaleSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/platform-orders/imports") {
+      await handlePlatformOrderImportList(response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/platform-orders/imports/")) {
+      const importId = decodeURIComponent(url.pathname.replace("/api/platform-orders/imports/", ""));
+      await handlePlatformOrderImportDetail(importId, response);
       return;
     }
 

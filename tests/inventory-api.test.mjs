@@ -213,6 +213,45 @@ test("inventory APIs create product, SKU, purchase-in, balance, and stock card r
     const saleSkus = await requestJson(baseUrl, "/api/inventory/sale-skus?search=Shopee");
     assert.equal(saleSkus.saleSkus.length, 1);
     assert.equal(saleSkus.saleSkus[0].platformVariationId, "SP-BLACK-M");
+
+    const { saleSku: apiSaleSku } = await requestJson(baseUrl, "/api/inventory/sale-skus", {
+      method: "POST",
+      body: JSON.stringify({
+        saleSku: "API-SET",
+        displayName: "API ชุด",
+        platform: "shopee",
+        components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+      }),
+    });
+    assert.equal(apiSaleSku.saleSku, "API-SET");
+
+    const orderUpload = multipartBody("file", "orders.csv", "text/csv", [
+      "order_no,sale_sku,quantity",
+      "SP-API-001,API-SET,1",
+    ].join("\n"));
+
+    const orderImport = await requestJson(baseUrl, "/api/platform-orders/imports", {
+      method: "POST",
+      headers: {
+        "content-type": orderUpload.contentType,
+        "x-platform": "shopee",
+      },
+      body: orderUpload.body,
+    });
+
+    assert.equal(orderImport.import.status, "ready");
+    assert.equal(orderImport.lines[0].saleSku, "API-SET");
+
+    const orderImports = await requestJson(baseUrl, "/api/platform-orders/imports");
+    assert.equal(orderImports.imports[0].importNo, orderImport.import.importNo);
+
+    const orderDetail = await requestJson(baseUrl, `/api/platform-orders/imports/${orderImport.import.id}`);
+    assert.equal(orderDetail.import.id, orderImport.import.id);
+
+    const postedImport = await requestJson(baseUrl, `/api/platform-orders/imports/${orderImport.import.id}/post`, {
+      method: "POST",
+    });
+    assert.equal(postedImport.import.status, "posted");
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));
