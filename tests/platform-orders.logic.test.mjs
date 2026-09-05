@@ -15,6 +15,7 @@ const {
   importPlatformOrders,
   listPlatformOrderImports,
   normalizePlatform,
+  postPlatformOrderImport,
   parsePlatformOrderFile,
 } = platformOrders;
 
@@ -299,6 +300,107 @@ test("importPlatformOrders rejects re-imports that conflict with posted order li
     assert.equal(loaded.import.status, "posted");
     assert.equal(loaded.orders.length, 1);
     assert.equal(loaded.lines.length, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("postPlatformOrderImport creates sale_out movements for bundle components", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-post-"));
+
+  try {
+    const top = createProduct(rootDir, { productCode: "TOP-POST", name: "เสื้อโพสต์", category: "เสื้อ" });
+    const skirt = createProduct(rootDir, { productCode: "SKIRT-POST", name: "กระโปรงโพสต์", category: "กระโปรง" });
+    const topSku = createStockSku(rootDir, { productId: top.id, sku: "TOP-POST-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    const skirtSku = createStockSku(rootDir, { productId: skirt.id, sku: "SKIRT-POST-BLACK-M", color: "ดำ", size: "M", defaultUnitCost: "150" });
+    createPurchaseInMovement(rootDir, { stockSkuId: topSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createPurchaseInMovement(rootDir, { stockSkuId: skirtSku.id, quantity: "5", unitCost: "150", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "POST-SET",
+      displayName: "ชุดพร้อมส่ง",
+      platform: "tiktok",
+      components: [
+        { stockSkuId: topSku.id, quantity: "1" },
+        { stockSkuId: skirtSku.id, quantity: "1" },
+      ],
+    });
+
+    const detail = importPlatformOrders(rootDir, {
+      platform: "tiktok",
+      fileName: "post-orders.tsv",
+      fileBuffer: Buffer.from("order id\tseller sku\tqty\nTT-9001\tPOST-SET\t2", "utf8"),
+    }, {
+      now: () => "2026-09-05T10:00:00.000Z",
+    });
+
+    const posted = postPlatformOrderImport(rootDir, detail.import.id, {
+      now: () => "2026-09-05T10:05:00.000Z",
+    });
+
+    assert.equal(posted.import.status, "posted");
+    assert.equal(posted.lines[0].postedAt, "2026-09-05T10:05:00.000Z");
+
+    const movements = posted.postedMovements;
+    assert.deepEqual(movements.map((movement) => ({
+      stockSkuId: movement.stockSkuId,
+      movementType: movement.movementType,
+      quantity: movement.quantity,
+      referenceType: movement.referenceType,
+      referenceNo: movement.referenceNo,
+    })), [
+      {
+        stockSkuId: topSku.id,
+        movementType: "sale_out",
+        quantity: 2,
+        referenceType: "platform_order",
+        referenceNo: "tiktok:TT-9001:1:POST-SET",
+      },
+      {
+        stockSkuId: skirtSku.id,
+        movementType: "sale_out",
+        quantity: 2,
+        referenceType: "platform_order",
+        referenceNo: "tiktok:TT-9001:1:POST-SET",
+      },
+    ]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("postPlatformOrderImport is idempotent and blocks batches with postable issues", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-idempotent-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "TOP-IDEMP", name: "เสื้อกันซ้ำ", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "TOP-IDEMP-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "90" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "3", unitCost: "90", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "IDEMP-TOP",
+      displayName: "เสื้อกันซ้ำ",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const ready = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "ready.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-3001,IDEMP-TOP,1", "utf8"),
+    });
+
+    postPlatformOrderImport(rootDir, ready.import.id);
+    const postedAgain = postPlatformOrderImport(rootDir, ready.import.id);
+
+    assert.equal(postedAgain.postedMovements.length, 1);
+    assert.equal(postedAgain.import.status, "posted");
+
+    const bad = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "bad.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-3002,UNKNOWN,1", "utf8"),
+    });
+
+    assert.throws(() => postPlatformOrderImport(rootDir, bad.import.id), /ยังมีรายการที่ต้องแก้ไข/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

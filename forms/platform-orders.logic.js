@@ -133,6 +133,33 @@ function createImportNo(timestamp, db) {
   return `POI-${datePart}-${String(count + 1).padStart(4, "0")}`;
 }
 
+function createMovementNo(movementDate, db) {
+  const prefix = `MOV-${movementDate.replace(/-/g, "")}`;
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM stock_movements
+    WHERE movement_no LIKE ?
+  `).get(`${prefix}-%`);
+  return `${prefix}-${String(Number(row.count || 0) + 1).padStart(4, "0")}`;
+}
+
+function mapMovement(row) {
+  return {
+    id: row.id,
+    movementNo: row.movement_no,
+    stockSkuId: row.stock_sku_id,
+    movementType: row.movement_type,
+    movementDate: row.movement_date,
+    quantity: row.quantity,
+    unitCost: row.unit_cost,
+    totalCost: row.total_cost,
+    referenceType: row.reference_type,
+    referenceNo: row.reference_no,
+    note: row.note,
+    createdAt: row.created_at,
+  };
+}
+
 function getQuantityOnHand(db, stockSkuId) {
   const row = db.prepare(`
     SELECT COALESCE(SUM(CASE
@@ -357,6 +384,8 @@ function mapLine(row, components = []) {
     id: row.id,
     importId: row.import_id,
     orderId: row.order_id,
+    platform: row.platform,
+    orderNo: row.order_no,
     lineNo: row.line_no,
     saleSku: row.sale_sku,
     displayName: row.display_name,
@@ -386,10 +415,14 @@ function getPlatformOrderImportFromDb(db, importId) {
   `).all(id);
 
   const lineRows = db.prepare(`
-    SELECT *
+    SELECT
+      platform_order_lines.*,
+      platform_orders.platform,
+      platform_orders.order_no
     FROM platform_order_lines
-    WHERE import_id = ?
-    ORDER BY order_id ASC, line_no ASC, id ASC
+    JOIN platform_orders ON platform_orders.id = platform_order_lines.order_id
+    WHERE platform_order_lines.import_id = ?
+    ORDER BY platform_order_lines.order_id ASC, platform_order_lines.line_no ASC, platform_order_lines.id ASC
   `).all(id);
 
   return {
@@ -412,6 +445,80 @@ function listPlatformOrderImports(rootDir) {
     FROM platform_order_imports
     ORDER BY created_at DESC, id DESC
   `).all().map(mapImport));
+}
+
+function postPlatformOrderImport(rootDir, importId, options = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    try {
+      db.exec("BEGIN");
+
+      const detail = getPlatformOrderImportFromDb(db, importId);
+      const blockers = detail.lines.filter((line) => line.postable && line.matchStatus !== "matched");
+      if (blockers.length) throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
+
+      const timestamp = nowIso(options);
+      const movementDate = timestamp.slice(0, 10);
+      const postedMovements = [];
+
+      for (const line of detail.lines.filter((item) => item.postable && item.matchStatus === "matched")) {
+        for (const component of line.components) {
+          const referenceNo = `${line.platform}:${line.orderNo}:${line.lineNo}:${line.saleSku}`;
+          const existing = db.prepare(`
+            SELECT *
+            FROM stock_movements
+            WHERE reference_type = 'platform_order'
+              AND reference_no = ?
+              AND stock_sku_id = ?
+          `).get(referenceNo, component.stockSkuId);
+          if (existing) {
+            postedMovements.push(mapMovement(existing));
+            continue;
+          }
+
+          const movementNo = createMovementNo(movementDate, db);
+          const unitCost = Number(component.unitCost || 0);
+          const totalCost = Math.round(unitCost * component.requiredQuantity * 100) / 100;
+          const inserted = db.prepare(`
+            INSERT INTO stock_movements (
+              movement_no, stock_sku_id, movement_type, movement_date, quantity,
+              unit_cost, total_cost, reference_type, reference_no, note, created_at
+            )
+            VALUES (?, ?, 'sale_out', ?, ?, ?, ?, 'platform_order', ?, ?, ?)
+            RETURNING *
+          `).get(
+            movementNo,
+            component.stockSkuId,
+            movementDate,
+            component.requiredQuantity,
+            unitCost,
+            totalCost,
+            referenceNo,
+            `Platform order import ${detail.import.importNo}`,
+            timestamp,
+          );
+          postedMovements.push(mapMovement(inserted));
+        }
+
+        db.prepare("UPDATE platform_order_lines SET posted_at = ? WHERE id = ?").run(timestamp, line.id);
+      }
+
+      db.prepare(`
+        UPDATE platform_order_imports
+        SET status = 'posted', posted_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(timestamp, timestamp, detail.import.id);
+
+      const posted = {
+        ...getPlatformOrderImportFromDb(db, importId),
+        postedMovements,
+      };
+      db.exec("COMMIT");
+      return posted;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  });
 }
 
 function importPlatformOrders(rootDir, file = {}, options = {}) {
@@ -473,5 +580,6 @@ module.exports = {
   importPlatformOrders,
   listPlatformOrderImports,
   normalizePlatform,
+  postPlatformOrderImport,
   parsePlatformOrderFile,
 };
