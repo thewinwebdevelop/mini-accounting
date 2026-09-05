@@ -107,13 +107,25 @@ def baht_text(value):
     return ("ลบ" if negative else "") + result
 
 
+def _preparer_signature_cell(name=""):
+    name_line = f"({name})" if name else "(........................................)"
+    return [
+        Paragraph("ลงชื่อผู้จ่ายเงิน/ผู้รับรอง", styles["DocBody"]),
+        Spacer(1, 8 * mm),
+        Paragraph("........................................", styles["DocBody"]),
+        blank_paragraph(name_line, "DocSmall"),
+        blank_paragraph("ตำแหน่ง........................................", "DocSmall"),
+        Paragraph("วันที่ ........../........../..........", styles["DocSmall"]),
+    ]
+
+
 def _substitute_signature_table(payload):
     prepared_by = payload.get("preparedBy") or payload.get("requesterName") or ""
     rows = [[
-        signature_cell("ผู้จ่ายเงิน/ผู้รับรอง", prepared_by),
+        _preparer_signature_cell(prepared_by),
         signature_cell("ผู้อนุมัติ"),
     ]]
-    table = Table(rows, colWidths=[91 * mm, 91 * mm], rowHeights=[36 * mm], hAlign="LEFT")
+    table = Table(rows, colWidths=[91 * mm, 91 * mm], rowHeights=[40 * mm], hAlign="LEFT")
     table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -223,39 +235,43 @@ def build_substitute_receipt_story(payload):
     if is_stock_purchase:
         item_rows = [[
             paragraph("ลำดับ"), paragraph("Stock SKU"), paragraph("รายละเอียด"),
-            paragraph("จำนวน"), paragraph("ต้นทุน/หน่วย"), paragraph("ยอดรวม"),
+            paragraph("จำนวน"), paragraph("ต้นทุน/หน่วย"), paragraph("ยอดรวม"), paragraph("หมายเหตุ"),
         ]]
         for index, line in enumerate(lines, 1):
             item_rows.append([
                 paragraph(index), paragraph(line.get("sku")), paragraph(line.get("description")),
                 paragraph(line.get("quantity")), money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
+                paragraph("-"),
             ])
-        col_widths = [11 * mm, 38 * mm, 65 * mm, 18 * mm, 25 * mm, 25 * mm]
+        col_widths = [10 * mm, 32 * mm, 60 * mm, 14 * mm, 22 * mm, 24 * mm, 20 * mm]
         align_right_cols = [3, 4, 5]
     else:
         item_rows = [[
-            paragraph("ลำดับ"), paragraph("รายละเอียด"), paragraph("จำนวน"),
-            paragraph("ราคา/หน่วย"), paragraph("ยอดรวม"),
+            paragraph("ลำดับ"), paragraph("รายละเอียดรายจ่าย"), paragraph("จำนวน"),
+            paragraph("ราคา/หน่วย"), paragraph("ยอดรวม"), paragraph("หมายเหตุ"),
         ]]
         for index, line in enumerate(lines, 1):
             item_rows.append([
                 paragraph(index), paragraph(line.get("description")),
                 paragraph(line.get("quantity")), money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
+                paragraph("-"),
             ])
-        col_widths = [13 * mm, 81 * mm, 20 * mm, 30 * mm, 38 * mm]
+        col_widths = [11 * mm, 63 * mm, 18 * mm, 27 * mm, 33 * mm, 30 * mm]
         align_right_cols = [2, 3, 4]
 
     total_amount = totals.get("totalAmount")
     story.extend([
-        styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols),
+        styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols, header_shade=False),
         Spacer(1, 4),
         _totals_box(total_amount),
         Spacer(1, 10),
         Paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}", styles["DocBody"]),
         Spacer(1, 6),
         Paragraph(
-            "ข้าพเจ้าขอรับรองว่ารายการข้างต้นเป็นค่าใช้จ่ายที่เกิดขึ้นจริงเพื่อกิจการ "
-            "ผู้ขายไม่ได้ออกใบเสร็จรับเงินให้ และได้แนบหลักฐานการชำระเงิน/การสั่งซื้อประกอบไว้ในชุดเอกสารนี้",
+            f"ข้าพเจ้าขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ "
+            f"และข้าพเจ้าได้จ่ายไปในงานของทาง {company['name']} โดยแท้ "
+            f"ตั้งแต่วันที่ {thai_date(payload.get('receiptDate'))} ถึงวันที่ {thai_date(payload.get('receiptDate'))} "
+            "ทั้งนี้ ได้แนบหลักฐานการชำระเงิน/การสั่งซื้อประกอบไว้ในชุดเอกสารนี้แล้ว",
             styles["DocBody"],
         ),
         Spacer(1, 12),

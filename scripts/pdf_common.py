@@ -165,7 +165,7 @@ def append_pdf(writer, path):
         writer.add_page(page)
 
 
-def styled_table(rows, col_widths=None, header=True, align_right_cols=None):
+def styled_table(rows, col_widths=None, header=True, align_right_cols=None, header_shade=True):
     table = Table(rows, colWidths=col_widths, repeatRows=1 if header else 0, hAlign="LEFT")
     commands = [
         ("FONTNAME", (0, 0), (-1, -1), FONT),
@@ -178,7 +178,7 @@ def styled_table(rows, col_widths=None, header=True, align_right_cols=None):
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]
-    if header:
+    if header and header_shade:
         commands.extend([
             ("BACKGROUND", (0, 0), (-1, 0), BRAND_2),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
