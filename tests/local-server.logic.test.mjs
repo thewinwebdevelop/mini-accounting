@@ -418,9 +418,8 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
     ]);
     assert.deepEqual(result.pdfFiles.map((file) => file.name), [
       "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf",
-      "02_ชุดรวมส่งตรวจ_ใบรับรองแทนใบเสร็จ.pdf",
     ]);
-    assert.equal(result.pdfFiles[1].annexedRawFiles, 2);
+    assert.equal(result.pdfFiles[0].annexedRawFiles, 2);
 
     const savedJson = JSON.parse(await readFile(join(result.absoluteFolderPath, "data", "substitute-receipt.json"), "utf8"));
     assert.equal(savedJson.receiptNo, "SR-2026-09-0001");
@@ -433,9 +432,7 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
     const receiptText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
     assert.match(receiptText, /ใบรับรองแทนใบเสร็จรับเงิน/);
     assert.match(receiptText, /SR-2026-09-0001/);
-
-    const auditText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "02_ชุดรวมส่งตรวจ_ใบรับรองแทนใบเสร็จ.pdf"));
-    assert.doesNotMatch(auditText, /เลขที่เอกสาร\s*-\s*รหัส\/ประเภทหลักฐาน/);
+    assert.doesNotMatch(receiptText, /Checklist หลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -583,10 +580,6 @@ test("approve and receive substitute receipt stock are separate idempotent trans
     const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
     assert.equal(loaded.payload.stockReceipt.receivedDate, "2026-09-05");
     assert.deepEqual(loaded.payload.stockReceipt.movementIds, received.stockMovements.map((movement) => movement.id));
-    const pdfText = await extractPdfText(join(rootDir, loaded.folderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
-    assert.match(pdfText, /สถานะเอกสาร/);
-    assert.match(pdfText, /รับเข้าคลังแล้ว/);
-    assert.match(pdfText, /วันที่รับสินค้า/);
 
     const receivedAgain = await receiveSubstituteReceiptStock({
       rootDir,

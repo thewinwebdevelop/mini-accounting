@@ -117,7 +117,7 @@ test("substitute receipt APIs return next number and submit stock purchase recei
     assert.equal(submitted.receiptNo, "SR-2026-09-0001");
     assert.equal(submitted.status, "pending_approval");
     assert.equal(submitted.rawFiles[0].storedName, "B1_payment-slip_001.txt");
-    assert.equal(submitted.pdfFiles.length, 2);
+    assert.equal(submitted.pdfFiles.length, 1);
     assert.equal(submitted.stockMovements.length, 0);
 
     const stockCard = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
