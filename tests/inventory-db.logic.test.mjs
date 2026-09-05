@@ -28,6 +28,9 @@ test("ensureInventorySchema creates inventory database tables", async () => {
     assert.deepEqual(tableNames.filter((name) => !name.startsWith("sqlite_")), [
       "bundle_components",
       "inventory_schema_migrations",
+      "platform_order_imports",
+      "platform_order_lines",
+      "platform_orders",
       "product_categories",
       "products",
       "sale_skus",
@@ -44,6 +47,50 @@ test("ensureInventorySchema creates inventory database tables", async () => {
     assert.deepEqual(categories.slice(0, 6), ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"]);
 
     assert.equal((await stat(dbPath)).isFile(), true);
+    db.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory schema creates platform order import tables", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-schema-"));
+
+  try {
+    const db = openInventoryDatabase(rootDir);
+    ensureInventorySchema(db);
+
+    const tables = db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+      ORDER BY name
+    `).all().map((row) => row.name);
+
+    assert.equal(tables.includes("platform_order_imports"), true);
+    assert.equal(tables.includes("platform_orders"), true);
+    assert.equal(tables.includes("platform_order_lines"), true);
+
+    const importColumns = db.prepare("PRAGMA table_info(platform_order_imports)").all().map((column) => column.name);
+    assert.deepEqual(importColumns, [
+      "id",
+      "import_no",
+      "platform",
+      "file_name",
+      "status",
+      "row_count",
+      "matched_line_count",
+      "issue_count",
+      "posted_at",
+      "created_at",
+      "updated_at",
+    ]);
+
+    const lineColumns = db.prepare("PRAGMA table_info(platform_order_lines)").all().map((column) => column.name);
+    assert.equal(lineColumns.includes("match_status"), true);
+    assert.equal(lineColumns.includes("posted_at"), true);
+    assert.equal(lineColumns.includes("issue_message"), true);
+
     db.close();
   } finally {
     await rm(rootDir, { recursive: true, force: true });

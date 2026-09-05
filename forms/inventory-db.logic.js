@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -115,6 +115,63 @@ function ensureInventorySchema(db) {
       UNIQUE (sale_sku_id, stock_sku_id),
       CHECK (quantity > 0)
     );
+
+    CREATE TABLE IF NOT EXISTS platform_order_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_no TEXT NOT NULL UNIQUE,
+      platform TEXT NOT NULL DEFAULT 'manual',
+      file_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'imported',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      matched_line_count INTEGER NOT NULL DEFAULT 0,
+      issue_count INTEGER NOT NULL DEFAULT 0,
+      posted_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (platform IN ('shopee', 'tiktok', 'manual')),
+      CHECK (status IN ('imported', 'ready', 'has_issues', 'posted'))
+    );
+
+    CREATE TABLE IF NOT EXISTS platform_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_id INTEGER NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'manual',
+      order_no TEXT NOT NULL,
+      order_date TEXT NOT NULL DEFAULT '',
+      order_status TEXT NOT NULL DEFAULT '',
+      buyer_name TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (import_id) REFERENCES platform_order_imports(id),
+      UNIQUE (platform, order_no),
+      CHECK (platform IN ('shopee', 'tiktok', 'manual'))
+    );
+
+    CREATE TABLE IF NOT EXISTS platform_order_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      line_no TEXT NOT NULL,
+      sale_sku TEXT NOT NULL,
+      display_name TEXT NOT NULL DEFAULT '',
+      quantity INTEGER NOT NULL DEFAULT 0,
+      sale_sku_id INTEGER,
+      match_status TEXT NOT NULL DEFAULT 'missing_sale_sku',
+      issue_message TEXT NOT NULL DEFAULT '',
+      posted_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (import_id) REFERENCES platform_order_imports(id),
+      FOREIGN KEY (order_id) REFERENCES platform_orders(id),
+      FOREIGN KEY (sale_sku_id) REFERENCES sale_skus(id),
+      UNIQUE (order_id, line_no, sale_sku),
+      CHECK (quantity >= 0),
+      CHECK (match_status IN ('matched', 'missing_sale_sku', 'invalid_quantity', 'insufficient_stock', 'skipped_status'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_platform_order_imports_status
+      ON platform_order_imports (status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_platform_order_lines_import
+      ON platform_order_lines (import_id, match_status);
   `);
 
   addColumnIfMissing(db, "products", "image_path", "TEXT NOT NULL DEFAULT ''");
