@@ -34,11 +34,12 @@
   - Next suggested task after completion: create product flow from stock list.
 - [x] Add new product flow from stock list: menu/button opens the existing create parent/child product workflow from the list experience.
   - Next suggested task after completion: import platform orders and deduct stock.
+- [x] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
+  - Next suggested task after completion: Shopee/TikTok fee summary.
 
 ## Current
 
-- [ ] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
-  - Next suggested task after completion: Shopee/TikTok fee summary.
+- [ ] Shopee/TikTok fee summary.
 
 ## Requested Next
 
@@ -49,6 +50,3 @@
   - Next suggested task after completion: Sale SKU / Bundle SKU mapping.
 
 ## Upcoming
-
-- [ ] Shopee/TikTok order import, fee summary, and automatic stock deduction.
-  - Next suggested task after completion: monthly revenue, platform fee, and tax-ready accounting reports.
