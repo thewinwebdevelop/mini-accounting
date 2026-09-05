@@ -75,6 +75,200 @@ function isSkippedStatus(status) {
   return /cancel|cancelled|canceled|refund|refunded|ยกเลิก|คืนเงิน/i.test(status || "");
 }
 
+function nowIso(options = {}) {
+  return options.now ? options.now() : new Date().toISOString();
+}
+
+function withPlatformDb(rootDir, fn) {
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+function mapImport(row) {
+  return {
+    id: row.id,
+    importNo: row.import_no,
+    platform: row.platform,
+    fileName: row.file_name,
+    status: row.status,
+    rowCount: row.row_count,
+    matchedLineCount: row.matched_line_count,
+    issueCount: row.issue_count,
+    postedAt: row.posted_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapOrder(row) {
+  return {
+    id: row.id,
+    importId: row.import_id,
+    platform: row.platform,
+    orderNo: row.order_no,
+    orderDate: row.order_date,
+    orderStatus: row.order_status,
+    buyerName: row.buyer_name,
+    createdAt: row.created_at,
+  };
+}
+
+function createImportNo(timestamp, db) {
+  const datePart = timestamp.slice(0, 10).replace(/-/g, "");
+  const count = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM platform_order_imports
+    WHERE import_no LIKE ?
+  `).get(`POI-${datePart}-%`).count;
+  return `POI-${datePart}-${String(count + 1).padStart(4, "0")}`;
+}
+
+function getQuantityOnHand(db, stockSkuId) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(CASE
+      WHEN movement_type IN ('purchase_in', 'return_in', 'adjustment_in') THEN quantity
+      WHEN movement_type IN ('sale_out', 'adjustment_out') THEN -quantity
+      ELSE 0
+    END), 0) AS quantity_on_hand
+    FROM stock_movements
+    WHERE stock_sku_id = ?
+  `).get(stockSkuId);
+  return Number(row.quantity_on_hand || 0);
+}
+
+function findSaleSku(db, saleSkuCode, platform) {
+  const rows = db.prepare(`
+    SELECT *
+    FROM sale_skus
+    WHERE sale_sku = ?
+      AND status = 'active'
+    ORDER BY CASE WHEN platform = ? THEN 0 WHEN platform = 'manual' THEN 1 ELSE 2 END, id ASC
+  `).all(saleSkuCode, platform);
+  if (rows.length === 0) return null;
+  const best = rows[0];
+  const sameRank = rows.filter((row) => row.platform === best.platform);
+  return sameRank.length === 1 ? best : null;
+}
+
+function getSaleSkuComponents(db, saleSkuId, lineQuantity) {
+  const rows = db.prepare(`
+    SELECT
+      bundle_components.stock_sku_id,
+      bundle_components.quantity AS component_quantity,
+      stock_skus.sku,
+      stock_skus.color,
+      stock_skus.size,
+      stock_skus.default_unit_cost,
+      products.product_code,
+      products.name AS product_name
+    FROM bundle_components
+    JOIN stock_skus ON stock_skus.id = bundle_components.stock_sku_id
+    JOIN products ON products.id = stock_skus.product_id
+    WHERE bundle_components.sale_sku_id = ?
+    ORDER BY bundle_components.id ASC
+  `).all(saleSkuId);
+
+  return rows.map((row) => {
+    const quantityOnHand = getQuantityOnHand(db, row.stock_sku_id);
+    return {
+      stockSkuId: row.stock_sku_id,
+      sku: row.sku,
+      color: row.color,
+      size: row.size,
+      productCode: row.product_code,
+      productName: row.product_name,
+      componentQuantity: row.component_quantity,
+      requiredQuantity: row.component_quantity * lineQuantity,
+      quantityOnHand,
+      unitCost: row.default_unit_cost,
+    };
+  });
+}
+
+function issueMessageFor(matchStatus) {
+  return {
+    invalid_quantity: "จำนวนไม่ถูกต้อง",
+    missing_sale_sku: "ไม่พบ Sale SKU ที่ตรงกัน",
+    insufficient_stock: "สต๊อกไม่พอ",
+    skipped_status: "ข้ามตามสถานะคำสั่งซื้อ",
+  }[matchStatus] || "";
+}
+
+function classifyLine(db, row) {
+  if (row.skipped) return { matchStatus: "skipped_status", saleSkuId: null, components: [] };
+  if (row.quantity <= 0) return { matchStatus: "invalid_quantity", saleSkuId: null, components: [] };
+
+  const saleSku = findSaleSku(db, row.saleSku, row.platform);
+  if (!saleSku) return { matchStatus: "missing_sale_sku", saleSkuId: null, components: [] };
+
+  const components = getSaleSkuComponents(db, saleSku.id, row.quantity);
+  const hasInsufficientStock = components.some((component) => component.requiredQuantity > component.quantityOnHand);
+  return {
+    matchStatus: hasInsufficientStock ? "insufficient_stock" : "matched",
+    saleSkuId: saleSku.id,
+    components,
+  };
+}
+
+function upsertPlatformOrder(db, row, importId, timestamp) {
+  return db.prepare(`
+    INSERT INTO platform_orders (
+      import_id, platform, order_no, order_date, order_status, buyer_name, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(platform, order_no) DO UPDATE SET
+      import_id = excluded.import_id,
+      order_date = excluded.order_date,
+      order_status = excluded.order_status,
+      buyer_name = excluded.buyer_name
+    RETURNING *
+  `).get(
+    importId,
+    row.platform,
+    row.orderNo,
+    row.orderDate,
+    row.orderStatus,
+    row.buyerName,
+    timestamp,
+  );
+}
+
+function upsertPlatformOrderLine(db, row, importId, orderId, classification, timestamp) {
+  const matchStatus = classification.matchStatus;
+  return db.prepare(`
+    INSERT INTO platform_order_lines (
+      import_id, order_id, line_no, sale_sku, display_name, quantity,
+      sale_sku_id, match_status, issue_message, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(order_id, line_no, sale_sku) DO UPDATE SET
+      import_id = excluded.import_id,
+      display_name = excluded.display_name,
+      quantity = excluded.quantity,
+      sale_sku_id = excluded.sale_sku_id,
+      match_status = excluded.match_status,
+      issue_message = excluded.issue_message
+    WHERE platform_order_lines.posted_at = ''
+    RETURNING *
+  `).get(
+    importId,
+    orderId,
+    row.lineNo,
+    row.saleSku,
+    row.displayName,
+    row.quantity,
+    classification.saleSkuId,
+    matchStatus,
+    issueMessageFor(matchStatus),
+    timestamp,
+  );
+}
+
 function parsePlatformOrderFile(fileBuffer, options = {}) {
   const text = Buffer.isBuffer(fileBuffer) ? fileBuffer.toString("utf8") : String(fileBuffer ?? "");
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
@@ -120,7 +314,124 @@ function parsePlatformOrderFile(fileBuffer, options = {}) {
   return { rows, duplicateKeys };
 }
 
+function mapLine(row, components = []) {
+  return {
+    id: row.id,
+    importId: row.import_id,
+    orderId: row.order_id,
+    lineNo: row.line_no,
+    saleSku: row.sale_sku,
+    displayName: row.display_name,
+    quantity: row.quantity,
+    saleSkuId: row.sale_sku_id,
+    matchStatus: row.match_status,
+    issueMessage: row.issue_message,
+    postedAt: row.posted_at,
+    createdAt: row.created_at,
+    postable: row.match_status !== "skipped_status",
+    components,
+  };
+}
+
+function getPlatformOrderImportFromDb(db, importId) {
+  const id = Number(importId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบ import");
+
+  const importRow = db.prepare("SELECT * FROM platform_order_imports WHERE id = ?").get(id);
+  if (!importRow) throw new Error("ไม่พบ import");
+
+  const orderRows = db.prepare(`
+    SELECT *
+    FROM platform_orders
+    WHERE import_id = ?
+    ORDER BY order_no ASC, id ASC
+  `).all(id);
+
+  const lineRows = db.prepare(`
+    SELECT *
+    FROM platform_order_lines
+    WHERE import_id = ?
+    ORDER BY order_id ASC, line_no ASC, id ASC
+  `).all(id);
+
+  return {
+    import: mapImport(importRow),
+    orders: orderRows.map(mapOrder),
+    lines: lineRows.map((row) => mapLine(
+      row,
+      row.sale_sku_id ? getSaleSkuComponents(db, row.sale_sku_id, row.quantity) : [],
+    )),
+  };
+}
+
+function getPlatformOrderImport(rootDir, importId) {
+  return withPlatformDb(rootDir, (db) => getPlatformOrderImportFromDb(db, importId));
+}
+
+function listPlatformOrderImports(rootDir) {
+  return withPlatformDb(rootDir, (db) => db.prepare(`
+    SELECT *
+    FROM platform_order_imports
+    ORDER BY created_at DESC, id DESC
+  `).all().map(mapImport));
+}
+
+function importPlatformOrders(rootDir, file = {}, options = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    const timestamp = nowIso(options);
+    const platform = normalizePlatform(file.platform || "manual");
+    const parsed = parsePlatformOrderFile(file.fileBuffer, { platform });
+    const importNo = createImportNo(timestamp, db);
+
+    try {
+      db.exec("BEGIN");
+      const importRow = db.prepare(`
+        INSERT INTO platform_order_imports (
+          import_no, platform, file_name, status, row_count,
+          matched_line_count, issue_count, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'imported', ?, 0, 0, ?, ?)
+        RETURNING *
+      `).get(importNo, platform, cleanText(file.fileName), parsed.rows.length, timestamp, timestamp);
+
+      const lineRows = [];
+      for (const row of parsed.rows) {
+        const order = upsertPlatformOrder(db, row, importRow.id, timestamp);
+        const classification = classifyLine(db, row);
+        const line = upsertPlatformOrderLine(db, row, importRow.id, order.id, classification, timestamp);
+        if (line) lineRows.push(line);
+      }
+
+      const matchedLineCount = lineRows.filter((line) => line.match_status === "matched").length;
+      const issueCount = lineRows.filter((line) => (
+        line.match_status !== "matched" && line.match_status !== "skipped_status"
+      )).length;
+      const postableLines = lineRows.filter((line) => line.match_status !== "skipped_status");
+      const status = postableLines.every((line) => line.match_status === "matched") ? "ready" : "has_issues";
+
+      db.prepare(`
+        UPDATE platform_order_imports
+        SET status = ?,
+            matched_line_count = ?,
+            issue_count = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(status, matchedLineCount, issueCount, timestamp, importRow.id);
+
+      const detail = getPlatformOrderImportFromDb(db, importRow.id);
+      db.exec("COMMIT");
+      return detail;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
 module.exports = {
+  getPlatformOrderImport,
+  importPlatformOrders,
+  listPlatformOrderImports,
   normalizePlatform,
   parsePlatformOrderFile,
 };
