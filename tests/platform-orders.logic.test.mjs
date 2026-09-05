@@ -9,7 +9,14 @@ import inventory from "../forms/inventory.logic.js";
 import platformOrders from "../forms/platform-orders.logic.js";
 
 const { withInventoryDatabase } = inventoryDb;
-const { createProduct, createPurchaseInMovement, createSaleSku, createStockSku } = inventory;
+const {
+  createProduct,
+  createPurchaseInMovement,
+  createSaleSku,
+  createStockSku,
+  getStockCard,
+  updateSaleSku,
+} = inventory;
 const {
   getPlatformOrderImport,
   importPlatformOrders,
@@ -341,6 +348,10 @@ test("postPlatformOrderImport creates sale_out movements for bundle components",
     assert.equal(posted.lines[0].postedAt, "2026-09-05T10:05:00.000Z");
 
     const movements = posted.postedMovements;
+    assert.deepEqual(movements.map((movement) => movement.movementNo), [
+      "MOV-20260905-00003",
+      "MOV-20260905-00004",
+    ]);
     assert.deepEqual(movements.map((movement) => ({
       stockSkuId: movement.stockSkuId,
       movementType: movement.movementType,
@@ -388,11 +399,19 @@ test("postPlatformOrderImport is idempotent and blocks batches with postable iss
       fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-3001,IDEMP-TOP,1", "utf8"),
     });
 
-    postPlatformOrderImport(rootDir, ready.import.id);
-    const postedAgain = postPlatformOrderImport(rootDir, ready.import.id);
+    const postedOnce = postPlatformOrderImport(rootDir, ready.import.id, {
+      now: () => "2026-09-05T11:00:00.000Z",
+    });
+    const balanceAfterFirstPost = getStockCard(rootDir, stockSku.id).balance.quantityOnHand;
+    const postedAgain = postPlatformOrderImport(rootDir, ready.import.id, {
+      now: () => "2026-09-05T11:30:00.000Z",
+    });
 
     assert.equal(postedAgain.postedMovements.length, 1);
     assert.equal(postedAgain.import.status, "posted");
+    assert.equal(postedAgain.import.postedAt, postedOnce.import.postedAt);
+    assert.equal(postedAgain.lines[0].postedAt, postedOnce.lines[0].postedAt);
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, balanceAfterFirstPost);
 
     const bad = importPlatformOrders(rootDir, {
       platform: "shopee",
@@ -401,6 +420,61 @@ test("postPlatformOrderImport is idempotent and blocks batches with postable iss
     });
 
     assert.throws(() => postPlatformOrderImport(rootDir, bad.import.id), /ยังมีรายการที่ต้องแก้ไข/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("postPlatformOrderImport reuses posted movements after bundle components change", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-posted-bundle-change-"));
+
+  try {
+    const originalProduct = createProduct(rootDir, { productCode: "ORIG-POST", name: "เสื้อเดิม", category: "เสื้อ" });
+    const replacementProduct = createProduct(rootDir, { productCode: "REPL-POST", name: "เสื้อใหม่", category: "เสื้อ" });
+    const originalSku = createStockSku(rootDir, { productId: originalProduct.id, sku: "ORIG-POST-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "80" });
+    const replacementSku = createStockSku(rootDir, { productId: replacementProduct.id, sku: "REPL-POST-BLACK-M", color: "ดำ", size: "M", defaultUnitCost: "95" });
+    createPurchaseInMovement(rootDir, { stockSkuId: originalSku.id, quantity: "5", unitCost: "80", movementDate: "2026-09-05" });
+    createPurchaseInMovement(rootDir, { stockSkuId: replacementSku.id, quantity: "5", unitCost: "95", movementDate: "2026-09-05" });
+    const saleSku = createSaleSku(rootDir, {
+      saleSku: "MUTABLE-SET",
+      displayName: "ชุดเปลี่ยน component",
+      platform: "shopee",
+      components: [{ stockSkuId: originalSku.id, quantity: "1" }],
+    });
+
+    const ready = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "mutable-ready.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-4001,MUTABLE-SET,1", "utf8"),
+    });
+
+    const postedOnce = postPlatformOrderImport(rootDir, ready.import.id, {
+      now: () => "2026-09-05T12:00:00.000Z",
+    });
+    updateSaleSku(rootDir, saleSku.id, {
+      saleSku: "MUTABLE-SET",
+      displayName: "ชุดเปลี่ยน component",
+      platform: "shopee",
+      components: [{ stockSkuId: replacementSku.id, quantity: "1" }],
+    });
+
+    const postedAgain = postPlatformOrderImport(rootDir, ready.import.id, {
+      now: () => "2026-09-05T12:45:00.000Z",
+    });
+
+    assert.deepEqual(postedAgain.postedMovements.map((movement) => ({
+      stockSkuId: movement.stockSkuId,
+      quantity: movement.quantity,
+      referenceNo: movement.referenceNo,
+    })), [{
+      stockSkuId: originalSku.id,
+      quantity: 1,
+      referenceNo: "shopee:SP-4001:1:MUTABLE-SET",
+    }]);
+    assert.equal(getStockCard(rootDir, originalSku.id).balance.quantityOnHand, 4);
+    assert.equal(getStockCard(rootDir, replacementSku.id).balance.quantityOnHand, 5);
+    assert.equal(postedAgain.import.postedAt, postedOnce.import.postedAt);
+    assert.equal(postedAgain.lines[0].postedAt, postedOnce.lines[0].postedAt);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

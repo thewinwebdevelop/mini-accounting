@@ -134,13 +134,17 @@ function createImportNo(timestamp, db) {
 }
 
 function createMovementNo(movementDate, db) {
-  const prefix = `MOV-${movementDate.replace(/-/g, "")}`;
-  const row = db.prepare(`
-    SELECT COUNT(*) AS count
+  const compactDate = cleanText(movementDate).replace(/-/g, "") || new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const prefix = `MOV-${compactDate}-`;
+  const latest = db.prepare(`
+    SELECT movement_no
     FROM stock_movements
     WHERE movement_no LIKE ?
-  `).get(`${prefix}-%`);
-  return `${prefix}-${String(Number(row.count || 0) + 1).padStart(4, "0")}`;
+    ORDER BY movement_no DESC
+    LIMIT 1
+  `).get(`${prefix}%`);
+  const nextSequence = latest ? Number(latest.movement_no.slice(prefix.length)) + 1 : 1;
+  return `${prefix}${String(nextSequence).padStart(5, "0")}`;
 }
 
 function mapMovement(row) {
@@ -447,22 +451,51 @@ function listPlatformOrderImports(rootDir) {
   `).all().map(mapImport));
 }
 
+function platformOrderReferenceNo(line) {
+  return `${line.platform}:${line.orderNo}:${line.lineNo}:${line.saleSku}`;
+}
+
+function getPostedMovementsForLine(db, line) {
+  return db.prepare(`
+    SELECT *
+    FROM stock_movements
+    WHERE reference_type = 'platform_order'
+      AND reference_no = ?
+    ORDER BY movement_date ASC, id ASC
+  `).all(platformOrderReferenceNo(line)).map(mapMovement);
+}
+
+function getPostedMovementsForLines(db, lines) {
+  return lines.flatMap((line) => getPostedMovementsForLine(db, line));
+}
+
 function postPlatformOrderImport(rootDir, importId, options = {}) {
   return withPlatformDb(rootDir, (db) => {
+    const detail = getPlatformOrderImportFromDb(db, importId);
+    if (detail.import.status === "posted") {
+      return {
+        ...detail,
+        postedMovements: getPostedMovementsForLines(db, detail.lines.filter((line) => line.postable)),
+      };
+    }
+
+    const blockers = detail.lines.filter((line) => line.postable && line.matchStatus !== "matched");
+    if (blockers.length) throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
+
     try {
       db.exec("BEGIN");
-
-      const detail = getPlatformOrderImportFromDb(db, importId);
-      const blockers = detail.lines.filter((line) => line.postable && line.matchStatus !== "matched");
-      if (blockers.length) throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
-
       const timestamp = nowIso(options);
       const movementDate = timestamp.slice(0, 10);
       const postedMovements = [];
 
       for (const line of detail.lines.filter((item) => item.postable && item.matchStatus === "matched")) {
+        if (line.postedAt) {
+          postedMovements.push(...getPostedMovementsForLine(db, line));
+          continue;
+        }
+
+        const referenceNo = platformOrderReferenceNo(line);
         for (const component of line.components) {
-          const referenceNo = `${line.platform}:${line.orderNo}:${line.lineNo}:${line.saleSku}`;
           const existing = db.prepare(`
             SELECT *
             FROM stock_movements
@@ -499,12 +532,14 @@ function postPlatformOrderImport(rootDir, importId, options = {}) {
           postedMovements.push(mapMovement(inserted));
         }
 
-        db.prepare("UPDATE platform_order_lines SET posted_at = ? WHERE id = ?").run(timestamp, line.id);
+        db.prepare("UPDATE platform_order_lines SET posted_at = ? WHERE id = ? AND posted_at = ''").run(timestamp, line.id);
       }
 
       db.prepare(`
         UPDATE platform_order_imports
-        SET status = 'posted', posted_at = ?, updated_at = ?
+        SET status = 'posted',
+            posted_at = CASE WHEN posted_at = '' THEN ? ELSE posted_at END,
+            updated_at = ?
         WHERE id = ?
       `).run(timestamp, timestamp, detail.import.id);
 
