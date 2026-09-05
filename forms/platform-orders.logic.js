@@ -71,6 +71,11 @@ function cell(cells, map, field) {
   return Number.isInteger(index) ? cleanText(cells[index]) : "";
 }
 
+function parseStrictPositiveInteger(value) {
+  const normalized = cleanText(value).replace(/,/g, "");
+  return /^[1-9]\d*$/.test(normalized) ? Number.parseInt(normalized, 10) : 0;
+}
+
 function isSkippedStatus(status) {
   return /cancel|cancelled|canceled|refund|refunded|ยกเลิก|คืนเงิน/i.test(status || "");
 }
@@ -199,7 +204,7 @@ function issueMessageFor(matchStatus) {
   }[matchStatus] || "";
 }
 
-function classifyLine(db, row) {
+function classifyLine(db, row, remainingStockBySku) {
   if (row.skipped) return { matchStatus: "skipped_status", saleSkuId: null, components: [] };
   if (row.quantity <= 0) return { matchStatus: "invalid_quantity", saleSkuId: null, components: [] };
 
@@ -207,7 +212,20 @@ function classifyLine(db, row) {
   if (!saleSku) return { matchStatus: "missing_sale_sku", saleSkuId: null, components: [] };
 
   const components = getSaleSkuComponents(db, saleSku.id, row.quantity);
-  const hasInsufficientStock = components.some((component) => component.requiredQuantity > component.quantityOnHand);
+  const hasInsufficientStock = components.some((component) => {
+    if (!remainingStockBySku.has(component.stockSkuId)) {
+      remainingStockBySku.set(component.stockSkuId, component.quantityOnHand);
+    }
+    return component.requiredQuantity > remainingStockBySku.get(component.stockSkuId);
+  });
+  if (!hasInsufficientStock) {
+    for (const component of components) {
+      remainingStockBySku.set(
+        component.stockSkuId,
+        remainingStockBySku.get(component.stockSkuId) - component.requiredQuantity,
+      );
+    }
+  }
   return {
     matchStatus: hasInsufficientStock ? "insufficient_stock" : "matched",
     saleSkuId: saleSku.id,
@@ -269,6 +287,26 @@ function upsertPlatformOrderLine(db, row, importId, orderId, classification, tim
   );
 }
 
+function assertNoPostedOrderConflicts(db, rows) {
+  const checkedOrders = new Set();
+  for (const row of rows) {
+    const key = `${row.platform}:${row.orderNo}`;
+    if (checkedOrders.has(key)) continue;
+    checkedOrders.add(key);
+
+    const posted = db.prepare(`
+      SELECT platform_order_lines.id
+      FROM platform_orders
+      JOIN platform_order_lines ON platform_order_lines.order_id = platform_orders.id
+      WHERE platform_orders.platform = ?
+        AND platform_orders.order_no = ?
+        AND platform_order_lines.posted_at <> ''
+      LIMIT 1
+    `).get(row.platform, row.orderNo);
+    if (posted) throw new Error("คำสั่งซื้อนี้โพสต์แล้ว ไม่สามารถนำเข้าใหม่ได้");
+  }
+}
+
 function parsePlatformOrderFile(fileBuffer, options = {}) {
   const text = Buffer.isBuffer(fileBuffer) ? fileBuffer.toString("utf8") : String(fileBuffer ?? "");
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
@@ -292,7 +330,7 @@ function parsePlatformOrderFile(fileBuffer, options = {}) {
     const orderCount = (perOrderCounts.get(orderNo) || 0) + 1;
     perOrderCounts.set(orderNo, orderCount);
     const lineNo = cell(cells, headerMap, "lineNo") || String(orderCount);
-    const quantity = Number.parseInt(cell(cells, headerMap, "quantity"), 10);
+    const quantity = parseStrictPositiveInteger(cell(cells, headerMap, "quantity"));
     const key = `${platform}:${orderNo}:${lineNo}:${saleSku}`;
     if (seen.has(key)) duplicateKeys.push(key);
     seen.add(key);
@@ -385,6 +423,7 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
 
     try {
       db.exec("BEGIN");
+      assertNoPostedOrderConflicts(db, parsed.rows);
       const importRow = db.prepare(`
         INSERT INTO platform_order_imports (
           import_no, platform, file_name, status, row_count,
@@ -395,9 +434,10 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
       `).get(importNo, platform, cleanText(file.fileName), parsed.rows.length, timestamp, timestamp);
 
       const lineRows = [];
+      const remainingStockBySku = new Map();
       for (const row of parsed.rows) {
         const order = upsertPlatformOrder(db, row, importRow.id, timestamp);
-        const classification = classifyLine(db, row);
+        const classification = classifyLine(db, row, remainingStockBySku);
         const line = upsertPlatformOrderLine(db, row, importRow.id, order.id, classification, timestamp);
         if (line) lineRows.push(line);
       }

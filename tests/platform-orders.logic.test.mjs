@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import inventoryDb from "../forms/inventory-db.logic.js";
 import inventory from "../forms/inventory.logic.js";
 import platformOrders from "../forms/platform-orders.logic.js";
 
+const { withInventoryDatabase } = inventoryDb;
 const { createProduct, createPurchaseInMovement, createSaleSku, createStockSku } = inventory;
 const {
   getPlatformOrderImport,
@@ -184,6 +186,119 @@ test("importPlatformOrders marks matched lines as insufficient_stock when compon
     assert.equal(detail.lines[0].matchStatus, "insufficient_stock");
     assert.equal(detail.lines[0].components[0].requiredQuantity, 2);
     assert.equal(detail.lines[0].components[0].quantityOnHand, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders reserves component stock across all lines in the same import", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-reserve-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "SHARED-STOCK", name: "เสื้อแชร์สต๊อก", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "SHARED-STOCK-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "SHARED-STOCK-SALE",
+      displayName: "เสื้อแชร์สต๊อก",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const detail = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "shared-stock.csv",
+      fileBuffer: Buffer.from([
+        "order_no,sale_sku,quantity",
+        "SP-SHARED-001,SHARED-STOCK-SALE,3",
+        "SP-SHARED-002,SHARED-STOCK-SALE,3",
+      ].join("\n"), "utf8"),
+    });
+
+    assert.equal(detail.import.status, "has_issues");
+    assert.equal(detail.import.matchedLineCount, 1);
+    assert.equal(detail.import.issueCount, 1);
+    assert.deepEqual(detail.lines.map((line) => line.matchStatus), ["matched", "insufficient_stock"]);
+    assert.equal(detail.lines[1].components[0].requiredQuantity, 3);
+    assert.equal(detail.lines[1].components[0].quantityOnHand, 5);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders rejects partial numeric quantities as invalid_quantity", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-strict-quantity-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "STRICT-QTY", name: "เสื้อจำนวนเข้มงวด", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "STRICT-QTY-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "10", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "STRICT-QTY-SALE",
+      displayName: "เสื้อจำนวนเข้มงวด",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const detail = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "strict-quantity.csv",
+      fileBuffer: Buffer.from([
+        "order_no,sale_sku,quantity",
+        "SP-QTY-001,STRICT-QTY-SALE,2abc",
+        "SP-QTY-002,STRICT-QTY-SALE,1.5",
+      ].join("\n"), "utf8"),
+    });
+
+    assert.equal(detail.import.status, "has_issues");
+    assert.equal(detail.import.matchedLineCount, 0);
+    assert.equal(detail.import.issueCount, 2);
+    assert.deepEqual(detail.lines.map((line) => line.matchStatus), ["invalid_quantity", "invalid_quantity"]);
+    assert.deepEqual(detail.lines.map((line) => line.quantity), [0, 0]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders rejects re-imports that conflict with posted order lines", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-posted-conflict-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "POSTED-CONFLICT", name: "เสื้อโพสต์แล้ว", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "POSTED-CONFLICT-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "POSTED-CONFLICT-SALE",
+      displayName: "เสื้อโพสต์แล้ว",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+    const fileBuffer = Buffer.from("order_no,sale_sku,quantity\nSP-POSTED-001,POSTED-CONFLICT-SALE,1", "utf8");
+
+    const firstImport = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "posted-conflict.csv",
+      fileBuffer,
+    });
+    withInventoryDatabase(rootDir, (db) => {
+      db.prepare("UPDATE platform_order_imports SET status = 'posted', posted_at = ? WHERE id = ?")
+        .run("2026-09-05T10:00:00.000Z", firstImport.import.id);
+      db.prepare("UPDATE platform_order_lines SET posted_at = ? WHERE import_id = ?")
+        .run("2026-09-05T10:00:00.000Z", firstImport.import.id);
+    });
+
+    assert.throws(() => importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "posted-conflict-again.csv",
+      fileBuffer,
+    }), /โพสต์แล้ว|posted/i);
+
+    const imports = listPlatformOrderImports(rootDir);
+    assert.equal(imports.length, 1);
+    const loaded = getPlatformOrderImport(rootDir, firstImport.import.id);
+    assert.equal(loaded.import.status, "posted");
+    assert.equal(loaded.orders.length, 1);
+    assert.equal(loaded.lines.length, 1);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
