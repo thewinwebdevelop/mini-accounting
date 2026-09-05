@@ -63,3 +63,14 @@ test("main pages separate substitute receipt links from expense request links", 
     assert.match(substituteReceiptGroup, /href="\/substitute-receipt-vendors"/, page);
   }
 });
+
+test("hamburger menu popover stays inside short viewports", async () => {
+  for (const page of pages) {
+    const html = await readFile(new URL(`../forms/${page}`, import.meta.url), "utf8");
+    const menuPanelCss = html.match(/\.menu-panel \{([\s\S]*?)\n    \}/)?.[1] ?? "";
+
+    assert.match(menuPanelCss, /max-height:\s*calc\(100vh - 70px\);/, page);
+    assert.match(menuPanelCss, /overflow-y:\s*auto;/, page);
+    assert.match(menuPanelCss, /overscroll-behavior:\s*contain;/, page);
+  }
+});
