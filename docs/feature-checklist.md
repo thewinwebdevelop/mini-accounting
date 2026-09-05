@@ -36,6 +36,8 @@
   - Next suggested task after completion: import platform orders and deduct stock.
 - [x] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
   - Next suggested task after completion: Shopee/TikTok fee summary.
+- [x] Accounting Advisor Agent policy: define the required accounting/tax consultation role for Sweet House Daisy agents and future workflows.
+  - Next suggested task after completion: add app-level Accounting Review status and tax-risk checklist before approval/monthly ledger sync.
 
 ## Current
 
