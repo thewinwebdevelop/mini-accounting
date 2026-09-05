@@ -28,6 +28,7 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /id="approveReceipt"/);
   assert.match(html, /id="receiveStock"/);
   assert.match(html, /id="receiptStatus"/);
+  assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.browser\.js"/);
 });
@@ -41,6 +42,16 @@ test("substitute receipt stock line template is collapsible with a running summa
   assert.match(template, /data-stock-line-title/);
   assert.match(template, /data-stock-line-total/);
   assert.match(template, /class="stock-line-fields"/);
+});
+
+test("substitute receipt line template lets general expenses skip Stock SKU", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const template = html.match(/<template id="stockLineTemplate">([\s\S]*?)<\/template>/)?.[1] ?? "";
+
+  assert.match(template, /data-stock-only-field/);
+  assert.match(template, /<select name="stockSkuId" data-searchable><\/select>/);
+  assert.doesNotMatch(template, /<select name="stockSkuId" required/);
+  assert.match(template, /data-description-label>รายละเอียด/);
 });
 
 test("substitute receipt browser controller loads draft and submitted receipt query targets", async () => {

@@ -720,7 +720,9 @@
             <div class="menu-group-title">ระบบสต๊อก</div>
             <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
           <a class="menu-item" href="/inventory-stock-list">List Stock</a>
-            <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+            <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
             <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
             <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
@@ -797,7 +799,7 @@
               </div>
               <div class="field span-4">
                 <label for="requesterRole">แผนก/ตำแหน่ง</label>
-                <select id="requesterRole" name="requesterRole">
+                <select id="requesterRole" name="requesterRole" data-searchable>
                   <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
                   <option>เจ้าของบริษัท</option>
                   <option>marketing</option>
@@ -945,7 +947,7 @@
         </div>
         <div class="field">
           <label>หมวด</label>
-          <select name="lineCategory">
+          <select name="lineCategory" data-searchable>
             <option value="" selected disabled>เลือกหมวด</option>
             <option>วัสดุแพ็คสินค้า</option>
             <option>ค่าส่ง/ขนส่ง</option>
@@ -981,6 +983,7 @@
     </details>
   </template>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./expense-request.logic.js"></script>
   <script>
   window.addEventListener("DOMContentLoaded", async () => {

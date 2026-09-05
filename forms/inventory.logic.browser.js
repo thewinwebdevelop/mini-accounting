@@ -2,40 +2,22 @@ window.addEventListener("DOMContentLoaded", () => {
   const state = {
     productCategories: [],
     products: [],
-    stockSkus: [],
     mode: new URLSearchParams(window.location.search).get("mode") || "",
   };
 
   const productForm = document.querySelector("#productForm");
   const skuForm = document.querySelector("#skuForm");
-  const purchaseInForm = document.querySelector("#purchaseInForm");
   const statusBox = document.querySelector("#inventoryStatus");
-  const productRows = document.querySelector("#productRows");
-  const skuRows = document.querySelector("#skuRows");
-  const balanceRows = document.querySelector("#balanceRows");
-  const stockCardRows = document.querySelector("#stockCardRows");
   const skuProductSelect = document.querySelector("#skuProductSelect");
   const productCategorySelect = document.querySelector("#productCategory");
-  const purchaseSkuSelect = document.querySelector("#purchaseSkuSelect");
-  const stockCardSkuSelect = document.querySelector("#stockCardSkuSelect");
   const productSubmitLabel = document.querySelector("#productSubmitLabel");
   const skuSubmitLabel = document.querySelector("#skuSubmitLabel");
 
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-
-  function todayInputValue() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+  function option(label, value) {
+    const node = document.createElement("option");
+    node.value = value;
+    node.textContent = label;
+    return node;
   }
 
   function setStatus(message, kind = "") {
@@ -65,58 +47,13 @@ window.addEventListener("DOMContentLoaded", () => {
     return result;
   }
 
-  function option(label, value) {
-    const node = document.createElement("option");
-    node.value = value;
-    node.textContent = label;
-    return node;
-  }
-
-  function skuLabel(sku) {
-    return `${sku.sku} - ${sku.productName} ${sku.color || ""} ${sku.size || ""}`.trim();
-  }
-
-  function statusLabel(status) {
-    return status === "inactive" ? "ปิดใช้" : "ใช้งาน";
-  }
-
-  function renderStatus(status) {
-    const css = status === "inactive" ? "status-pill inactive" : "status-pill";
-    return `<span class="${css}">${statusLabel(status)}</span>`;
-  }
-
-  function renderProducts() {
-    productRows.innerHTML = state.products.map((product) => `
-      <tr>
-        <td>${escapeHtml(product.productCode)}</td>
-        <td>${escapeHtml(product.name)}</td>
-        <td>${escapeHtml(product.category)}</td>
-        <td>${renderStatus(product.status)}</td>
-        <td><button class="icon-button" type="button" title="แก้ไขสินค้าแม่" data-edit-product="${product.id}">✎</button></td>
-      </tr>
-    `).join("") || `<tr><td colspan="5">ยังไม่มีสินค้าแม่</td></tr>`;
-  }
-
-  function renderSkus() {
-    skuRows.innerHTML = state.stockSkus.map((sku) => `
-      <tr>
-        <td>${escapeHtml(sku.sku)}</td>
-        <td>${escapeHtml(sku.productName)}</td>
-        <td>${escapeHtml(sku.color)}</td>
-        <td>${escapeHtml(sku.size)}</td>
-        <td class="number">${escapeHtml(sku.defaultUnitCost)}</td>
-        <td>${renderStatus(sku.status)}</td>
-        <td><button class="icon-button" type="button" title="แก้ไข SKU" data-edit-sku="${sku.id}">✎</button></td>
-      </tr>
-    `).join("") || `<tr><td colspan="7">ยังไม่มี Stock SKU</td></tr>`;
-  }
-
   function renderProductOptions() {
     const activeProducts = state.products.filter((product) => product.status !== "inactive");
     skuProductSelect.replaceChildren(
       option("เลือกสินค้าแม่", ""),
       ...activeProducts.map((product) => option(`${product.productCode} - ${product.name}`, product.id)),
     );
+    window.SearchableSelect?.enhance(skuProductSelect);
   }
 
   function renderProductCategoryOptions() {
@@ -125,27 +62,7 @@ window.addEventListener("DOMContentLoaded", () => {
       option("เลือกหมวดสินค้า", ""),
       ...activeCategories.map((category) => option(category.name, category.name)),
     );
-  }
-
-  function renderSkuOptions() {
-    const activeSkus = state.stockSkus.filter((sku) => sku.status !== "inactive");
-    const options = [option("เลือก SKU", ""), ...activeSkus.map((sku) => option(skuLabel(sku), sku.id))];
-    purchaseSkuSelect.replaceChildren(...options.map((node) => node.cloneNode(true)));
-    stockCardSkuSelect.replaceChildren(...options.map((node) => node.cloneNode(true)));
-  }
-
-  function renderBalances(balances) {
-    balanceRows.innerHTML = balances.map((row) => `
-      <tr>
-        <td>${escapeHtml(row.sku)}</td>
-        <td>${escapeHtml(row.productName)}</td>
-        <td>${escapeHtml(row.color)}</td>
-        <td>${escapeHtml(row.size)}</td>
-        <td class="number">${row.quantityOnHand}</td>
-        <td class="number">${escapeHtml(row.averageUnitCost)}</td>
-        <td class="number">${escapeHtml(row.inventoryValue)}</td>
-      </tr>
-    `).join("") || `<tr><td colspan="7">ยังไม่มีข้อมูลสต๊อก</td></tr>`;
+    window.SearchableSelect?.enhance(productCategorySelect);
   }
 
   function resetProductForm() {
@@ -158,33 +75,8 @@ window.addEventListener("DOMContentLoaded", () => {
   function resetSkuForm() {
     skuForm.reset();
     skuForm.elements.id.value = "";
+    renderProductOptions();
     skuSubmitLabel.textContent = "บันทึก SKU";
-    renderProductOptions();
-  }
-
-  function fillProductForm(product) {
-    productForm.elements.id.value = product.id;
-    productForm.elements.productCode.value = product.productCode;
-    productForm.elements.name.value = product.name;
-    productForm.elements.category.value = product.category;
-    productForm.elements.description.value = product.description;
-    productForm.elements.status.value = product.status;
-    productSubmitLabel.textContent = "บันทึกการแก้ไข";
-    productForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  function fillSkuForm(sku) {
-    renderProductOptions();
-    skuForm.elements.id.value = sku.id;
-    skuForm.elements.productId.value = sku.productId;
-    skuForm.elements.sku.value = sku.sku;
-    skuForm.elements.barcode.value = sku.barcode;
-    skuForm.elements.color.value = sku.color;
-    skuForm.elements.size.value = sku.size;
-    skuForm.elements.defaultUnitCost.value = sku.defaultUnitCost;
-    skuForm.elements.status.value = sku.status;
-    skuSubmitLabel.textContent = "บันทึกการแก้ไข";
-    skuForm.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function focusCreateProductFlow() {
@@ -205,7 +97,6 @@ window.addEventListener("DOMContentLoaded", () => {
   async function refreshProducts() {
     const { products } = await api("/api/inventory/products");
     state.products = products;
-    renderProducts();
     renderProductOptions();
   }
 
@@ -215,46 +106,9 @@ window.addEventListener("DOMContentLoaded", () => {
     renderProductCategoryOptions();
   }
 
-  async function refreshSkus() {
-    const { stockSkus } = await api("/api/inventory/stock-skus");
-    state.stockSkus = stockSkus;
-    renderSkus();
-    renderSkuOptions();
-  }
-
-  async function refreshBalances() {
-    const { balances } = await api("/api/inventory/balances");
-    renderBalances(balances);
-  }
-
-  async function refreshStockCard() {
-    const stockSkuId = stockCardSkuSelect.value;
-    if (!stockSkuId) {
-      stockCardRows.innerHTML = `<tr><td colspan="8">เลือก SKU เพื่อดู stock card</td></tr>`;
-      return;
-    }
-
-    const card = await api(`/api/inventory/stock-card?stockSkuId=${encodeURIComponent(stockSkuId)}`);
-    stockCardRows.innerHTML = card.movements.map((row) => `
-      <tr>
-        <td>${escapeHtml(row.movementDate)}</td>
-        <td>${escapeHtml(row.movementNo)}</td>
-        <td>${escapeHtml(row.movementType)}</td>
-        <td class="number">${row.quantity}</td>
-        <td class="number">${escapeHtml(row.unitCost)}</td>
-        <td class="number">${escapeHtml(row.totalCost)}</td>
-        <td class="number">${row.runningQuantity}</td>
-        <td>${escapeHtml([row.referenceType, row.referenceNo].filter(Boolean).join(": "))}</td>
-      </tr>
-    `).join("") || `<tr><td colspan="8">ยังไม่มี movement</td></tr>`;
-  }
-
   async function refreshAll() {
     await refreshProductCategories();
     await refreshProducts();
-    await refreshSkus();
-    await refreshBalances();
-    await refreshStockCard();
   }
 
   productForm.addEventListener("submit", async (event) => {
@@ -287,54 +141,19 @@ window.addEventListener("DOMContentLoaded", () => {
       const method = id ? "PUT" : "POST";
       await api(route, { method, body: JSON.stringify(payload) });
       resetSkuForm();
-      await refreshAll();
+      await refreshProducts();
       setStatus("บันทึก SKU แล้ว", "success");
     } catch (error) {
       setStatus(error.message, "error");
     }
   });
 
-  purchaseInForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    clearStatus();
-    try {
-      await api("/api/inventory/purchase-in", { method: "POST", body: JSON.stringify(formPayload(purchaseInForm)) });
-      purchaseInForm.reset();
-      purchaseInForm.elements.movementDate.value = todayInputValue();
-      purchaseInForm.elements.referenceType.value = "manual";
-      await refreshAll();
-      setStatus("รับสินค้าเข้าคลังแล้ว", "success");
-    } catch (error) {
-      setStatus(error.message, "error");
-    }
-  });
-
-  productRows.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-edit-product]");
-    if (!button) return;
-    const product = state.products.find((item) => String(item.id) === button.dataset.editProduct);
-    if (product) fillProductForm(product);
-  });
-
-  skuRows.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-edit-sku]");
-    if (!button) return;
-    const sku = state.stockSkus.find((item) => String(item.id) === button.dataset.editSku);
-    if (sku) fillSkuForm(sku);
-  });
-
-  purchaseSkuSelect.addEventListener("change", () => {
-    const sku = state.stockSkus.find((item) => String(item.id) === purchaseSkuSelect.value);
-    if (sku && !purchaseInForm.elements.unitCost.value) {
-      purchaseInForm.elements.unitCost.value = sku.defaultUnitCost;
-    }
-  });
-  stockCardSkuSelect.addEventListener("change", () => refreshStockCard().catch((error) => setStatus(error.message, "error")));
-  document.querySelector("#refreshInventory").addEventListener("click", () => refreshAll().catch((error) => setStatus(error.message, "error")));
   document.querySelector("#cancelProductEdit").addEventListener("click", resetProductForm);
   document.querySelector("#cancelSkuEdit").addEventListener("click", resetSkuForm);
+  document.querySelector("#refreshInventoryMaster").addEventListener("click", () => {
+    refreshAll().catch((error) => setStatus(error.message, "error"));
+  });
 
-  purchaseInForm.elements.movementDate.value = todayInputValue();
   refreshAll()
     .then(focusCreateProductFlow)
     .catch((error) => setStatus(error.message, "error"));

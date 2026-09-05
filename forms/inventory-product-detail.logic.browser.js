@@ -72,6 +72,7 @@ window.addEventListener("DOMContentLoaded", () => {
         .map((category) => option(category.name, category.name)),
     );
     categorySelect.value = selected;
+    window.SearchableSelect?.enhance(categorySelect);
   }
 
   function renderImagePreview(target, imageUrl, altText, className) {

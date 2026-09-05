@@ -310,7 +310,9 @@
           <div class="menu-group-title">ระบบสต๊อก</div>
           <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
           <a class="menu-item" href="/inventory-stock-list">List Stock</a>
-          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
@@ -358,7 +360,7 @@
           </div>
           <div class="field span-6">
             <label for="categoryStatus">สถานะ</label>
-            <select id="categoryStatus" name="status">
+            <select id="categoryStatus" name="status" data-searchable>
               <option value="active">ใช้งาน</option>
               <option value="inactive">ปิดใช้</option>
             </select>
@@ -395,6 +397,7 @@
     </section>
   </main>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./inventory-settings.logic.browser.js"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ระบบสต๊อกสินค้า - หจก.สวีทเฮาส์</title>
+  <title>รับสินค้าเข้าคลัง - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
@@ -14,7 +14,6 @@
       --brand: #334e68;
       --brand-strong: #102a43;
       --accent: #0f766e;
-      --danger: #b91c1c;
       --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
     }
     * { box-sizing: border-box; }
@@ -84,7 +83,7 @@
     }
     .menu-item:hover { background: var(--soft); }
     .page {
-      max-width: 1120px;
+      max-width: 880px;
       margin: 0 auto;
       padding: 18px;
     }
@@ -94,11 +93,6 @@
       justify-content: space-between;
       gap: 10px;
       margin-bottom: 12px;
-    }
-    .stack {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
     }
     .section {
       overflow: hidden;
@@ -134,11 +128,7 @@
       border-radius: 6px;
       outline: none;
     }
-    textarea { min-height: 88px; resize: vertical; }
-    input:focus, select:focus, textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
-    }
+    textarea { min-height: 78px; resize: vertical; }
     .select-search { min-height: 34px; font-size: 12px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button {
@@ -169,8 +159,7 @@
     .status-box.active { display: block; }
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
-    @media (max-width: 900px) {
-      .stack { grid-template-columns: 1fr; }
+    @media (max-width: 760px) {
       .span-4, .span-6 { grid-column: span 12; }
     }
   </style>
@@ -211,111 +200,63 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">สร้างสินค้า / Stock SKU</h1>
-      <p class="brand-subtitle">จัดการ master data สินค้าแม่ สี ไซซ์ และต้นทุนตั้งต้น</p>
+      <h1 class="brand-title">รับสินค้าเข้าคลัง</h1>
+      <p class="brand-subtitle">บันทึก movement รับเข้าแบบ manual แยกจาก master data สินค้า</p>
     </div>
   </header>
 
   <main class="page">
     <div class="toolbar">
       <div class="actions">
-        <a class="button secondary" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+        <a class="button secondary" href="/inventory">สร้างสินค้า / Stock SKU</a>
         <a class="button secondary" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
-        <a class="button secondary" href="/inventory-stock-list" data-create-product-flow="return-to-stock-list">กลับไป List Stock</a>
       </div>
-      <button class="button secondary" type="button" id="refreshInventoryMaster">รีเฟรชข้อมูลอ้างอิง</button>
+      <button class="button secondary" type="button" id="refreshPurchaseInSkus">รีเฟรช SKU</button>
     </div>
 
-    <div class="stack">
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">สินค้าแม่</h2>
+    <section class="section">
+      <div class="section-header">
+        <h2 class="section-title">รับสินค้าเข้าคลัง</h2>
+      </div>
+      <form class="section-body" id="purchaseInForm">
+        <div class="grid">
+          <div class="field span-12">
+            <label for="purchaseSkuSelect">Stock SKU *</label>
+            <select id="purchaseSkuSelect" name="stockSkuId" required data-searchable></select>
+          </div>
+          <div class="field span-4">
+            <label for="movementDate">วันที่รับเข้า *</label>
+            <input id="movementDate" name="movementDate" type="date" required>
+          </div>
+          <div class="field span-4">
+            <label for="quantity">จำนวน *</label>
+            <input id="quantity" name="quantity" inputmode="numeric" required>
+          </div>
+          <div class="field span-4">
+            <label for="unitCost">ต้นทุนต่อหน่วย *</label>
+            <input id="unitCost" name="unitCost" inputmode="decimal" required>
+          </div>
+          <div class="field span-6">
+            <label for="referenceType">ประเภทอ้างอิง</label>
+            <input id="referenceType" name="referenceType" value="manual">
+          </div>
+          <div class="field span-6">
+            <label for="referenceNo">เลขอ้างอิง</label>
+            <input id="referenceNo" name="referenceNo">
+          </div>
+          <div class="field span-12">
+            <label for="movementNote">หมายเหตุ</label>
+            <textarea id="movementNote" name="note"></textarea>
+          </div>
         </div>
-        <form class="section-body" id="productForm">
-          <input id="productRecordId" name="id" type="hidden">
-          <div class="grid">
-            <div class="field span-6">
-              <label for="productCode">รหัสสินค้าแม่ *</label>
-              <input id="productCode" name="productCode" required>
-            </div>
-            <div class="field span-6">
-              <label for="productName">ชื่อสินค้า *</label>
-              <input id="productName" name="name" required>
-            </div>
-            <div class="field span-6">
-              <label for="productCategory">หมวด *</label>
-              <select id="productCategory" name="category" required data-searchable></select>
-            </div>
-            <div class="field span-6">
-              <label for="productStatus">สถานะ</label>
-              <select id="productStatus" name="status" data-searchable>
-                <option value="active">ใช้งาน</option>
-                <option value="inactive">ปิดใช้</option>
-              </select>
-            </div>
-            <div class="field span-12">
-              <label for="productDescription">รายละเอียด</label>
-              <textarea id="productDescription" name="description"></textarea>
-            </div>
-          </div>
-          <div class="actions">
-            <button class="button primary" type="submit" id="productSubmitLabel">บันทึกสินค้าแม่</button>
-            <button class="button secondary" type="button" id="cancelProductEdit">ยกเลิกแก้ไข</button>
-          </div>
-        </form>
-      </section>
+        <button class="button primary" type="submit">รับเข้าคลัง</button>
+      </form>
+    </section>
 
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">Stock SKU</h2>
-        </div>
-        <form class="section-body" id="skuForm">
-          <input id="skuRecordId" name="id" type="hidden">
-          <div class="grid">
-            <div class="field span-12">
-              <label for="skuProductSelect">สินค้าแม่ *</label>
-              <select id="skuProductSelect" name="productId" required data-searchable></select>
-            </div>
-            <div class="field span-6">
-              <label for="skuCode">SKU *</label>
-              <input id="skuCode" name="sku" required>
-            </div>
-            <div class="field span-6">
-              <label for="skuBarcode">บาร์โค้ด</label>
-              <input id="skuBarcode" name="barcode">
-            </div>
-            <div class="field span-4">
-              <label for="skuColor">สี</label>
-              <input id="skuColor" name="color">
-            </div>
-            <div class="field span-4">
-              <label for="skuSize">ไซซ์</label>
-              <input id="skuSize" name="size">
-            </div>
-            <div class="field span-4">
-              <label for="skuDefaultCost">ต้นทุนตั้งต้น</label>
-              <input id="skuDefaultCost" name="defaultUnitCost" inputmode="decimal">
-            </div>
-            <div class="field span-12">
-              <label for="skuStatus">สถานะ</label>
-              <select id="skuStatus" name="status" data-searchable>
-                <option value="active">ใช้งาน</option>
-                <option value="inactive">ปิดใช้</option>
-              </select>
-            </div>
-          </div>
-          <div class="actions">
-            <button class="button primary" type="submit" id="skuSubmitLabel">บันทึก SKU</button>
-            <button class="button secondary" type="button" id="cancelSkuEdit">ยกเลิกแก้ไข</button>
-          </div>
-        </form>
-      </section>
-    </div>
-
-    <div class="status-box" id="inventoryStatus"></div>
+    <div class="status-box" id="inventoryPurchaseInStatus"></div>
   </main>
 
   <script src="./searchable-select.logic.browser.js"></script>
-  <script src="./inventory.logic.browser.js"></script>
+  <script src="./inventory-purchase-in.logic.browser.js"></script>
 </body>
 </html>

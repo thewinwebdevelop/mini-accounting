@@ -261,8 +261,14 @@ function buildSubstituteReceiptPayload(data = {}) {
 }
 
 function formatSubstituteReceiptMarkdown(payload = {}) {
+  const isStockPurchase = (payload.receiptType || "stock_purchase") === "stock_purchase";
+  const lineHeader = isStockPurchase
+    ? "| ลำดับ | Stock SKU | รายละเอียด | จำนวน | ต้นทุนต่อหน่วย | ยอดรวม |\n|---:|---|---|---:|---:|---:|"
+    : "| ลำดับ | รายละเอียด | จำนวน | ราคา/หน่วย | ยอดรวม |\n|---:|---|---:|---:|---:|";
   const lines = (payload.lines ?? []).map((line, index) => (
-    `| ${index + 1} | ${line.sku || ""} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
+    isStockPurchase
+      ? `| ${index + 1} | ${line.sku || ""} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
+      : `| ${index + 1} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
   )).join("\n");
   const evidence = Object.values(payload.evidence ?? {}).map((item) => (
     `| ${item.ref} | ${item.label} | ${item.status} | ${(item.files ?? []).join(", ")} |`
@@ -285,8 +291,7 @@ function formatSubstituteReceiptMarkdown(payload = {}) {
 
 ## รายการ
 
-| ลำดับ | Stock SKU | รายละเอียด | จำนวน | ต้นทุนต่อหน่วย | ยอดรวม |
-|---:|---|---|---:|---:|---:|
+${lineHeader}
 ${lines}
 
 ## สรุปยอด

@@ -63,6 +63,7 @@ window.addEventListener("DOMContentLoaded", () => {
       ...activeSkus.map((sku) => option(stockSkuLabel(sku), sku.id)),
     );
     select.value = selectedValue ? String(selectedValue) : "";
+    window.SearchableSelect?.enhance(select);
   }
 
   function addComponent(initial = {}) {

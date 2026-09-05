@@ -3,21 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Platform Orders - หจก.สวีทเฮาส์</title>
+  <title>ข้อมูลสต๊อกสินค้า - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
       --muted: #66788a;
+      --line: #cbd2d9;
+      --soft: #f5f7fa;
       --panel: #ffffff;
       --brand: #334e68;
       --brand-strong: #102a43;
       --accent: #0f766e;
       --danger: #b91c1c;
-      --line: #d9e2ec;
-      --soft: #f5f7fa;
       --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
     }
-
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -48,7 +47,7 @@
       width: 38px;
       height: 38px;
       place-items: center;
-      border: 1px solid rgba(255,255,255,0.35);
+      border: 1px solid rgba(255, 255, 255, 0.35);
       border-radius: 6px;
       cursor: pointer;
       font-size: 22px;
@@ -60,11 +59,11 @@
       position: absolute;
       top: 48px;
       left: 0;
-      width: min(320px, calc(100vw - 32px));
+      width: min(340px, calc(100vw - 32px));
       padding: 10px;
       color: var(--ink);
       background: #ffffff;
-      border: 1px solid var(--line);
+      border: 1px solid #d9e2ec;
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
@@ -75,25 +74,32 @@
       width: 100%;
       padding: 9px 10px;
       color: var(--brand-strong);
+      background: transparent;
+      border: 0;
       border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
       text-decoration: none;
       font-weight: 800;
     }
     .menu-item:hover { background: var(--soft); }
-
     .page {
-      display: grid;
-      grid-template-columns: minmax(310px, 410px) minmax(0, 1fr);
-      gap: 16px;
-      max-width: 1380px;
+      max-width: 1280px;
       margin: 0 auto;
       padding: 18px;
     }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .stack { display: grid; gap: 12px; }
     .section {
-      align-self: start;
       overflow: hidden;
       background: var(--panel);
-      border: 1px solid var(--line);
+      border: 1px solid #d9e2ec;
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
@@ -107,7 +113,7 @@
       background: var(--brand);
     }
     .section-title { margin: 0; font-size: 14px; font-weight: 800; }
-    .section-body { display: grid; gap: 11px; padding: 14px; }
+    .section-body { display: grid; gap: 10px; padding: 14px; }
     .field { display: grid; gap: 5px; }
     label { color: var(--brand); font-size: 12px; font-weight: 800; }
     input, select {
@@ -121,24 +127,13 @@
       outline: none;
     }
     .select-search { min-height: 34px; font-size: 12px; }
-    input:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
-    }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       min-height: 38px;
       padding: 8px 12px;
-      color: var(--brand-strong);
-      background: #ffffff;
       border: 1px solid transparent;
       border-radius: 6px;
       cursor: pointer;
@@ -147,129 +142,41 @@
       white-space: nowrap;
     }
     .button.primary { color: #ffffff; background: var(--accent); }
-    .button.secondary { border-color: #bcccdc; }
-    .button.small { min-height: 32px; padding: 6px 9px; font-size: 12px; }
-    .button[disabled] { cursor: not-allowed; opacity: 0.56; }
-    .status-box {
-      display: none;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      color: var(--brand-strong);
-      background: var(--soft);
-      font-weight: 800;
-    }
-    .status-box.active { display: block; }
-    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
-    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
-    .table-wrap { overflow-x: auto; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
-    th, td {
-      padding: 10px 11px;
-      border-bottom: 1px solid #e4e7eb;
-      text-align: left;
-      vertical-align: top;
-      word-break: break-word;
-    }
-    th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      min-height: 24px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      color: #155e75;
-      background: #cffafe;
-      font-size: 12px;
-      font-weight: 800;
-      white-space: nowrap;
-    }
-    .pill.ready, .pill.matched { color: #166534; background: #dcfce7; }
-    .pill.has_issues, .pill.missing_sale_sku, .pill.invalid_quantity, .pill.insufficient_stock {
-      color: #991b1b;
-      background: #fee2e2;
-    }
-    .pill.posted { color: #334155; background: #e2e8f0; }
-    .pill.skipped_status { color: #854d0e; background: #fef3c7; }
-    .mobile-label { display: none; }
-    .detail-column { display: grid; gap: 12px; }
-    .post-actions { justify-content: flex-end; }
-    .metric-row {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .metric-row div {
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--soft);
-    }
-    .metric-row span {
-      display: block;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 800;
-    }
-    .metric-row strong { color: var(--brand-strong); font-size: 16px; }
-    .order-lines { display: grid; gap: 10px; }
-    .order-line {
-      display: grid;
-      gap: 7px;
-      padding: 11px;
-      border: 1px solid var(--line);
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid #d9e2ec;
       border-radius: 8px;
       background: #ffffff;
     }
-    .order-line header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .issue {
-      padding: 8px 10px;
-      border: 1px solid #fecaca;
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    th, td { padding: 8px 9px; border-bottom: 1px solid #eef2f6; text-align: left; vertical-align: top; }
+    th { color: #ffffff; background: var(--brand); font-size: 12px; }
+    .number { text-align: right; white-space: nowrap; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 7px;
       border-radius: 6px;
-      color: #991b1b;
-      background: #fef2f2;
+      background: #dcfce7;
+      color: #065f46;
+      font-size: 12px;
       font-weight: 800;
     }
-    .components { display: grid; gap: 6px; }
-    .component-line {
-      display: grid;
-      grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.2fr) minmax(135px, auto);
-      gap: 8px;
-      padding: 8px;
+    .status-pill.inactive { background: #fef2f2; color: var(--danger); }
+    .status-box {
+      display: none;
+      margin-bottom: 12px;
+      padding: 10px;
       border-radius: 6px;
+      border: 1px solid #d9e2ec;
       background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
     }
-
-    @media (max-width: 900px) {
-      .page { grid-template-columns: 1fr; padding: 12px; }
-      table, thead, tbody, tr, th, td { display: block; }
-      thead { display: none; }
-      tr { padding: 10px 12px; border-bottom: 1px solid #e4e7eb; }
-      td {
-        display: grid;
-        grid-template-columns: 88px 1fr;
-        gap: 8px;
-        padding: 5px 0;
-        border-bottom: 0;
-      }
-      .mobile-label { display: inline; color: var(--brand); font-size: 12px; font-weight: 800; }
-      .post-actions { justify-content: flex-start; }
-    }
-    @media (max-width: 640px) {
-      .metric-row { grid-template-columns: 1fr 1fr; }
-      .component-line { grid-template-columns: 1fr; }
-      .order-line header { display: grid; }
-    }
+    .status-box.active { display: block; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
   </style>
 </head>
 <body>
@@ -308,71 +215,124 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">Platform Orders</h1>
-      <p class="brand-subtitle">นำเข้า order จากแพลตฟอร์มเพื่อตัดสต๊อกจาก Sale SKU / Bundle SKU</p>
+      <h1 class="brand-title">ข้อมูลสต๊อกสินค้า</h1>
+      <p class="brand-subtitle">ยอดคงเหลือ รายการสินค้าแม่ รายการ Stock SKU และ Stock Card</p>
     </div>
   </header>
 
   <main class="page">
-    <div class="detail-column">
-      <form id="platformOrderUploadForm" class="section">
-        <div class="section-header">
-          <h2 class="section-title">Import order</h2>
-        </div>
-        <div class="section-body">
-          <label class="field" for="platformOrderPlatform">
-            <span>Platform</span>
-            <select id="platformOrderPlatform" name="platform" data-searchable>
-              <option value="shopee">Shopee</option>
-              <option value="tiktok">TikTok</option>
-              <option value="manual">Manual</option>
-            </select>
-          </label>
-          <label class="field" for="platformOrderFile">
-            <span>CSV/TSV file</span>
-            <input id="platformOrderFile" name="file" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values">
-          </label>
-          <div class="actions">
-            <button class="button primary" type="submit">Import</button>
-            <button class="button secondary" id="refreshPlatformOrders" type="button">Refresh</button>
-          </div>
-          <div id="platformOrderStatusBox" class="status-box"></div>
-        </div>
-      </form>
+    <div class="toolbar">
+      <div class="actions">
+        <a class="button secondary" href="/inventory">สร้างสินค้า / Stock SKU</a>
+        <a class="button secondary" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+      </div>
+      <button class="button secondary" type="button" id="refreshInventoryLedger">รีเฟรช</button>
+    </div>
+    <div class="status-box" id="inventoryLedgerStatus"></div>
 
+    <div class="stack">
       <section class="section">
         <div class="section-header">
-          <h2 class="section-title">Recent imports</h2>
+          <h2 class="section-title">ยอดคงเหลือ</h2>
         </div>
         <div class="section-body">
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th style="width: 28%;">Import</th>
-                  <th style="width: 16%;">Platform</th>
-                  <th style="width: 18%;">Status</th>
-                  <th style="width: 12%;">Rows</th>
-                  <th style="width: 12%;">Issues</th>
-                  <th style="width: 14%;"></th>
+                  <th>SKU</th>
+                  <th>สินค้า</th>
+                  <th>สี</th>
+                  <th>ไซซ์</th>
+                  <th class="number">คงเหลือ</th>
+                  <th class="number">ต้นทุนเฉลี่ย</th>
+                  <th class="number">มูลค่า</th>
                 </tr>
               </thead>
-              <tbody id="platformOrderImportRows"></tbody>
+              <tbody id="balanceRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รายการสินค้าแม่</h2>
+        </div>
+        <div class="section-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>รหัส</th>
+                  <th>ชื่อสินค้า</th>
+                  <th>หมวด</th>
+                  <th>สถานะ</th>
+                  <th>จัดการ</th>
+                </tr>
+              </thead>
+              <tbody id="productRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">รายการ Stock SKU</h2>
+        </div>
+        <div class="section-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>สินค้า</th>
+                  <th>สี</th>
+                  <th>ไซซ์</th>
+                  <th class="number">ต้นทุนตั้งต้น</th>
+                  <th>สถานะ</th>
+                  <th>จัดการ</th>
+                </tr>
+              </thead>
+              <tbody id="skuRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Stock Card</h2>
+        </div>
+        <div class="section-body">
+          <div class="field">
+            <label for="stockCardSkuSelect">เลือก SKU</label>
+            <select id="stockCardSkuSelect" data-searchable></select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>วันที่</th>
+                  <th>เลข Movement</th>
+                  <th>ประเภท</th>
+                  <th class="number">จำนวน</th>
+                  <th class="number">ต้นทุน/หน่วย</th>
+                  <th class="number">ต้นทุนรวม</th>
+                  <th class="number">คงเหลือ</th>
+                  <th>อ้างอิง</th>
+                </tr>
+              </thead>
+              <tbody id="stockCardRows"></tbody>
             </table>
           </div>
         </div>
       </section>
     </div>
-
-    <div class="detail-column">
-      <section id="platformOrderDetail" class="section"></section>
-      <div class="actions post-actions">
-        <button id="postPlatformOrderImport" class="button primary" type="button" disabled>Post to inventory</button>
-      </div>
-    </div>
   </main>
 
-  <script src="/searchable-select.logic.browser.js"></script>
-  <script src="/platform-orders.logic.browser.js"></script>
+  <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./inventory-ledger.logic.browser.js"></script>
 </body>
 </html>

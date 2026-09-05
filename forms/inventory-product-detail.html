@@ -196,6 +196,7 @@
       background: #ffffff;
       color: var(--ink);
     }
+    .select-search { min-height: 34px; font-size: 12px; }
     textarea { min-height: 76px; resize: vertical; }
     .sku-editor {
       display: grid;
@@ -254,7 +255,9 @@
           <div class="menu-group-title">ระบบสต๊อก</div>
           <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
           <a class="menu-item" href="/inventory-stock-list">List Stock</a>
-          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
@@ -339,11 +342,11 @@
           </div>
           <div class="field span-6">
             <label for="detailProductCategory">หมวด *</label>
-            <select id="detailProductCategory" name="category" required></select>
+            <select id="detailProductCategory" name="category" required data-searchable></select>
           </div>
           <div class="field span-6">
             <label for="detailProductStatus">สถานะ</label>
-            <select id="detailProductStatus" name="status">
+            <select id="detailProductStatus" name="status" data-searchable>
               <option value="active">ใช้งาน</option>
               <option value="inactive">ปิดใช้</option>
             </select>
@@ -390,6 +393,7 @@
     </section>
   </main>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./inventory-product-detail.logic.browser.js"></script>
 </body>
 </html>

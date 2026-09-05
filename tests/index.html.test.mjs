@@ -16,8 +16,11 @@ test("landing page introduces the accounting system and links to expense routes"
   assert.match(html, /href="\/expense-requests"/);
   assert.match(html, /href="\/expense-request"/);
   assert.match(html, /href="\/inventory"/);
+  assert.match(html, /href="\/inventory-ledger"/);
+  assert.match(html, /href="\/inventory-purchase-in"/);
   assert.match(html, /href="\/inventory-settings"/);
-  assert.match(html, /สินค้าและสต๊อก/);
+  assert.match(html, /สร้างสินค้า \/ Stock SKU/);
+  assert.match(html, /รับสินค้าเข้าคลัง/);
   assert.match(html, /href="\/google-drive"/);
   assert.match(html, /href="\/company-settings"/);
   assert.doesNotMatch(html, /class="quick-actions"/);

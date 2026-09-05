@@ -12,5 +12,7 @@ test("platform orders page has upload review and post controls", async () => {
   assert.match(html, /id="platformOrderImportRows"/);
   assert.match(html, /id="platformOrderDetail"/);
   assert.match(html, /id="postPlatformOrderImport"/);
+  assert.match(html, /id="platformOrderPlatform"[^>]*data-searchable/);
+  assert.match(html, /searchable-select\.logic\.browser\.js/);
   assert.match(html, /platform-orders\.logic\.browser\.js/);
 });

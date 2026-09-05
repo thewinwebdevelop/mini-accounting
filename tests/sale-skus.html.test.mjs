@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("sale SKU page manages platform SKUs and bundle components", async () => {
-  const html = await readFile(new URL("../forms/sale-skus.html", import.meta.url), "utf8");
-  const browserLogic = await readFile(new URL("../forms/sale-skus.logic.browser.js", import.meta.url), "utf8");
+const htmlPath = new URL("../forms/sale-skus.html", import.meta.url);
+const browserLogicPath = new URL("../forms/sale-skus.logic.browser.js", import.meta.url);
 
-  assert.match(html, /<title>Sale SKU \/ Bundle SKU - หจก\.สวีทเฮาส์<\/title>/);
-  assert.match(html, /id="saleSkuForm"/);
-  assert.match(html, /id="saleSkuRows"/);
-  assert.match(html, /id="componentRows"/);
-  assert.match(html, /id="componentTemplate"/);
-  assert.match(html, /href="\/inventory"/);
+test("sale SKU page makes platform and component dropdowns searchable", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.match(html, /id="salePlatform"[^>]*data-searchable/);
+  assert.match(html, /<select name="stockSkuId" required data-searchable><\/select>/);
+  assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
   assert.match(html, /src="\.\/sale-skus\.logic\.browser\.js"/);
-  assert.match(browserLogic, /\/api\/inventory\/sale-skus/);
-  assert.match(browserLogic, /\/api\/inventory\/stock-skus/);
-  assert.match(browserLogic, /addComponent/);
-  assert.match(browserLogic, /data-edit-sale-sku/);
+});
+
+test("sale SKU browser controller enhances dynamic component dropdowns", async () => {
+  const script = await readFile(browserLogicPath, "utf8");
+
+  assert.match(script, /SearchableSelect\?\.enhance\(select\)/);
 });

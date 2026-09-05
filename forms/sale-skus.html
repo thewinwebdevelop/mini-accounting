@@ -121,6 +121,7 @@
       border-radius: 6px;
       outline: none;
     }
+    .select-search { min-height: 34px; font-size: 12px; }
     input:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
@@ -228,7 +229,9 @@
           <div class="menu-group-title">ระบบสต๊อก</div>
           <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
           <a class="menu-item" href="/inventory-stock-list">List Stock</a>
-          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
@@ -272,7 +275,7 @@
           </div>
           <div class="field span-6">
             <label for="salePlatform">Platform</label>
-            <select id="salePlatform" name="platform">
+            <select id="salePlatform" name="platform" data-searchable>
               <option value="manual">Manual</option>
               <option value="shopee">Shopee</option>
               <option value="tiktok">TikTok</option>
@@ -292,7 +295,7 @@
           </div>
           <div class="field span-12">
             <label for="saleStatus">สถานะ</label>
-            <select id="saleStatus" name="status">
+            <select id="saleStatus" name="status" data-searchable>
               <option value="active">ใช้งาน</option>
               <option value="inactive">ปิดใช้</option>
             </select>
@@ -343,7 +346,7 @@
     <div class="component-row">
       <div class="field">
         <label>Stock SKU</label>
-        <select name="stockSkuId" required></select>
+        <select name="stockSkuId" required data-searchable></select>
       </div>
       <div class="field">
         <label>จำนวน</label>
@@ -353,6 +356,7 @@
     </div>
   </template>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./sale-skus.logic.browser.js"></script>
 </body>
 </html>

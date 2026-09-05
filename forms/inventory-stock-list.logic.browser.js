@@ -79,6 +79,7 @@ window.addEventListener("DOMContentLoaded", () => {
         .filter((category) => category.status !== "inactive")
         .map((category) => option(category.name, category.name)),
     );
+    window.SearchableSelect?.enhance(categorySelect);
   }
 
   function renderParentRows() {

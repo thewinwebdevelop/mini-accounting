@@ -109,6 +109,7 @@ window.addEventListener("DOMContentLoaded", () => {
       option("เลือก Stock SKU", ""),
       ...activeSkus.map((sku) => option(skuLabel(sku), sku.id, sku)),
     );
+    window.SearchableSelect?.enhance(select);
   }
 
   function vendorLabel(vendor) {
@@ -150,8 +151,21 @@ window.addEventListener("DOMContentLoaded", () => {
   function applyReceiptTypeState() {
     const isStockPurchase = form.elements.receiptType.value === "stock_purchase";
     stockReceiptNotice.style.display = isStockPurchase ? "block" : "none";
-    lineItems.querySelectorAll('select[name="stockSkuId"]').forEach((select) => {
-      select.required = isStockPurchase;
+    lineItems.querySelectorAll(".stock-line").forEach((row) => {
+      const stockField = row.querySelector("[data-stock-only-field]");
+      const select = row.querySelector('select[name="stockSkuId"]');
+      const skuInput = row.querySelector('input[name="sku"]');
+      const descriptionLabel = row.querySelector("[data-description-label]");
+      const amountLabel = row.querySelector("[data-amount-label]");
+
+      if (stockField) stockField.hidden = !isStockPurchase;
+      if (descriptionLabel) descriptionLabel.textContent = isStockPurchase ? "รายละเอียด" : "รายละเอียดค่าใช้จ่าย *";
+      if (amountLabel) amountLabel.textContent = isStockPurchase ? "ต้นทุน/หน่วย *" : "ราคา/หน่วย *";
+      if (select) {
+        select.required = isStockPurchase;
+        if (!isStockPurchase) select.value = "";
+      }
+      if (!isStockPurchase && skuInput) skuInput.value = "";
     });
     applyStockLineLock();
   }
@@ -210,12 +224,13 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function collectLineRows() {
+    const isStockPurchase = form.elements.receiptType.value === "stock_purchase";
     return [...lineItems.querySelectorAll(".stock-line")].map((row) => {
       const select = row.querySelector('select[name="stockSkuId"]');
       const selected = select.selectedOptions[0];
       return {
-        stockSkuId: select.value,
-        sku: row.querySelector('input[name="sku"]').value || selected?.dataset.sku || "",
+        stockSkuId: isStockPurchase ? select.value : "",
+        sku: isStockPurchase ? row.querySelector('input[name="sku"]').value || selected?.dataset.sku || "" : "",
         description: row.querySelector('input[name="description"]').value || selected?.dataset.description || "",
         quantity: row.querySelector('input[name="quantity"]').value,
         unitCost: row.querySelector('input[name="unitCost"]').value,

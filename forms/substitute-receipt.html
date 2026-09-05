@@ -413,7 +413,9 @@
           <div class="menu-group-title">ระบบสต๊อก</div>
           <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
           <a class="menu-item" href="/inventory-stock-list">List Stock</a>
-          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
@@ -461,7 +463,7 @@
             </div>
             <div class="field span-4">
               <label for="receiptType">ประเภท *</label>
-              <select id="receiptType" name="receiptType" required>
+              <select id="receiptType" name="receiptType" required data-searchable>
                 <option value="stock_purchase">ซื้อสต๊อกสินค้า</option>
                 <option value="general_expense">รายจ่ายทั่วไป</option>
               </select>
@@ -482,7 +484,7 @@
           <div class="grid">
             <div class="field span-12">
               <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
-              <select id="vendorPresetSelect" name="vendorPresetSelect">
+              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable>
                 <option value="">กรอกเอง / ไม่ใช้ preset</option>
               </select>
             </div>
@@ -598,12 +600,12 @@
         <span class="stock-line-total" data-stock-line-total>0.00 บาท</span>
       </summary>
       <div class="stock-line-fields">
-        <div class="field">
+        <div class="field" data-stock-only-field>
           <label>Stock SKU *</label>
-          <select name="stockSkuId" required></select>
+          <select name="stockSkuId" data-searchable></select>
         </div>
         <div class="field">
-          <label>รายละเอียด</label>
+          <label data-description-label>รายละเอียด</label>
           <input name="description">
           <input name="sku" type="hidden">
         </div>
@@ -612,7 +614,7 @@
           <input name="quantity" inputmode="numeric" required>
         </div>
         <div class="field">
-          <label>ต้นทุน/หน่วย *</label>
+          <label data-amount-label>ต้นทุน/หน่วย *</label>
           <input name="unitCost" inputmode="decimal" required>
         </div>
         <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
@@ -620,6 +622,7 @@
     </details>
   </template>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
   <script src="./substitute-receipt.logic.browser.js"></script>
 </body>

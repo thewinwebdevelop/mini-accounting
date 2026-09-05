@@ -91,6 +91,30 @@ test("validateSubstituteReceipt requires traceable evidence and valid stock purc
   ]);
 });
 
+test("validateSubstituteReceipt allows general expenses without Stock SKU", () => {
+  assert.deepEqual(validateSubstituteReceipt({
+    receiptType: "general_expense",
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-04",
+    payeeName: "ขนส่งเอกชน",
+    businessPurpose: "ค่าส่งสินค้าให้ลูกค้า",
+    lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+    evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
+  }), []);
+
+  assert.deepEqual(validateSubstituteReceipt({
+    receiptType: "general_expense",
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-04",
+    payeeName: "ร้านอุปกรณ์",
+    businessPurpose: "ซื้ออุปกรณ์ในออฟฟิศ",
+    lines: [{ description: "กระดาษแพ็กสินค้า", quantity: "", unitCost: "" }],
+    evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
+  }), [
+    "กรอกรายการและยอดเงินอย่างน้อย 1 รายการ",
+  ]);
+});
+
 test("buildSubstituteReceiptRawFileName creates stable evidence filenames", () => {
   assert.equal(buildSubstituteReceiptRawFileName("paymentSlip", "transfer.JPG", 0), "B1_payment-slip_001.jpg");
   assert.equal(buildSubstituteReceiptRawFileName("purchaseOrder", "order.PDF", 2), "B2_purchase-order_003.pdf");
@@ -136,4 +160,25 @@ test("formatSubstituteReceiptMarkdown includes stock lines and raw evidence name
   assert.match(markdown, /TOP-A-WHITE-M/);
   assert.match(markdown, /B1_payment-slip_001.jpg/);
   assert.match(markdown, /ยอดรวม \| 200.00/);
+});
+
+test("formatSubstituteReceiptMarkdown labels general expense rows without Stock SKU", () => {
+  const payload = buildSubstituteReceiptPayload({
+    accountingMonth: "2026-09",
+    sequence: "2",
+    receiptDate: "2026-09-04",
+    receiptTitle: "ค่าส่งสินค้า",
+    receiptType: "general_expense",
+    payeeName: "ขนส่งเอกชน",
+    businessPurpose: "ค่าส่งสินค้าให้ลูกค้า",
+    lines: [{ description: "ค่าส่งสินค้า Shopee", quantity: "1", unitCost: "85" }],
+    evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
+  });
+
+  const markdown = formatSubstituteReceiptMarkdown(payload);
+  assert.match(markdown, /ประเภทเอกสาร: รายจ่ายทั่วไป/);
+  assert.match(markdown, /\| ลำดับ \| รายละเอียด \| จำนวน \| ราคา\/หน่วย \| ยอดรวม \|/);
+  assert.doesNotMatch(markdown, /\| ลำดับ \| Stock SKU \|/);
+  assert.match(markdown, /ค่าส่งสินค้า Shopee/);
+  assert.match(markdown, /ยอดรวม \| 85.00/);
 });
