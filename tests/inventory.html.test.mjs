@@ -87,6 +87,8 @@ test("inventory dashboard page shows stock value, stock-in report, and PDF expor
   assert.match(html, /id="totalInventoryValue"/);
   assert.match(html, /id="stockSkuCount"/);
   assert.match(html, /id="totalQuantityOnHand"/);
+  assert.match(html, /id="totalReservedQuantity"/);
+  assert.match(html, /id="totalAvailableQuantity"/);
   assert.match(html, /id="zeroQuantitySkuCount"/);
   assert.match(html, /id="latestStockInRows"/);
   assert.match(html, /id="stockInRows"/);
@@ -104,6 +106,8 @@ test("inventory stock list page supports search, filters, and grouped parent chi
   assert.match(html, /id="stockListCategory"[^>]*data-searchable/);
   assert.match(html, /id="stockListStatus"/);
   assert.match(html, /id="stockListMode"/);
+  assert.match(html, /จองแล้ว/);
+  assert.match(html, /พร้อมขาย/);
   assert.match(html, /id="parentStockRows"/);
   assert.match(html, /id="stockGroupRows"/);
   assert.match(html, /product-image-thumb/);
@@ -123,6 +127,8 @@ test("inventory product detail page edits parent and child SKUs and shows stock 
   assert.match(html, /id="skuDetailRows"/);
   assert.match(html, /id="movementHistoryRows"/);
   assert.match(html, /id="productSummary"/);
+  assert.match(html, /id="summaryReservedQuantity"/);
+  assert.match(html, /id="summaryAvailableQuantity"/);
   assert.match(html, /id="productImageForm"/);
   assert.match(html, /id="productImageInput"/);
   assert.match(html, /data-sku-image-form/);

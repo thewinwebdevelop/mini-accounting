@@ -740,6 +740,25 @@ function calculateBalanceFromRows(rows = []) {
   };
 }
 
+function getReservedQuantity(db, stockSkuId) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(quantity), 0) AS reserved_quantity
+    FROM platform_order_reservations
+    WHERE stock_sku_id = ?
+      AND status = 'reserved'
+  `).get(stockSkuId);
+  return Number(row.reserved_quantity || 0);
+}
+
+function addAvailability(balance, reservedQuantity) {
+  const reserved = Number(reservedQuantity || 0);
+  return {
+    ...balance,
+    reservedQuantity: reserved,
+    availableQuantity: Number(balance.quantityOnHand || 0) - reserved,
+  };
+}
+
 function listInventoryBalances(rootDir) {
   return withInventoryDatabase(rootDir, (db) => {
     const skus = listStockSkus(rootDir);
@@ -752,7 +771,7 @@ function listInventoryBalances(rootDir) {
       `).all(sku.id);
       return {
         ...sku,
-        ...calculateBalanceFromRows(movements),
+        ...addAvailability(calculateBalanceFromRows(movements), getReservedQuantity(db, sku.id)),
       };
     });
   });
@@ -851,7 +870,9 @@ function listInventoryStockGroups(rootDir, filters = {}) {
 
       if (!row.stock_sku_id) continue;
       const averageUnitCost = row.purchase_quantity ? Number(row.purchase_total_cost || 0) / row.purchase_quantity : 0;
-      const inventoryValue = Number(row.quantity_on_hand || 0) * averageUnitCost;
+      const quantityOnHand = Number(row.quantity_on_hand || 0);
+      const reservedQuantity = getReservedQuantity(db, row.stock_sku_id);
+      const inventoryValue = quantityOnHand * averageUnitCost;
       groups.get(row.product_id).children.push({
         id: row.stock_sku_id,
         productId: row.product_id,
@@ -867,7 +888,9 @@ function listInventoryStockGroups(rootDir, filters = {}) {
         status: row.stock_sku_status,
         createdAt: row.stock_sku_created_at,
         updatedAt: row.stock_sku_updated_at,
-        quantityOnHand: Number(row.quantity_on_hand || 0),
+        quantityOnHand,
+        reservedQuantity,
+        availableQuantity: quantityOnHand - reservedQuantity,
         averageUnitCost: money(averageUnitCost),
         inventoryValue: money(inventoryValue),
       });
@@ -881,6 +904,8 @@ function listInventoryStockGroups(rootDir, filters = {}) {
           ...group,
           childCount: filteredChildren.length,
           totalQuantityOnHand: filteredChildren.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0),
+          totalReservedQuantity: filteredChildren.reduce((sum, sku) => sum + Number(sku.reservedQuantity || 0), 0),
+          totalAvailableQuantity: filteredChildren.reduce((sum, sku) => sum + Number(sku.availableQuantity || 0), 0),
           totalInventoryValue: money(totalInventoryValue),
           children: filteredChildren,
         };
@@ -922,10 +947,14 @@ function getInventoryProductDetail(rootDir, productId) {
 
     const children = childRows.map((row) => {
       const averageUnitCost = row.purchase_quantity ? Number(row.purchase_total_cost || 0) / row.purchase_quantity : 0;
-      const inventoryValue = Number(row.quantity_on_hand || 0) * averageUnitCost;
+      const quantityOnHand = Number(row.quantity_on_hand || 0);
+      const reservedQuantity = getReservedQuantity(db, row.id);
+      const inventoryValue = quantityOnHand * averageUnitCost;
       return {
         ...mapStockSku(row),
-        quantityOnHand: Number(row.quantity_on_hand || 0),
+        quantityOnHand,
+        reservedQuantity,
+        availableQuantity: quantityOnHand - reservedQuantity,
         averageUnitCost: money(averageUnitCost),
         inventoryValue: money(inventoryValue),
       };
@@ -952,6 +981,8 @@ function getInventoryProductDetail(rootDir, productId) {
       summary: {
         childCount: children.length,
         totalQuantityOnHand: children.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0),
+        totalReservedQuantity: children.reduce((sum, sku) => sum + Number(sku.reservedQuantity || 0), 0),
+        totalAvailableQuantity: children.reduce((sum, sku) => sum + Number(sku.availableQuantity || 0), 0),
         totalInventoryValue: money(children.reduce((sum, sku) => sum + Number(sku.inventoryValue || 0), 0)),
       },
       children,
@@ -972,11 +1003,14 @@ function getInventoryDashboardSummary(rootDir, options = {}) {
   const balances = listInventoryBalances(rootDir);
   const totalInventoryValue = balances.reduce((sum, sku) => sum + Number(sku.inventoryValue || 0), 0);
   const totalQuantityOnHand = balances.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0);
+  const totalReservedQuantity = balances.reduce((sum, sku) => sum + Number(sku.reservedQuantity || 0), 0);
 
   return {
     asOfDate: cleanText(options.asOfDate) || nowIso(options).slice(0, 10),
     stockSkuCount: balances.length,
     totalQuantityOnHand,
+    totalReservedQuantity,
+    totalAvailableQuantity: totalQuantityOnHand - totalReservedQuantity,
     zeroQuantitySkuCount: balances.filter((sku) => Number(sku.quantityOnHand || 0) === 0).length,
     totalInventoryValue: money(totalInventoryValue),
   };
@@ -1005,10 +1039,11 @@ function getStockCard(rootDir, stockSkuId) {
       return mapMovement(row, runningQuantity);
     });
 
+    const balance = calculateBalanceFromRows(rows);
     return {
       sku: mapStockSku(sku),
       movements,
-      balance: calculateBalanceFromRows(rows),
+      balance: addAvailability(balance, getReservedQuantity(db, Number(stockSkuId))),
     };
   });
 }

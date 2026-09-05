@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -167,11 +167,34 @@ function ensureInventorySchema(db) {
       CHECK (match_status IN ('matched', 'missing_sale_sku', 'invalid_quantity', 'insufficient_stock', 'skipped_status'))
     );
 
+    CREATE TABLE IF NOT EXISTS platform_order_reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      import_id INTEGER NOT NULL,
+      order_line_id INTEGER NOT NULL,
+      stock_sku_id INTEGER NOT NULL,
+      quantity INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'reserved',
+      reference_no TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (import_id) REFERENCES platform_order_imports(id),
+      FOREIGN KEY (order_line_id) REFERENCES platform_order_lines(id),
+      FOREIGN KEY (stock_sku_id) REFERENCES stock_skus(id),
+      CHECK (quantity > 0),
+      CHECK (status IN ('reserved', 'released', 'fulfilled'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_platform_order_imports_status
       ON platform_order_imports (status, created_at);
 
     CREATE INDEX IF NOT EXISTS idx_platform_order_lines_import
       ON platform_order_lines (import_id, match_status);
+
+    CREATE INDEX IF NOT EXISTS idx_platform_order_reservations_sku_status
+      ON platform_order_reservations (stock_sku_id, status);
+
+    CREATE INDEX IF NOT EXISTS idx_platform_order_reservations_import
+      ON platform_order_reservations (import_id, status);
   `);
 
   addColumnIfMissing(db, "products", "image_path", "TEXT NOT NULL DEFAULT ''");
@@ -196,6 +219,34 @@ function ensureInventorySchema(db) {
     SELECT DISTINCT TRIM(category), 1000, 'active', ?, ?
     FROM products
     WHERE TRIM(category) <> ''
+  `).run(timestamp, timestamp);
+
+  db.prepare(`
+    INSERT INTO platform_order_reservations (
+      import_id, order_line_id, stock_sku_id, quantity, status, reference_no, created_at, updated_at
+    )
+    SELECT
+      platform_order_lines.import_id,
+      platform_order_lines.id,
+      bundle_components.stock_sku_id,
+      platform_order_lines.quantity * bundle_components.quantity,
+      'reserved',
+      platform_orders.platform || ':' || platform_orders.order_no || ':' || platform_order_lines.line_no || ':' || platform_order_lines.sale_sku,
+      ?,
+      ?
+    FROM platform_order_lines
+    JOIN platform_orders ON platform_orders.id = platform_order_lines.order_id
+    JOIN bundle_components ON bundle_components.sale_sku_id = platform_order_lines.sale_sku_id
+    WHERE platform_order_lines.match_status = 'matched'
+      AND platform_order_lines.posted_at = ''
+      AND platform_order_lines.quantity > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM platform_order_reservations existing
+        WHERE existing.order_line_id = platform_order_lines.id
+          AND existing.stock_sku_id = bundle_components.stock_sku_id
+          AND existing.status = 'reserved'
+      )
   `).run(timestamp, timestamp);
 }
 

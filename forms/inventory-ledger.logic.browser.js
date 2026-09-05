@@ -106,10 +106,12 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>${escapeHtml(row.color)}</td>
         <td>${escapeHtml(row.size)}</td>
         <td class="number">${row.quantityOnHand}</td>
+        <td class="number">${row.reservedQuantity || 0}</td>
+        <td class="number">${row.availableQuantity || 0}</td>
         <td class="number">${escapeHtml(row.averageUnitCost)}</td>
         <td class="number">${escapeHtml(row.inventoryValue)}</td>
       </tr>
-    `).join("") || `<tr><td colspan="7">ยังไม่มีข้อมูลสต๊อก</td></tr>`;
+    `).join("") || `<tr><td colspan="9">ยังไม่มีข้อมูลสต๊อก</td></tr>`;
   }
 
   async function refreshProducts() {

@@ -30,6 +30,7 @@ test("ensureInventorySchema creates inventory database tables", async () => {
       "inventory_schema_migrations",
       "platform_order_imports",
       "platform_order_lines",
+      "platform_order_reservations",
       "platform_orders",
       "product_categories",
       "products",
@@ -70,6 +71,7 @@ test("inventory schema creates platform order import tables", async () => {
     assert.equal(tables.includes("platform_order_imports"), true);
     assert.equal(tables.includes("platform_orders"), true);
     assert.equal(tables.includes("platform_order_lines"), true);
+    assert.equal(tables.includes("platform_order_reservations"), true);
 
     const importColumns = db.prepare("PRAGMA table_info(platform_order_imports)").all().map((column) => column.name);
     assert.deepEqual(importColumns, [
@@ -90,6 +92,81 @@ test("inventory schema creates platform order import tables", async () => {
     assert.equal(lineColumns.includes("match_status"), true);
     assert.equal(lineColumns.includes("posted_at"), true);
     assert.equal(lineColumns.includes("issue_message"), true);
+
+    const reservationColumns = db.prepare("PRAGMA table_info(platform_order_reservations)").all().map((column) => column.name);
+    assert.deepEqual(reservationColumns, [
+      "id",
+      "import_id",
+      "order_line_id",
+      "stock_sku_id",
+      "quantity",
+      "status",
+      "reference_no",
+      "created_at",
+      "updated_at",
+    ]);
+
+    db.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureInventorySchema backfills reservations for existing unposted matched order lines", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-reservation-backfill-"));
+
+  try {
+    const db = openInventoryDatabase(rootDir);
+    ensureInventorySchema(db);
+
+    const product = db.prepare(`
+      INSERT INTO products (product_code, name, category, description, status, created_at, updated_at)
+      VALUES ('BACKFILL', 'เสื้อ Backfill', 'เสื้อ', '', 'active', '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      RETURNING id
+    `).get();
+    const stockSku = db.prepare(`
+      INSERT INTO stock_skus (product_id, sku, color, size, barcode, default_unit_cost, status, created_at, updated_at)
+      VALUES (?, 'BACKFILL-WHITE-M', 'ขาว', 'M', '', 100, 'active', '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      RETURNING id
+    `).get(product.id);
+    const saleSku = db.prepare(`
+      INSERT INTO sale_skus (sale_sku, display_name, platform, platform_product_id, platform_variation_id, status, created_at, updated_at)
+      VALUES ('BACKFILL-SALE', 'เสื้อ Backfill', 'shopee', '', '', 'active', '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      RETURNING id
+    `).get();
+    db.prepare(`
+      INSERT INTO bundle_components (sale_sku_id, stock_sku_id, quantity, created_at)
+      VALUES (?, ?, 2, '2026-09-05T00:00:00.000Z')
+    `).run(saleSku.id, stockSku.id);
+    const importRow = db.prepare(`
+      INSERT INTO platform_order_imports (import_no, platform, file_name, status, row_count, matched_line_count, issue_count, posted_at, created_at, updated_at)
+      VALUES ('POI-BACKFILL', 'shopee', 'old.csv', 'ready', 1, 1, 0, '', '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      RETURNING id
+    `).get();
+    const order = db.prepare(`
+      INSERT INTO platform_orders (import_id, platform, order_no, order_date, order_status, buyer_name, created_at)
+      VALUES (?, 'shopee', 'SP-BACKFILL-001', '2026-09-05', 'paid', '', '2026-09-05T00:00:00.000Z')
+      RETURNING id
+    `).get(importRow.id);
+    db.prepare(`
+      INSERT INTO platform_order_lines (import_id, order_id, line_no, sale_sku, display_name, quantity, sale_sku_id, match_status, issue_message, posted_at, created_at)
+      VALUES (?, ?, '1', 'BACKFILL-SALE', 'เสื้อ Backfill', 3, ?, 'matched', '', '', '2026-09-05T00:00:00.000Z')
+    `).run(importRow.id, order.id, saleSku.id);
+
+    ensureInventorySchema(db);
+    ensureInventorySchema(db);
+
+    const reservations = db.prepare(`
+      SELECT stock_sku_id, quantity, status, reference_no
+      FROM platform_order_reservations
+      ORDER BY id ASC
+    `).all().map((row) => ({ ...row }));
+    assert.deepEqual(reservations, [{
+      stock_sku_id: stockSku.id,
+      quantity: 6,
+      status: "reserved",
+      reference_no: "shopee:SP-BACKFILL-001:1:BACKFILL-SALE",
+    }]);
 
     db.close();
   } finally {

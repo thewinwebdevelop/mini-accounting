@@ -71,7 +71,7 @@ window.addEventListener("DOMContentLoaded", () => {
       <div class="component-line">
         <strong>${escapeHtml(component.sku)}</strong>
         <span>${escapeHtml(component.productName)} ${escapeHtml(component.color)} ${escapeHtml(component.size)}</span>
-        <span>ตัด ${numberText(component.requiredQuantity)} / คงเหลือ ${numberText(component.quantityOnHand)}</span>
+        <span>ต้องใช้ ${numberText(component.requiredQuantity)} / คงเหลือจริง ${numberText(component.quantityOnHand)} / จองแล้ว ${numberText(component.reservedQuantity)} / พร้อมขาย ${numberText(component.availableQuantity)}</span>
       </div>
     `).join("") || `<span class="muted">ยังไม่มี component</span>`;
   }

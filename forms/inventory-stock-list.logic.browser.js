@@ -98,11 +98,13 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>${escapeHtml(group.category || "-")}</td>
         <td class="number">${group.childCount}</td>
         <td class="number">${group.totalQuantityOnHand}</td>
+        <td class="number">${group.totalReservedQuantity || 0}</td>
+        <td class="number">${group.totalAvailableQuantity || 0}</td>
         <td class="number">${money(group.totalInventoryValue)}</td>
         <td>${renderStatus(group.status)}</td>
         <td><a class="button secondary" href="/inventory-product-detail?productId=${encodeURIComponent(group.id)}">รายละเอียด</a></td>
       </tr>
-    `).join("") || `<tr><td colspan="7">ไม่พบรายการสต๊อก</td></tr>`;
+    `).join("") || `<tr><td colspan="9">ไม่พบรายการสต๊อก</td></tr>`;
   }
 
   function renderChildRows(group) {
@@ -115,11 +117,13 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>${escapeHtml(sku.color || "-")}</td>
         <td>${escapeHtml(sku.size || "-")}</td>
         <td class="number">${sku.quantityOnHand}</td>
+        <td class="number">${sku.reservedQuantity || 0}</td>
+        <td class="number">${sku.availableQuantity || 0}</td>
         <td class="number">${money(sku.averageUnitCost)}</td>
         <td class="number">${money(sku.inventoryValue)}</td>
         <td>${renderStatus(sku.status)}</td>
       </tr>
-    `).join("") || `<tr><td colspan="7">ยังไม่มี child SKU</td></tr>`;
+    `).join("") || `<tr><td colspan="9">ยังไม่มี child SKU</td></tr>`;
   }
 
   function renderGroups() {
@@ -136,7 +140,9 @@ window.addEventListener("DOMContentLoaded", () => {
             </div>
           </div>
           <div class="group-metric"><span>SKU</span><strong>${group.childCount}</strong></div>
-          <div class="group-metric"><span>คงเหลือ</span><strong>${group.totalQuantityOnHand}</strong></div>
+          <div class="group-metric"><span>คงเหลือจริง</span><strong>${group.totalQuantityOnHand}</strong></div>
+          <div class="group-metric"><span>จองแล้ว</span><strong>${group.totalReservedQuantity || 0}</strong></div>
+          <div class="group-metric"><span>พร้อมขาย</span><strong>${group.totalAvailableQuantity || 0}</strong></div>
           <div class="group-metric"><span>มูลค่า</span><strong>${money(group.totalInventoryValue)}</strong></div>
           <a class="button secondary" href="/inventory-product-detail?productId=${encodeURIComponent(group.id)}">รายละเอียด</a>
         </summary>
@@ -147,7 +153,9 @@ window.addEventListener("DOMContentLoaded", () => {
                 <th>Stock SKU</th>
                 <th>สี</th>
                 <th>ไซซ์</th>
-                <th class="number">คงเหลือ</th>
+                <th class="number">คงเหลือจริง</th>
+                <th class="number">จองแล้ว</th>
+                <th class="number">พร้อมขาย</th>
                 <th class="number">ต้นทุนเฉลี่ย</th>
                 <th class="number">มูลค่า</th>
                 <th>สถานะ</th>

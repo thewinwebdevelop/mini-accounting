@@ -117,7 +117,7 @@
     .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
     .summary-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 12px;
     }
@@ -308,8 +308,16 @@
         <strong id="summaryChildCount">0</strong>
       </div>
       <div class="summary-card">
-        <span>คงเหลือรวม</span>
+        <span>คงเหลือจริง</span>
         <strong id="summaryQuantity">0</strong>
+      </div>
+      <div class="summary-card">
+        <span>จองแล้ว</span>
+        <strong id="summaryReservedQuantity">0</strong>
+      </div>
+      <div class="summary-card">
+        <span>พร้อมขาย</span>
+        <strong id="summaryAvailableQuantity">0</strong>
       </div>
       <div class="summary-card">
         <span>มูลค่ารวม</span>

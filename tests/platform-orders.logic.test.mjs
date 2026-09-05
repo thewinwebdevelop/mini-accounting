@@ -15,6 +15,7 @@ const {
   createSaleSku,
   createStockSku,
   getStockCard,
+  listInventoryBalances,
   updateSaleSku,
 } = inventory;
 const {
@@ -229,6 +230,73 @@ test("importPlatformOrders reserves component stock across all lines in the same
     assert.deepEqual(detail.lines.map((line) => line.matchStatus), ["matched", "insufficient_stock"]);
     assert.equal(detail.lines[1].components[0].requiredQuantity, 3);
     assert.equal(detail.lines[1].components[0].quantityOnHand, 5);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("importPlatformOrders persists reserved stock across pending imports", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-persisted-reserve-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "PERSIST-RESERVE", name: "เสื้อรอส่ง", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "PERSIST-RESERVE-WHITE-M", color: "ขาว", size: "M", defaultUnitCost: "100" });
+    createPurchaseInMovement(rootDir, { stockSkuId: stockSku.id, quantity: "5", unitCost: "100", movementDate: "2026-09-05" });
+    createSaleSku(rootDir, {
+      saleSku: "PERSIST-RESERVE-SALE",
+      displayName: "เสื้อรอส่ง",
+      platform: "shopee",
+      components: [{ stockSkuId: stockSku.id, quantity: "1" }],
+    });
+
+    const first = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "first-reserve.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-RESERVE-001,PERSIST-RESERVE-SALE,3", "utf8"),
+    });
+
+    assert.equal(first.import.status, "ready");
+    assert.deepEqual(listInventoryBalances(rootDir).map((sku) => ({
+      quantityOnHand: sku.quantityOnHand,
+      reservedQuantity: sku.reservedQuantity,
+      availableQuantity: sku.availableQuantity,
+    })), [{
+      quantityOnHand: 5,
+      reservedQuantity: 3,
+      availableQuantity: 2,
+    }]);
+
+    const second = importPlatformOrders(rootDir, {
+      platform: "shopee",
+      fileName: "second-reserve.csv",
+      fileBuffer: Buffer.from("order_no,sale_sku,quantity\nSP-RESERVE-002,PERSIST-RESERVE-SALE,3", "utf8"),
+    });
+
+    assert.equal(second.import.status, "has_issues");
+    assert.equal(second.lines[0].matchStatus, "insufficient_stock");
+    assert.deepEqual(listInventoryBalances(rootDir).map((sku) => ({
+      quantityOnHand: sku.quantityOnHand,
+      reservedQuantity: sku.reservedQuantity,
+      availableQuantity: sku.availableQuantity,
+    })), [{
+      quantityOnHand: 5,
+      reservedQuantity: 3,
+      availableQuantity: 2,
+    }]);
+
+    postPlatformOrderImport(rootDir, first.import.id, {
+      now: () => "2026-09-05T14:00:00.000Z",
+    });
+
+    assert.deepEqual(listInventoryBalances(rootDir).map((sku) => ({
+      quantityOnHand: sku.quantityOnHand,
+      reservedQuantity: sku.reservedQuantity,
+      availableQuantity: sku.availableQuantity,
+    })), [{
+      quantityOnHand: 2,
+      reservedQuantity: 0,
+      availableQuantity: 2,
+    }]);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -477,7 +545,7 @@ test("postPlatformOrderImport creates sale_out movements for bundle components",
   }
 });
 
-test("postPlatformOrderImport rechecks shared stock before posting stale ready imports", async () => {
+test("importPlatformOrders checks pending reservations before marking a later import ready", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-platform-post-recheck-"));
 
   try {
@@ -503,14 +571,15 @@ test("postPlatformOrderImport rechecks shared stock before posting stale ready i
     });
 
     assert.equal(first.import.status, "ready");
-    assert.equal(second.import.status, "ready");
+    assert.equal(second.import.status, "has_issues");
+    assert.equal(second.lines[0].matchStatus, "insufficient_stock");
     postPlatformOrderImport(rootDir, first.import.id, {
       now: () => "2026-09-05T14:00:00.000Z",
     });
 
     assert.throws(() => postPlatformOrderImport(rootDir, second.import.id, {
       now: () => "2026-09-05T14:05:00.000Z",
-    }), /สต๊อกไม่พอ|stock/i);
+    }), /ยังมีรายการที่ต้องแก้ไข|stock/i);
 
     const reloadedSecond = getPlatformOrderImport(rootDir, second.import.id);
     assert.equal(reloadedSecond.import.status, "has_issues");

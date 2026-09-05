@@ -181,6 +181,20 @@ function getQuantityOnHand(db, stockSkuId) {
   return Number(row.quantity_on_hand || 0);
 }
 
+function getReservedQuantity(db, stockSkuId) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(quantity), 0) AS reserved_quantity
+    FROM platform_order_reservations
+    WHERE stock_sku_id = ?
+      AND status = 'reserved'
+  `).get(stockSkuId);
+  return Number(row.reserved_quantity || 0);
+}
+
+function getAvailableQuantity(db, stockSkuId) {
+  return getQuantityOnHand(db, stockSkuId) - getReservedQuantity(db, stockSkuId);
+}
+
 function findSaleSku(db, saleSkuCode, platform) {
   const rows = db.prepare(`
     SELECT *
@@ -238,6 +252,7 @@ function getSaleSkuComponents(db, saleSkuId, lineQuantity) {
 
   return rows.map((row) => {
     const quantityOnHand = getQuantityOnHand(db, row.stock_sku_id);
+    const reservedQuantity = getReservedQuantity(db, row.stock_sku_id);
     return {
       stockSkuId: row.stock_sku_id,
       sku: row.sku,
@@ -248,6 +263,8 @@ function getSaleSkuComponents(db, saleSkuId, lineQuantity) {
       componentQuantity: row.component_quantity,
       requiredQuantity: row.component_quantity * lineQuantity,
       quantityOnHand,
+      reservedQuantity,
+      availableQuantity: quantityOnHand - reservedQuantity,
       unitCost: row.default_unit_cost,
     };
   });
@@ -272,7 +289,7 @@ function classifyLine(db, row, remainingStockBySku) {
   const components = getSaleSkuComponents(db, saleSku.id, row.quantity);
   const hasInsufficientStock = components.some((component) => {
     if (!remainingStockBySku.has(component.stockSkuId)) {
-      remainingStockBySku.set(component.stockSkuId, component.quantityOnHand);
+      remainingStockBySku.set(component.stockSkuId, getAvailableQuantity(db, component.stockSkuId));
     }
     return component.requiredQuantity > remainingStockBySku.get(component.stockSkuId);
   });
@@ -389,6 +406,14 @@ function findUnpostedImportIdsForRows(db, rows) {
 function supersedeImports(db, importIds, timestamp) {
   for (const importId of importIds) {
     db.prepare(`
+      UPDATE platform_order_reservations
+      SET status = 'released',
+          updated_at = ?
+      WHERE import_id = ?
+        AND status = 'reserved'
+    `).run(timestamp, importId);
+
+    db.prepare(`
       UPDATE platform_order_imports
       SET status = 'has_issues',
           issue_count = CASE WHEN issue_count = 0 THEN 1 ELSE issue_count END,
@@ -465,6 +490,45 @@ function mapLine(row, components = []) {
   };
 }
 
+function getReservedComponentsForLine(db, line) {
+  const rows = db.prepare(`
+    SELECT
+      platform_order_reservations.stock_sku_id,
+      platform_order_reservations.quantity,
+      stock_skus.sku,
+      stock_skus.color,
+      stock_skus.size,
+      stock_skus.default_unit_cost,
+      products.product_code,
+      products.name AS product_name
+    FROM platform_order_reservations
+    JOIN stock_skus ON stock_skus.id = platform_order_reservations.stock_sku_id
+    JOIN products ON products.id = stock_skus.product_id
+    WHERE platform_order_reservations.order_line_id = ?
+      AND platform_order_reservations.status IN ('reserved', 'fulfilled')
+    ORDER BY platform_order_reservations.id ASC
+  `).all(line.id);
+
+  return rows.map((row) => {
+    const quantityOnHand = getQuantityOnHand(db, row.stock_sku_id);
+    const reservedQuantity = getReservedQuantity(db, row.stock_sku_id);
+    return {
+      stockSkuId: row.stock_sku_id,
+      sku: row.sku,
+      color: row.color,
+      size: row.size,
+      productCode: row.product_code,
+      productName: row.product_name,
+      componentQuantity: line.quantity ? row.quantity / line.quantity : row.quantity,
+      requiredQuantity: row.quantity,
+      quantityOnHand,
+      reservedQuantity,
+      availableQuantity: quantityOnHand - reservedQuantity,
+      unitCost: row.default_unit_cost,
+    };
+  });
+}
+
 function getPlatformOrderImportFromDb(db, importId) {
   const id = Number(importId);
   if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบ import");
@@ -493,10 +557,13 @@ function getPlatformOrderImportFromDb(db, importId) {
   return {
     import: mapImport(importRow),
     orders: orderRows.map(mapOrder),
-    lines: lineRows.map((row) => mapLine(
-      row,
-      row.sale_sku_id ? getSaleSkuComponents(db, row.sale_sku_id, row.quantity) : [],
-    )),
+    lines: lineRows.map((row) => {
+      const reservedComponents = getReservedComponentsForLine(db, row);
+      return mapLine(
+        row,
+        reservedComponents.length || !row.sale_sku_id ? reservedComponents : getSaleSkuComponents(db, row.sale_sku_id, row.quantity),
+      );
+    }),
   };
 }
 
@@ -551,6 +618,35 @@ function pendingRequirementsForLine(db, line) {
     );
   }
   return requirements;
+}
+
+function reserveComponentsForLine(db, importId, sourceRow, line, components, timestamp) {
+  db.prepare(`
+    UPDATE platform_order_reservations
+    SET status = 'released',
+        updated_at = ?
+    WHERE order_line_id = ?
+      AND status = 'reserved'
+  `).run(timestamp, line.id);
+
+  const insert = db.prepare(`
+    INSERT INTO platform_order_reservations (
+      import_id, order_line_id, stock_sku_id, quantity, status, reference_no, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?)
+  `);
+  const referenceNo = platformOrderReferenceNo(sourceRow);
+  for (const component of components) {
+    insert.run(
+      importId,
+      line.id,
+      component.stockSkuId,
+      component.requiredQuantity,
+      referenceNo,
+      timestamp,
+      timestamp,
+    );
+  }
 }
 
 function findInsufficientLinesForPosting(db, lines) {
@@ -658,6 +754,13 @@ function postPlatformOrderImport(rootDir, importId, options = {}) {
         }
 
         db.prepare("UPDATE platform_order_lines SET posted_at = ? WHERE id = ? AND posted_at = ''").run(timestamp, line.id);
+        db.prepare(`
+          UPDATE platform_order_reservations
+          SET status = 'fulfilled',
+              updated_at = ?
+          WHERE order_line_id = ?
+            AND status = 'reserved'
+        `).run(timestamp, line.id);
       }
 
       db.prepare(`
@@ -712,7 +815,12 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
         const order = upsertPlatformOrder(db, row, importRow.id, timestamp);
         const classification = classifyLine(db, row, remainingStockBySku);
         const line = upsertPlatformOrderLine(db, row, importRow.id, order.id, classification, timestamp);
-        if (line) lineRows.push(line);
+        if (line) {
+          if (classification.matchStatus === "matched") {
+            reserveComponentsForLine(db, importRow.id, row, line, classification.components, timestamp);
+          }
+          lineRows.push(line);
+        }
       }
 
       refreshImportSummary(db, importRow.id, timestamp);

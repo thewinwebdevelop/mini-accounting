@@ -98,6 +98,8 @@ window.addEventListener("DOMContentLoaded", () => {
     document.querySelector("#summaryProductCode").textContent = detail.product.productCode;
     document.querySelector("#summaryChildCount").textContent = detail.summary.childCount;
     document.querySelector("#summaryQuantity").textContent = detail.summary.totalQuantityOnHand;
+    document.querySelector("#summaryReservedQuantity").textContent = detail.summary.totalReservedQuantity || 0;
+    document.querySelector("#summaryAvailableQuantity").textContent = detail.summary.totalAvailableQuantity || 0;
     document.querySelector("#summaryValue").textContent = `${money(detail.summary.totalInventoryValue)} บาท`;
     productImagePreview = renderImagePreview(productImagePreview, detail.product.imageUrl, detail.product.productCode, "product-image-preview");
   }
@@ -109,7 +111,7 @@ window.addEventListener("DOMContentLoaded", () => {
         <input name="productId" type="hidden" value="${escapeHtml(detail.product.id)}">
         <div class="sku-editor-header">
           <span>${escapeHtml(sku.sku)}</span>
-          <span class="muted">คงเหลือ ${sku.quantityOnHand} | มูลค่า ${money(sku.inventoryValue)} บาท</span>
+          <span class="muted">คงเหลือจริง ${sku.quantityOnHand} | จองแล้ว ${sku.reservedQuantity || 0} | พร้อมขาย ${sku.availableQuantity || 0} | มูลค่า ${money(sku.inventoryValue)} บาท</span>
         </div>
         <div class="image-editor">
           ${sku.imageUrl

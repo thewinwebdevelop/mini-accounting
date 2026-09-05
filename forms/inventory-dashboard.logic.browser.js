@@ -41,6 +41,8 @@ window.addEventListener("DOMContentLoaded", () => {
     document.querySelector("#totalInventoryValue").textContent = `${money(summary.totalInventoryValue)} บาท`;
     document.querySelector("#stockSkuCount").textContent = summary.stockSkuCount;
     document.querySelector("#totalQuantityOnHand").textContent = summary.totalQuantityOnHand;
+    document.querySelector("#totalReservedQuantity").textContent = summary.totalReservedQuantity || 0;
+    document.querySelector("#totalAvailableQuantity").textContent = summary.totalAvailableQuantity || 0;
     document.querySelector("#zeroQuantitySkuCount").textContent = summary.zeroQuantitySkuCount;
     document.querySelector("#asOfDate").textContent = summary.asOfDate || "-";
   }
