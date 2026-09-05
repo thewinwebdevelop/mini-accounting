@@ -3,6 +3,7 @@ window.addEventListener("DOMContentLoaded", () => {
     productCategories: [],
     products: [],
     stockSkus: [],
+    mode: new URLSearchParams(window.location.search).get("mode") || "",
   };
 
   const productForm = document.querySelector("#productForm");
@@ -186,6 +187,21 @@ window.addEventListener("DOMContentLoaded", () => {
     skuForm.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function focusCreateProductFlow() {
+    if (state.mode !== "create-product") return;
+    resetProductForm();
+    productForm.scrollIntoView({ behavior: "smooth", block: "start" });
+    productForm.elements.productCode.focus({ preventScroll: true });
+  }
+
+  function focusCreateSkuFlow(productId) {
+    if (state.mode !== "create-product" || !productId) return;
+    resetSkuForm();
+    skuForm.elements.productId.value = productId;
+    skuForm.scrollIntoView({ behavior: "smooth", block: "start" });
+    skuForm.elements.sku.focus({ preventScroll: true });
+  }
+
   async function refreshProducts() {
     const { products } = await api("/api/inventory/products");
     state.products = products;
@@ -250,9 +266,10 @@ window.addEventListener("DOMContentLoaded", () => {
       delete payload.id;
       const route = id ? `/api/inventory/products/${encodeURIComponent(id)}` : "/api/inventory/products";
       const method = id ? "PUT" : "POST";
-      await api(route, { method, body: JSON.stringify(payload) });
+      const result = await api(route, { method, body: JSON.stringify(payload) });
       resetProductForm();
       await refreshAll();
+      focusCreateSkuFlow(result.product?.id);
       setStatus("บันทึกสินค้าแม่แล้ว", "success");
     } catch (error) {
       setStatus(error.message, "error");
@@ -318,5 +335,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#cancelSkuEdit").addEventListener("click", resetSkuForm);
 
   purchaseInForm.elements.movementDate.value = todayInputValue();
-  refreshAll().catch((error) => setStatus(error.message, "error"));
+  refreshAll()
+    .then(focusCreateProductFlow)
+    .catch((error) => setStatus(error.message, "error"));
 });

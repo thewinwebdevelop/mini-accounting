@@ -51,6 +51,21 @@ async function requestBuffer(baseUrl, route) {
   };
 }
 
+function multipartBody(name, fileName, contentType, content) {
+  const boundary = "sweet-house-test-boundary";
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\n`),
+    Buffer.from(`Content-Disposition: form-data; name="${name}"; filename="${fileName}"\r\n`),
+    Buffer.from(`Content-Type: ${contentType}\r\n\r\n`),
+    Buffer.from(content),
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 test("inventory APIs create product, SKU, purchase-in, balance, and stock card records", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-api-"));
   const port = 19187;
@@ -139,6 +154,39 @@ test("inventory APIs create product, SKU, purchase-in, balance, and stock card r
     const stockInReport = await requestJson(baseUrl, "/api/inventory/stock-in-report?limit=10");
     assert.equal(stockInReport.movements[0].sku, "SHIRT-A-BLACK-M");
     assert.equal(stockInReport.movements[0].totalCost, "600.00");
+
+    const stockList = await requestJson(baseUrl, "/api/inventory/stock-list?search=shirt&stockStatus=in_stock");
+    assert.equal(stockList.groups.length, 1);
+    assert.equal(stockList.groups[0].productCode, "SHIRT-A");
+    assert.equal(stockList.groups[0].totalQuantityOnHand, 5);
+    assert.equal(stockList.groups[0].totalInventoryValue, "600.00");
+    assert.deepEqual(stockList.groups[0].children.map((child) => child.sku), ["SHIRT-A-BLACK-M"]);
+
+    const productDetail = await requestJson(baseUrl, `/api/inventory/products/${product.id}/detail`);
+    assert.equal(productDetail.product.productCode, "SHIRT-A");
+    assert.equal(productDetail.summary.totalQuantityOnHand, 5);
+    assert.deepEqual(productDetail.children.map((child) => child.sku), ["SHIRT-A-BLACK-M"]);
+    assert.deepEqual(productDetail.movements.map((movement) => movement.referenceNo), ["RCV-API-001"]);
+
+    const productUpload = multipartBody("image", "shirt.png", "image/png", "product-image");
+    const uploadedProductImage = await requestJson(baseUrl, `/api/inventory/products/${product.id}/image`, {
+      method: "POST",
+      headers: { "content-type": productUpload.contentType },
+      body: productUpload.body,
+    });
+    assert.equal(uploadedProductImage.product.imageUrl, `/api/inventory/images/products/product-${product.id}.png`);
+
+    const skuUpload = multipartBody("image", "shirt-black.jpg", "image/jpeg", "sku-image");
+    const uploadedSkuImage = await requestJson(baseUrl, `/api/inventory/stock-skus/${stockSku.id}/image`, {
+      method: "POST",
+      headers: { "content-type": skuUpload.contentType },
+      body: skuUpload.body,
+    });
+    assert.equal(uploadedSkuImage.stockSku.imageUrl, `/api/inventory/images/stock-skus/stock-sku-${stockSku.id}.jpg`);
+
+    const servedProductImage = await requestBuffer(baseUrl, uploadedProductImage.product.imageUrl);
+    assert.equal(servedProductImage.contentType, "image/png");
+    assert.equal(servedProductImage.body.toString("utf8"), "product-image");
 
     const pdf = await requestBuffer(baseUrl, "/api/inventory/current-stock-pdf");
     assert.equal(pdf.contentType, "application/pdf");

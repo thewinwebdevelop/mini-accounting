@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,11 +11,15 @@ const {
   createProduct,
   createSaleSku,
   createStockSku,
+  getInventoryProductDetail,
   getSaleSku,
   listSaleSkus,
+  listInventoryStockGroups,
   listProductCategories,
   listProducts,
   listStockSkus,
+  saveProductImage,
+  saveStockSkuImage,
   updateProductCategory,
   updateProduct,
   updateSaleSku,
@@ -462,6 +466,180 @@ test("stock-in report lists latest purchase-in movements with product context", 
     assert.equal(report[0].quantity, 5);
     assert.equal(report[0].totalCost, "425.00");
     assert.equal(report[0].referenceNo, "SR-2026-09-0001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory stock list groups child SKUs under parent products with balances and filters", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-stock-list-"));
+
+  try {
+    const shirt = createProduct(rootDir, { productCode: "TOP-LUNA", name: "เสื้อ Luna", category: "เสื้อ" });
+    const skirt = createProduct(rootDir, { productCode: "SKIRT-MIRA", name: "กระโปรง Mira", category: "กระโปรง" });
+    const white = createStockSku(rootDir, {
+      productId: shirt.id,
+      sku: "TOP-LUNA-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "120",
+    });
+    createStockSku(rootDir, {
+      productId: shirt.id,
+      sku: "TOP-LUNA-BLACK-M",
+      color: "ดำ",
+      size: "M",
+      defaultUnitCost: "125",
+    });
+    createStockSku(rootDir, {
+      productId: skirt.id,
+      sku: "SKIRT-MIRA-BLACK-S",
+      color: "ดำ",
+      size: "S",
+      defaultUnitCost: "160",
+    });
+
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: white.id,
+      movementDate: "2026-09-05",
+      quantity: "4",
+      unitCost: "130",
+    });
+
+    const allGroups = listInventoryStockGroups(rootDir);
+    assert.deepEqual(allGroups.map((group) => group.productCode), ["SKIRT-MIRA", "TOP-LUNA"]);
+    assert.equal(allGroups[1].childCount, 2);
+    assert.equal(allGroups[1].totalQuantityOnHand, 4);
+    assert.equal(allGroups[1].totalInventoryValue, "520.00");
+    assert.deepEqual(allGroups[1].children.map((child) => ({
+      sku: child.sku,
+      quantityOnHand: child.quantityOnHand,
+      inventoryValue: child.inventoryValue,
+    })), [
+      { sku: "TOP-LUNA-BLACK-M", quantityOnHand: 0, inventoryValue: "0.00" },
+      { sku: "TOP-LUNA-WHITE-M", quantityOnHand: 4, inventoryValue: "520.00" },
+    ]);
+
+    const searched = listInventoryStockGroups(rootDir, { search: "white" });
+    assert.deepEqual(searched.map((group) => group.productCode), ["TOP-LUNA"]);
+    assert.deepEqual(searched[0].children.map((child) => child.sku), ["TOP-LUNA-WHITE-M"]);
+
+    const inStock = listInventoryStockGroups(rootDir, { stockStatus: "in_stock" });
+    assert.deepEqual(inStock.map((group) => group.productCode), ["TOP-LUNA"]);
+    assert.deepEqual(inStock[0].children.map((child) => child.sku), ["TOP-LUNA-WHITE-M"]);
+
+    const category = listInventoryStockGroups(rootDir, { category: "กระโปรง" });
+    assert.deepEqual(category.map((group) => group.productCode), ["SKIRT-MIRA"]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory product detail loads parent data, child SKU balances, and movement history", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-product-detail-"));
+
+  try {
+    const product = createProduct(rootDir, {
+      productCode: "DETAIL-TOP",
+      name: "เสื้อ Detail",
+      category: "เสื้อ",
+      description: "สินค้าไว้ตรวจ detail",
+    });
+    const white = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "DETAIL-TOP-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const black = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "DETAIL-TOP-BLACK-S",
+      color: "ดำ",
+      size: "S",
+      defaultUnitCost: "90",
+    });
+
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: white.id,
+      movementDate: "2026-09-01",
+      quantity: "2",
+      unitCost: "110",
+      referenceType: "manual",
+      referenceNo: "IN-OLD",
+    }, { now: () => "2026-09-01T01:00:00.000Z" });
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: black.id,
+      movementDate: "2026-09-05",
+      quantity: "3",
+      unitCost: "95",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-DETAIL",
+    }, { now: () => "2026-09-05T01:00:00.000Z" });
+
+    const detail = getInventoryProductDetail(rootDir, product.id);
+
+    assert.equal(detail.product.productCode, "DETAIL-TOP");
+    assert.equal(detail.product.name, "เสื้อ Detail");
+    assert.equal(detail.summary.childCount, 2);
+    assert.equal(detail.summary.totalQuantityOnHand, 5);
+    assert.equal(detail.summary.totalInventoryValue, "505.00");
+    assert.deepEqual(detail.children.map((sku) => ({
+      sku: sku.sku,
+      quantityOnHand: sku.quantityOnHand,
+      inventoryValue: sku.inventoryValue,
+    })), [
+      { sku: "DETAIL-TOP-BLACK-S", quantityOnHand: 3, inventoryValue: "285.00" },
+      { sku: "DETAIL-TOP-WHITE-M", quantityOnHand: 2, inventoryValue: "220.00" },
+    ]);
+    assert.deepEqual(detail.movements.map((movement) => ({
+      sku: movement.sku,
+      movementDate: movement.movementDate,
+      referenceNo: movement.referenceNo,
+    })), [
+      { sku: "DETAIL-TOP-BLACK-S", movementDate: "2026-09-05", referenceNo: "SR-DETAIL" },
+      { sku: "DETAIL-TOP-WHITE-M", movementDate: "2026-09-01", referenceNo: "IN-OLD" },
+    ]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory product and stock SKU image uploads save files and expose image URLs", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-images-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "IMG-TOP", name: "เสื้อมีรูป", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "IMG-TOP-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+
+    const productImage = await saveProductImage(rootDir, product.id, {
+      originalName: "front.png",
+      type: "image/png",
+      buffer: Buffer.from("product-image"),
+    });
+    const skuImage = await saveStockSkuImage(rootDir, sku.id, {
+      originalName: "variant.jpg",
+      type: "image/jpeg",
+      buffer: Buffer.from("sku-image"),
+    });
+
+    assert.equal(productImage.imagePath, `products/product-${product.id}.png`);
+    assert.equal(productImage.imageUrl, `/api/inventory/images/products/product-${product.id}.png`);
+    assert.equal((await readFile(join(rootDir, "data", "inventory-images", productImage.imagePath))).toString("utf8"), "product-image");
+
+    assert.equal(skuImage.imagePath, `stock-skus/stock-sku-${sku.id}.jpg`);
+    assert.equal(skuImage.imageUrl, `/api/inventory/images/stock-skus/stock-sku-${sku.id}.jpg`);
+    assert.equal((await readFile(join(rootDir, "data", "inventory-images", skuImage.imagePath))).toString("utf8"), "sku-image");
+
+    const detail = getInventoryProductDetail(rootDir, product.id);
+    assert.equal(detail.product.imageUrl, productImage.imageUrl);
+    assert.equal(detail.children[0].imageUrl, skuImage.imageUrl);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

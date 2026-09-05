@@ -10,6 +10,8 @@ const pages = [
   "index.html",
   "inventory.html",
   "inventory-dashboard.html",
+  "inventory-product-detail.html",
+  "inventory-stock-list.html",
   "inventory-settings.html",
   "sale-skus.html",
   "substitute-receipt.html",
@@ -39,6 +41,8 @@ test("main pages link to substitute receipt creation from the document menu", as
     assert.match(menu, /Sale SKU \/ Bundle SKU/, page);
     assert.match(menu, /href="\/inventory-dashboard"/, page);
     assert.match(menu, /Dashboard สต๊อก/, page);
+    assert.match(menu, /href="\/inventory-stock-list"/, page);
+    assert.match(menu, /List Stock/, page);
   }
 });
 

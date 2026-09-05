@@ -1,3 +1,5 @@
+const { mkdir, writeFile } = require("node:fs/promises");
+const path = require("node:path");
 const { withInventoryDatabase } = require("./inventory-db.logic.js");
 
 const IN_TYPES = new Set(["purchase_in", "return_in", "adjustment_in"]);
@@ -31,6 +33,11 @@ function money(value) {
   return Number(value || 0).toFixed(2);
 }
 
+function imageUrl(imagePath) {
+  const cleanPath = cleanText(imagePath).replace(/\\/g, "/");
+  return cleanPath ? `/api/inventory/images/${cleanPath}` : "";
+}
+
 function mapProduct(row) {
   return {
     id: row.id,
@@ -38,6 +45,8 @@ function mapProduct(row) {
     name: row.name,
     category: row.category,
     description: row.description,
+    imagePath: row.image_path || "",
+    imageUrl: imageUrl(row.image_path),
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -66,6 +75,8 @@ function mapStockSku(row) {
     size: row.size,
     barcode: row.barcode,
     defaultUnitCost: money(row.default_unit_cost),
+    imagePath: row.image_path || "",
+    imageUrl: imageUrl(row.image_path),
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -583,6 +594,89 @@ function mapMovement(row, runningQuantity = null) {
   };
 }
 
+function imageExtension(file = {}) {
+  const originalExtension = path.extname(cleanText(file.originalName)).toLowerCase();
+  const typeExtension = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+  }[cleanText(file.type).toLowerCase()];
+  const extension = originalExtension || typeExtension;
+  if (![".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(extension)) {
+    throw new Error("รองรับเฉพาะรูปภาพ png, jpg, webp หรือ gif");
+  }
+  return extension === ".jpeg" ? ".jpg" : extension;
+}
+
+function assertImageFile(file = {}) {
+  if (!file.buffer?.length) throw new Error("เลือกรูปภาพก่อนอัปโหลด");
+  const contentType = cleanText(file.type).toLowerCase();
+  if (contentType && !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(contentType)) {
+    throw new Error("รองรับเฉพาะรูปภาพ png, jpg, webp หรือ gif");
+  }
+}
+
+async function saveProductImage(rootDir, productId, file = {}, options = {}) {
+  const id = Number(productId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบสินค้าแม่");
+  assertImageFile(file);
+
+  withInventoryDatabase(rootDir, (db) => {
+    const found = db.prepare("SELECT id FROM products WHERE id = ?").get(id);
+    if (!found) throw new Error("ไม่พบสินค้าแม่");
+  });
+
+  const imagePath = `products/product-${id}${imageExtension(file)}`;
+  const absolutePath = path.join(rootDir, "data", "inventory-images", imagePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, file.buffer);
+
+  const product = withInventoryDatabase(rootDir, (db) => {
+    db.prepare("UPDATE products SET image_path = ?, updated_at = ? WHERE id = ?").run(imagePath, nowIso(options), id);
+    return mapProduct(db.prepare("SELECT * FROM products WHERE id = ?").get(id));
+  });
+
+  return {
+    product,
+    imagePath,
+    imageUrl: imageUrl(imagePath),
+  };
+}
+
+async function saveStockSkuImage(rootDir, stockSkuId, file = {}, options = {}) {
+  const id = Number(stockSkuId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบ SKU");
+  assertImageFile(file);
+
+  withInventoryDatabase(rootDir, (db) => {
+    const found = db.prepare("SELECT id FROM stock_skus WHERE id = ?").get(id);
+    if (!found) throw new Error("ไม่พบ SKU");
+  });
+
+  const imagePath = `stock-skus/stock-sku-${id}${imageExtension(file)}`;
+  const absolutePath = path.join(rootDir, "data", "inventory-images", imagePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, file.buffer);
+
+  const stockSku = withInventoryDatabase(rootDir, (db) => {
+    db.prepare("UPDATE stock_skus SET image_path = ?, updated_at = ? WHERE id = ?").run(imagePath, nowIso(options), id);
+    const updated = db.prepare(`
+      SELECT stock_skus.*, products.product_code, products.name AS product_name
+      FROM stock_skus
+      JOIN products ON products.id = stock_skus.product_id
+      WHERE stock_skus.id = ?
+    `).get(id);
+    return mapStockSku(updated);
+  });
+
+  return {
+    stockSku,
+    imagePath,
+    imageUrl: imageUrl(imagePath),
+  };
+}
+
 function createPurchaseInMovement(rootDir, data = {}, options = {}) {
   return withInventoryDatabase(rootDir, (db) => {
     const stockSkuId = Number(data.stockSkuId);
@@ -661,6 +755,216 @@ function listInventoryBalances(rootDir) {
         ...calculateBalanceFromRows(movements),
       };
     });
+  });
+}
+
+function matchesStockListSearch(product, children, searchText) {
+  if (!searchText) return true;
+  const haystack = [
+    product.productCode,
+    product.name,
+    product.category,
+    product.description,
+    ...children.flatMap((sku) => [sku.sku, sku.color, sku.size, sku.barcode]),
+  ].join(" ").toLowerCase();
+  return haystack.includes(searchText.toLowerCase());
+}
+
+function filterStockListChildren(product, children, filters = {}) {
+  const searchText = cleanText(filters.search);
+  const stockStatus = cleanText(filters.stockStatus || filters.stock || "all");
+  const productMatches = matchesStockListSearch(product, [], searchText);
+
+  return children.filter((sku) => {
+    const childMatches = !searchText || productMatches || matchesStockListSearch(product, [sku], searchText);
+    const quantity = Number(sku.quantityOnHand || 0);
+    const stockMatches = stockStatus === "in_stock"
+      ? quantity > 0
+      : stockStatus === "zero"
+        ? quantity === 0
+        : true;
+    return childMatches && stockMatches;
+  });
+}
+
+function listInventoryStockGroups(rootDir, filters = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const category = cleanText(filters.category);
+    const rows = db.prepare(`
+      SELECT
+        products.id AS product_id,
+        products.product_code,
+        products.name AS product_name,
+        products.category,
+        products.description,
+        products.image_path AS product_image_path,
+        products.status AS product_status,
+        products.created_at AS product_created_at,
+        products.updated_at AS product_updated_at,
+        stock_skus.id AS stock_sku_id,
+        stock_skus.sku,
+        stock_skus.color,
+        stock_skus.size,
+        stock_skus.barcode,
+        stock_skus.default_unit_cost,
+        stock_skus.image_path AS stock_sku_image_path,
+        stock_skus.status AS stock_sku_status,
+        stock_skus.created_at AS stock_sku_created_at,
+        stock_skus.updated_at AS stock_sku_updated_at,
+        COALESCE(SUM(
+          CASE
+            WHEN stock_movements.movement_type IN ('purchase_in', 'return_in', 'adjustment_in') THEN stock_movements.quantity
+            WHEN stock_movements.movement_type IN ('sale_out', 'adjustment_out') THEN -stock_movements.quantity
+            ELSE 0
+          END
+        ), 0) AS quantity_on_hand,
+        COALESCE(SUM(CASE WHEN stock_movements.movement_type = 'purchase_in' THEN stock_movements.quantity ELSE 0 END), 0) AS purchase_quantity,
+        COALESCE(SUM(CASE WHEN stock_movements.movement_type = 'purchase_in' THEN stock_movements.total_cost ELSE 0 END), 0) AS purchase_total_cost
+      FROM products
+      LEFT JOIN stock_skus ON stock_skus.product_id = products.id
+      LEFT JOIN stock_movements ON stock_movements.stock_sku_id = stock_skus.id
+      WHERE (? = '' OR products.category = ?)
+      GROUP BY products.id, stock_skus.id
+      ORDER BY products.product_code ASC, stock_skus.sku ASC
+    `).all(category, category);
+
+    const groups = new Map();
+    for (const row of rows) {
+      if (!groups.has(row.product_id)) {
+        groups.set(row.product_id, {
+          id: row.product_id,
+          productCode: row.product_code,
+          name: row.product_name,
+          category: row.category,
+          description: row.description,
+          imagePath: row.product_image_path || "",
+          imageUrl: imageUrl(row.product_image_path),
+          status: row.product_status,
+          createdAt: row.product_created_at,
+          updatedAt: row.product_updated_at,
+          childCount: 0,
+          totalQuantityOnHand: 0,
+          totalInventoryValue: "0.00",
+          children: [],
+        });
+      }
+
+      if (!row.stock_sku_id) continue;
+      const averageUnitCost = row.purchase_quantity ? Number(row.purchase_total_cost || 0) / row.purchase_quantity : 0;
+      const inventoryValue = Number(row.quantity_on_hand || 0) * averageUnitCost;
+      groups.get(row.product_id).children.push({
+        id: row.stock_sku_id,
+        productId: row.product_id,
+        productCode: row.product_code,
+        productName: row.product_name,
+        sku: row.sku,
+        color: row.color,
+        size: row.size,
+        barcode: row.barcode,
+        defaultUnitCost: money(row.default_unit_cost),
+        imagePath: row.stock_sku_image_path || "",
+        imageUrl: imageUrl(row.stock_sku_image_path),
+        status: row.stock_sku_status,
+        createdAt: row.stock_sku_created_at,
+        updatedAt: row.stock_sku_updated_at,
+        quantityOnHand: Number(row.quantity_on_hand || 0),
+        averageUnitCost: money(averageUnitCost),
+        inventoryValue: money(inventoryValue),
+      });
+    }
+
+    return [...groups.values()]
+      .map((group) => {
+        const filteredChildren = filterStockListChildren(group, group.children, filters);
+        const totalInventoryValue = filteredChildren.reduce((sum, sku) => sum + Number(sku.inventoryValue || 0), 0);
+        return {
+          ...group,
+          childCount: filteredChildren.length,
+          totalQuantityOnHand: filteredChildren.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0),
+          totalInventoryValue: money(totalInventoryValue),
+          children: filteredChildren,
+        };
+      })
+      .filter((group) => group.children.length > 0 || (matchesStockListSearch(group, [], cleanText(filters.search)) && cleanText(filters.stockStatus || filters.stock || "all") === "all"));
+  });
+}
+
+function getInventoryProductDetail(rootDir, productId) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const id = Number(productId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบสินค้าแม่");
+
+    const productRow = db.prepare("SELECT * FROM products WHERE id = ?").get(id);
+    if (!productRow) throw new Error("ไม่พบสินค้าแม่");
+    const product = mapProduct(productRow);
+
+    const childRows = db.prepare(`
+      SELECT
+        stock_skus.*,
+        products.product_code,
+        products.name AS product_name,
+        COALESCE(SUM(
+          CASE
+            WHEN stock_movements.movement_type IN ('purchase_in', 'return_in', 'adjustment_in') THEN stock_movements.quantity
+            WHEN stock_movements.movement_type IN ('sale_out', 'adjustment_out') THEN -stock_movements.quantity
+            ELSE 0
+          END
+        ), 0) AS quantity_on_hand,
+        COALESCE(SUM(CASE WHEN stock_movements.movement_type = 'purchase_in' THEN stock_movements.quantity ELSE 0 END), 0) AS purchase_quantity,
+        COALESCE(SUM(CASE WHEN stock_movements.movement_type = 'purchase_in' THEN stock_movements.total_cost ELSE 0 END), 0) AS purchase_total_cost
+      FROM stock_skus
+      JOIN products ON products.id = stock_skus.product_id
+      LEFT JOIN stock_movements ON stock_movements.stock_sku_id = stock_skus.id
+      WHERE stock_skus.product_id = ?
+      GROUP BY stock_skus.id
+      ORDER BY stock_skus.sku ASC
+    `).all(id);
+
+    const children = childRows.map((row) => {
+      const averageUnitCost = row.purchase_quantity ? Number(row.purchase_total_cost || 0) / row.purchase_quantity : 0;
+      const inventoryValue = Number(row.quantity_on_hand || 0) * averageUnitCost;
+      return {
+        ...mapStockSku(row),
+        quantityOnHand: Number(row.quantity_on_hand || 0),
+        averageUnitCost: money(averageUnitCost),
+        inventoryValue: money(inventoryValue),
+      };
+    });
+
+    const movementRows = db.prepare(`
+      SELECT
+        stock_movements.*,
+        stock_skus.sku,
+        stock_skus.color,
+        stock_skus.size,
+        stock_skus.barcode,
+        products.product_code,
+        products.name AS product_name
+      FROM stock_movements
+      JOIN stock_skus ON stock_skus.id = stock_movements.stock_sku_id
+      JOIN products ON products.id = stock_skus.product_id
+      WHERE stock_skus.product_id = ?
+      ORDER BY stock_movements.movement_date DESC, stock_movements.id DESC
+    `).all(id);
+
+    return {
+      product,
+      summary: {
+        childCount: children.length,
+        totalQuantityOnHand: children.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0),
+        totalInventoryValue: money(children.reduce((sum, sku) => sum + Number(sku.inventoryValue || 0), 0)),
+      },
+      children,
+      movements: movementRows.map((row) => ({
+        ...mapMovement(row),
+        sku: row.sku,
+        color: row.color,
+        size: row.size,
+        barcode: row.barcode,
+        productCode: row.product_code,
+        productName: row.product_name,
+      })),
+    };
   });
 }
 
@@ -763,16 +1067,20 @@ module.exports = {
   createPurchaseInMovement,
   createSaleSku,
   createStockSku,
+  getInventoryProductDetail,
   getInventoryDashboardSummary,
   getSaleSku,
   getStockCard,
   listInventoryBalances,
+  listInventoryStockGroups,
   listProductCategories,
   listProducts,
   listSaleSkus,
   listStockInReport,
   listStockMovementsByReference,
   listStockSkus,
+  saveProductImage,
+  saveStockSkuImage,
   updateProductCategory,
   updateProduct,
   updateSaleSku,

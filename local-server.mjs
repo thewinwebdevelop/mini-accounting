@@ -44,15 +44,19 @@ const {
   createPurchaseInMovement,
   createSaleSku,
   createStockSku,
+  getInventoryProductDetail,
   getInventoryDashboardSummary,
   getSaleSku,
   getStockCard,
   listInventoryBalances,
+  listInventoryStockGroups,
   listProductCategories,
   listProducts,
   listSaleSkus,
   listStockInReport,
   listStockSkus,
+  saveProductImage,
+  saveStockSkuImage,
   updateProductCategory,
   updateProduct,
   updateSaleSku,
@@ -81,6 +85,8 @@ const mimeTypes = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
   ".pdf": "application/pdf",
 };
 
@@ -110,6 +116,10 @@ function safeStaticPath(urlPath) {
     "/inventory/": "/inventory.html",
     "/inventory-dashboard": "/inventory-dashboard.html",
     "/inventory-dashboard/": "/inventory-dashboard.html",
+    "/inventory-product-detail": "/inventory-product-detail.html",
+    "/inventory-product-detail/": "/inventory-product-detail.html",
+    "/inventory-stock-list": "/inventory-stock-list.html",
+    "/inventory-stock-list/": "/inventory-stock-list.html",
     "/inventory-settings": "/inventory-settings.html",
     "/inventory-settings/": "/inventory-settings.html",
     "/sale-skus": "/sale-skus.html",
@@ -578,6 +588,14 @@ async function handleInventoryProductList(url, response) {
   }
 }
 
+async function handleInventoryProductDetail(productId, response) {
+  try {
+    sendJson(response, 200, getInventoryProductDetail(rootDir, productId));
+  } catch (error) {
+    sendJson(response, 404, { error: error.message || "Cannot load product detail" });
+  }
+}
+
 async function handleInventoryCategoryList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -614,6 +632,17 @@ async function handleInventoryProductCreate(request, response) {
   }
 }
 
+async function handleInventoryProductImageUpload(productId, request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { files } = parseMultipartForm(body, request.headers["content-type"]);
+    const file = files.find((upload) => upload.evidenceKey === "image") || files[0];
+    sendJson(response, 200, await saveProductImage(rootDir, productId, file));
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot upload product image" });
+  }
+}
+
 async function handleInventoryProductUpdate(productId, request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -637,6 +666,17 @@ async function handleInventoryStockSkuCreate(request, response) {
     sendJson(response, 200, { stockSku: createStockSku(rootDir, payload) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create stock SKU" });
+  }
+}
+
+async function handleInventoryStockSkuImageUpload(stockSkuId, request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { files } = parseMultipartForm(body, request.headers["content-type"]);
+    const file = files.find((upload) => upload.evidenceKey === "image") || files[0];
+    sendJson(response, 200, await saveStockSkuImage(rootDir, stockSkuId, file));
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot upload stock SKU image" });
   }
 }
 
@@ -748,6 +788,20 @@ async function handleInventoryStockInReport(url, response) {
   }
 }
 
+async function handleInventoryStockList(url, response) {
+  try {
+    sendJson(response, 200, {
+      groups: listInventoryStockGroups(rootDir, {
+        search: url.searchParams.get("search") || "",
+        category: url.searchParams.get("category") || "",
+        stockStatus: url.searchParams.get("stockStatus") || "all",
+      }),
+    });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot load stock list" });
+  }
+}
+
 async function handleCurrentStockPdf(response) {
   try {
     const company = await getCompanySettings(rootDir);
@@ -770,6 +824,34 @@ async function handleInventoryStockCard(url, response) {
     sendJson(response, 200, getStockCard(rootDir, url.searchParams.get("stockSkuId")));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load stock card" });
+  }
+}
+
+async function handleInventoryImage(urlPath, response) {
+  const prefix = "/api/inventory/images/";
+  const imagePath = decodeURIComponent(urlPath.slice(prefix.length));
+  if (!imagePath || imagePath.includes("..") || imagePath.includes("\\") || path.isAbsolute(imagePath)) {
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+
+  const imageRoot = path.resolve(rootDir, "data", "inventory-images");
+  const absolutePath = path.resolve(imageRoot, imagePath);
+  if (!absolutePath.startsWith(`${imageRoot}${path.sep}`)) {
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+
+  try {
+    const body = await readFile(absolutePath);
+    const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
   }
 }
 
@@ -818,6 +900,22 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && request.url === "/api/inventory/sale-skus") {
     await handleInventorySaleSkuCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/inventory/products/") && url.pathname.endsWith("/image")) {
+    const productId = decodeURIComponent(url.pathname
+      .replace("/api/inventory/products/", "")
+      .replace("/image", ""));
+    await handleInventoryProductImageUpload(productId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/inventory/stock-skus/") && url.pathname.endsWith("/image")) {
+    const stockSkuId = decodeURIComponent(url.pathname
+      .replace("/api/inventory/stock-skus/", "")
+      .replace("/image", ""));
+    await handleInventoryStockSkuImageUpload(stockSkuId, request, response);
     return;
   }
 
@@ -947,6 +1045,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname.startsWith("/api/inventory/products/") && url.pathname.endsWith("/detail")) {
+      const productId = decodeURIComponent(url.pathname
+        .replace("/api/inventory/products/", "")
+        .replace("/detail", ""));
+      await handleInventoryProductDetail(productId, response);
+      return;
+    }
+
     if (url.pathname === "/api/inventory/categories") {
       await handleInventoryCategoryList(url, response);
       return;
@@ -972,8 +1078,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === "/api/inventory/stock-list") {
+      await handleInventoryStockList(url, response);
+      return;
+    }
+
     if (url.pathname === "/api/inventory/current-stock-pdf") {
       await handleCurrentStockPdf(response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/inventory/images/")) {
+      await handleInventoryImage(url.pathname, response);
       return;
     }
 

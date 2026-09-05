@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard สต๊อกสินค้า - หจก.สวีทเฮาส์</title>
+  <title>รายละเอียดสินค้า - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
@@ -27,7 +27,7 @@
       font-size: 14px;
       line-height: 1.5;
     }
-    button { font: inherit; }
+    button, input, select, textarea { font: inherit; }
     .topbar {
       position: sticky;
       top: 0;
@@ -84,7 +84,6 @@
       font-weight: 800;
     }
     .menu-item:hover { background: var(--soft); }
-
     .page {
       max-width: 1280px;
       margin: 0 auto;
@@ -93,7 +92,6 @@
     .toolbar {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
       justify-content: space-between;
       gap: 10px;
       margin-bottom: 12px;
@@ -114,13 +112,13 @@
     }
     .button.primary { color: #ffffff; background: var(--accent); }
     .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
-    .metric-grid {
+    .summary-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 12px;
     }
-    .metric {
+    .summary-card {
       display: grid;
       gap: 4px;
       padding: 14px;
@@ -129,8 +127,8 @@
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
-    .metric span { color: var(--muted); font-size: 12px; font-weight: 800; }
-    .metric strong { color: var(--brand-strong); font-size: 24px; line-height: 1.2; }
+    .summary-card span { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .summary-card strong { color: var(--brand-strong); font-size: 22px; line-height: 1.2; }
     .panel {
       overflow: hidden;
       margin-top: 12px;
@@ -149,8 +147,73 @@
       background: var(--brand);
     }
     .panel-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .section-body { padding: 13px; }
+    .image-editor {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding: 13px;
+      border-bottom: 1px solid #e4e7eb;
+    }
+    .product-image-preview,
+    .sku-image-preview {
+      width: 96px;
+      height: 96px;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      object-fit: cover;
+      background: #edf2f7;
+    }
+    .image-placeholder {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .field { display: grid; gap: 5px; }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-12 { grid-column: span 12; }
+    label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    input, select, textarea {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+    }
+    textarea { min-height: 76px; resize: vertical; }
+    .sku-editor {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid #e4e7eb;
+    }
+    .sku-editor:last-child { border-bottom: 0; }
+    .sku-editor-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--brand-strong);
+      font-weight: 900;
+    }
     .table-wrap { overflow-x: auto; }
-    table { width: 100%; min-width: 900px; border-collapse: collapse; }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; }
     th, td { padding: 10px 11px; border-bottom: 1px solid #e4e7eb; text-align: left; vertical-align: top; }
     th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
     .number { text-align: right; white-space: nowrap; }
@@ -166,14 +229,19 @@
       font-size: 12px;
     }
     .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
 
     @media (max-width: 900px) {
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .span-3,
+      .span-4,
+      .span-6 { grid-column: span 12; }
     }
     @media (max-width: 560px) {
-      .metric-grid { grid-template-columns: 1fr; }
-      .metric strong { font-size: 21px; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .image-editor { grid-template-columns: 1fr; }
+      .summary-card strong { font-size: 20px; }
     }
   </style>
 </head>
@@ -210,86 +278,117 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">Dashboard สต๊อกสินค้า</h1>
-      <p class="brand-subtitle">ภาพรวมมูลค่าสต๊อกและรายงานสินค้าเข้าเพื่อใช้ตรวจบัญชี</p>
+      <h1 class="brand-title" id="detailTitle">รายละเอียดสินค้า</h1>
+      <p class="brand-subtitle" id="detailSubtitle">แก้ไขสินค้าแม่, child SKU และตรวจประวัติ in/out</p>
     </div>
   </header>
 
   <main class="page">
     <div class="toolbar">
-      <div class="muted">ข้อมูล ณ วันที่ <span id="asOfDate">-</span></div>
+      <a class="button secondary" href="/inventory-stock-list">กลับไป List Stock</a>
       <div class="actions">
-        <button class="button secondary" type="button" id="refreshDashboard">รีเฟรช</button>
-        <a class="button primary" href="/api/inventory/current-stock-pdf" target="_blank" rel="noopener">Export PDF สต๊อกปัจจุบัน</a>
+        <button class="button secondary" type="button" id="refreshProductDetail">รีเฟรช</button>
       </div>
     </div>
-    <div class="status-box" id="dashboardStatus"></div>
+    <div class="status-box" id="productDetailStatus"></div>
 
-    <section class="metric-grid" aria-label="ภาพรวมสต๊อก">
-      <div class="metric">
-        <span>มูลค่าสต๊อกรวม</span>
-        <strong id="totalInventoryValue">0.00 บาท</strong>
+    <section class="summary-grid" id="productSummary">
+      <div class="summary-card">
+        <span>Parent SKU</span>
+        <strong id="summaryProductCode">-</strong>
       </div>
-      <div class="metric">
-        <span>จำนวน Stock SKU</span>
-        <strong id="stockSkuCount">0</strong>
+      <div class="summary-card">
+        <span>จำนวน Child SKU</span>
+        <strong id="summaryChildCount">0</strong>
       </div>
-      <div class="metric">
-        <span>จำนวนคงเหลือรวม</span>
-        <strong id="totalQuantityOnHand">0</strong>
+      <div class="summary-card">
+        <span>คงเหลือรวม</span>
+        <strong id="summaryQuantity">0</strong>
       </div>
-      <div class="metric">
-        <span>SKU ที่คงเหลือ 0</span>
-        <strong id="zeroQuantitySkuCount">0</strong>
+      <div class="summary-card">
+        <span>มูลค่ารวม</span>
+        <strong id="summaryValue">0.00</strong>
       </div>
     </section>
 
     <section class="panel">
       <div class="panel-header">
-        <h2 class="panel-title">สินค้าเข้าล่าสุด</h2>
-        <button class="button secondary" type="button" id="seeMoreStockIn">ดูเพิ่มเติม</button>
+        <h2 class="panel-title">สินค้าแม่</h2>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>วันที่</th>
-              <th>SKU</th>
-              <th>สี/Size</th>
-              <th class="number">จำนวน</th>
-              <th class="number">ต้นทุน/หน่วย</th>
-              <th class="number">รวม</th>
-              <th>อ้างอิง</th>
-            </tr>
-          </thead>
-          <tbody id="latestStockInRows"></tbody>
-        </table>
-      </div>
+      <form class="image-editor" id="productImageForm" enctype="multipart/form-data">
+        <div id="productImagePreview" class="product-image-preview image-placeholder">IMG</div>
+        <div class="field">
+          <label for="productImageInput">รูปสินค้าแม่</label>
+          <input id="productImageInput" name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+          <div class="actions">
+            <button class="button secondary" type="submit">อัปโหลดรูปสินค้าแม่</button>
+          </div>
+        </div>
+      </form>
+      <form class="section-body" id="productDetailForm">
+        <input id="detailProductId" name="id" type="hidden">
+        <div class="grid">
+          <div class="field span-6">
+            <label for="detailProductCode">รหัสสินค้าแม่ *</label>
+            <input id="detailProductCode" name="productCode" required>
+          </div>
+          <div class="field span-6">
+            <label for="detailProductName">ชื่อสินค้า *</label>
+            <input id="detailProductName" name="name" required>
+          </div>
+          <div class="field span-6">
+            <label for="detailProductCategory">หมวด *</label>
+            <select id="detailProductCategory" name="category" required></select>
+          </div>
+          <div class="field span-6">
+            <label for="detailProductStatus">สถานะ</label>
+            <select id="detailProductStatus" name="status">
+              <option value="active">ใช้งาน</option>
+              <option value="inactive">ปิดใช้</option>
+            </select>
+          </div>
+          <div class="field span-12">
+            <label for="detailProductDescription">รายละเอียด</label>
+            <textarea id="detailProductDescription" name="description"></textarea>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="button primary" type="submit">บันทึกสินค้าแม่</button>
+        </div>
+      </form>
     </section>
 
-    <section class="panel" id="fullReportPanel" hidden>
+    <section class="panel">
       <div class="panel-header">
-        <h2 class="panel-title">รายงานสินค้าเข้าแบบเต็ม</h2>
+        <h2 class="panel-title">Child Stock SKU</h2>
+      </div>
+      <div id="skuDetailRows" data-sku-image-form="dynamic"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">History In/Out</h2>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>วันที่</th>
-              <th>SKU</th>
-              <th>สี/Size</th>
+              <th>Movement</th>
+              <th>Stock SKU</th>
+              <th>ประเภท</th>
               <th class="number">จำนวน</th>
               <th class="number">ต้นทุน/หน่วย</th>
               <th class="number">รวม</th>
               <th>อ้างอิง</th>
             </tr>
           </thead>
-          <tbody id="stockInRows"></tbody>
+          <tbody id="movementHistoryRows"></tbody>
         </table>
       </div>
     </section>
   </main>
 
-  <script src="./inventory-dashboard.logic.browser.js"></script>
+  <script src="./inventory-product-detail.logic.browser.js"></script>
 </body>
 </html>

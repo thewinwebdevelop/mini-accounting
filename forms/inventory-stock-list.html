@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard สต๊อกสินค้า - หจก.สวีทเฮาส์</title>
+  <title>List Stock - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
@@ -27,7 +27,7 @@
       font-size: 14px;
       line-height: 1.5;
     }
-    button { font: inherit; }
+    button, input, select { font: inherit; }
     .topbar {
       position: sticky;
       top: 0;
@@ -91,14 +91,28 @@
       padding: 18px;
     }
     .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: minmax(220px, 1.5fr) repeat(3, minmax(150px, 1fr)) auto;
       gap: 10px;
+      align-items: end;
       margin-bottom: 12px;
     }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .field { display: grid; gap: 5px; }
+    label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     .button {
       display: inline-flex;
       align-items: center;
@@ -114,23 +128,7 @@
     }
     .button.primary { color: #ffffff; background: var(--accent); }
     .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
-    .metric-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .metric {
-      display: grid;
-      gap: 4px;
-      padding: 14px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-    }
-    .metric span { color: var(--muted); font-size: 12px; font-weight: 800; }
-    .metric strong { color: var(--brand-strong); font-size: 24px; line-height: 1.2; }
+    .button[disabled] { cursor: not-allowed; opacity: 0.56; }
     .panel {
       overflow: hidden;
       margin-top: 12px;
@@ -155,6 +153,43 @@
     th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
     .number { text-align: right; white-space: nowrap; }
     .muted { color: var(--muted); font-size: 12px; }
+    .product-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .product-image-thumb {
+      width: 46px;
+      height: 46px;
+      flex: 0 0 auto;
+      border-radius: 6px;
+      border: 1px solid #d9e2ec;
+      object-fit: cover;
+      background: #edf2f7;
+    }
+    .product-image-placeholder {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #ecfdf5;
+      color: #047857;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .status-pill.inactive {
+      background: #fef2f2;
+      color: var(--danger);
+    }
     .status-box {
       display: none;
       margin-bottom: 12px;
@@ -167,13 +202,41 @@
     }
     .status-box.active { display: block; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
-
-    @media (max-width: 900px) {
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stock-groups { display: grid; gap: 10px; padding: 12px; }
+    .stock-group {
+      overflow: hidden;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #ffffff;
     }
-    @media (max-width: 560px) {
-      .metric-grid { grid-template-columns: 1fr; }
-      .metric strong { font-size: 21px; }
+    .stock-group summary {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(100px, auto));
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      cursor: pointer;
+      list-style: none;
+      background: #f8fafc;
+    }
+    .stock-group summary::-webkit-details-marker { display: none; }
+    .product-heading { display: grid; gap: 2px; }
+    .product-heading strong { color: var(--brand-strong); }
+    .group-metric { text-align: right; }
+    .group-metric span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; }
+    .group-metric strong { color: var(--brand-strong); white-space: nowrap; }
+    .stock-group[open] summary { border-bottom: 1px solid #d9e2ec; }
+    .mode-panel[hidden] { display: none; }
+
+    @media (max-width: 980px) {
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .actions { justify-content: flex-start; }
+    }
+    @media (max-width: 640px) {
+      .toolbar { grid-template-columns: 1fr; }
+      .stock-group summary { grid-template-columns: 1fr 1fr; }
+      .product-heading { grid-column: 1 / -1; }
+      .group-metric { text-align: left; }
     }
   </style>
 </head>
@@ -210,86 +273,76 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">Dashboard สต๊อกสินค้า</h1>
-      <p class="brand-subtitle">ภาพรวมมูลค่าสต๊อกและรายงานสินค้าเข้าเพื่อใช้ตรวจบัญชี</p>
+      <h1 class="brand-title">List Stock</h1>
+      <p class="brand-subtitle">ค้นหาและตรวจยอดสินค้าแม่กับ Stock SKU สี/ไซซ์</p>
     </div>
   </header>
 
   <main class="page">
-    <div class="toolbar">
-      <div class="muted">ข้อมูล ณ วันที่ <span id="asOfDate">-</span></div>
+    <form class="toolbar" id="stockListFilters">
+      <div class="field">
+        <label for="stockListSearch">ค้นหา</label>
+        <input id="stockListSearch" name="search" placeholder="SKU, ชื่อสินค้า, สี, ไซซ์">
+      </div>
+      <div class="field">
+        <label for="stockListCategory">หมวด</label>
+        <select id="stockListCategory" name="category"></select>
+      </div>
+      <div class="field">
+        <label for="stockListStatus">สถานะสต๊อก</label>
+        <select id="stockListStatus" name="stockStatus">
+          <option value="all">ทั้งหมด</option>
+          <option value="in_stock">มีของคงเหลือ</option>
+          <option value="zero">คงเหลือ 0</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="stockListMode">มุมมอง</label>
+        <select id="stockListMode" name="mode">
+          <option value="parent">Parent SKU</option>
+          <option value="all">List all</option>
+        </select>
+      </div>
       <div class="actions">
-        <button class="button secondary" type="button" id="refreshDashboard">รีเฟรช</button>
-        <a class="button primary" href="/api/inventory/current-stock-pdf" target="_blank" rel="noopener">Export PDF สต๊อกปัจจุบัน</a>
+        <button class="button secondary" type="button" id="refreshStockList">รีเฟรช</button>
+        <a class="button primary" href="/inventory?mode=create-product">เพิ่มสินค้าใหม่</a>
       </div>
-    </div>
-    <div class="status-box" id="dashboardStatus"></div>
+    </form>
 
-    <section class="metric-grid" aria-label="ภาพรวมสต๊อก">
-      <div class="metric">
-        <span>มูลค่าสต๊อกรวม</span>
-        <strong id="totalInventoryValue">0.00 บาท</strong>
-      </div>
-      <div class="metric">
-        <span>จำนวน Stock SKU</span>
-        <strong id="stockSkuCount">0</strong>
-      </div>
-      <div class="metric">
-        <span>จำนวนคงเหลือรวม</span>
-        <strong id="totalQuantityOnHand">0</strong>
-      </div>
-      <div class="metric">
-        <span>SKU ที่คงเหลือ 0</span>
-        <strong id="zeroQuantitySkuCount">0</strong>
-      </div>
-    </section>
+    <div class="status-box" id="stockListStatusBox"></div>
 
-    <section class="panel">
+    <section class="panel mode-panel" id="parentStockPanel" data-detail-route="/inventory-product-detail?productId=">
       <div class="panel-header">
-        <h2 class="panel-title">สินค้าเข้าล่าสุด</h2>
-        <button class="button secondary" type="button" id="seeMoreStockIn">ดูเพิ่มเติม</button>
+        <h2 class="panel-title">Parent SKU</h2>
+        <div class="muted"><span id="stockListCount">0</span> รายการ</div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>วันที่</th>
-              <th>SKU</th>
-              <th>สี/Size</th>
-              <th class="number">จำนวน</th>
-              <th class="number">ต้นทุน/หน่วย</th>
-              <th class="number">รวม</th>
-              <th>อ้างอิง</th>
+              <th>สินค้าแม่</th>
+              <th>หมวด</th>
+              <th class="number">จำนวน SKU</th>
+              <th class="number">คงเหลือรวม</th>
+              <th class="number">มูลค่ารวม</th>
+              <th>สถานะ</th>
+              <th>รายละเอียด</th>
             </tr>
           </thead>
-          <tbody id="latestStockInRows"></tbody>
+          <tbody id="parentStockRows"></tbody>
         </table>
       </div>
     </section>
 
-    <section class="panel" id="fullReportPanel" hidden>
+    <section class="panel mode-panel" id="allStockPanel" hidden>
       <div class="panel-header">
-        <h2 class="panel-title">รายงานสินค้าเข้าแบบเต็ม</h2>
+        <h2 class="panel-title">Parent / Child Stock SKU</h2>
+        <div class="muted">กดสินค้าแม่เพื่อเปิดรายการ child SKU</div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>วันที่</th>
-              <th>SKU</th>
-              <th>สี/Size</th>
-              <th class="number">จำนวน</th>
-              <th class="number">ต้นทุน/หน่วย</th>
-              <th class="number">รวม</th>
-              <th>อ้างอิง</th>
-            </tr>
-          </thead>
-          <tbody id="stockInRows"></tbody>
-        </table>
-      </div>
+      <div class="stock-groups" id="stockGroupRows"></div>
     </section>
   </main>
 
-  <script src="./inventory-dashboard.logic.browser.js"></script>
+  <script src="./inventory-stock-list.logic.browser.js"></script>
 </body>
 </html>

@@ -26,20 +26,22 @@
   - Next suggested task after completion: inventory dashboard.
 - [x] Inventory dashboard: total inventory value, current stock PDF export for tax/accounting evidence, and latest stock-in report with at least 10 rows plus see-more detail.
   - Next suggested task after completion: full stock list.
+- [x] Full stock list: search/filter, parent-only vs all-SKU mode, grouped parent/child sections with collapsed children by default.
+  - Next suggested task after completion: product detail workspace.
+- [x] Product detail workspace: open parent product detail, edit parent and child SKUs, and view related stock in/out history in an easy scanning layout.
+  - Next suggested task after completion: product image uploads.
+- [x] Product image uploads: optional image upload for parent products and child Stock SKUs.
+  - Next suggested task after completion: create product flow from stock list.
+- [x] Add new product flow from stock list: menu/button opens the existing create parent/child product workflow from the list experience.
+  - Next suggested task after completion: import platform orders and deduct stock.
 
 ## Current
 
-- [ ] Full stock list: search/filter, parent-only vs all-SKU mode, grouped parent/child sections with collapsed children by default.
-  - Next suggested task after completion: product detail workspace.
+- [ ] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
+  - Next suggested task after completion: Shopee/TikTok fee summary.
 
 ## Requested Next
 
-- [ ] Product detail workspace: open parent product detail, edit parent and child SKUs, and view related stock in/out history in an easy scanning layout.
-  - Next suggested task after completion: product image uploads.
-- [ ] Product image uploads: optional image upload for parent products and child Stock SKUs.
-  - Next suggested task after completion: create product flow from stock list.
-- [ ] Add new product flow from stock list: menu/button opens the existing create parent/child product workflow from the list experience.
-  - Next suggested task after completion: import platform orders and deduct stock.
 
 ## Later
 
@@ -48,7 +50,5 @@
 
 ## Upcoming
 
-- [ ] Import platform orders and deduct stock from Sale SKU / Bundle SKU mappings.
-  - Next suggested task after completion: Shopee/TikTok fee summary.
 - [ ] Shopee/TikTok order import, fee summary, and automatic stock deduction.
   - Next suggested task after completion: monthly revenue, platform fee, and tax-ready accounting reports.

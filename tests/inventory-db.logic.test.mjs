@@ -124,3 +124,50 @@ test("ensureInventorySchema imports existing product category text into config",
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("ensureInventorySchema adds image paths to existing product and stock SKU tables", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-db-"));
+
+  try {
+    const db = openInventoryDatabase(rootDir);
+    db.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (status IN ('active', 'inactive'))
+      );
+
+      CREATE TABLE stock_skus (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        sku TEXT NOT NULL UNIQUE,
+        color TEXT NOT NULL DEFAULT '',
+        size TEXT NOT NULL DEFAULT '',
+        barcode TEXT NOT NULL DEFAULT '',
+        default_unit_cost REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (product_id) REFERENCES products(id),
+        CHECK (default_unit_cost >= 0),
+        CHECK (status IN ('active', 'inactive'))
+      );
+    `);
+
+    ensureInventorySchema(db);
+
+    const productColumns = db.prepare("PRAGMA table_info(products)").all().map((column) => column.name);
+    const skuColumns = db.prepare("PRAGMA table_info(stock_skus)").all().map((column) => column.name);
+    assert.equal(productColumns.includes("image_path"), true);
+    assert.equal(skuColumns.includes("image_path"), true);
+    db.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

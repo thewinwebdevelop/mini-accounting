@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -31,6 +31,7 @@ function ensureInventorySchema(db) {
       name TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
+      image_path TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -55,6 +56,7 @@ function ensureInventorySchema(db) {
       size TEXT NOT NULL DEFAULT '',
       barcode TEXT NOT NULL DEFAULT '',
       default_unit_cost REAL NOT NULL DEFAULT 0,
+      image_path TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -115,6 +117,9 @@ function ensureInventorySchema(db) {
     );
   `);
 
+  addColumnIfMissing(db, "products", "image_path", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "stock_skus", "image_path", "TEXT NOT NULL DEFAULT ''");
+
   db.prepare(`
     INSERT OR IGNORE INTO inventory_schema_migrations (version, applied_at)
     VALUES (?, ?)
@@ -135,6 +140,13 @@ function ensureInventorySchema(db) {
     FROM products
     WHERE TRIM(category) <> ''
   `).run(timestamp, timestamp);
+}
+
+function addColumnIfMissing(db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all().map((column) => column.name);
+  if (!columns.includes(columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
 }
 
 function withInventoryDatabase(rootDir, callback) {
