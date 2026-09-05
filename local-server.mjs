@@ -44,12 +44,14 @@ const {
   createPurchaseInMovement,
   createSaleSku,
   createStockSku,
+  getInventoryDashboardSummary,
   getSaleSku,
   getStockCard,
   listInventoryBalances,
   listProductCategories,
   listProducts,
   listSaleSkus,
+  listStockInReport,
   listStockSkus,
   updateProductCategory,
   updateProduct,
@@ -61,6 +63,9 @@ const {
   listSubstituteReceiptVendors,
   updateSubstituteReceiptVendor,
 } = require("./forms/substitute-receipt-vendors.logic.js");
+const {
+  generateCurrentStockPdf,
+} = require("./forms/inventory-report.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -103,6 +108,8 @@ function safeStaticPath(urlPath) {
     "/company-settings/": "/company-settings.html",
     "/inventory": "/inventory.html",
     "/inventory/": "/inventory.html",
+    "/inventory-dashboard": "/inventory-dashboard.html",
+    "/inventory-dashboard/": "/inventory-dashboard.html",
     "/inventory-settings": "/inventory-settings.html",
     "/inventory-settings/": "/inventory-settings.html",
     "/sale-skus": "/sale-skus.html",
@@ -720,6 +727,44 @@ async function handleInventoryBalanceList(response) {
   }
 }
 
+async function handleInventoryDashboard(response) {
+  try {
+    sendJson(response, 200, {
+      summary: getInventoryDashboardSummary(rootDir),
+      latestStockIn: listStockInReport(rootDir, { limit: 10 }),
+    });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot load inventory dashboard" });
+  }
+}
+
+async function handleInventoryStockInReport(url, response) {
+  try {
+    sendJson(response, 200, {
+      movements: listStockInReport(rootDir, { limit: url.searchParams.get("limit") || "100" }),
+    });
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot load stock-in report" });
+  }
+}
+
+async function handleCurrentStockPdf(response) {
+  try {
+    const company = await getCompanySettings(rootDir);
+    const summary = getInventoryDashboardSummary(rootDir);
+    const balances = listInventoryBalances(rootDir);
+    const pdf = await generateCurrentStockPdf({ company, summary, balances });
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `attachment; filename="current-stock-${summary.asOfDate}.pdf"`,
+      "content-length": String(pdf.length),
+    });
+    response.end(pdf);
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "Cannot generate current stock PDF" });
+  }
+}
+
 async function handleInventoryStockCard(url, response) {
   try {
     sendJson(response, 200, getStockCard(rootDir, url.searchParams.get("stockSkuId")));
@@ -914,6 +959,21 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/inventory/sale-skus") {
       await handleInventorySaleSkuList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/dashboard") {
+      await handleInventoryDashboard(response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/stock-in-report") {
+      await handleInventoryStockInReport(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/inventory/current-stock-pdf") {
+      await handleCurrentStockPdf(response);
       return;
     }
 

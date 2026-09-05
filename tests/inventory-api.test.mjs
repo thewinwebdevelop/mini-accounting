@@ -41,6 +41,16 @@ async function requestJson(baseUrl, route, options = {}) {
   return body;
 }
 
+async function requestBuffer(baseUrl, route) {
+  const response = await fetch(`${baseUrl}${route}`);
+  const body = Buffer.from(await response.arrayBuffer());
+  assert.equal(response.ok, true, `HTTP ${response.status}: ${body.toString("utf8").slice(0, 120)}`);
+  return {
+    contentType: response.headers.get("content-type"),
+    body,
+  };
+}
+
 test("inventory APIs create product, SKU, purchase-in, balance, and stock card records", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-api-"));
   const port = 19187;
@@ -118,6 +128,21 @@ test("inventory APIs create product, SKU, purchase-in, balance, and stock card r
     assert.equal(balances[0].quantityOnHand, 5);
     assert.equal(balances[0].averageUnitCost, "120.00");
     assert.equal(balances[0].inventoryValue, "600.00");
+
+    const dashboard = await requestJson(baseUrl, "/api/inventory/dashboard");
+    assert.equal(dashboard.summary.stockSkuCount, 1);
+    assert.equal(dashboard.summary.totalQuantityOnHand, 5);
+    assert.equal(dashboard.summary.totalInventoryValue, "600.00");
+    assert.equal(dashboard.latestStockIn.length, 1);
+    assert.equal(dashboard.latestStockIn[0].referenceNo, "RCV-API-001");
+
+    const stockInReport = await requestJson(baseUrl, "/api/inventory/stock-in-report?limit=10");
+    assert.equal(stockInReport.movements[0].sku, "SHIRT-A-BLACK-M");
+    assert.equal(stockInReport.movements[0].totalCost, "600.00");
+
+    const pdf = await requestBuffer(baseUrl, "/api/inventory/current-stock-pdf");
+    assert.equal(pdf.contentType, "application/pdf");
+    assert.equal(pdf.body.subarray(0, 4).toString("utf8"), "%PDF");
 
     const stockCard = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
     assert.equal(stockCard.sku.color, "ดำสนิท");

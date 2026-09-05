@@ -274,8 +274,10 @@ test("updateProduct and updateStockSku edit master data without changing movemen
 
 const {
   createPurchaseInMovement,
+  getInventoryDashboardSummary,
   getStockCard,
   listInventoryBalances,
+  listStockInReport,
   listStockMovementsByReference,
 } = inventory;
 
@@ -377,6 +379,89 @@ test("stock card lists movements in chronological order with running balance", a
     assert.equal(card.balance.quantityOnHand, 5);
     assert.equal(card.balance.averageUnitCost, "176.00");
     assert.equal(card.balance.inventoryValue, "880.00");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory dashboard summary totals current stock value and zero quantity SKUs", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-dashboard-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "DASH", name: "สินค้า Dashboard", category: "เสื้อ" });
+    const stockedSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "DASH-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    createStockSku(rootDir, {
+      productId: product.id,
+      sku: "DASH-BLACK-M",
+      color: "ดำ",
+      size: "M",
+      defaultUnitCost: "110",
+    });
+
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: stockedSku.id,
+      movementDate: "2026-09-04",
+      quantity: "3",
+      unitCost: "120",
+    });
+
+    const summary = getInventoryDashboardSummary(rootDir);
+
+    assert.equal(summary.stockSkuCount, 2);
+    assert.equal(summary.totalQuantityOnHand, 3);
+    assert.equal(summary.zeroQuantitySkuCount, 1);
+    assert.equal(summary.totalInventoryValue, "360.00");
+    assert.equal(summary.asOfDate.length, 10);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("stock-in report lists latest purchase-in movements with product context", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-stock-in-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "INREP", name: "สินค้าเข้า", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "INREP-BLUE-S",
+      color: "น้ำเงิน",
+      size: "S",
+      defaultUnitCost: "80",
+    });
+
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-01",
+      quantity: "2",
+      unitCost: "80",
+      referenceType: "manual",
+      referenceNo: "OLD",
+    }, { now: () => "2026-09-01T01:00:00.000Z" });
+    createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-05",
+      quantity: "5",
+      unitCost: "85",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0001",
+    }, { now: () => "2026-09-05T01:00:00.000Z" });
+
+    const report = listStockInReport(rootDir, { limit: 1 });
+
+    assert.equal(report.length, 1);
+    assert.equal(report[0].movementDate, "2026-09-05");
+    assert.equal(report[0].sku, "INREP-BLUE-S");
+    assert.equal(report[0].productCode, "INREP");
+    assert.equal(report[0].quantity, 5);
+    assert.equal(report[0].totalCost, "425.00");
+    assert.equal(report[0].referenceNo, "SR-2026-09-0001");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

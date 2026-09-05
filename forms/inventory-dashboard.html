@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard สต๊อกสินค้า - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #cbd2d9;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    button { font: inherit; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(330px, calc(100vw - 32px));
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .metric {
+      display: grid;
+      gap: 4px;
+      padding: 14px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .metric span { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .metric strong { color: var(--brand-strong); font-size: 24px; line-height: 1.2; }
+    .panel {
+      overflow: hidden;
+      margin-top: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+    .panel-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 900px; border-collapse: collapse; }
+    th, td { padding: 10px 11px; border-bottom: 1px solid #e4e7eb; text-align: left; vertical-align: top; }
+    th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
+    .number { text-align: right; white-space: nowrap; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .status-box {
+      display: none;
+      margin-bottom: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #d9e2ec;
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+    }
+    .status-box.active { display: block; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+
+    @media (max-width: 900px) {
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric strong { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
+          <a class="menu-item" href="/inventory">สินค้าและสต๊อก</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+          <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบรับรองแทนใบเสร็จ</div>
+          <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">Dashboard สต๊อกสินค้า</h1>
+      <p class="brand-subtitle">ภาพรวมมูลค่าสต๊อกและรายงานสินค้าเข้าเพื่อใช้ตรวจบัญชี</p>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="toolbar">
+      <div class="muted">ข้อมูล ณ วันที่ <span id="asOfDate">-</span></div>
+      <div class="actions">
+        <button class="button secondary" type="button" id="refreshDashboard">รีเฟรช</button>
+        <a class="button primary" href="/api/inventory/current-stock-pdf" target="_blank" rel="noopener">Export PDF สต๊อกปัจจุบัน</a>
+      </div>
+    </div>
+    <div class="status-box" id="dashboardStatus"></div>
+
+    <section class="metric-grid" aria-label="ภาพรวมสต๊อก">
+      <div class="metric">
+        <span>มูลค่าสต๊อกรวม</span>
+        <strong id="totalInventoryValue">0.00 บาท</strong>
+      </div>
+      <div class="metric">
+        <span>จำนวน Stock SKU</span>
+        <strong id="stockSkuCount">0</strong>
+      </div>
+      <div class="metric">
+        <span>จำนวนคงเหลือรวม</span>
+        <strong id="totalQuantityOnHand">0</strong>
+      </div>
+      <div class="metric">
+        <span>SKU ที่คงเหลือ 0</span>
+        <strong id="zeroQuantitySkuCount">0</strong>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">สินค้าเข้าล่าสุด</h2>
+        <button class="button secondary" type="button" id="seeMoreStockIn">ดูเพิ่มเติม</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>วันที่</th>
+              <th>SKU</th>
+              <th>สี/Size</th>
+              <th class="number">จำนวน</th>
+              <th class="number">ต้นทุน/หน่วย</th>
+              <th class="number">รวม</th>
+              <th>อ้างอิง</th>
+            </tr>
+          </thead>
+          <tbody id="latestStockInRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="fullReportPanel" hidden>
+      <div class="panel-header">
+        <h2 class="panel-title">รายงานสินค้าเข้าแบบเต็ม</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>วันที่</th>
+              <th>SKU</th>
+              <th>สี/Size</th>
+              <th class="number">จำนวน</th>
+              <th class="number">ต้นทุน/หน่วย</th>
+              <th class="number">รวม</th>
+              <th>อ้างอิง</th>
+            </tr>
+          </thead>
+          <tbody id="stockInRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="./inventory-dashboard.logic.browser.js"></script>
+</body>
+</html>

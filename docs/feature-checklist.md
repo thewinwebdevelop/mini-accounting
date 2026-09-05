@@ -24,16 +24,16 @@
   - Next suggested task after completion: split hamburger document sections.
 - [x] Hamburger menu document grouping: separate substitute receipt links into their own menu section instead of grouping them under expense requests.
   - Next suggested task after completion: inventory dashboard.
+- [x] Inventory dashboard: total inventory value, current stock PDF export for tax/accounting evidence, and latest stock-in report with at least 10 rows plus see-more detail.
+  - Next suggested task after completion: full stock list.
 
 ## Current
 
-- [ ] Inventory dashboard: total inventory value, current stock PDF export for tax/accounting evidence, and latest stock-in report with at least 10 rows plus see-more detail.
-  - Next suggested task after completion: full stock list.
+- [ ] Full stock list: search/filter, parent-only vs all-SKU mode, grouped parent/child sections with collapsed children by default.
+  - Next suggested task after completion: product detail workspace.
 
 ## Requested Next
 
-- [ ] Full stock list: search/filter, parent-only vs all-SKU mode, grouped parent/child sections with collapsed children by default.
-  - Next suggested task after completion: product detail workspace.
 - [ ] Product detail workspace: open parent product detail, edit parent and child SKUs, and view related stock in/out history in an easy scanning layout.
   - Next suggested task after completion: product image uploads.
 - [ ] Product image uploads: optional image upload for parent products and child Stock SKUs.

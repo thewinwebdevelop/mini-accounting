@@ -9,6 +9,7 @@ const pages = [
   "google-drive.html",
   "index.html",
   "inventory.html",
+  "inventory-dashboard.html",
   "inventory-settings.html",
   "sale-skus.html",
   "substitute-receipt.html",
@@ -36,6 +37,8 @@ test("main pages link to substitute receipt creation from the document menu", as
     assert.match(menu, /ตั้งค่าผู้ขายใบรับรอง/, page);
     assert.match(menu, /href="\/sale-skus"/, page);
     assert.match(menu, /Sale SKU \/ Bundle SKU/, page);
+    assert.match(menu, /href="\/inventory-dashboard"/, page);
+    assert.match(menu, /Dashboard สต๊อก/, page);
   }
 });
 

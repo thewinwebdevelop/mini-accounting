@@ -664,6 +664,20 @@ function listInventoryBalances(rootDir) {
   });
 }
 
+function getInventoryDashboardSummary(rootDir, options = {}) {
+  const balances = listInventoryBalances(rootDir);
+  const totalInventoryValue = balances.reduce((sum, sku) => sum + Number(sku.inventoryValue || 0), 0);
+  const totalQuantityOnHand = balances.reduce((sum, sku) => sum + Number(sku.quantityOnHand || 0), 0);
+
+  return {
+    asOfDate: cleanText(options.asOfDate) || nowIso(options).slice(0, 10),
+    stockSkuCount: balances.length,
+    totalQuantityOnHand,
+    zeroQuantitySkuCount: balances.filter((sku) => Number(sku.quantityOnHand || 0) === 0).length,
+    totalInventoryValue: money(totalInventoryValue),
+  };
+}
+
 function getStockCard(rootDir, stockSkuId) {
   return withInventoryDatabase(rootDir, (db) => {
     const sku = db.prepare(`
@@ -695,6 +709,41 @@ function getStockCard(rootDir, stockSkuId) {
   });
 }
 
+function listStockInReport(rootDir, filters = {}) {
+  return withInventoryDatabase(rootDir, (db) => {
+    const limit = Math.max(1, Math.min(Number.parseInt(String(filters.limit || "10"), 10) || 10, 500));
+    const rows = db.prepare(`
+      SELECT
+        stock_movements.*,
+        stock_skus.sku,
+        stock_skus.color,
+        stock_skus.size,
+        stock_skus.default_unit_cost,
+        products.id AS product_id,
+        products.product_code,
+        products.name AS product_name,
+        products.category
+      FROM stock_movements
+      JOIN stock_skus ON stock_skus.id = stock_movements.stock_sku_id
+      JOIN products ON products.id = stock_skus.product_id
+      WHERE stock_movements.movement_type = 'purchase_in'
+      ORDER BY stock_movements.movement_date DESC, stock_movements.id DESC
+      LIMIT ?
+    `).all(limit);
+
+    return rows.map((row) => ({
+      ...mapMovement(row),
+      sku: row.sku,
+      color: row.color,
+      size: row.size,
+      productId: row.product_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      category: row.category,
+    }));
+  });
+}
+
 function listStockMovementsByReference(rootDir, referenceType, referenceNo) {
   return withInventoryDatabase(rootDir, (db) => {
     const rows = db.prepare(`
@@ -714,12 +763,14 @@ module.exports = {
   createPurchaseInMovement,
   createSaleSku,
   createStockSku,
+  getInventoryDashboardSummary,
   getSaleSku,
   getStockCard,
   listInventoryBalances,
   listProductCategories,
   listProducts,
   listSaleSkus,
+  listStockInReport,
   listStockMovementsByReference,
   listStockSkus,
   updateProductCategory,
