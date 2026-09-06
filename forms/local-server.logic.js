@@ -24,6 +24,7 @@ const {
   LIGHTWEIGHT_DOCUMENT_KINDS,
   WORKFLOW_DOCUMENT_PREFIXES,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
+  assertWorkflowDocumentCompletable,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
 } = require("./workflow-document.logic.js");
@@ -1734,6 +1735,21 @@ async function getWorkflowDocument(rootDir, documentKind, documentNo) {
   return records.find((record) => record.documentKind === documentKind && record.documentNo === documentNo) || null;
 }
 
+// Defense-in-depth path containment: resolves targetPath and refuses it unless
+// it is baseDir itself or strictly inside it. Exported so this guard can be
+// unit-tested directly, independent of whatever upstream sanitization
+// currently prevents a hostile path from reaching it in practice — the whole
+// point of "defense in depth" is that it must still hold if that sanitization
+// ever regresses.
+function assertPathWithinDirectory(baseDir, targetPath, message) {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(targetPath);
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(`${resolvedBase}${path.sep}`)) {
+    throw new Error(message);
+  }
+  return resolvedTarget;
+}
+
 async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
     throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
@@ -1750,12 +1766,27 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
     rawFiles: rawFiles.length ? rawFiles : payload.rawFiles ?? [],
   };
 
-  const absoluteFolderPath = path.join(rootDir, finalPayload.folderPath);
+  // Defense in depth: folderPath is meant to be server-derived (fresh for a new
+  // document, carried forward from the stored record for an edit — see
+  // handleWorkflowDocumentSubmission), but a future bug in either path must not
+  // turn into a write primitive outside rootDir. Re-resolve and contain it here,
+  // the same way the read side already contains file lookups.
+  const absoluteFolderPath = assertPathWithinDirectory(
+    rootDir,
+    path.join(rootDir, finalPayload.folderPath || ""),
+    "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง",
+  );
+
   const rawDir = path.join(absoluteFolderPath, "raw");
   await mkdir(rawDir, { recursive: true });
 
   for (const write of preparedUploads.writes) {
-    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
+    const targetPath = assertPathWithinDirectory(
+      rawDir,
+      path.join(rawDir, write.fileRecord.storedName),
+      "ชื่อไฟล์แนบไม่ถูกต้อง",
+    );
+    await writeFile(targetPath, write.buffer);
   }
 
   const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload);
@@ -1779,7 +1810,7 @@ async function completeWorkflowDocument({
   now = () => new Date().toISOString(),
 }) {
   const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
-  if (!record) throw new Error("Workflow document not found");
+  if (!record) throw new Error("ไม่พบเอกสาร");
 
   const payload = { ...record.payload, folderPath: record.folderPath };
   const currentStatus = payload.status || "draft";
@@ -1798,6 +1829,9 @@ async function completeWorkflowDocument({
       pdfFiles: await listPdfFiles(rootDir, payload.folderPath),
     };
   }
+
+  // A cancelled document must never be silently reopened by completing it.
+  assertWorkflowDocumentCompletable(currentStatus);
 
   const completedAt = now();
   payload.statusHistory = [
@@ -1824,19 +1858,19 @@ async function completeWorkflowDocument({
 }
 
 async function getWorkflowDocumentFile({ rootDir, documentKind, documentNo, section, fileName }) {
-  if (!documentNo) throw new Error("Missing document number");
-  if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
+  if (!documentNo) throw new Error("ไม่มีเลขที่เอกสาร");
+  if (!["pdf", "raw"].includes(section)) throw new Error("ส่วนไฟล์ไม่ถูกต้อง");
   if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
-    throw new Error("Invalid file name");
+    throw new Error("ชื่อไฟล์ไม่ถูกต้อง");
   }
 
   const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
-  if (!record) throw new Error("Workflow document not found");
+  if (!record) throw new Error("ไม่พบเอกสาร");
 
   const baseDir = path.resolve(rootDir, record.folderPath, section);
   const absolutePath = path.resolve(baseDir, fileName);
   if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) {
-    throw new Error("Invalid file name");
+    throw new Error("ชื่อไฟล์ไม่ถูกต้อง");
   }
 
   return { absolutePath, fileName, section };
@@ -1961,6 +1995,7 @@ async function syncSubstituteReceiptToDrive({
 module.exports = {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  assertPathWithinDirectory,
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,

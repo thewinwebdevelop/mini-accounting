@@ -34,17 +34,7 @@ window.addEventListener("DOMContentLoaded", () => {
     payee: "ผู้รับเงิน/คู่ค้า",
     purpose: "วัตถุประสงค์",
     lines: "รายการ",
-    totals: "ยอดเงิน",
   };
-
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
 
   function todayInputValue() {
     const now = new Date();
@@ -197,15 +187,16 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function applyPrefillPatch(patch = {}, groups = []) {
-    if (patch.payeeName !== undefined) {
+    const selectedGroups = new Set(groups);
+    if (selectedGroups.has("payee") && patch.payeeName !== undefined) {
       form.elements.payeeName.value = patch.payeeName;
       markFieldPrefilled("payeeName", state.prefill?.sources?.payee);
     }
-    if (patch.businessPurpose !== undefined) {
+    if (selectedGroups.has("purpose") && patch.businessPurpose !== undefined) {
       form.elements.businessPurpose.value = patch.businessPurpose;
       markFieldPrefilled("businessPurpose", state.prefill?.sources?.purpose);
     }
-    if (Array.isArray(patch.lines) && patch.lines.length) {
+    if (selectedGroups.has("lines") && Array.isArray(patch.lines) && patch.lines.length) {
       lineItems.replaceChildren();
       for (const line of patch.lines) addLine(line);
       markFieldPrefilled("lines", state.prefill?.sources?.lines);
@@ -259,7 +250,7 @@ window.addEventListener("DOMContentLoaded", () => {
     state.workflowTemplateId = payload.workflowTemplateId || state.workflowTemplateId;
     state.workflowStepId = payload.workflowStepId || state.workflowStepId;
     fillForm(payload);
-    setStatus(`โหลดเอกสาร ${escapeHtml(state.documentNo)} แล้ว`, "success");
+    setStatus(`โหลดเอกสาร ${state.documentNo} แล้ว`, "success");
   }
 
   function buildMultipartPayload(payload) {
@@ -283,7 +274,7 @@ window.addEventListener("DOMContentLoaded", () => {
     state.documentNo = result.documentNo;
     state.status = result.status || "draft";
     setDocumentState(state.status);
-    setStatus(`บันทึกเอกสาร ${escapeHtml(result.documentNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์`, "success");
+    setStatus(`บันทึกเอกสาร ${result.documentNo} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์`, "success");
   }
 
   async function completeWorkflowDocumentSubmission() {
@@ -296,7 +287,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     state.status = result.status || "completed";
     setDocumentState(state.status);
-    setStatus(`เอกสาร ${escapeHtml(state.documentNo)} เสร็จสิ้นแล้ว`, "success");
+    setStatus(`เอกสาร ${state.documentNo} เสร็จสิ้นแล้ว`, "success");
   }
 
   addLineButton.addEventListener("click", () => addLine());

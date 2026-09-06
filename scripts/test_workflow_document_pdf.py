@@ -1,10 +1,14 @@
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from generate_workflow_document_pdf import build_document_pdf
+from generate_workflow_document_pdf import DOCUMENT_KIND_LABELS, build_document_pdf
 from pdf_common import pdf_page_count
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW_LOGIC_PATH = REPO_ROOT / "forms" / "workflow.logic.js"
 
 
 class WorkflowDocumentPdfTests(unittest.TestCase):
@@ -82,6 +86,34 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
             build_document_pdf(payload, str(output_path))
             self.assertTrue(output_path.exists())
             self.assertGreater(os.path.getsize(output_path), 0)
+
+
+class WorkflowDocumentLabelDriftTests(unittest.TestCase):
+    """Nothing previously asserted that DOCUMENT_KIND_LABELS here still matches
+    the labels forms/workflow.logic.js defines for the same five lightweight
+    document kinds. This is a cheap text-level check against that drift — it
+    does not execute the JS, just confirms the Thai label strings agree."""
+
+    def test_pdf_labels_match_workflow_logic_definitions(self):
+        source = WORKFLOW_LOGIC_PATH.read_text(encoding="utf-8")
+        self.assertTrue(DOCUMENT_KIND_LABELS, "DOCUMENT_KIND_LABELS must not be empty")
+
+        for document_kind, expected_label in DOCUMENT_KIND_LABELS.items():
+            match = re.search(
+                r"%s:\s*\{[^}]*?label:\s*\"([^\"]+)\"" % re.escape(document_kind),
+                source,
+            )
+            self.assertIsNotNone(
+                match,
+                f"no DOCUMENT_TYPE_DEFINITIONS entry found for '{document_kind}' in workflow.logic.js",
+            )
+            self.assertEqual(
+                match.group(1),
+                expected_label,
+                f"label drift for '{document_kind}': "
+                f"generate_workflow_document_pdf.py says '{expected_label}' but "
+                f"workflow.logic.js says '{match.group(1)}'",
+            )
 
 
 if __name__ == "__main__":

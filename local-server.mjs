@@ -444,14 +444,53 @@ async function handleWorkflowDocumentSubmission(request, response) {
     const errors = validateWorkflowDocumentPayload(data);
     if (errors.length) throw new Error(errors.join(", "));
 
-    const nextInfo = await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
-    const payload = buildWorkflowDocumentPayload({ ...data, sequence: nextInfo.sequence });
+    // documentNo, folderPath, status, statusHistory, completedAt, completedBy and
+    // createdAt are server-owned. The client may only ever *reference* an existing
+    // document by documentNo to edit it — every one of those fields is then loaded
+    // from the stored record here, never taken from the request body, so a client
+    // cannot forge an audit stamp, redirect the write outside its real folder, or
+    // resurrect an already-completed document by editing it.
+    const requestedDocumentNo = String(data.documentNo ?? "").trim();
+    const existingDocument = requestedDocumentNo
+      ? await getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo)
+      : null;
+
+    if (existingDocument?.status === "completed") {
+      throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
+    }
+
+    let serverOwnedFields;
+    if (existingDocument) {
+      serverOwnedFields = {
+        documentNo: existingDocument.documentNo,
+        folderPath: existingDocument.folderPath,
+        status: existingDocument.status,
+        statusHistory: existingDocument.payload?.statusHistory ?? [],
+        completedAt: existingDocument.payload?.completedAt ?? "",
+        completedBy: existingDocument.payload?.completedBy ?? "",
+        createdAt: existingDocument.payload?.createdAt ?? "",
+      };
+    } else {
+      const nextInfo = await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
+      serverOwnedFields = {
+        documentNo: "",
+        folderPath: "",
+        sequence: nextInfo.sequence,
+        status: "draft",
+        statusHistory: [],
+        completedAt: "",
+        completedBy: "",
+        createdAt: "",
+      };
+    }
+
+    const payload = buildWorkflowDocumentPayload({ ...data, ...serverOwnedFields });
     const result = await saveWorkflowDocument({ rootDir, payload, uploads: files });
 
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
-      error: error.message || "Cannot save workflow document",
+      error: error.message || "ไม่สามารถบันทึกเอกสารได้",
     });
   }
 }
@@ -473,6 +512,11 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
   }
 }
 
+function omitAbsoluteFolderPath(record) {
+  const { absoluteFolderPath, ...rest } = record;
+  return rest;
+}
+
 async function handleWorkflowDocumentList(url, response) {
   try {
     const filters = {
@@ -483,10 +527,10 @@ async function handleWorkflowDocumentList(url, response) {
       status: url.searchParams.get("status") || "",
     };
     const documents = await listWorkflowDocuments(rootDir, filters);
-    sendJson(response, 200, { documents });
+    sendJson(response, 200, { documents: documents.map(omitAbsoluteFolderPath) });
   } catch (error) {
     sendJson(response, 400, {
-      error: error.message || "Cannot list workflow documents",
+      error: error.message || "ไม่สามารถแสดงรายการเอกสารได้",
     });
   }
 }
@@ -494,11 +538,11 @@ async function handleWorkflowDocumentList(url, response) {
 async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   try {
     const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
-    if (!record) throw new Error("Workflow document not found");
-    sendJson(response, 200, record);
+    if (!record) throw new Error("ไม่พบเอกสาร");
+    sendJson(response, 200, omitAbsoluteFolderPath(record));
   } catch (error) {
     sendJson(response, 404, {
-      error: error.message || "Cannot load workflow document",
+      error: error.message || "ไม่สามารถโหลดเอกสารได้",
     });
   }
 }
@@ -1415,5 +1459,6 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
-  console.log(`Expense request local web app: http://localhost:${port}/`);
+  const boundPort = server.address().port;
+  console.log(`Expense request local web app: http://localhost:${boundPort}/`);
 });

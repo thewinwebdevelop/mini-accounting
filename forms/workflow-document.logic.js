@@ -1,5 +1,3 @@
-const { getDocumentTypeDefinition } = require("./workflow.logic.js");
-
 const LIGHTWEIGHT_DOCUMENT_KINDS = [
   "purchase_order",
   "payment_voucher",
@@ -24,7 +22,26 @@ const WORKFLOW_DOCUMENT_STATUS_LABELS = {
   cancelled: "ยกเลิก",
 };
 
-const EVIDENCE_LABEL = "หลักฐานประกอบ";
+// A cancelled lightweight document must never be silently reopened by completing
+// it. Every other status may transition to "completed" (repeat completion of an
+// already-completed document is handled separately as an idempotent no-op).
+const WORKFLOW_DOCUMENT_UNCOMPLETABLE_STATUSES = new Set(["cancelled"]);
+
+function assertWorkflowDocumentCompletable(currentStatus) {
+  if (WORKFLOW_DOCUMENT_UNCOMPLETABLE_STATUSES.has(cleanText(currentStatus))) {
+    throw new Error(`ไม่สามารถทำให้เอกสารสถานะ "${WORKFLOW_DOCUMENT_STATUS_LABELS[currentStatus] || currentStatus}" เสร็จสิ้นได้`);
+  }
+}
+
+// Cross-module lookups resolve at call time (never at module load) so this file
+// stays a plain classic script in the browser: workflow.logic.js is loaded first
+// there and exposes window.WorkflowLogic, while Node resolves it via require().
+function resolveWorkflowLogic() {
+  if (typeof module !== "undefined" && module.exports) {
+    return require("./workflow.logic.js");
+  }
+  return typeof window !== "undefined" ? window.WorkflowLogic : undefined;
+}
 
 function cleanText(value) {
   return String(value ?? "").trim();
@@ -65,8 +82,21 @@ function getFileExtension(originalName) {
   return match ? `.${match[1].toLowerCase()}` : "";
 }
 
+// evidenceKey is the multipart field name minus the "evidence_" prefix, which
+// means it is fully attacker-controlled. Strip path separators AND dots (not
+// just separators, like safeTitle does) so a value such as "../../../ESCAPED"
+// can never reassemble into a traversal segment once "_NNN.ext" is appended.
+function sanitizeEvidenceKey(evidenceKey) {
+  const cleaned = cleanText(evidenceKey)
+    .replace(/[\\/:*?"<>|#%{}^~[\]`.]+/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 80)
+    .toLowerCase();
+  return cleaned || "evidence";
+}
+
 function buildWorkflowDocumentRawFileName(evidenceKey, originalName, index = 0) {
-  const slug = cleanText(evidenceKey) || "evidence";
+  const slug = sanitizeEvidenceKey(evidenceKey);
   const sequence = String(index + 1).padStart(3, "0");
   return `${slug}_${sequence}${getFileExtension(originalName)}`;
 }
@@ -146,7 +176,7 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
   const uploadedRawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
 
   const status = cleanText(data.status) || "draft";
-  const documentTypeDefinition = getDocumentTypeDefinition(documentKind);
+  const documentTypeDefinition = resolveWorkflowLogic()?.getDocumentTypeDefinition?.(documentKind);
 
   return {
     documentKind,
@@ -227,7 +257,7 @@ const WorkflowDocumentLogic = {
   LIGHTWEIGHT_DOCUMENT_KINDS,
   WORKFLOW_DOCUMENT_PREFIXES,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
-  EVIDENCE_LABEL,
+  assertWorkflowDocumentCompletable,
   buildWorkflowDocumentPayload,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,

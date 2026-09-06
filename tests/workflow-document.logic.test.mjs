@@ -109,19 +109,19 @@ test("getWorkflowDocumentFile rejects every invalid input branch, not just path 
 
     await assert.rejects(
       () => serverLogic.getWorkflowDocumentFile({ rootDir, documentKind: "purchase_order", documentNo: "", section: "pdf", fileName: "01_purchase_order.pdf" }),
-      /Missing document number/,
+      /ไม่มีเลขที่เอกสาร/,
     );
     await assert.rejects(
       () => serverLogic.getWorkflowDocumentFile({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, section: "data", fileName: "workflow-document.json" }),
-      /Invalid file section/,
+      /ส่วนไฟล์ไม่ถูกต้อง/,
     );
     await assert.rejects(
       () => serverLogic.getWorkflowDocumentFile({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, section: "pdf", fileName: ".." }),
-      /Invalid file name/,
+      /ชื่อไฟล์ไม่ถูกต้อง/,
     );
     await assert.rejects(
       () => serverLogic.getWorkflowDocumentFile({ rootDir, documentKind: "purchase_order", documentNo: "PO-2026-09-9999", section: "pdf", fileName: "01_purchase_order.pdf" }),
-      /Workflow document not found/,
+      /ไม่พบเอกสาร/,
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -171,6 +171,31 @@ test("buildWorkflowDocumentRawFileName produces sequential, extension-preserving
   assert.equal(docLogic.buildWorkflowDocumentRawFileName("evidence", "photo.JPG", 0), "evidence_001.jpg");
   assert.equal(docLogic.buildWorkflowDocumentRawFileName("evidence", "photo.jpg", 1), "evidence_002.jpg");
   assert.equal(docLogic.buildWorkflowDocumentRawFileName("evidence", "no-extension", 0), "evidence_001");
+});
+
+test("Critical 2 exploit: a hostile evidenceKey cannot escape the raw/ directory via buildWorkflowDocumentRawFileName", () => {
+  // Reproduction from the security review: evidenceKey is the multipart field
+  // name minus the "evidence_" prefix, which is fully attacker-controlled.
+  // Before the fix, buildWorkflowDocumentRawFileName("../../../ESCAPED", "x.txt", 0)
+  // produced "../../../ESCAPED_001.txt" — a name that, joined onto rawDir, writes
+  // clean outside rootDir.
+  const hostileKeys = [
+    "../../../ESCAPED",
+    "..\\..\\ESCAPED",
+    "/etc/passwd",
+    "....//....//ESCAPED",
+    "...",
+    "..",
+    "/",
+    "\\",
+  ];
+
+  for (const hostileKey of hostileKeys) {
+    const name = docLogic.buildWorkflowDocumentRawFileName(hostileKey, "x.txt", 0);
+    assert.ok(!name.includes("/"), `${JSON.stringify(hostileKey)} -> ${JSON.stringify(name)} must not contain "/"`);
+    assert.ok(!name.includes("\\"), `${JSON.stringify(hostileKey)} -> ${JSON.stringify(name)} must not contain "\\"`);
+    assert.ok(!name.includes(".."), `${JSON.stringify(hostileKey)} -> ${JSON.stringify(name)} must not contain ".."`);
+  }
 });
 
 test("getWorkflowDocument returns null (not a throw) when the document does not exist", async () => {
@@ -339,6 +364,134 @@ test("saveWorkflowDocument works without any workflow context (transactionNo abs
       now: () => "2026-09-06T15:00:00.000Z",
     });
     assert.equal(completed.status, "completed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("assertPathWithinDirectory allows a path inside the base directory and refuses one that escapes it", () => {
+  // Direct unit coverage for the defense-in-depth guard saveWorkflowDocument now
+  // applies on both the folder-path and the raw-evidence-write side, independent
+  // of whatever upstream sanitization happens to prevent a hostile path from
+  // reaching it today.
+  assert.doesNotThrow(() => serverLogic.assertPathWithinDirectory("/root/docs", "/root/docs/raw/file.txt", "should not throw"));
+  assert.doesNotThrow(() => serverLogic.assertPathWithinDirectory("/root/docs", "/root/docs", "should not throw"));
+  assert.throws(() => serverLogic.assertPathWithinDirectory("/root/docs", "/root/other/file.txt", "escaped"), /escaped/);
+  assert.throws(() => serverLogic.assertPathWithinDirectory("/root/docs", "/root/docs-sibling/file.txt", "escaped"), /escaped/, "a sibling directory that merely shares a prefix must still be rejected");
+  assert.throws(() => serverLogic.assertPathWithinDirectory("/root/docs", "/tmp/escaped", "escaped"), /escaped/);
+});
+
+test("Critical 3 exploit: saveWorkflowDocument refuses a folderPath that resolves outside rootDir", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "ทดสอบ",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+      // A client posting raw JSON can set folderPath directly (this is exactly
+      // what buildWorkflowDocumentPayload accepts verbatim when present) — this
+      // reproduces the exploit from the security review: honoring it verbatim
+      // let a client's write land anywhere on disk.
+      folderPath: "../../../../tmp/sweet-house-escaped",
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+
+    await assert.rejects(
+      () => serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] }),
+      /ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง/,
+    );
+
+    const { existsSync } = await import("node:fs");
+    assert.equal(existsSync("/tmp/sweet-house-escaped"), false, "the escaping folder must never be created");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    const { rm: rmAsync } = await import("node:fs/promises");
+    await rmAsync("/tmp/sweet-house-escaped", { recursive: true, force: true });
+  }
+});
+
+test("completeWorkflowDocument refuses to complete a cancelled document but allows every other origin status", async () => {
+  const statusOutcomes = {
+    draft: "accepted",
+    pending_approval: "accepted",
+    approved: "accepted",
+    cancelled: "rejected",
+  };
+
+  for (const [originStatus, outcome] of Object.entries(statusOutcomes)) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+    try {
+      const payload = docLogic.buildWorkflowDocumentPayload({
+        documentKind: "purchase_order",
+        sequence: "1",
+        accountingMonth: "2026-09",
+        documentDate: "2026-09-06",
+        title: `ทดสอบสถานะ ${originStatus}`,
+        businessPurpose: "ทดสอบ",
+        lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+        status: originStatus,
+      }, { now: () => "2026-09-06T12:00:00.000Z" });
+      const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+
+      const attempt = serverLogic.completeWorkflowDocument({
+        rootDir,
+        documentKind: "purchase_order",
+        documentNo: saved.documentNo,
+        completedBy: "คุณต้า",
+        now: () => "2026-09-06T13:00:00.000Z",
+      });
+
+      if (outcome === "accepted") {
+        const result = await attempt;
+        assert.equal(result.status, "completed", `origin status "${originStatus}" must be completable`);
+      } else {
+        await assert.rejects(() => attempt, undefined, `origin status "${originStatus}" must not be completable`);
+        const record = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+        assert.equal(record.status, originStatus, `a rejected completion must leave status "${originStatus}" unchanged`);
+      }
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("completeWorkflowDocument stays idempotent even though completed is not in the completable-origin set", async () => {
+  // completed -> completed is the one self-transition that must still succeed as
+  // a no-op (retry / double-click / replayed request), even though "completed"
+  // is not itself an origin status the transition guard is meant to open up.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "ทดสอบซ้ำ",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+
+    await serverLogic.completeWorkflowDocument({
+      rootDir,
+      documentKind: "purchase_order",
+      documentNo: saved.documentNo,
+      completedBy: "คุณต้า",
+      now: () => "2026-09-06T13:00:00.000Z",
+    });
+
+    const again = await serverLogic.completeWorkflowDocument({
+      rootDir,
+      documentKind: "purchase_order",
+      documentNo: saved.documentNo,
+      completedBy: "someone-else",
+      now: () => "2026-09-06T14:00:00.000Z",
+    });
+    assert.equal(again.status, "completed");
+    assert.equal(again.completedBy, "คุณต้า");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
