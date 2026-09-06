@@ -12,29 +12,32 @@
 
 ## Global Constraints
 
-- Workflow templates define only ordered document kinds and sync toggles.
+- Workflow templates define only ordered document kinds and a Google Drive sync toggle (`syncGoogleDrive`). There is no workflow-level Google Sheets sync and no `syncGoogleSheets` toggle anywhere in the template shape — see the D6 deviation note below.
 - Do not duplicate standalone document forms inside workflow pages.
 - Starting a workflow creates transaction numbers in the format `TXN-YYYY-MM-0001`.
 - Workflow transaction records are stored under `documents/YYYY/MM/workflow-transactions/TXN-YYYY-MM-0001_<safe-title>/`.
 - Every child document created from workflow must store `transactionNo`, `workflowTemplateId`, and `workflowStepId`.
 - All standalone document types used in workflow must expose or normalize a `completed` state.
 - Workflow next-step unlocking is based on child document completion, not a separate workflow approval state.
+- Documents must be created in strict template order. A step after the first incomplete step is `blocked`, even when that later step's own child document already exists and independently reports `completed` (e.g. a document created out of band, or a stale/duplicate document number reused from another transaction). This is not only a UI affordance: the server must refuse to let a document be started for any step that is not the transaction's currently unlocked step. `deriveWorkflowProgress()` (Task 2) computes the block; the `POST /api/workflow-transactions/:transactionNo/start-document/:stepId` handler (Task 9) enforces it.
 - Existing standalone pages must still work without `transactionNo`.
 - `goods_receipt` is a lightweight standalone document (route `/workflow-document?documentKind=goods_receipt`, prefix `GR-YYYY-MM-0001`), exactly like `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement`. It is NOT the existing `/inventory-purchase-in` route. Do not modify the inventory purchase-in system (`forms/inventory.logic.js`, `createPurchaseInMovement()`) in any way while implementing this plan — stock movements remain owned exclusively by the existing `receiveSubstituteReceiptStock()` flow, which is unrelated to workflow document completion.
 - `substitute_receipt` workflow completion is hybrid, keyed on `receiptType`: native `received` reports workflow `completed` only for `receiptType === "stock_purchase"`; native `approved` reports workflow `completed` only for `receiptType === "general_expense"`. Every other native `approved`, and missing/unknown status, reports workflow `in_progress`. The explicit `completeSubstituteReceipt()` action is available regardless of `receiptType` and always stamps native `status: "completed"`.
-- Workflow transaction completion and sync are driven by the template's `syncGoogleDrive`/`syncGoogleSheets` toggles snapshotted onto the transaction: sync runs automatically right after all steps are `completed` when the matching toggle is `true`; when a toggle is `false`, the transaction page exposes a manual sync button for that channel instead. Manual sync must remain callable independent of the toggle value once the transaction is completed.
+- Workflow transaction completion and sync are Drive-only, driven by the template's `syncGoogleDrive` toggle snapshotted onto the transaction: Drive sync runs automatically right after all steps are `completed` when the toggle is `true`; when the toggle is `false`, the transaction page exposes a manual "Sync Drive" button instead. Manual sync must remain callable independent of the toggle value once the transaction is completed. The workflow layer never writes a Google Sheets row — see the D6 deviation note below.
 - Any route that serves a file by name (transaction packet files, workflow-document PDFs/raw files) must resolve the path the same way `getExpenseRequestFile()` does today: resolve against the section directory and reject any resolved path that does not start with `${baseDir}${path.sep}`, so a crafted `fileName` cannot traverse outside the document/transaction folder. `getWorkflowTransactionFile()` (Task 5) and `getWorkflowDocumentFile()` (Task 4) are the concrete implementations of this rule — see those tasks for the allowed `section` values.
 - `returnTo` must be treated as untrusted input everywhere it is consumed (expense request, substitute receipt, and lightweight workflow-document pages): before assigning it to a link's `href`, validate it is a same-origin relative path — starts with a single `/`, does not start with `//`, and does not contain `\` — otherwise leave the return link hidden. Use the shared `sanitizeWorkflowReturnTo()` helper (Task 4) rather than re-implementing this check per page.
 - Use `scripts/test.sh` for final verification.
+
+> **Deliberate deviation from spec (D6):** The spec's `## Sync Rules` section says "Google Sheets sync should write one summary row per completed transaction." The product owner overrode this on 2026-09-06 (see `.superpowers/sdd/progress.md`, decision D6): a workflow transaction bundles several child documents that cover the *same* underlying money, and each child document (expense request, substitute receipt) already writes its own Google Sheets row with the real amount via `recordMonthlyExpense()`. A workflow-level row would double- or triple-count that money in the monthly sheet. **This plan governs**: there is no workflow-level Sheets row, no `syncGoogleSheets` toggle, and no `sync-sheets` route anywhere in this plan. Do not edit the spec file to match — the spec is left as-is and this note records the intentional divergence. `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) upserts on `sourceKey`, so this change does not affect child documents' existing Sheets behavior at all.
 
 ---
 
 ## File Structure
 
 - Create `forms/workflow.logic.js`
-  - Owns document type registry, default template seeds, template validation, transaction payload normalization, transaction progress derivation, child document adapters, file naming, markdown formatting, and sheet entry conversion.
+  - Owns document type registry, default template seeds, template validation, transaction payload normalization, transaction progress derivation, child document adapters, file naming, and markdown formatting. Does not produce a Sheets row — see D6.
 - Create `forms/workflow-templates.html`
-  - Lets the user create/edit workflow templates by choosing document kinds in order and toggling Google Drive/Sheets sync.
+  - Lets the user create/edit workflow templates by choosing document kinds in order and toggling Google Drive sync.
 - Create `forms/workflow-transactions.html`
   - Lets the user choose a template, start a transaction, and list existing transactions.
 - Create `forms/workflow-transaction.html`
@@ -54,9 +57,9 @@
 - Create `scripts/generate_workflow_document_pdf.py`
   - Generates PDFs for lightweight standalone documents.
 - Modify `forms/local-server.logic.js`
-  - Add workflow template storage, workflow transaction storage, sequence generation, child document lookup, progress refresh, packet generation, workflow transaction completion, auto/manual Drive and Sheets sync functions, and exported helpers.
+  - Add workflow template storage, workflow transaction storage, sequence generation, child document lookup, progress refresh, packet generation, workflow transaction completion, auto/manual Drive sync functions, and exported helpers. No Sheets sync function — see D6.
 - Modify `local-server.mjs`
-  - Add static routes and API handlers for templates, transactions, transaction completion, transaction sync (Drive and Sheets), and packet files.
+  - Add static routes and API handlers for templates, transactions, transaction completion, transaction sync (Drive only), and packet files.
 - Modify `forms/expense-request.logic.js`
   - Preserve workflow relation fields and add `completed` status support.
 - Modify `forms/substitute-receipt.logic.js`
@@ -137,12 +140,11 @@ test("stock company bank template contains the requested document order", () => 
   ]);
 });
 
-test("template normalization preserves order and sync toggles", () => {
+test("template normalization preserves order and sync toggle", () => {
   const normalized = normalizeWorkflowTemplate({
     templateId: "custom_stock",
     name: "ซื้อสต๊อกแบบ custom",
     syncGoogleDrive: true,
-    syncGoogleSheets: false,
     documentSteps: [
       { documentKind: "purchase_order" },
       { documentKind: "payment_voucher" },
@@ -151,7 +153,7 @@ test("template normalization preserves order and sync toggles", () => {
 
   assert.equal(normalized.templateId, "custom_stock");
   assert.equal(normalized.syncGoogleDrive, true);
-  assert.equal(normalized.syncGoogleSheets, false);
+  assert.equal(normalized.syncGoogleSheets, undefined);
   assert.deepEqual(normalized.documentSteps.map((step) => step.stepId), ["step-001", "step-002"]);
 });
 
@@ -197,7 +199,6 @@ const DOCUMENT_TYPE_DEFINITIONS = {
   name,
   description,
   syncGoogleDrive: false,
-  syncGoogleSheets: false,
   active: true,
   documentSteps: [
     { stepId: "step-001", documentKind: "..." },
@@ -207,11 +208,13 @@ const DOCUMENT_TYPE_DEFINITIONS = {
 }
 ```
 
+There is no `syncGoogleSheets` field anywhere in the template shape (decision D6, `.superpowers/sdd/progress.md`) — `syncGoogleDrive` is the only sync toggle a template carries.
+
 Use deterministic seed timestamps: `"2026-09-06T00:00:00.000Z"`.
 
 - [ ] **Step 5: Implement template helpers**
 
-`normalizeWorkflowTemplate()` must trim text, set sequential `step-001` IDs, copy sync toggles as booleans, validate document kinds, and keep `createdAt` if provided.
+`normalizeWorkflowTemplate()` must trim text, set sequential `step-001` IDs, copy `syncGoogleDrive` as a boolean, validate document kinds, and keep `createdAt` if provided. It must not read or emit `syncGoogleSheets`.
 
 `validateWorkflowTemplate()` must return Thai error strings and reject empty document step lists.
 
@@ -242,7 +245,6 @@ git commit -m "feat: add workflow document templates"
 - Produces: `normalizeDocumentWorkflowStatus(documentRecord)`
 - Produces: `deriveWorkflowProgress(transaction, childDocuments)`
 - Produces: `formatWorkflowSummaryMarkdown(transaction, childDocuments)`
-- Produces: `buildWorkflowSheetEntry(transaction, childDocuments, driveMetadata, completedAt)`
 
 - [ ] **Step 1: Write failing transaction tests**
 
@@ -347,6 +349,38 @@ test("deriveWorkflowProgress unlocks next document only after current child is c
   assert.equal(next.steps[2].workflowStatus, "blocked");
   assert.equal(next.currentStepId, "step-002");
 });
+
+test("deriveWorkflowProgress blocks a later step even when its own child document already reports completed out of order", () => {
+  // Decision D5 (.superpowers/sdd/progress.md): documents must be created in
+  // strict template order. step-001 has no child document at all, but
+  // step-002 already has one that independently reports native "completed".
+  // step-002 must still come back "blocked" and currentStepId must stay
+  // "step-001" -- a completed child document for a later step never skips
+  // the earlier, still-incomplete step.
+  const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
+  const transaction = workflowLogic.buildWorkflowTransactionPayload({
+    sequence: "2",
+    accountingMonth: "2026-09",
+    title: "ทดสอบลำดับเอกสาร",
+    template,
+  });
+
+  const next = workflowLogic.deriveWorkflowProgress(transaction, [
+    {
+      documentKind: "substitute_receipt",
+      documentNo: "SR-2026-09-0001",
+      workflowStepId: "step-002",
+      transactionNo: transaction.transactionNo,
+      status: "completed",
+      statusLabel: "เสร็จสิ้น",
+    },
+  ]);
+
+  assert.equal(next.steps[0].workflowStatus, "not_started");
+  assert.equal(next.steps[1].workflowStatus, "blocked");
+  assert.equal(next.steps[2].workflowStatus, "blocked");
+  assert.equal(next.currentStepId, "step-001");
+});
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -357,7 +391,7 @@ Expected: FAIL because transaction helpers are missing.
 
 - [ ] **Step 3: Implement transaction payload builder**
 
-`buildWorkflowTransactionPayload()` must validate `accountingMonth` as `YYYY-MM`, create `transactionNo`, create the workflow transaction folder path, snapshot the selected template, initialize derived step states, copy sync toggles, and set `status = "in_progress"`.
+`buildWorkflowTransactionPayload()` must validate `accountingMonth` as `YYYY-MM`, create `transactionNo`, create the workflow transaction folder path, snapshot the selected template (including its `syncGoogleDrive` toggle — there is no `syncGoogleSheets` field to snapshot), initialize derived step states, and set `status = "in_progress"`.
 
 - [ ] **Step 4: Implement document completion adapter**
 
@@ -375,13 +409,15 @@ This is the auto-completion signal only. `completeSubstituteReceipt()` (Task 3) 
 
 - [ ] **Step 5: Implement progress derivation**
 
-`deriveWorkflowProgress(transaction, childDocuments)` must normalize all child documents, match them by `workflowStepId` first and by `documentKind` second, unlock only the first incomplete step, and mark the transaction `completed` when every step is completed.
+`deriveWorkflowProgress(transaction, childDocuments)` must normalize all child documents, match them by `workflowStepId` first and by `documentKind` second, and mark the transaction `completed` when every step is completed.
 
-- [ ] **Step 6: Implement markdown and sheet entry**
+Strict-order rule (decision D5, `.superpowers/sdd/progress.md`): walk `template.documentSteps` in order and find the index of the first step whose normalized child document is not `completed` (or has no child document at all) — call this `firstIncompleteIndex`. Every step at an index `> firstIncompleteIndex` is `blocked`, **unconditionally** — do not special-case a later step whose own child document happens to already report `completed`. Only the step at `firstIncompleteIndex` may be `not_started`/`in_progress`; steps before it are `completed`. `currentStepId` is always the `stepId` at `firstIncompleteIndex` (or `null` when every step is completed). Do not implement this as "unlock only the first incomplete step" while leaving later steps to report whatever their own child document says — that reading is exactly the ambiguity that produced the out-of-order bug this step's test now covers; a later step's own `completed` child document must never promote it past `blocked` while an earlier step is still incomplete.
+
+- [ ] **Step 6: Implement markdown formatting**
 
 `formatWorkflowSummaryMarkdown()` must output Thai tables for template, steps, child documents, PDF files, and raw files.
 
-`buildWorkflowSheetEntry()` must return the same row shape used by `recordMonthlyExpense()` with `sourceKey: workflow_transaction:${transaction.transactionNo}` and `documentType: "Workflow ธุรกรรมเอกสาร"`.
+There is no workflow-level Sheets row (decision D6, `.superpowers/sdd/progress.md`) — do not implement `buildWorkflowSheetEntry()` or any equivalent. Child documents (expense request, substitute receipt) already write their own Sheets rows with the real amounts via `recordMonthlyExpense()`; a workflow-level row would double-count that money in the monthly sheet.
 
 - [ ] **Step 7: Run tests**
 
@@ -1308,11 +1344,12 @@ git commit -m "feat: generate workflow transaction packets"
 - Test: `tests/workflow-api.test.mjs`
 
 **Interfaces:**
-- Produces: `completeWorkflowTransaction({ rootDir, transactionNo, completedBy, now, driveUploader, sheetsRecorder })`
+- Produces: `completeWorkflowTransaction({ rootDir, transactionNo, completedBy, now, driveUploader })`
 - Produces: `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader, now })`
-- Produces: `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder, now })`
 
-No task before this one calls `buildWorkflowSheetEntry()` (Task 2) or wires transaction-level Drive/Sheets sync, even though the spec requires `POST /.../complete`, `POST /.../sync-drive`, and "one Sheets summary row per completed transaction." This task closes that gap. Follow the existing standalone-document pattern before writing code: read `approveExpenseRequest()`, `syncExpenseRequestToDrive()`, and `recordExpenseSheetMetadata()` in `forms/local-server.logic.js` (around lines 538, 1373, and 1524) — they show the established shape for injecting a stubbable uploader/recorder with a default (`driveUploader = uploadFolderToGoogleDrive`, `expenseRecorder = recordMonthlyExpense`), writing `{ syncStatus, ... }` metadata back onto the record, and turning a sync failure into a `sync_failed` status instead of throwing.
+No task before this one wires transaction-level Drive sync, even though the spec requires `POST /.../complete` and `POST /.../sync-drive`. This task closes that gap. Follow the existing standalone-document pattern before writing code: read `approveExpenseRequest()` and `syncExpenseRequestToDrive()` in `forms/local-server.logic.js` (around lines 538 and 1373) — they show the established shape for injecting a stubbable uploader with a default (`driveUploader = uploadFolderToGoogleDrive`), writing `{ syncStatus, ... }` metadata back onto the record, and turning a sync failure into a `sync_failed` status instead of throwing.
+
+There is no workflow-level Sheets sync in this task or anywhere in this plan (decision D6, `.superpowers/sdd/progress.md`, and the deviation note in Global Constraints): do not implement `syncWorkflowTransactionToSheets()`, do not call `buildWorkflowSheetEntry()` (removed from Task 2), and do not add a `sheetsRecorder` parameter to `completeWorkflowTransaction()`. Task 8 keeps Drive sync in full — auto when `syncGoogleDrive` is on, manual button when it is off. Child documents (expense request, substitute receipt) keep writing their own Sheets rows unchanged.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -1341,7 +1378,6 @@ async function completeSingleStepTransaction(rootDir, templateOverrides) {
       templateId: `single_step_${Date.now()}`,
       name: "ทดสอบ single step",
       syncGoogleDrive: false,
-      syncGoogleSheets: false,
       documentSteps: [{ documentKind: "payment_voucher" }],
       ...templateOverrides,
     },
@@ -1379,69 +1415,60 @@ async function completeSingleStepTransaction(rootDir, templateOverrides) {
   return txn;
 }
 
-test("completeWorkflowTransaction succeeds and auto-syncs when template toggles are on", async () => {
+test("completeWorkflowTransaction succeeds and auto-syncs Drive when the template toggle is on", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
-    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: true, syncGoogleSheets: true });
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: true });
     let driveCalls = 0;
-    let sheetCalls = 0;
     const completed = await serverLogic.completeWorkflowTransaction({
       rootDir,
       transactionNo: txn.transactionNo,
       completedBy: "บัญชี",
       driveUploader: async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; },
-      sheetsRecorder: async () => { sheetCalls += 1; return { syncStatus: "synced" }; },
     });
 
     assert.equal(completed.status, "completed");
     assert.equal(completed.completedBy, "บัญชี");
     assert.equal(driveCalls, 1);
-    assert.equal(sheetCalls, 1);
     assert.equal(completed.driveSync.syncStatus, "synced");
-    assert.equal(completed.sheetSync.syncStatus, "synced");
+    assert.equal(completed.sheetSync, undefined);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("completeWorkflowTransaction does not auto-sync when toggles are off, and manual sync works afterward", async () => {
+test("completeWorkflowTransaction does not auto-sync Drive when the toggle is off, and manual sync works afterward", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
-    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: false, syncGoogleSheets: false });
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: false });
     let driveCalls = 0;
-    let sheetCalls = 0;
     const stubDrive = async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; };
-    const stubSheets = async () => { sheetCalls += 1; return { syncStatus: "synced" }; };
 
     const completed = await serverLogic.completeWorkflowTransaction({
       rootDir,
       transactionNo: txn.transactionNo,
       completedBy: "บัญชี",
       driveUploader: stubDrive,
-      sheetsRecorder: stubSheets,
     });
     assert.equal(completed.status, "completed");
     assert.equal(driveCalls, 0);
-    assert.equal(sheetCalls, 0);
 
     const manualDrive = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: txn.transactionNo, driveUploader: stubDrive });
     assert.equal(driveCalls, 1);
     assert.equal(manualDrive.syncStatus, "synced");
-
-    const manualSheets = await serverLogic.syncWorkflowTransactionToSheets({ rootDir, transactionNo: txn.transactionNo, sheetsRecorder: stubSheets });
-    assert.equal(sheetCalls, 1);
-    assert.equal(manualSheets.syncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 ```
 
+There must be no `syncWorkflowTransactionToSheets` test, no `sheetsRecorder` argument, and no `sheetSync` assertion anywhere in this task's test block — the two tests above (and the assertion that `completed.sheetSync` is `undefined`) are the complete replacement for the three-test/Sheets version this task previously had.
+
 - [ ] **Step 2: Run tests to verify failure**
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
 
-Expected: FAIL because `completeWorkflowTransaction`, `syncWorkflowTransactionToDrive`, and `syncWorkflowTransactionToSheets` do not exist yet.
+Expected: FAIL because `completeWorkflowTransaction` and `syncWorkflowTransactionToDrive` do not exist yet.
 
 - [ ] **Step 3: Implement `completeWorkflowTransaction()`**
 
@@ -1452,26 +1479,24 @@ Load the transaction with `getWorkflowTransaction()`, load its child documents (
 - rewrite `data/workflow-transaction.json` and `working-md/workflow-summary.md` (`formatWorkflowSummaryMarkdown()`)
 - regenerate the packet PDF via the Task 7 helper
 - if `transaction.templateSnapshot.syncGoogleDrive` (the value snapshotted at start time, not a live template lookup) is `true`, call `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader })` internally and attach the result as `transaction.driveSync`
-- if `transaction.templateSnapshot.syncGoogleSheets` is `true`, call `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder })` internally and attach the result as `transaction.sheetSync`
-- when a toggle is `false`, leave the matching `driveSync`/`sheetSync` field as `{ syncStatus: "not_required" }` so the UI can tell "not needed" apart from "not yet synced"
-- accept `driveUploader` and `sheetsRecorder` as injectable parameters (defaults below) so both the auto-sync-on and auto-sync-off paths are testable without hitting the network
-- return the updated transaction, including `driveSync`/`sheetSync`
+- when the toggle is `false`, leave `driveSync` as `{ syncStatus: "not_required" }` so the UI can tell "not needed" apart from "not yet synced"
+- accept `driveUploader` as an injectable parameter (default below) so both the auto-sync-on and auto-sync-off paths are testable without hitting the network
+- return the updated transaction, including `driveSync`. Do not add a `sheetSync` field or a `sheetsRecorder` parameter — there is no workflow-level Sheets sync (decision D6)
 
-- [ ] **Step 4: Implement manual sync fallbacks**
+- [ ] **Step 4: Implement the manual sync fallback**
 
-`syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader = uploadFolderToGoogleDrive, now = () => new Date().toISOString() })` and `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder = recordMonthlyExpense, now = () => new Date().toISOString() })`:
+`syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader = uploadFolderToGoogleDrive, now = () => new Date().toISOString() })`:
 
 - load the transaction; throw if not found
-- require `transaction.status === "completed"` — refuse to sync an incomplete transaction, mirroring the enable condition the UI uses to show these buttons
-- Drive: call `driveUploader({ rootDir, folderPath: transaction.folderPath })`, write `{ syncStatus: "synced", driveFolderId, driveFolderUrl, drivePath, uploadedFileCount, syncedAt, updatedAt }` (or `{ syncStatus: "sync_failed", error, updatedAt }` on rejection, without throwing past this function) into `transaction.driveSync`, persist the transaction JSON, and return the same metadata object — this is exactly the `syncExpenseRequestToDrive()` shape applied to a workflow transaction folder instead of a document folder
-- Sheets: build one row with `buildWorkflowSheetEntry(transaction, childDocuments, driveMetadata, syncedAt)` (Task 2) with `sourceKey: workflow_transaction:${transaction.transactionNo}` so re-running sync updates rather than duplicates the row, call `sheetsRecorder({ rootDir, entry, now })`, store the result as `transaction.sheetSync`, persist, and return it
+- require `transaction.status === "completed"` — refuse to sync an incomplete transaction, mirroring the enable condition the UI uses to show this button
+- call `driveUploader({ rootDir, folderPath: transaction.folderPath })`, write `{ syncStatus: "synced", driveFolderId, driveFolderUrl, drivePath, uploadedFileCount, syncedAt, updatedAt }` (or `{ syncStatus: "sync_failed", error, updatedAt }` on rejection, without throwing past this function) into `transaction.driveSync`, persist the transaction JSON, and return the same metadata object — this is exactly the `syncExpenseRequestToDrive()` shape applied to a workflow transaction folder instead of a document folder
+- callable standalone (manual button press) and also the function `completeWorkflowTransaction()` calls internally for auto-sync — do not fork the logic into two implementations
 
-  Verified fact (no further dedupe layer needed here): `recordMonthlyExpense()` in `forms/google-sheets.logic.js` already upserts on `sourceKey` — line 235 does `rows.findIndex((existingRow, index) => index > 0 && existingRow[0] === entry.sourceKey)` and updates that row in place when found, only appending a new row when no match exists. So passing `sourceKey: workflow_transaction:${transactionNo}` on every call (auto-sync and every manual re-sync) genuinely yields one Sheets row per transaction; do not add a separate duplicate-check before calling `sheetsRecorder()`.
-- both functions are callable standalone (manual button press) and are also the functions `completeWorkflowTransaction()` calls internally for auto-sync — do not fork the logic into two implementations
+Do not implement `syncWorkflowTransactionToSheets()` in this step or anywhere else. There is no workflow-level Sheets row (decision D6): child documents (expense request, substitute receipt) already write their own Sheets rows with the real amounts, and `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) upserts those rows on `sourceKey`, so this change does not affect that existing behavior at all — it only removes a workflow-level row that would have double-counted the same money.
 
 - [ ] **Step 5: Export functions**
 
-Add `completeWorkflowTransaction`, `syncWorkflowTransactionToDrive`, and `syncWorkflowTransactionToSheets` to `module.exports`.
+Add `completeWorkflowTransaction` and `syncWorkflowTransactionToDrive` to `module.exports`.
 
 - [ ] **Step 6: Run tests**
 
@@ -1483,7 +1508,7 @@ Expected: PASS.
 
 ```bash
 git add forms/local-server.logic.js tests/workflow-api.test.mjs
-git commit -m "feat: complete workflow transactions and sync them to Drive/Sheets"
+git commit -m "feat: complete workflow transactions and sync them to Drive"
 ```
 
 ---
@@ -1513,12 +1538,64 @@ test("local server exposes workflow template and transaction routes", async () =
   assert.match(source, /refreshWorkflowTransaction/);
   assert.match(source, /completeWorkflowTransaction/);
   assert.match(source, /syncWorkflowTransactionToDrive/);
-  assert.match(source, /syncWorkflowTransactionToSheets/);
   assert.match(source, /\/complete/);
   assert.match(source, /\/sync-drive/);
-  assert.match(source, /\/sync-sheets/);
+  assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
+  assert.doesNotMatch(source, /\/sync-sheets/);
+});
+
+test("starting a document for a locked step is refused server-side", async () => {
+  // Decision D5 (.superpowers/sdd/progress.md): the strict document order is
+  // enforced by the server, not only hidden/disabled in the UI. Attempting
+  // start-document on any step other than the transaction's current unlocked
+  // step (transaction.currentStepId from deriveWorkflowProgress()) must be
+  // refused with a JSON error in the existing sendJson() style, and must not
+  // return a document start URL. Follows the spawn/waitForServer/requestJsonResponse
+  // pattern already used in tests/substitute-receipt-api.test.mjs.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19195;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบล็อกลำดับเอกสาร",
+      }),
+    });
+    // txn.currentStepId is "step-001" (purchase_order); step-002 (substitute_receipt) is locked.
+    assert.equal(txn.currentStepId, "step-001");
+
+    const { response, body } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-002`, {
+      method: "POST",
+    });
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 400);
+    assert.match(body.error, /ยังไม่ถึงลำดับ|ลำดับเอกสาร|ขั้นตอนนี้ยังไม่เปิด/);
+    assert.equal(body.url, undefined);
+
+    // The unlocked step must still be startable.
+    const { response: okResponse } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, {
+      method: "POST",
+    });
+    assert.equal(okResponse.ok, true);
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 ```
+
+This test needs the same `spawn`, `waitForServer`, and `requestJsonResponse` helpers already present at the top of `tests/substitute-receipt-api.test.mjs` — reuse that exact pattern in `tests/workflow-api.test.mjs` (add the helpers if this test file doesn't already have them from an earlier task) rather than inventing a second convention for spawning the server.
 
 - [ ] **Step 2: Run tests to verify failure**
 
@@ -1542,8 +1619,9 @@ saveWorkflowTemplate,
 startWorkflowTransaction,
 completeWorkflowTransaction,
 syncWorkflowTransactionToDrive,
-syncWorkflowTransactionToSheets,
 ```
+
+Do not import `syncWorkflowTransactionToSheets` — it does not exist (decision D6).
 
 - [ ] **Step 4: Add static page routes**
 
@@ -1560,9 +1638,9 @@ In `safeStaticPath()` route map:
 
 - [ ] **Step 5: Add API handlers**
 
-Follow existing `sendJson()` error style. Add handlers for listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, completing a transaction (`completeWorkflowTransaction`), manually syncing a transaction to Drive (`syncWorkflowTransactionToDrive`), manually syncing a transaction to Sheets (`syncWorkflowTransactionToSheets`), and serving transaction packet files.
+Follow existing `sendJson()` error style. Add handlers for listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, completing a transaction (`completeWorkflowTransaction`), and manually syncing a transaction to Drive (`syncWorkflowTransactionToDrive`), and serving transaction packet files. There is no Sheets sync handler — decision D6 dropped `syncWorkflowTransactionToSheets()` entirely (see Task 8 and the Global Constraints deviation note).
 
-For `start-document`, return the standalone document URL:
+For `start-document`, first re-derive progress and enforce the strict-order rule (decision D5, `.superpowers/sdd/progress.md`) before building the start URL — the requested `stepId` must equal the transaction's current unlocked step, not merely be `not_started` or `in_progress` on its own record:
 
 ```js
 function buildWorkflowDocumentStartUrl(transaction, step) {
@@ -1577,17 +1655,27 @@ function buildWorkflowDocumentStartUrl(transaction, step) {
 }
 ```
 
+The `start-document` handler must:
+
+1. Load the transaction (`getWorkflowTransaction()`); 404 if missing.
+2. Look up the requested step in `transaction.steps` by `stepId`; 404 if the step doesn't exist on this transaction/template.
+3. Compare `stepId` against `transaction.currentStepId` (the value `deriveWorkflowProgress()`/`refreshWorkflowTransaction()` last computed and persisted — do not recompute progress from a live re-scan here unless the route already refreshes first; either way, the comparison must reflect the strict-order state, not just the step's own `workflowStatus`). If they don't match, respond with `sendJson(res, 400, { error: "ยังไม่ถึงลำดับเอกสารนี้ ต้องทำเอกสารก่อนหน้าให้เสร็จก่อน" })` (or an equivalent Thai message) and return — do not build or return a start URL.
+4. Otherwise build and return `{ url: buildWorkflowDocumentStartUrl(transaction, step) }` as today.
+
+This refusal is the server-side half of decision D5: a client that bypasses the UI's disabled buttons and calls `start-document` directly for a locked step must still be turned away.
+
 - [ ] **Step 6: Register routes**
 
 POST routes:
 
 - `/api/workflow-templates`
 - `/api/workflow-transactions`
-- `/api/workflow-transactions/:transactionNo/start-document/:stepId`
+- `/api/workflow-transactions/:transactionNo/start-document/:stepId` (enforces the Step 5 strict-order check)
 - `/api/workflow-transactions/:transactionNo/refresh`
-- `/api/workflow-transactions/:transactionNo/complete` (calls `completeWorkflowTransaction`, refuses unless every step is `completed`, auto-syncs per the transaction's snapshotted toggles)
+- `/api/workflow-transactions/:transactionNo/complete` (calls `completeWorkflowTransaction`, refuses unless every step is `completed`, auto-syncs Drive per the transaction's snapshotted `syncGoogleDrive` toggle)
 - `/api/workflow-transactions/:transactionNo/sync-drive` (calls `syncWorkflowTransactionToDrive`, manual fallback usable any time after completion)
-- `/api/workflow-transactions/:transactionNo/sync-sheets` (calls `syncWorkflowTransactionToSheets`, manual fallback usable any time after completion)
+
+There is no `/api/workflow-transactions/:transactionNo/sync-sheets` route (decision D6).
 
 GET routes:
 
@@ -1633,14 +1721,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("workflow template page edits document order and sync toggles", async () => {
+test("workflow template page edits document order and the Drive sync toggle", async () => {
   const html = await readFile(new URL("../forms/workflow-templates.html", import.meta.url), "utf8");
   assert.match(html, /ตั้งค่า Workflow Template/);
   assert.match(html, /\/api\/workflow-document-types/);
   assert.match(html, /\/api\/workflow-templates/);
   assert.match(html, /syncGoogleDrive/);
-  assert.match(html, /syncGoogleSheets/);
   assert.match(html, /documentSteps/);
+  assert.doesNotMatch(html, /syncGoogleSheets/);
 });
 
 test("workflow transactions page starts transactions from templates", async () => {
@@ -1662,15 +1750,15 @@ test("workflow transaction page shows progress checklist and standalone document
   assert.match(html, /เปิดเอกสาร/);
 });
 
-test("workflow transaction page shows manual sync buttons and auto-sync status", async () => {
+test("workflow transaction page shows a manual Drive sync button and auto-sync status, and no Sheets sync UI", async () => {
   const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
   assert.match(html, /id="syncDriveButton"/);
-  assert.match(html, /id="syncSheetsButton"/);
   assert.match(html, /id="driveSyncStatus"/);
-  assert.match(html, /id="sheetSyncStatus"/);
   assert.match(html, /sync-drive/);
-  assert.match(html, /sync-sheets/);
   assert.match(html, /\/complete/);
+  assert.doesNotMatch(html, /id="syncSheetsButton"/);
+  assert.doesNotMatch(html, /id="sheetSyncStatus"/);
+  assert.doesNotMatch(html, /sync-sheets/);
 });
 ```
 
@@ -1687,8 +1775,7 @@ Use existing topbar/menu styles. UI controls:
 - template selector
 - template name input
 - description textarea
-- Google Drive sync checkbox
-- Google Sheets sync checkbox
+- Google Drive sync checkbox (the only workflow-level sync toggle — there is no Google Sheets sync checkbox; decision D6)
 - document kind select
 - add document button
 - ordered document list with up/down/remove buttons
@@ -1720,9 +1807,9 @@ Render:
 - PDF/raw file links grouped by child document
 - packet PDF link
 - a "complete transaction" button, enabled only when every step is `completed` and the transaction is not already `completed`; calls `POST /api/workflow-transactions/:transactionNo/complete`
-- sync section driven by the transaction's `driveSync`/`sheetSync` state and the template snapshot's `syncGoogleDrive`/`syncGoogleSheets` toggles, shown only once the transaction is `completed`:
-  - when a toggle is `true`: show `#driveSyncStatus` / `#sheetSyncStatus` text reflecting the auto-sync result (e.g. synced / failed / pending) — no button
-  - when a toggle is `false`: show `#syncDriveButton` / `#syncSheetsButton` respectively, calling `POST .../sync-drive` and `POST .../sync-sheets`, and update the matching status text after the call resolves
+- sync section driven by the transaction's `driveSync` state and the template snapshot's `syncGoogleDrive` toggle, shown only once the transaction is `completed`. There is no Sheets sync UI at all (decision D6 — no workflow-level Sheets row, no `sheetSync`, no `syncGoogleSheets`):
+  - when the toggle is `true`: show `#driveSyncStatus` text reflecting the auto-sync result (e.g. synced / failed / pending) — no button
+  - when the toggle is `false`: show `#syncDriveButton`, calling `POST .../sync-drive`, and update `#driveSyncStatus` after the call resolves
 
 - [ ] **Step 6: Implement browser controller**
 
@@ -1741,8 +1828,9 @@ async function startDocument(stepId) { /* POST start-document and navigate to re
 function renderTransaction(transaction) { /* checklist + files + sync section */ }
 async function completeTransaction() { /* POST .../complete, then re-render */ }
 async function syncTransactionDrive() { /* POST .../sync-drive, then re-render */ }
-async function syncTransactionSheets() { /* POST .../sync-sheets, then re-render */ }
 ```
+
+There is no `syncTransactionSheets()` function and no `collectTemplatePayload()` output field for a Sheets toggle — `collectTemplatePayload()` only collects the ordered document kinds and the single `syncGoogleDrive` toggle (decision D6).
 
 - [ ] **Step 7: Run tests**
 
@@ -1861,12 +1949,17 @@ Workflow is not a duplicate workflow engine with its own document forms. It is a
 
 Decision ledger: `.superpowers/sdd/progress.md` records the four PM decisions this revision applies (goods_receipt as a 5th lightweight kind, hybrid substitute_receipt completion, toggle-driven completion/sync with manual fallback, and the reporting cadence for the executing agent) plus two plan-defect fixes (`findLightweightWorkflowDocuments` must be real, and `scripts/test.sh` must only register each task's own Python test). Read it before starting Task 1.
 
-A follow-up architecture/security pass closed three gaps the first revision flagged but left open: `getWorkflowTransactionFile()` now has a real implementation step (Task 5, Step 8) and `getWorkflowDocumentFile()` was added to Task 4 (Step 7) with the same path-traversal guard as `getExpenseRequestFile()`; `returnTo` is now validated through a shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, created in Task 4 Step 8, consumed in Task 4's own shell and in Task 6) instead of being assigned to `href` unchecked; and Task 8's Sheets-sync step now cites the verified upsert behavior of `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) so no implementer adds a redundant dedupe layer. Details: `.superpowers/sdd/architecture-gap-closure-report.md`.
+A follow-up architecture/security pass closed three gaps the first revision flagged but left open: `getWorkflowTransactionFile()` now has a real implementation step (Task 5, Step 8) and `getWorkflowDocumentFile()` was added to Task 4 (Step 7) with the same path-traversal guard as `getExpenseRequestFile()`; `returnTo` is now validated through a shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, created in Task 4 Step 8, consumed in Task 4's own shell and in Task 6) instead of being assigned to `href` unchecked; and (at the time of that pass) Task 8's Sheets-sync step cited the verified upsert behavior of `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`). Details: `.superpowers/sdd/architecture-gap-closure-report.md`. That Sheets-sync step no longer exists — see the D5/D6 pass below.
+
+A second follow-up pass applied two more product-owner decisions, D5 and D6 (`.superpowers/sdd/progress.md`), across the whole plan, including the already-implemented Task 1 and Task 2 (a separate agent is fixing that landed code to match this revision concurrently):
+
+- **D5 (strict document order):** `deriveWorkflowProgress()` (Task 2, Step 5) now states explicitly that every step after the first incomplete step is `blocked` even when its own child document independently reports `completed` — Task 2's test block gained a dedicated out-of-order regression test. This is enforced server-side, not only in the UI: the `start-document` handler (Task 9, Step 5) now refuses with a Thai `sendJson()` error when the requested `stepId` is not the transaction's current unlocked step, with a new integration test. A Global Constraints bullet states the rule once.
+- **D6 (no workflow-level Sheets row):** `buildWorkflowSheetEntry()` is gone from Task 2; `syncWorkflowTransactionToSheets()` and its auto/manual behavior are gone from Task 8; the `POST .../sync-sheets` route is gone from Task 9; the Sheets button/status and `syncGoogleSheets` toggle are gone from Task 10's UI and tests; `syncGoogleSheets` is gone from Task 1's template seed/tests, Task 2's transaction snapshot, and `normalizeWorkflowTemplate()`. `syncGoogleDrive` is the only remaining workflow sync toggle. A Global Constraints bullet and a dedicated deviation note record that this knowingly diverges from the spec's `## Sync Rules` section (which still describes a Sheets summary row) — the plan governs, the spec file was left unedited. `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) upserts on `sourceKey`, so child documents' own Sheets rows are unaffected.
 
 ## Self-Review
 
-- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive/Sheets sync (auto + manual fallback), APIs, UI, and tests.
-- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (new Task 8 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`/`syncWorkflowTransactionToSheets`; Task 9 exposes the three HTTP routes; Task 10 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 7's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward).
+- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive-only sync (auto + manual fallback; no workflow-level Sheets sync, decision D6), strict document ordering enforced server-side (decision D5), APIs, UI, and tests.
+- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (new Task 8 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`; Task 9 exposes the Drive-only HTTP routes; Task 10 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 7's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward) — D5 (strict document order is unambiguous in Task 2's `deriveWorkflowProgress()` spec and test, and enforced server-side in Task 9's `start-document` handler) — D6 (no workflow-level Sheets row anywhere in the plan; `syncGoogleDrive` is the sole workflow sync toggle; deviation from the spec's `## Sync Rules` section recorded in a dedicated note).
 - Placeholder scan: No TBD/TODO placeholders, including the former `findLightweightWorkflowDocuments() { return []; }` stub. Each task includes concrete files, interfaces, tests, commands, and commit messages.
 - Type consistency: Public helper names introduced in earlier tasks are reused with the same names later. `LIGHTWEIGHT_DOCUMENT_KINDS` and `DOCUMENT_PREFIXES` both carry `goods_receipt` as a fifth entry; `DOCUMENT_TYPE_DEFINITIONS`' key order is unchanged from the original plan (only `goods_receipt.route` changed).
 - Task numbering: Tasks 1–7 are unchanged. Task 8 (Workflow Completion And Sync) is new. The original Task 8 (HTTP Routes) is now Task 9, the original Task 9 (UI) is now Task 10, and the original Task 10 (Navigation And Final Verification) is now Task 11. Every cross-reference to a renumbered task was checked and updated. This total of 11 tasks is unchanged by the follow-up gap-closure pass — that pass only inserted steps inside Task 4, Task 5, Task 6, and Task 8, renumbering each task's own later steps; no task was added, removed, or renumbered.
