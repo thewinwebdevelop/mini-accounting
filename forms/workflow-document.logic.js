@@ -261,6 +261,7 @@ const WorkflowDocumentLogic = {
   buildWorkflowDocumentPayload,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
+  sanitizeEvidenceKey,
   validateWorkflowDocumentPayload,
 };
 

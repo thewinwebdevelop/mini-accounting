@@ -338,6 +338,58 @@ test("saveWorkflowDocument names multiple uploads sequentially from index 0, eve
   }
 });
 
+test("saveWorkflowDocument keeps two raw evidence keys that sanitize to the same slug from clobbering each other", async () => {
+  // sanitizeEvidenceKey lowercases and strips a wide character class including
+  // dots, so "a.b" and "ab" — two different raw multipart field names a client
+  // is free to send — both collapse to the slug "ab". prepareUploadRecords used
+  // to count occurrences of the *raw* evidenceKey while the stored file name was
+  // built from the *sanitized* slug, so each raw key started its own counter at
+  // 0 and both files landed on "ab_001.jpg" — the second write silently clobbered
+  // the first, and the first upload's evidenceFiles metadata then pointed at
+  // content it never held.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "หลักฐานชื่อคีย์ชนกัน",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+
+    const uploads = [
+      { evidenceKey: "a.b", originalName: "first.jpg", buffer: Buffer.from("first"), type: "image/jpeg" },
+      { evidenceKey: "ab", originalName: "second.jpg", buffer: Buffer.from("second"), type: "image/jpeg" },
+    ];
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads });
+
+    assert.deepEqual(
+      saved.rawFiles.sort(),
+      ["ab_001.jpg", "ab_002.jpg"],
+      "colliding raw evidence keys must produce two distinct stored files, not the same name twice",
+    );
+
+    const { readFile: readFileAsync } = await import("node:fs/promises");
+    const rawDir = join(rootDir, saved.folderPath, "raw");
+    const contents = await Promise.all(
+      ["ab_001.jpg", "ab_002.jpg"].map((name) => readFileAsync(join(rawDir, name), "utf8")),
+    );
+    assert.deepEqual(contents.sort(), ["first", "second"], "both uploaded files must survive on disk, unclobbered");
+
+    const record = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    const allFiles = Object.values(record.payload.evidenceFiles).flat();
+    assert.equal(allFiles.length, 2, "evidenceFiles metadata must track both uploads, not just one surviving pointer");
+    for (const file of allFiles) {
+      const content = await readFileAsync(join(rawDir, file.storedName), "utf8");
+      assert.ok(content.length > 0, `metadata entry for ${file.storedName} must point at real content on disk`);
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("saveWorkflowDocument works without any workflow context (transactionNo absent)", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
@@ -492,6 +544,84 @@ test("completeWorkflowDocument stays idempotent even though completed is not in 
     });
     assert.equal(again.status, "completed");
     assert.equal(again.completedBy, "คุณต้า");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveWorkflowDocument re-checks status immediately before writing and refuses a document completed behind its back", async () => {
+  // handleWorkflowDocumentSubmission reads the existing document, confirms it is
+  // not "completed", then awaits saveWorkflowDocument (mkdir + writeFile + a
+  // spawned PDF generator). If a POST .../complete lands in that window, the
+  // save must not proceed from its now-stale pre-completion snapshot and
+  // silently revert the freshly completed record. This test drives that race
+  // deterministically: build the payload the route would have built from a
+  // pre-completion read, then — behind saveWorkflowDocument's back — flip the
+  // stored record to "completed" directly on disk, exactly as a concurrent
+  // /complete request would have. saveWorkflowDocument must then refuse.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const created = await serverLogic.saveWorkflowDocument({
+      rootDir,
+      payload: docLogic.buildWorkflowDocumentPayload({
+        documentKind: "purchase_order",
+        sequence: "1",
+        accountingMonth: "2026-09",
+        documentDate: "2026-09-06",
+        title: "เอกสารก่อนเสร็จสิ้น",
+        businessPurpose: "ทดสอบ",
+        lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+      }, { now: () => "2026-09-06T12:00:00.000Z" }),
+      uploads: [],
+    });
+
+    const preCompletionRecord = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", created.documentNo);
+
+    // This mirrors exactly what handleWorkflowDocumentSubmission builds for an
+    // edit: the client's new field values plus the server-owned fields carried
+    // forward from the (still pre-completion) stored record.
+    const stalePayload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "พยายามแก้ไขระหว่างแข่งขัน",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการแก้ไข", quantity: "2", unitCost: "20" }],
+      documentNo: preCompletionRecord.documentNo,
+      folderPath: preCompletionRecord.folderPath,
+      status: preCompletionRecord.status,
+      statusHistory: preCompletionRecord.payload.statusHistory,
+      completedAt: preCompletionRecord.payload.completedAt,
+      completedBy: preCompletionRecord.payload.completedBy,
+      createdAt: preCompletionRecord.payload.createdAt,
+    }, { now: () => "2026-09-06T12:05:00.000Z" });
+
+    // Simulate a concurrent /complete request winning the race: flip the
+    // stored record to completed directly on disk, behind saveWorkflowDocument's
+    // back, in between the route's own early check and the save that follows.
+    const { readFile: readFileAsync } = await import("node:fs/promises");
+    const dataPath = join(rootDir, preCompletionRecord.folderPath, "data", "workflow-document.json");
+    const onDisk = JSON.parse(await readFileAsync(dataPath, "utf8"));
+    onDisk.status = "completed";
+    onDisk.statusLabel = docLogic.WORKFLOW_DOCUMENT_STATUS_LABELS.completed;
+    onDisk.completedAt = "2026-09-06T12:03:00.000Z";
+    onDisk.completedBy = "คนอื่น";
+    onDisk.statusHistory = [
+      ...onDisk.statusHistory,
+      { fromStatus: "draft", toStatus: "completed", changedAt: "2026-09-06T12:03:00.000Z", note: "completed" },
+    ];
+    await writeFile(dataPath, `${JSON.stringify(onDisk, null, 2)}\n`, "utf8");
+
+    await assert.rejects(
+      () => serverLogic.saveWorkflowDocument({ rootDir, payload: stalePayload, uploads: [] }),
+      /ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้/,
+      "a save built from a stale pre-completion snapshot must be refused once the document has since been completed",
+    );
+
+    const afterAttempt = JSON.parse(await readFileAsync(dataPath, "utf8"));
+    assert.equal(afterAttempt.status, "completed", "the refused save must not have reverted the completed status");
+    assert.equal(afterAttempt.completedBy, "คนอื่น", "the refused save must not have touched the real completion audit stamp");
+    assert.equal(afterAttempt.title, "เอกสารก่อนเสร็จสิ้น", "the refused save must not have overwritten the stored title");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

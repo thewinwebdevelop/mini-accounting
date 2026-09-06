@@ -109,6 +109,7 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
     assert.equal(submitted.status, "draft");
     assert.equal(submitted.pdfFiles.length, 1);
     assert.equal(submitted.rawFiles[0], "evidence_001.txt");
+    assert.equal("absoluteFolderPath" in submitted, false, "POST create response must not leak the server's absolute filesystem path");
 
     const secondSubmitted = await requestJsonOk(baseUrl, "/api/workflow-documents", {
       method: "POST",
@@ -246,6 +247,7 @@ test("Critical 3: editing an existing document carries its documentNo/folderPath
     });
     assert.equal(edited.documentNo, created.documentNo);
     assert.equal(edited.folderPath, created.folderPath, "editing must reuse the original folder, not compute a new one");
+    assert.equal("absoluteFolderPath" in edited, false, "POST edit response must not leak the server's absolute filesystem path");
 
     const afterEdit = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
     assert.equal(afterEdit.payload.title, "สั่งซื้อสินค้า Lot กันยายน (แก้ไข)");

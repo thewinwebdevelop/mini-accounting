@@ -24,6 +24,270 @@ function runAsClassicScriptInBrowserSandbox(source) {
   return context.window;
 }
 
+// Minimal fake DOM node, purpose-built for exactly the selectors and APIs
+// forms/workflow-document.logic.browser.js exercises (querySelector(All) on
+// tag/class/id/attribute selectors plus a ":checked" pseudo-class,
+// append/appendChild/replaceChildren, cloneNode, setAttribute/getAttribute).
+// This is not a general DOM shim — it only supports what this script actually
+// calls, mirroring the technique already used for the *.logic.js sandbox
+// above and for searchable-select.logic.browser.js's own fake DOM.
+class FakeNode {
+  constructor(tagName) {
+    this.tagName = String(tagName).toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.listeners = {};
+    this.attrs = {};
+    this.dataset = {};
+    this.id = "";
+    this.name = "";
+    this.type = "";
+    this.value = "";
+    this.checked = false;
+    this.hidden = false;
+    this.textContent = "";
+    this.className = "";
+  }
+
+  addEventListener(type, handler) {
+    (this.listeners[type] ??= []).push(handler);
+  }
+
+  dispatch(type, event = {}) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  }
+
+  setAttribute(name, value) {
+    this.attrs[name] = String(value);
+    if (name === "id") this.id = String(value);
+    if (name === "name") this.name = String(value);
+    if (name === "type") this.type = String(value);
+    if (name.startsWith("data-")) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      this.dataset[key] = String(value);
+    }
+  }
+
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+  }
+
+  matches(selector) {
+    let sel = selector;
+    let requireChecked = false;
+    if (sel.endsWith(":checked")) {
+      requireChecked = true;
+      sel = sel.slice(0, -":checked".length);
+    }
+    if (requireChecked && !this.checked) return false;
+
+    const bracketMatch = sel.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
+    if (bracketMatch) {
+      const [, tag, attr, value] = bracketMatch;
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+      if (attr === "name") {
+        return value === undefined ? Boolean(this.name) : this.name === value;
+      }
+      if (attr === "type") {
+        return value === undefined ? Boolean(this.type) : this.type === value;
+      }
+      const actual = this.attrs[attr];
+      return value === undefined ? actual !== undefined : actual === value;
+    }
+
+    if (sel.startsWith(".")) {
+      return String(this.className).split(/\s+/).filter(Boolean).includes(sel.slice(1));
+    }
+    if (sel.startsWith("#")) return this.id === sel.slice(1);
+    return this.tagName.toLowerCase() === sel.toLowerCase();
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (child.matches(selector)) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  appendChild(node) {
+    if (node.tagName === "#FRAGMENT") {
+      for (const child of node.children) {
+        child.parentNode = this;
+        this.children.push(child);
+      }
+      node.children = [];
+      return node;
+    }
+    if (node.parentNode) {
+      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
+    }
+    node.parentNode = this;
+    this.children.push(node);
+    return node;
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => this.appendChild(node));
+  }
+
+  replaceChildren(...nodes) {
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+    this.append(...nodes);
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+    }
+  }
+
+  cloneNode(deep) {
+    const clone = new FakeNode(this.tagName);
+    clone.attrs = { ...this.attrs };
+    clone.dataset = { ...this.dataset };
+    clone.id = this.id;
+    clone.name = this.name;
+    clone.type = this.type;
+    clone.value = this.value;
+    clone.className = this.className;
+    if (deep) {
+      clone.children = this.children.map((child) => {
+        const childClone = child.cloneNode(true);
+        childClone.parentNode = clone;
+        return childClone;
+      });
+    }
+    return clone;
+  }
+}
+
+// Builds one <template id="lineTemplate"> equivalent: a fragment holding one
+// ".line-item" row with the three inputs and the remove button the real
+// template markup provides (see forms/workflow-document.html).
+function createLineTemplate() {
+  const template = new FakeNode("template");
+  const fragment = new FakeNode("#fragment");
+  const row = new FakeNode("div");
+  row.className = "line-item";
+  const description = new FakeNode("input");
+  description.setAttribute("name", "description");
+  const quantity = new FakeNode("input");
+  quantity.setAttribute("name", "quantity");
+  const unitCost = new FakeNode("input");
+  unitCost.setAttribute("name", "unitCost");
+  const removeButton = new FakeNode("button");
+  removeButton.setAttribute("data-remove-line", "");
+  row.append(description, quantity, unitCost, removeButton);
+  fragment.append(row);
+  template.content = fragment;
+  return template;
+}
+
+// Sets up forms/workflow-document.logic.browser.js in a require-less sandbox
+// with just enough of a fake DOM to run its DOMContentLoaded handler for
+// real, then (since the transactionNo/workflowStepId query params are set and
+// documentNo is not) drives it through loadWorkflowPrefill with a stubbed
+// fetch so a prefill banner with checkable groups gets rendered — the exact
+// path applyPrefillPatch is reached through in the real page. Returns the
+// elements a test needs to drive and inspect the per-group prefill checkboxes.
+async function setupWorkflowDocumentPrefillSandbox(prefillResponse) {
+  const elementsById = {
+    workflowDocumentForm: new FakeNode("form"),
+    workflowDocumentStatus: new FakeNode("div"),
+    lineItems: new FakeNode("div"),
+    lineTemplate: createLineTemplate(),
+    addLine: new FakeNode("button"),
+    saveWorkflowDocument: new FakeNode("button"),
+    completeWorkflowDocument: new FakeNode("button"),
+    documentStatusPreview: new FakeNode("span"),
+    documentNoPreview: new FakeNode("span"),
+    lineCountPreview: new FakeNode("span"),
+    totalAmountPreview: new FakeNode("span"),
+    pageTitle: new FakeNode("h1"),
+    workflowPrefillBanner: new FakeNode("div"),
+    workflowPrefillGroups: new FakeNode("div"),
+    workflowPrefillApply: new FakeNode("button"),
+    workflowPrefillDismiss: new FakeNode("button"),
+  };
+
+  const form = elementsById.workflowDocumentForm;
+  form.elements = {
+    documentKind: { value: "" },
+    documentNo: { value: "" },
+    transactionNo: { value: "" },
+    workflowTemplateId: { value: "" },
+    workflowStepId: { value: "" },
+    accountingMonth: { value: "" },
+    documentDate: { value: "" },
+    title: { value: "" },
+    requesterName: { value: "" },
+    payeeName: { value: "" },
+    businessPurpose: { value: "" },
+  };
+
+  const fakeDocument = {
+    querySelector(selector) {
+      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
+      return null;
+    },
+    createElement(tag) {
+      return new FakeNode(tag);
+    },
+  };
+
+  const stubFetch = async () => ({ ok: true, json: async () => prefillResponse });
+  const window = { fetch: stubFetch };
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location: { search: "?documentKind=purchase_order&transactionNo=TXN-2026-09-0001&workflowStepId=step-1" },
+    URLSearchParams,
+    // The script calls bare `fetch(...)`, which in a real browser resolves
+    // through the global object (== window). In this vm context the sandbox
+    // object itself is the global object, distinct from our `window` property,
+    // so `fetch` must also be defined here directly or fetchWorkflowPrefill's
+    // try/catch silently swallows a ReferenceError and prefill never loads.
+    fetch: stubFetch,
+  });
+
+  vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
+
+  context.window._handlers.DOMContentLoaded();
+
+  // loadWorkflowPrefill() is fired-and-forgotten (not awaited) at the end of
+  // the DOMContentLoaded handler; let its fetch -> json -> renderPrefillBanner
+  // microtask chain fully settle before the test touches the resulting DOM.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  return { context, elements: elementsById };
+}
+
+function getPrefillCheckbox(prefillGroupsContainer, group) {
+  return prefillGroupsContainer
+    .querySelectorAll('input[type="checkbox"]')
+    .find((checkbox) => checkbox.value === group);
+}
+
+function lineDescriptions(lineItems) {
+  return lineItems.querySelectorAll(".line-item").map((row) => row.querySelector('input[name="description"]').value);
+}
+
 test("workflow document shell provides the generic document form", async () => {
   const html = await readFile(htmlPath, "utf8");
 
@@ -212,4 +476,93 @@ test("sibling dual-mode logic modules also survive the require-less browser sand
       `${sibling.name} must populate window.${sibling.globalName} in a require-less sandbox`,
     );
   }
+});
+
+test("applyPrefillPatch fills only payee fields when just the payee group is ticked", async () => {
+  // Reproduces the product ask directly: the user ticks which prefill groups
+  // (payee/purpose/lines) to reuse from an earlier document in the same
+  // workflow, and unticking a group must mean that group's fields are left
+  // alone. applyPrefillPatch (forms/workflow-document.logic.browser.js:189-205)
+  // is a private closure with no export, so this drives it through the real
+  // integration path — the prefill-apply button's click handler — with
+  // window.WorkflowPrefillLogic stubbed to hand back a fixed patch, and only
+  // the checkbox checked-state varied per scenario.
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: {},
+  };
+  const { context, elements } = await setupWorkflowDocumentPrefillSandbox(prefillResponse);
+  const { workflowDocumentForm: form, lineItems, workflowPrefillGroups, workflowPrefillApply } = elements;
+
+  const testPatch = {
+    payeeName: "ร้านค้าทดสอบ",
+    businessPurpose: "วัตถุประสงค์ทดสอบ",
+    lines: [{ description: "สินค้าทดสอบ", quantity: "3", unitCost: "99" }],
+  };
+  context.window.WorkflowPrefillLogic = { applyWorkflowPrefillGroups: () => testPatch };
+
+  getPrefillCheckbox(workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "purpose").checked = false;
+  getPrefillCheckbox(workflowPrefillGroups, "lines").checked = false;
+
+  workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.payeeName.value, "ร้านค้าทดสอบ", "the ticked payee group must be applied");
+  assert.equal(form.elements.businessPurpose.value, "", "an unticked purpose group must be left untouched");
+  assert.deepEqual(lineDescriptions(lineItems), [""], "an unticked lines group must leave the original blank line alone");
+});
+
+test("applyPrefillPatch applies every group when payee, purpose, and lines are all ticked", async () => {
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: {},
+  };
+  const { context, elements } = await setupWorkflowDocumentPrefillSandbox(prefillResponse);
+  const { workflowDocumentForm: form, lineItems, workflowPrefillGroups, workflowPrefillApply } = elements;
+
+  const testPatch = {
+    payeeName: "ร้านค้าทดสอบ",
+    businessPurpose: "วัตถุประสงค์ทดสอบ",
+    lines: [{ description: "สินค้าทดสอบ", quantity: "3", unitCost: "99" }],
+  };
+  context.window.WorkflowPrefillLogic = { applyWorkflowPrefillGroups: () => testPatch };
+
+  getPrefillCheckbox(workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "purpose").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "lines").checked = true;
+
+  workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.payeeName.value, "ร้านค้าทดสอบ", "the ticked payee group must be applied");
+  assert.equal(form.elements.businessPurpose.value, "วัตถุประสงค์ทดสอบ", "the ticked purpose group must be applied");
+  assert.deepEqual(lineDescriptions(lineItems), ["สินค้าทดสอบ"], "the ticked lines group must replace the line items");
+});
+
+test("applyPrefillPatch changes nothing when no prefill group is ticked", async () => {
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: {},
+  };
+  const { context, elements } = await setupWorkflowDocumentPrefillSandbox(prefillResponse);
+  const { workflowDocumentForm: form, lineItems, workflowPrefillGroups, workflowPrefillApply } = elements;
+
+  const testPatch = {
+    payeeName: "ร้านค้าทดสอบ",
+    businessPurpose: "วัตถุประสงค์ทดสอบ",
+    lines: [{ description: "สินค้าทดสอบ", quantity: "3", unitCost: "99" }],
+  };
+  context.window.WorkflowPrefillLogic = { applyWorkflowPrefillGroups: () => testPatch };
+
+  getPrefillCheckbox(workflowPrefillGroups, "payee").checked = false;
+  getPrefillCheckbox(workflowPrefillGroups, "purpose").checked = false;
+  getPrefillCheckbox(workflowPrefillGroups, "lines").checked = false;
+
+  workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.payeeName.value, "", "untick must mean untick: payee must stay untouched");
+  assert.equal(form.elements.businessPurpose.value, "", "untick must mean untick: purpose must stay untouched");
+  assert.deepEqual(lineDescriptions(lineItems), [""], "untick must mean untick: lines must stay untouched");
 });

@@ -487,7 +487,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
     const payload = buildWorkflowDocumentPayload({ ...data, ...serverOwnedFields });
     const result = await saveWorkflowDocument({ rootDir, payload, uploads: files });
 
-    sendJson(response, 200, result);
+    sendJson(response, 200, omitAbsoluteFolderPath(result));
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถบันทึกเอกสารได้",

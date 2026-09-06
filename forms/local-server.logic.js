@@ -27,6 +27,7 @@ const {
   assertWorkflowDocumentCompletable,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
+  sanitizeEvidenceKey,
 } = require("./workflow-document.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
@@ -256,21 +257,41 @@ function parseMultipartForm(body, contentType = "") {
   return { fields, files };
 }
 
-function countEvidenceFiles(evidenceFiles = {}) {
-  return Object.fromEntries(
-    Object.entries(evidenceFiles).map(([key, files]) => [key, Array.isArray(files) ? files.length : 0]),
-  );
+// keyNormalizer defaults to identity so expense-request and substitute-receipt
+// (whose evidenceKey values are never sanitized/collapsed before naming) keep
+// counting against the raw key exactly as before. workflow-document is the one
+// caller that passes its own sanitizeEvidenceKey here — see prepareUploadRecords.
+function countEvidenceFiles(evidenceFiles = {}, keyNormalizer = (key) => key) {
+  const counts = {};
+  for (const [key, files] of Object.entries(evidenceFiles)) {
+    const normalizedKey = keyNormalizer(key);
+    const fileCount = Array.isArray(files) ? files.length : 0;
+    counts[normalizedKey] = (counts[normalizedKey] ?? 0) + fileCount;
+  }
+  return counts;
 }
 
-function prepareUploadRecords(uploads = [], existingEvidenceFiles = {}, fileNameBuilder = buildRawFileName) {
-  const counts = countEvidenceFiles(existingEvidenceFiles);
+// fileNameBuilder derives the stored file's slug from evidenceKey internally
+// (workflow-document's buildWorkflowDocumentRawFileName sanitizes it, lowercasing
+// and stripping a wide character class including dots). Left uncorrected, two
+// different raw evidenceKeys that sanitize to the same slug ("a.b" and "ab" both
+// become "ab") would each start counting from 0 here and collide on the same
+// stored file name, silently clobbering one upload with the other. keyNormalizer
+// lets a caller (workflow-document only — see saveWorkflowDocument) count against
+// the same slug fileNameBuilder will actually use, so colliding raw keys share
+// one counter ("ab_001", "ab_002") instead of each claiming "ab_001". Defaults to
+// identity so expense-request and substitute-receipt, which pass no normalizer,
+// see no behavior change.
+function prepareUploadRecords(uploads = [], existingEvidenceFiles = {}, fileNameBuilder = buildRawFileName, keyNormalizer = (key) => key) {
+  const counts = countEvidenceFiles(existingEvidenceFiles, keyNormalizer);
   const evidenceFiles = {};
   const writes = [];
 
   for (const upload of uploads) {
     if (!upload?.evidenceKey || !upload.buffer?.length) continue;
-    const nextIndex = counts[upload.evidenceKey] ?? 0;
-    counts[upload.evidenceKey] = nextIndex + 1;
+    const countingKey = keyNormalizer(upload.evidenceKey);
+    const nextIndex = counts[countingKey] ?? 0;
+    counts[countingKey] = nextIndex + 1;
 
     const storedName = fileNameBuilder(upload.evidenceKey, upload.originalName, nextIndex);
     const fileRecord = {
@@ -1756,7 +1777,11 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   }
 
   const existingEvidenceFiles = payload.evidenceFiles ?? {};
-  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildWorkflowDocumentRawFileName);
+  // Count against the same sanitized slug buildWorkflowDocumentRawFileName uses
+  // to name the stored file, so raw evidenceKeys that collapse onto the same
+  // slug (e.g. "a.b" and "ab" both sanitize to "ab") share one counter instead
+  // of each starting at 0 and clobbering the same path — see prepareUploadRecords.
+  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildWorkflowDocumentRawFileName, sanitizeEvidenceKey);
   const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
   const rawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
 
@@ -1787,6 +1812,23 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
       "ชื่อไฟล์แนบไม่ถูกต้อง",
     );
     await writeFile(targetPath, write.buffer);
+  }
+
+  // Close the TOCTOU window: handleWorkflowDocumentSubmission reads the existing
+  // document, confirms it is not "completed", then awaits this function — which
+  // does its own mkdir/writeFile/PDF-generation work before this point. A
+  // concurrent .../complete request can land in that window and complete the
+  // document from underneath us; if we then wrote finalPayload (built from the
+  // pre-completion snapshot) unconditionally, we would silently revert the
+  // freshly completed record back to its old status. Re-read the stored status
+  // right before the commit — as close to it as possible — and refuse if the
+  // document has since become completed. The route's own early check stays too,
+  // for a fast, clear error in the common (non-racing) case.
+  if (finalPayload.documentNo) {
+    const currentOnDisk = await getWorkflowDocument(rootDir, finalPayload.documentKind, finalPayload.documentNo);
+    if (currentOnDisk?.status === "completed") {
+      throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
+    }
   }
 
   const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload);
