@@ -29,6 +29,15 @@ const {
   formatWorkflowDocumentMarkdown,
   sanitizeEvidenceKey,
 } = require("./workflow-document.logic.js");
+const {
+  DOCUMENT_TYPE_DEFINITIONS,
+  buildWorkflowTransactionPayload,
+  deriveWorkflowProgress,
+  formatWorkflowSummaryMarkdown,
+  getDefaultWorkflowTemplates,
+  normalizeWorkflowTemplate,
+  validateWorkflowTemplate,
+} = require("./workflow.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
 const { recordMonthlyExpense } = require("./google-sheets.logic.js");
@@ -173,6 +182,37 @@ async function getNextWorkflowDocumentInfo(rootDir, documentKind, accountingMont
   return {
     sequence,
     documentNo: `${documentPrefix}${padSequence(sequence)}`,
+  };
+}
+
+function getWorkflowTransactionMonthDir(rootDir, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  return path.join(rootDir, "documents", year, month, "workflow-transactions");
+}
+
+async function getNextWorkflowTransactionInfo(rootDir, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  const monthDir = getWorkflowTransactionMonthDir(rootDir, accountingMonth);
+  let folderNames = [];
+
+  try {
+    folderNames = await readdir(monthDir);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const prefix = `TXN-${year}-${month}-`;
+  const latestSequence = folderNames.reduce((latest, name) => {
+    if (!name.startsWith(prefix)) return latest;
+    const match = name.slice(prefix.length).match(/^(\d{4})/);
+    if (!match) return latest;
+    return Math.max(latest, Number.parseInt(match[1], 10));
+  }, 0);
+  const sequence = String(latestSequence + 1);
+
+  return {
+    sequence,
+    transactionNo: `${prefix}${padSequence(sequence)}`,
   };
 }
 
@@ -696,6 +736,11 @@ async function findSubmittedExpenseRequests(rootDir) {
         sheetSyncedAt: payload.sheetSync?.syncedAt || "",
         sheetSyncError: payload.sheetSync?.error || "",
         nextAction: getExpenseRequestNextAction(status),
+        transactionNo: payload.transactionNo || "",
+        workflowTemplateId: payload.workflowTemplateId || "",
+        workflowStepId: payload.workflowStepId || "",
+        completedAt: payload.completedAt || "",
+        completedBy: payload.completedBy || "",
       });
     }
   }
@@ -1976,6 +2021,234 @@ async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) 
   };
 }
 
+function listWorkflowDocumentTypes() {
+  return Object.values(DOCUMENT_TYPE_DEFINITIONS);
+}
+
+function getWorkflowTemplatesFilePath(rootDir) {
+  return path.join(rootDir, "data", "workflow-templates.json");
+}
+
+async function listWorkflowTemplates(rootDir) {
+  const filePath = getWorkflowTemplatesFilePath(rootDir);
+  try {
+    const raw = await readFile(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return getDefaultWorkflowTemplates();
+  }
+}
+
+async function saveWorkflowTemplate({ rootDir, template }) {
+  const errors = validateWorkflowTemplate(template);
+  if (errors.length) {
+    throw new Error(errors.join(", "));
+  }
+
+  const templates = await listWorkflowTemplates(rootDir);
+  const existing = templates.find((item) => item.templateId === template.templateId);
+  const normalized = normalizeWorkflowTemplate({
+    ...template,
+    createdAt: template.createdAt || existing?.createdAt,
+  });
+
+  const nextTemplates = existing
+    ? templates.map((item) => (item.templateId === normalized.templateId ? normalized : item))
+    : [...templates, normalized];
+
+  const dataDir = path.join(rootDir, "data");
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(
+    getWorkflowTemplatesFilePath(rootDir),
+    `${JSON.stringify(nextTemplates, null, 2)}\n`,
+    "utf8",
+  );
+
+  return normalized;
+}
+
+async function getWorkflowTemplate(rootDir, templateId) {
+  const templates = await listWorkflowTemplates(rootDir);
+  return templates.find((template) => template.templateId === templateId) || null;
+}
+
+async function persistWorkflowTransaction(rootDir, transaction, childDocuments = []) {
+  const absoluteFolderPath = assertPathWithinDirectory(
+    rootDir,
+    path.join(rootDir, transaction.folderPath || ""),
+    "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง",
+  );
+  const dataDir = path.join(absoluteFolderPath, "data");
+  const workingMdDir = path.join(absoluteFolderPath, "working-md");
+  const pdfDir = path.join(absoluteFolderPath, "pdf");
+
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(workingMdDir, { recursive: true });
+  await mkdir(pdfDir, { recursive: true });
+
+  await writeFile(
+    path.join(dataDir, "workflow-transaction.json"),
+    `${JSON.stringify(transaction, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(workingMdDir, "workflow-summary.md"),
+    formatWorkflowSummaryMarkdown(transaction, childDocuments),
+    "utf8",
+  );
+
+  return absoluteFolderPath;
+}
+
+async function startWorkflowTransaction({
+  rootDir,
+  templateId,
+  accountingMonth,
+  title,
+  now = () => new Date().toISOString(),
+}) {
+  const template = await getWorkflowTemplate(rootDir, templateId);
+  if (!template) {
+    throw new Error("ไม่พบ template ที่ระบุ");
+  }
+
+  const { sequence } = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
+  const transaction = buildWorkflowTransactionPayload(
+    { accountingMonth, title, sequence, template },
+    { now },
+  );
+
+  await persistWorkflowTransaction(rootDir, transaction, []);
+
+  return transaction;
+}
+
+async function findAllWorkflowTransactions(rootDir) {
+  const documentsRoot = path.join(rootDir, "documents");
+  const records = [];
+
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (entry.name !== "workflow-transaction.json") continue;
+      const transaction = JSON.parse(await readFile(absolutePath, "utf8"));
+      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
+      records.push({ ...transaction, folderPath: transaction.folderPath || folderPath });
+    }
+  }
+
+  await walk(documentsRoot);
+  return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+async function listWorkflowTransactions(rootDir) {
+  return findAllWorkflowTransactions(rootDir);
+}
+
+async function getWorkflowTransaction(rootDir, transactionNo) {
+  if (!transactionNo) return null;
+  const transactions = await findAllWorkflowTransactions(rootDir);
+  return transactions.find((transaction) => transaction.transactionNo === transactionNo) || null;
+}
+
+// MVP child-document scan: every document type a workflow template can
+// reference lives in one of three places on disk. Expense requests and
+// substitute receipts do not carry a documentKind field on their own record,
+// so it is injected here before the record reaches normalizeDocumentWorkflowStatus
+// (in workflow.logic.js), which dispatches on documentKind — including the
+// hybrid substitute_receipt completion rule that inspects receiptType.
+async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
+  if (!transactionNo) return [];
+  const records = await listWorkflowDocuments(rootDir, { transactionNo });
+
+  return Promise.all(records.map(async (record) => ({
+    documentKind: record.documentKind,
+    documentNo: record.documentNo,
+    status: record.status,
+    statusLabel: record.statusLabel,
+    folderPath: record.folderPath,
+    pdfFiles: await listPdfFiles(rootDir, record.folderPath),
+    rawFiles: await listRawFiles(rootDir, record.folderPath),
+    workflowStepId: record.workflowStepId,
+    completedAt: record.payload?.completedAt || "",
+    completedBy: record.payload?.completedBy || "",
+  })));
+}
+
+async function findWorkflowChildDocuments(rootDir, transactionNo) {
+  if (!transactionNo) return [];
+
+  const [expenseRequests, substituteReceipts, lightweightDocuments] = await Promise.all([
+    findSubmittedExpenseRequests(rootDir),
+    findSubmittedSubstituteReceipts(rootDir),
+    findLightweightWorkflowDocuments(rootDir, transactionNo),
+  ]);
+
+  const expenseRequestDocs = expenseRequests
+    .filter((record) => record.transactionNo === transactionNo)
+    .map((record) => ({ ...record, documentKind: "expense_request" }));
+
+  const substituteReceiptDocs = substituteReceipts
+    .filter((record) => record.payload?.transactionNo === transactionNo)
+    .map((record) => ({
+      ...record.payload,
+      folderPath: record.folderPath,
+      pdfFiles: record.pdfFiles,
+      rawFiles: record.rawFiles,
+      documentKind: "substitute_receipt",
+    }));
+
+  return [...expenseRequestDocs, ...substituteReceiptDocs, ...lightweightDocuments];
+}
+
+async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => new Date().toISOString() }) {
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) {
+    throw new Error("ไม่พบธุรกรรม");
+  }
+
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+  // The packet PDF (Task 8) will regenerate here too, once the generator exists.
+  const updated = {
+    ...deriveWorkflowProgress(transaction, childDocuments),
+    updatedAt: now(),
+  };
+
+  await persistWorkflowTransaction(rootDir, updated, childDocuments);
+
+  return updated;
+}
+
+async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fileName }) {
+  if (!transactionNo) throw new Error("Missing transaction number");
+  if (!["pdf"].includes(section)) throw new Error("Invalid file section");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Invalid file name");
+  }
+
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) throw new Error("Workflow transaction not found");
+
+  const baseDir = path.resolve(rootDir, transaction.folderPath, section);
+  const absolutePath = assertPathWithinDirectory(baseDir, path.resolve(baseDir, fileName), "Invalid file name");
+
+  return { absolutePath, fileName, section };
+}
+
 async function syncExpenseRequestToDrive({
   rootDir,
   requestNo,
@@ -2082,22 +2355,32 @@ module.exports = {
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getNextWorkflowDocumentInfo,
+  getNextWorkflowTransactionInfo,
   getSubstituteReceiptDraft,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
   getWorkflowDocumentFile,
+  getWorkflowTemplate,
+  getWorkflowTransaction,
+  getWorkflowTransactionFile,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
   listSubstituteReceipts,
+  listWorkflowDocumentTypes,
   listWorkflowDocuments,
+  listWorkflowTemplates,
+  listWorkflowTransactions,
   parseMultipartForm,
   receiveSubstituteReceiptStock,
+  refreshWorkflowTransaction,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
+  saveWorkflowTemplate,
+  startWorkflowTransaction,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
   writeWorkflowDocumentFiles,
