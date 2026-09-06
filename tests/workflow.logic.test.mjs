@@ -432,6 +432,33 @@ test("deriveWorkflowProgress blocks a later step even when its own child documen
   assert.equal(next.currentStepId, "step-001");
 });
 
+test("deriveWorkflowProgress reports in_progress when first step has an incomplete child document", () => {
+  const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
+  const transaction = workflowLogic.buildWorkflowTransactionPayload({
+    sequence: "5",
+    accountingMonth: "2026-09",
+    title: "ซื้อสต๊อกอนุมัติแล้ว",
+    template,
+  });
+
+  const next = workflowLogic.deriveWorkflowProgress(transaction, [
+    {
+      documentKind: "purchase_order",
+      documentNo: "PO-2026-09-0005",
+      workflowStepId: "step-001",
+      transactionNo: transaction.transactionNo,
+      status: "approved",
+      statusLabel: "อนุมัติแล้ว",
+    },
+  ]);
+
+  assert.equal(next.steps[0].workflowStatus, "in_progress");
+  assert.equal(next.steps[1].workflowStatus, "blocked");
+  assert.equal(next.steps[2].workflowStatus, "blocked");
+  assert.equal(next.steps[3].workflowStatus, "blocked");
+  assert.equal(next.currentStepId, "step-001");
+});
+
 test("formatWorkflowSummaryMarkdown renders template, step, document, and file tables", () => {
   const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
   const transaction = workflowLogic.buildWorkflowTransactionPayload({
