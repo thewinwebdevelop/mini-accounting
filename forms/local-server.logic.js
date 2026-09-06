@@ -1513,6 +1513,22 @@ async function completeExpenseRequest({
     ...request.payload,
     folderPath: request.folderPath,
   };
+  const currentStatus = normalizeExpenseRequestStatus(payload.status || "submitted");
+
+  if (currentStatus === "completed") {
+    // A repeat completion call (retry, double-click, replayed request) is a no-op:
+    // completedAt/completedBy are the audit record of who closed the document and
+    // when, so they must not be overwritten, and no duplicate history entry is added.
+    return {
+      requestNo: payload.requestNo,
+      status: payload.status,
+      completedAt: payload.completedAt,
+      completedBy: payload.completedBy,
+      folderPath: payload.folderPath,
+      pdfFiles: await listPdfFiles(rootDir, payload.folderPath),
+    };
+  }
+
   const completedAt = now();
   appendExpenseRequestStatus(payload, "completed", "completed", completedBy, () => completedAt);
   payload.completedAt = completedAt;
@@ -1540,6 +1556,22 @@ async function completeSubstituteReceipt({
     ...receipt.payload,
     folderPath: receipt.folderPath,
   };
+  const currentStatus = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+
+  if (currentStatus === "completed") {
+    // A repeat completion call (retry, double-click, replayed request) is a no-op:
+    // completedAt/completedBy are the audit record of who closed the document and
+    // when, so they must not be overwritten, and no duplicate history entry is added.
+    return {
+      receiptNo: payload.receiptNo,
+      status: payload.status,
+      completedAt: payload.completedAt,
+      completedBy: payload.completedBy,
+      folderPath: payload.folderPath,
+      pdfFiles: await listSubstituteReceiptPdfFiles(rootDir, payload.folderPath, payload.receiptNo),
+    };
+  }
+
   appendSubstituteReceiptStatus(payload, "completed", "completed", completedBy);
   const completedAt = now();
   payload.updatedAt = completedAt;

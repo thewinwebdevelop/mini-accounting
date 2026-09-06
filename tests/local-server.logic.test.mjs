@@ -699,6 +699,56 @@ test("completeSubstituteReceipt marks an approved general expense receipt comple
     assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
     assert.equal(loaded.payload.completedBy, "บัญชี");
     assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+    assert.equal(
+      loaded.payload.statusHistory.filter((entry) => entry.toStatus === "completed").length,
+      1,
+    );
+
+    const receipts = await listSubstituteReceipts(rootDir);
+    const listedReceipt = receipts.find((receipt) => receipt.receiptNo === submitted.receiptNo);
+    assert.equal(listedReceipt.nextAction, "เสร็จสิ้น");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt is idempotent when a completed receipt is completed again", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    const afterFirstComplete = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    const historyLengthAfterFirstComplete = afterFirstComplete.payload.statusHistory.length;
+
+    // A retry (double-click, replayed request, different actor) must not overwrite
+    // the audit-trail fields recorded by the original completion.
+    const completedAgain = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "ผู้จัดการ",
+      now: () => "2026-09-06T16:00:00.000Z",
+    });
+    assert.equal(completedAgain.status, "completed");
+    assert.equal(completedAgain.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(completedAgain.completedBy, "บัญชี");
+
+    const loadedAgain = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedAgain.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loadedAgain.payload.completedBy, "บัญชี");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstComplete);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -899,6 +949,14 @@ test("completeExpenseRequest transitions approved request to completed", async (
     assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
     assert.equal(loaded.payload.completedBy, "บัญชี");
     assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+    assert.equal(
+      loaded.payload.statusHistory.filter((entry) => entry.toStatus === "completed").length,
+      1,
+    );
+
+    const requests = await listExpenseRequests(rootDir);
+    const listedRequest = requests.find((request) => request.requestNo === saved.requestNo);
+    assert.equal(listedRequest.nextAction, "เสร็จสิ้น");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -934,15 +992,25 @@ test("completeExpenseRequest is idempotent when a completed request is completed
       completedBy: "บัญชี",
       now: () => "2026-09-06T15:00:00.000Z",
     });
+    const afterFirstComplete = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    const historyLengthAfterFirstComplete = afterFirstComplete.payload.statusHistory.length;
 
+    // A retry (double-click, replayed request, different actor) must not overwrite
+    // the audit-trail fields recorded by the original completion.
     const completedAgain = await completeExpenseRequest({
       rootDir,
       requestNo: saved.requestNo,
-      completedBy: "บัญชี",
+      completedBy: "ผู้จัดการ",
       now: () => "2026-09-06T16:00:00.000Z",
     });
     assert.equal(completedAgain.status, "completed");
-    assert.equal(completedAgain.completedAt, "2026-09-06T16:00:00.000Z");
+    assert.equal(completedAgain.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(completedAgain.completedBy, "บัญชี");
+
+    const loadedAgain = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loadedAgain.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loadedAgain.payload.completedBy, "บัญชี");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstComplete);
 
     // Cannot fall back to approved once completed.
     await assert.rejects(
