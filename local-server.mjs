@@ -18,26 +18,36 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  completeWorkflowDocument,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
+  getNextWorkflowDocumentInfo,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptDraft,
   getSubstituteReceiptFile,
   getSubmittedSubstituteReceipt,
+  getWorkflowDocument,
+  getWorkflowDocumentFile,
   listExpenseDrafts,
   listExpenseRequests,
   listSubstituteReceipts,
+  listWorkflowDocuments,
   parseMultipartForm,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
+  saveWorkflowDocument,
   receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
 } = require("./forms/local-server.logic.js");
+const {
+  buildWorkflowDocumentPayload,
+  validateWorkflowDocumentPayload,
+} = require("./forms/workflow-document.logic.js");
 const {
   createProductCategory,
   createProduct,
@@ -114,6 +124,8 @@ function safeStaticPath(urlPath) {
     "/substitute-receipts/": "/substitute-receipts.html",
     "/substitute-receipt-vendors": "/substitute-receipt-vendors.html",
     "/substitute-receipt-vendors/": "/substitute-receipt-vendors.html",
+    "/workflow-document": "/workflow-document.html",
+    "/workflow-document/": "/workflow-document.html",
     "/google-drive": "/google-drive.html",
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
@@ -191,6 +203,22 @@ function parseExpenseRequestFileRoute(urlPath) {
     requestNo: decodeURIComponent(remainder.slice(0, markerIndex)),
     section: decodeURIComponent(fileRoute.slice(0, sectionEnd)),
     fileName: decodeURIComponent(fileRoute.slice(sectionEnd + 1)),
+  };
+}
+
+function parseWorkflowDocumentFileRoute(urlPath) {
+  const prefix = "/workflow-documents/";
+  if (!urlPath.startsWith(prefix)) return null;
+
+  const segments = urlPath.slice(prefix.length).split("/");
+  if (segments.length !== 4 || segments.some((segment) => !segment)) return null;
+
+  const [documentKind, documentNo, section, fileName] = segments;
+  return {
+    documentKind: decodeURIComponent(documentKind),
+    documentNo: decodeURIComponent(documentNo),
+    section: decodeURIComponent(section),
+    fileName: decodeURIComponent(fileName),
   };
 }
 
@@ -384,6 +412,93 @@ async function handleSubstituteReceiptFile(fileRoute, response) {
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "Cannot open substitute receipt file",
+    });
+  }
+}
+
+async function handleWorkflowDocumentFile(fileRoute, response) {
+  try {
+    const file = await getWorkflowDocumentFile({
+      rootDir,
+      documentKind: fileRoute.documentKind,
+      documentNo: fileRoute.documentNo,
+      section: fileRoute.section,
+      fileName: fileRoute.fileName,
+    });
+    const body = await readFile(file.absolutePath);
+    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "Cannot open workflow document file",
+    });
+  }
+}
+
+async function handleWorkflowDocumentSubmission(request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
+    const data = JSON.parse(fields.payload || "{}");
+    const errors = validateWorkflowDocumentPayload(data);
+    if (errors.length) throw new Error(errors.join(", "));
+
+    const nextInfo = await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
+    const payload = buildWorkflowDocumentPayload({ ...data, sequence: nextInfo.sequence });
+    const result = await saveWorkflowDocument({ rootDir, payload, uploads: files });
+
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot save workflow document",
+    });
+  }
+}
+
+async function handleWorkflowDocumentComplete(documentKind, documentNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const result = await completeWorkflowDocument({
+      rootDir,
+      documentKind,
+      documentNo,
+      completedBy: body.completedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot complete workflow document",
+    });
+  }
+}
+
+async function handleWorkflowDocumentList(url, response) {
+  try {
+    const filters = {
+      documentKind: url.searchParams.get("documentKind") || "",
+      transactionNo: url.searchParams.get("transactionNo") || "",
+      workflowTemplateId: url.searchParams.get("workflowTemplateId") || "",
+      workflowStepId: url.searchParams.get("workflowStepId") || "",
+      status: url.searchParams.get("status") || "",
+    };
+    const documents = await listWorkflowDocuments(rootDir, filters);
+    sendJson(response, 200, { documents });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot list workflow documents",
+    });
+  }
+}
+
+async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
+  try {
+    const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    if (!record) throw new Error("Workflow document not found");
+    sendJson(response, 200, record);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "Cannot load workflow document",
     });
   }
 }
@@ -1029,6 +1144,18 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/workflow-documents") {
+    await handleWorkflowDocumentSubmission(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/complete")) {
+    const remainder = url.pathname.replace("/api/workflow-documents/", "").replace("/complete", "");
+    const [documentKind, documentNo] = remainder.split("/");
+    await handleWorkflowDocumentComplete(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/substitute-receipt-drafts") {
     await handleSubstituteReceiptDraftSave(request, response);
     return;
@@ -1212,6 +1339,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === "/api/workflow-documents") {
+      await handleWorkflowDocumentList(url, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/workflow-documents/")) {
+      const remainder = url.pathname.replace("/api/workflow-documents/", "");
+      const [documentKind, documentNo] = remainder.split("/");
+      await handleWorkflowDocumentGet(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
+      return;
+    }
+
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
       await handleExpenseRequestFile(fileRoute, response);
@@ -1221,6 +1360,12 @@ const server = createServer(async (request, response) => {
     const substituteReceiptFileRoute = parseSubstituteReceiptFileRoute(url.pathname);
     if (substituteReceiptFileRoute) {
       await handleSubstituteReceiptFile(substituteReceiptFileRoute, response);
+      return;
+    }
+
+    const workflowDocumentFileRoute = parseWorkflowDocumentFileRoute(url.pathname);
+    if (workflowDocumentFileRoute) {
+      await handleWorkflowDocumentFile(workflowDocumentFileRoute, response);
       return;
     }
 

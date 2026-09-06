@@ -20,6 +20,13 @@ const {
   normalizeSubstituteReceiptStatus,
   validateSubstituteReceipt,
 } = require("./substitute-receipt.logic.js");
+const {
+  LIGHTWEIGHT_DOCUMENT_KINDS,
+  WORKFLOW_DOCUMENT_PREFIXES,
+  WORKFLOW_DOCUMENT_STATUS_LABELS,
+  buildWorkflowDocumentRawFileName,
+  formatWorkflowDocumentMarkdown,
+} = require("./workflow-document.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
 const { recordMonthlyExpense } = require("./google-sheets.logic.js");
@@ -30,6 +37,7 @@ const {
 
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
+const workflowDocumentPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_document_pdf.py");
 
 function padSequence(sequence) {
   return String(sequence).padStart(4, "0");
@@ -129,6 +137,40 @@ async function getNextSubstituteReceiptInfo(rootDir, accountingMonth) {
   return {
     sequence,
     receiptNo: `SR-${year}-${month}-${padSequence(sequence)}`,
+  };
+}
+
+function getWorkflowDocumentKindDir(rootDir, documentKind, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  return path.join(rootDir, "documents", year, month, documentKind);
+}
+
+async function getNextWorkflowDocumentInfo(rootDir, documentKind, accountingMonth) {
+  const prefix = WORKFLOW_DOCUMENT_PREFIXES[documentKind];
+  if (!prefix) throw new Error(`Invalid workflow document kind: ${documentKind}`);
+
+  const { year, month } = getMonthParts(accountingMonth);
+  const kindDir = getWorkflowDocumentKindDir(rootDir, documentKind, accountingMonth);
+  let folderNames = [];
+
+  try {
+    folderNames = await readdir(kindDir);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const documentPrefix = `${prefix}-${year}-${month}-`;
+  const latestSequence = folderNames.reduce((latest, name) => {
+    if (!name.startsWith(documentPrefix)) return latest;
+    const match = name.slice(documentPrefix.length).match(/^(\d{4})/);
+    if (!match) return latest;
+    return Math.max(latest, Number.parseInt(match[1], 10));
+  }, 0);
+  const sequence = String(latestSequence + 1);
+
+  return {
+    sequence,
+    documentNo: `${documentPrefix}${padSequence(sequence)}`,
   };
 }
 
@@ -313,6 +355,25 @@ async function generateExpensePdfs({ payloadPath, outputDir, rawDir }) {
 
 async function generateSubstituteReceiptPdfs({ payloadPath, outputDir, rawDir }) {
   return generateExpensePdfs({ payloadPath, outputDir, rawDir });
+}
+
+async function generateWorkflowDocumentPdf({ payloadPath, outputDir }) {
+  await mkdir(outputDir, { recursive: true });
+  const { stdout, stderr } = await execFileAsync(getPythonExecutable(), [
+    workflowDocumentPdfGeneratorPath,
+    "--payload",
+    payloadPath,
+    "--output-dir",
+    outputDir,
+  ], {
+    maxBuffer: 1024 * 1024,
+  });
+
+  if (stderr.trim()) {
+    console.warn(stderr.trim());
+  }
+
+  return JSON.parse(stdout);
 }
 
 async function findDraftRecords(rootDir, includeSubmitted = false) {
@@ -1589,6 +1650,198 @@ async function completeSubstituteReceipt({
   };
 }
 
+async function writeWorkflowDocumentFiles(rootDir, payload) {
+  const absoluteFolderPath = path.join(rootDir, payload.folderPath);
+  const dataDir = path.join(absoluteFolderPath, "data");
+  const workingMdDir = path.join(absoluteFolderPath, "working-md");
+  const pdfDir = path.join(absoluteFolderPath, "pdf");
+
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(workingMdDir, { recursive: true });
+  await mkdir(pdfDir, { recursive: true });
+
+  const dataPath = path.join(dataDir, "workflow-document.json");
+  await writeFile(dataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await writeFile(path.join(workingMdDir, "workflow-document.md"), formatWorkflowDocumentMarkdown(payload), "utf8");
+
+  const pdfFiles = await generateWorkflowDocumentPdf({
+    payloadPath: dataPath,
+    outputDir: pdfDir,
+  });
+
+  return { absoluteFolderPath, pdfFiles };
+}
+
+async function findAllWorkflowDocuments(rootDir) {
+  const documentsRoot = path.join(rootDir, "documents");
+  const records = [];
+
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (entry.name !== "workflow-document.json") continue;
+      const payload = JSON.parse(await readFile(absolutePath, "utf8"));
+      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
+      records.push({
+        documentKind: payload.documentKind,
+        documentNo: payload.documentNo,
+        status: payload.status,
+        statusLabel: payload.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[payload.status] || payload.status,
+        title: payload.title || "",
+        transactionNo: payload.transactionNo || "",
+        workflowTemplateId: payload.workflowTemplateId || "",
+        workflowStepId: payload.workflowStepId || "",
+        folderPath: payload.folderPath || folderPath,
+        absoluteFolderPath: path.join(rootDir, folderPath),
+        updatedAt: payload.updatedAt || payload.createdAt || "",
+        payload,
+      });
+    }
+  }
+
+  await walk(documentsRoot);
+  return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+async function listWorkflowDocuments(rootDir, filters = {}) {
+  const records = await findAllWorkflowDocuments(rootDir);
+  return records.filter((record) => {
+    if (filters.documentKind && record.documentKind !== filters.documentKind) return false;
+    if (filters.transactionNo && record.transactionNo !== filters.transactionNo) return false;
+    if (filters.workflowTemplateId && record.workflowTemplateId !== filters.workflowTemplateId) return false;
+    if (filters.workflowStepId && record.workflowStepId !== filters.workflowStepId) return false;
+    if (filters.status && record.status !== filters.status) return false;
+    return true;
+  });
+}
+
+async function getWorkflowDocument(rootDir, documentKind, documentNo) {
+  if (!documentKind || !documentNo) return null;
+  const records = await findAllWorkflowDocuments(rootDir);
+  return records.find((record) => record.documentKind === documentKind && record.documentNo === documentNo) || null;
+}
+
+async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
+  if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
+    throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
+  }
+
+  const existingEvidenceFiles = payload.evidenceFiles ?? {};
+  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildWorkflowDocumentRawFileName);
+  const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+  const rawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
+
+  const finalPayload = {
+    ...payload,
+    evidenceFiles,
+    rawFiles: rawFiles.length ? rawFiles : payload.rawFiles ?? [],
+  };
+
+  const absoluteFolderPath = path.join(rootDir, finalPayload.folderPath);
+  const rawDir = path.join(absoluteFolderPath, "raw");
+  await mkdir(rawDir, { recursive: true });
+
+  for (const write of preparedUploads.writes) {
+    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
+  }
+
+  const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload);
+
+  return {
+    documentKind: finalPayload.documentKind,
+    documentNo: finalPayload.documentNo,
+    status: finalPayload.status,
+    folderPath: finalPayload.folderPath,
+    absoluteFolderPath,
+    pdfFiles,
+    rawFiles,
+  };
+}
+
+async function completeWorkflowDocument({
+  rootDir,
+  documentKind,
+  documentNo,
+  completedBy = "",
+  now = () => new Date().toISOString(),
+}) {
+  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+  if (!record) throw new Error("Workflow document not found");
+
+  const payload = { ...record.payload, folderPath: record.folderPath };
+  const currentStatus = payload.status || "draft";
+
+  if (currentStatus === "completed") {
+    // A repeat completion call (retry, double-click, replayed request) is a no-op:
+    // completedAt/completedBy are the audit record of who closed the document and
+    // when, so they must not be overwritten, and no duplicate history entry is added.
+    return {
+      documentKind: payload.documentKind,
+      documentNo: payload.documentNo,
+      status: payload.status,
+      completedAt: payload.completedAt,
+      completedBy: payload.completedBy,
+      folderPath: payload.folderPath,
+      pdfFiles: await listPdfFiles(rootDir, payload.folderPath),
+    };
+  }
+
+  const completedAt = now();
+  payload.statusHistory = [
+    ...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []),
+    { fromStatus: currentStatus, toStatus: "completed", changedAt: completedAt, note: "completed" },
+  ];
+  payload.status = "completed";
+  payload.statusLabel = WORKFLOW_DOCUMENT_STATUS_LABELS.completed;
+  payload.completedAt = completedAt;
+  payload.completedBy = completedBy || "";
+  payload.updatedAt = completedAt;
+
+  const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, payload);
+
+  return {
+    documentKind: payload.documentKind,
+    documentNo: payload.documentNo,
+    status: payload.status,
+    completedAt: payload.completedAt,
+    completedBy: payload.completedBy,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
+async function getWorkflowDocumentFile({ rootDir, documentKind, documentNo, section, fileName }) {
+  if (!documentNo) throw new Error("Missing document number");
+  if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Invalid file name");
+  }
+
+  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+  if (!record) throw new Error("Workflow document not found");
+
+  const baseDir = path.resolve(rootDir, record.folderPath, section);
+  const absolutePath = path.resolve(baseDir, fileName);
+  if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    throw new Error("Invalid file name");
+  }
+
+  return { absolutePath, fileName, section };
+}
+
 async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) {
   if (!requestNo) throw new Error("Missing expense request number");
   if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
@@ -1710,24 +1963,30 @@ module.exports = {
   approveSubstituteReceipt,
   completeExpenseRequest,
   completeSubstituteReceipt,
+  completeWorkflowDocument,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptFile,
   getSubmittedExpenseRequest,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
+  getNextWorkflowDocumentInfo,
   getSubstituteReceiptDraft,
   getSubmittedSubstituteReceipt,
+  getWorkflowDocument,
+  getWorkflowDocumentFile,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
   listSubstituteReceipts,
+  listWorkflowDocuments,
   parseMultipartForm,
   receiveSubstituteReceiptStock,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
+  saveWorkflowDocument,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
 };
