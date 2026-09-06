@@ -161,6 +161,221 @@ function normalizeWorkflowTemplate(template, options) {
   };
 }
 
+function padWorkflowSequence(sequence) {
+  const parsed = Number.parseInt(String(sequence ?? "1"), 10);
+  const safe = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  return String(safe).padStart(4, "0");
+}
+
+function safeWorkflowTitle(title) {
+  return String(title ?? "")
+    .trim()
+    .replace(/[\\/:*?"<>|#%{}^~[\]`]+/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 80) || "ไม่ระบุรายการ";
+}
+
+function getWorkflowMonthParts(accountingMonth = "") {
+  const [year, month] = String(accountingMonth).split("-");
+  if (!/^\d{4}$/.test(year) || !/^\d{2}$/.test(month)) {
+    throw new Error("Invalid accounting month");
+  }
+  return { year, month };
+}
+
+function cloneWorkflowTemplate(template = {}) {
+  return {
+    ...template,
+    documentSteps: (template.documentSteps || []).map((step) => ({ ...step })),
+  };
+}
+
+function createWorkflowStepStates(template) {
+  const documentSteps = (template && template.documentSteps) || [];
+  return documentSteps.map((step, index) => ({
+    stepId: step.stepId,
+    documentKind: step.documentKind,
+    workflowStatus: index === 0 ? "not_started" : "blocked",
+  }));
+}
+
+function buildWorkflowTransactionPayload(data = {}, options = {}) {
+  const now = typeof options.now === "function" ? options.now() : new Date().toISOString();
+  const { year, month } = getWorkflowMonthParts(data.accountingMonth);
+  const transactionNo = `TXN-${year}-${month}-${padWorkflowSequence(data.sequence)}`;
+  const title = String(data.title ?? "").trim();
+  const folderPath = `documents/${year}/${month}/workflow-transactions/${transactionNo}_${safeWorkflowTitle(title)}`;
+  const templateSnapshot = cloneWorkflowTemplate(data.template);
+  const steps = createWorkflowStepStates(templateSnapshot);
+
+  return {
+    transactionNo,
+    accountingMonth: `${year}-${month}`,
+    title,
+    workflowTemplateId: templateSnapshot.templateId,
+    templateSnapshot,
+    folderPath,
+    status: "in_progress",
+    syncGoogleDrive: !!templateSnapshot.syncGoogleDrive,
+    syncGoogleSheets: !!templateSnapshot.syncGoogleSheets,
+    steps,
+    currentStepId: steps.length ? steps[0].stepId : null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function deriveChildWorkflowStatus(documentRecord = {}) {
+  if (documentRecord.status === "completed") {
+    return "completed";
+  }
+
+  if (documentRecord.documentKind === "substitute_receipt") {
+    if (documentRecord.receiptType === "stock_purchase" && documentRecord.status === "received") {
+      return "completed";
+    }
+    if (documentRecord.receiptType === "general_expense" && documentRecord.status === "approved") {
+      return "completed";
+    }
+  }
+
+  return "in_progress";
+}
+
+function normalizeDocumentWorkflowStatus(documentRecord = {}) {
+  const documentNo = documentRecord.documentNo
+    || documentRecord.requestNo
+    || documentRecord.receiptNo
+    || documentRecord.voucherNo
+    || documentRecord.purchaseOrderNo
+    || documentRecord.goodsReceiptNo
+    || "";
+
+  return {
+    documentKind: documentRecord.documentKind,
+    documentNo,
+    transactionNo: documentRecord.transactionNo,
+    nativeStatus: documentRecord.status,
+    nativeStatusLabel: documentRecord.statusLabel,
+    workflowStatus: deriveChildWorkflowStatus(documentRecord),
+    completedAt: documentRecord.completedAt,
+    completedBy: documentRecord.completedBy,
+  };
+}
+
+function deriveWorkflowProgress(transaction, childDocuments = []) {
+  const normalizedDocs = childDocuments.map((doc) => ({
+    ...normalizeDocumentWorkflowStatus(doc),
+    workflowStepId: doc.workflowStepId,
+  }));
+
+  let unlocked = false;
+  const steps = (transaction.steps || []).map((step) => {
+    const match = normalizedDocs.find((doc) => doc.workflowStepId === step.stepId)
+      || normalizedDocs.find((doc) => !doc.workflowStepId && doc.documentKind === step.documentKind);
+
+    let workflowStatus;
+    if (match && match.workflowStatus === "completed") {
+      workflowStatus = "completed";
+    } else if (!unlocked) {
+      workflowStatus = match ? match.workflowStatus : "not_started";
+      unlocked = true;
+    } else {
+      workflowStatus = "blocked";
+    }
+
+    return { ...step, workflowStatus };
+  });
+
+  const allCompleted = steps.length > 0 && steps.every((step) => step.workflowStatus === "completed");
+  const currentStep = steps.find((step) => step.workflowStatus !== "completed");
+
+  return {
+    ...transaction,
+    steps,
+    status: allCompleted ? "completed" : "in_progress",
+    currentStepId: currentStep ? currentStep.stepId : null,
+  };
+}
+
+function formatWorkflowSummaryMarkdown(transaction = {}, childDocuments = []) {
+  const templateSnapshot = transaction.templateSnapshot || {};
+
+  const stepRows = (transaction.steps || []).map((step, index) => {
+    const label = getDocumentTypeDefinition(step.documentKind)?.label || step.documentKind;
+    return `| ${index + 1} | ${label} | ${step.workflowStatus} |`;
+  }).join("\n");
+
+  const childRows = childDocuments.map((doc) => {
+    const normalized = normalizeDocumentWorkflowStatus(doc);
+    const label = getDocumentTypeDefinition(normalized.documentKind)?.label || normalized.documentKind;
+    return `| ${label} | ${normalized.documentNo || ""} | ${normalized.nativeStatusLabel || normalized.nativeStatus || ""} |`;
+  }).join("\n");
+
+  const pdfRows = childDocuments
+    .flatMap((doc) => doc.pdfFiles || [])
+    .map((file) => `| ${file.name || ""} | ${file.url || ""} |`)
+    .join("\n");
+
+  const rawRows = childDocuments
+    .flatMap((doc) => doc.rawFiles || [])
+    .map((file) => `| ${file.name || ""} | ${file.url || ""} |`)
+    .join("\n");
+
+  return `# สรุปธุรกรรม Workflow
+
+เลขที่ธุรกรรม: ${transaction.transactionNo || ""}
+ชื่อธุรกรรม: ${transaction.title || ""}
+เดือนบัญชี: ${transaction.accountingMonth || ""}
+สถานะ: ${transaction.status || ""}
+Template: ${templateSnapshot.name || ""}
+โฟลเดอร์: ${transaction.folderPath || ""}
+
+## ขั้นตอนเอกสาร
+
+| ลำดับ | ประเภทเอกสาร | สถานะ |
+|---:|---|---|
+${stepRows}
+
+## เอกสารย่อย
+
+| ประเภทเอกสาร | เลขที่เอกสาร | สถานะ |
+|---|---|---|
+${childRows}
+
+## ไฟล์ PDF
+
+| ชื่อไฟล์ | ลิงก์ |
+|---|---|
+${pdfRows}
+
+## ไฟล์ต้นฉบับ
+
+| ชื่อไฟล์ | ลิงก์ |
+|---|---|
+${rawRows}
+`;
+}
+
+function buildWorkflowSheetEntry(transaction = {}, childDocuments = [], driveMetadata = {}, completedAt = "") {
+  return {
+    sourceKey: `workflow_transaction:${transaction.transactionNo}`,
+    approvedAt: completedAt,
+    accountingMonth: transaction.accountingMonth || "",
+    documentType: "Workflow ธุรกรรมเอกสาร",
+    documentNo: transaction.transactionNo,
+    payeeName: "",
+    title: transaction.title || "",
+    category: transaction.templateSnapshot?.name || "",
+    amountBeforeVat: "0.00",
+    vatAmount: "0.00",
+    grossAmount: "0.00",
+    withholdingTax: "0.00",
+    netPayment: "0.00",
+    documentUrl: driveMetadata?.driveFolderUrl || "",
+  };
+}
+
 const WorkflowLogic = {
   DOCUMENT_TYPE_DEFINITIONS,
   DEFAULT_WORKFLOW_TEMPLATES,
@@ -168,6 +383,12 @@ const WorkflowLogic = {
   getDefaultWorkflowTemplates,
   validateWorkflowTemplate,
   normalizeWorkflowTemplate,
+  createWorkflowStepStates,
+  buildWorkflowTransactionPayload,
+  normalizeDocumentWorkflowStatus,
+  deriveWorkflowProgress,
+  formatWorkflowSummaryMarkdown,
+  buildWorkflowSheetEntry,
 };
 
 if (typeof module !== "undefined" && module.exports) {
