@@ -35,8 +35,9 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     documentSteps: [
       { stepId: "step-001", documentKind: "purchase_order" },
       { stepId: "step-002", documentKind: "substitute_receipt" },
-      { stepId: "step-003", documentKind: "payment_voucher" },
-      { stepId: "step-004", documentKind: "goods_receipt" },
+      { stepId: "step-003", documentKind: "expense_request" },
+      { stepId: "step-004", documentKind: "payment_voucher" },
+      { stepId: "step-005", documentKind: "goods_receipt" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
     updatedAt: "2026-09-06T00:00:00.000Z",
@@ -50,7 +51,8 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
-      { stepId: "step-002", documentKind: "payment_voucher" },
+      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-003", documentKind: "payment_voucher" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
     updatedAt: "2026-09-06T00:00:00.000Z",
@@ -65,6 +67,8 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
       { stepId: "step-002", documentKind: "cash_spend_declaration" },
+      { stepId: "step-003", documentKind: "substitute_receipt" },
+      { stepId: "step-004", documentKind: "payment_voucher" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
     updatedAt: "2026-09-06T00:00:00.000Z",
@@ -78,8 +82,10 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
-      { stepId: "step-002", documentKind: "payment_voucher" },
-      { stepId: "step-003", documentKind: "cash_spend_declaration" },
+      { stepId: "step-002", documentKind: "cash_spend_declaration" },
+      { stepId: "step-003", documentKind: "substitute_receipt" },
+      { stepId: "step-004", documentKind: "payment_voucher" },
+      { stepId: "step-005", documentKind: "payee_acknowledgement" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
     updatedAt: "2026-09-06T00:00:00.000Z",
@@ -93,7 +99,9 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
-      { stepId: "step-002", documentKind: "payment_voucher" },
+      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-003", documentKind: "payment_voucher" },
+      { stepId: "step-004", documentKind: "payee_acknowledgement" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
     updatedAt: "2026-09-06T00:00:00.000Z",
@@ -105,7 +113,10 @@ function getDocumentTypeDefinition(documentKind) {
 }
 
 function getDefaultWorkflowTemplates() {
-  return DEFAULT_WORKFLOW_TEMPLATES;
+  return DEFAULT_WORKFLOW_TEMPLATES.map((template) => ({
+    ...template,
+    documentSteps: template.documentSteps.map((step) => ({ ...step })),
+  }));
 }
 
 function validateWorkflowTemplate(template) {
@@ -135,9 +146,9 @@ function normalizeWorkflowTemplate(template, options) {
   const now = options?.now?.() || "2026-09-06T00:00:00.000Z";
 
   return {
-    templateId: template.templateId?.trim?.() || template.templateId,
-    name: template.name?.trim?.() || template.name,
-    description: template.description?.trim?.() || template.description,
+    templateId: typeof template.templateId === "string" ? template.templateId.trim() : template.templateId,
+    name: typeof template.name === "string" ? template.name.trim() : template.name,
+    description: typeof template.description === "string" ? template.description.trim() : template.description,
     syncGoogleDrive: !!template.syncGoogleDrive,
     syncGoogleSheets: !!template.syncGoogleSheets,
     active: template.active !== false,

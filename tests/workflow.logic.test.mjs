@@ -8,6 +8,7 @@ const {
   DEFAULT_WORKFLOW_TEMPLATES,
   validateWorkflowTemplate,
   normalizeWorkflowTemplate,
+  getDefaultWorkflowTemplates,
 } = workflowLogic;
 
 test("document type registry exposes MVP standalone document kinds", () => {
@@ -66,4 +67,98 @@ test("template validation rejects unsupported document kinds", () => {
     name: "bad",
     documentSteps: [{ documentKind: "unknown_doc" }],
   }), ["ระบุรหัส template", "พบประเภทเอกสารที่ยังไม่รองรับ: unknown_doc"]);
+});
+
+test("every default workflow template has the document steps specified by the design spec", () => {
+  const expectedDocumentKindsByTemplateId = {
+    stock_no_tax_invoice_company_bank: [
+      "purchase_order",
+      "substitute_receipt",
+      "payment_voucher",
+      "goods_receipt",
+    ],
+    stock_no_tax_invoice_director_transfer: [
+      "purchase_order",
+      "substitute_receipt",
+      "expense_request",
+      "payment_voucher",
+      "goods_receipt",
+    ],
+    director_expense_transfer: [
+      "expense_request",
+      "substitute_receipt",
+      "payment_voucher",
+    ],
+    director_expense_cash: [
+      "expense_request",
+      "cash_spend_declaration",
+      "substitute_receipt",
+      "payment_voucher",
+    ],
+    outsource_expense_cash: [
+      "expense_request",
+      "cash_spend_declaration",
+      "substitute_receipt",
+      "payment_voucher",
+      "payee_acknowledgement",
+    ],
+    outsource_expense_transfer: [
+      "expense_request",
+      "substitute_receipt",
+      "payment_voucher",
+      "payee_acknowledgement",
+    ],
+  };
+
+  const actualDocumentKindsByTemplateId = Object.fromEntries(
+    DEFAULT_WORKFLOW_TEMPLATES.map((template) => [
+      template.templateId,
+      template.documentSteps.map((step) => step.documentKind),
+    ]),
+  );
+
+  assert.deepEqual(actualDocumentKindsByTemplateId, expectedDocumentKindsByTemplateId);
+});
+
+test("every default workflow template has contiguous sequential step IDs", () => {
+  for (const template of DEFAULT_WORKFLOW_TEMPLATES) {
+    const expectedStepIds = template.documentSteps.map((_, index) => `step-${String(index + 1).padStart(3, "0")}`);
+    assert.deepEqual(template.documentSteps.map((step) => step.stepId), expectedStepIds, `template ${template.templateId} has non-contiguous step IDs`);
+  }
+});
+
+test("template normalization trims whitespace-only text fields to empty strings", () => {
+  const normalized = normalizeWorkflowTemplate({
+    templateId: "   ",
+    name: "   ",
+    description: "   ",
+    documentSteps: [{ documentKind: "purchase_order" }],
+  }, { now: () => "2026-09-06T10:00:00.000Z" });
+
+  assert.equal(normalized.templateId, "");
+  assert.equal(normalized.name, "");
+  assert.equal(normalized.description, "");
+});
+
+test("getDefaultWorkflowTemplates returns a deep copy that cannot corrupt the shared seed", () => {
+  const first = getDefaultWorkflowTemplates();
+  first.push({ templateId: "injected" });
+  first[0].templateId = "mutated";
+  first[0].documentSteps.push({ stepId: "step-999", documentKind: "purchase_order" });
+
+  const second = getDefaultWorkflowTemplates();
+  assert.deepEqual(second.map((item) => item.templateId), [
+    "stock_no_tax_invoice_company_bank",
+    "stock_no_tax_invoice_director_transfer",
+    "director_expense_transfer",
+    "director_expense_cash",
+    "outsource_expense_cash",
+    "outsource_expense_transfer",
+  ]);
+  assert.deepEqual(second[0].documentSteps.map((step) => step.documentKind), [
+    "purchase_order",
+    "substitute_receipt",
+    "payment_voucher",
+    "goods_receipt",
+  ]);
 });
