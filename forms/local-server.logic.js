@@ -1,4 +1,4 @@
-const { copyFile, mkdir, readdir, readFile, stat, writeFile } = require("node:fs/promises");
+const { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } = require("node:fs/promises");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -1672,7 +1672,7 @@ async function completeSubstituteReceipt({
   };
 }
 
-async function writeWorkflowDocumentFiles(rootDir, payload) {
+async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {}) {
   const absoluteFolderPath = path.join(rootDir, payload.folderPath);
   const dataDir = path.join(absoluteFolderPath, "data");
   const workingMdDir = path.join(absoluteFolderPath, "working-md");
@@ -1681,6 +1681,17 @@ async function writeWorkflowDocumentFiles(rootDir, payload) {
   await mkdir(dataDir, { recursive: true });
   await mkdir(workingMdDir, { recursive: true });
   await mkdir(pdfDir, { recursive: true });
+
+  // Last chance to refuse before the commit write below. Callers (see
+  // saveWorkflowDocument) pass a hook that re-reads the on-disk status: the
+  // three mkdir calls above are each an awaited event-loop yield a concurrent
+  // .../complete request can land in, so the check that decides whether this
+  // write may proceed must run *after* them, immediately before the commit —
+  // otherwise a completion landing during those mkdirs would still get
+  // silently reverted by this write.
+  if (beforeCommit) {
+    await beforeCommit();
+  }
 
   const dataPath = path.join(dataDir, "workflow-document.json");
   await writeFile(dataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -1771,10 +1782,35 @@ function assertPathWithinDirectory(baseDir, targetPath, message) {
   return resolvedTarget;
 }
 
+// Thrown by saveWorkflowDocument's assertNotCompletedOnDisk guard below. Kept
+// as a shared constant so saveWorkflowDocument can recognize *this specific*
+// refusal (as opposed to, say, a PDF-generation failure) when deciding whether
+// a failed attempt needs to clean up raw files it just wrote.
+const WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE = "ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้";
+
 async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
     throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
   }
+
+  // Re-reads the stored status from disk and refuses if it has become
+  // "completed". Called twice: once up front, before any raw evidence file is
+  // written (so a save that is already doomed never leaves an orphaned file
+  // behind, and the common case fails fast and cheaply); and again as the
+  // beforeCommit hook passed to writeWorkflowDocumentFiles, immediately before
+  // the actual JSON commit write, to close the TOCTOU window a concurrent
+  // .../complete request could otherwise land in during the mkdir calls that
+  // precede that commit. The route's own early check (in local-server.mjs)
+  // stays too, for a fast, clear error before this function is even called.
+  const assertNotCompletedOnDisk = async () => {
+    if (!payload.documentNo) return;
+    const currentOnDisk = await getWorkflowDocument(rootDir, payload.documentKind, payload.documentNo);
+    if (currentOnDisk?.status === "completed") {
+      throw new Error(WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE);
+    }
+  };
+
+  await assertNotCompletedOnDisk();
 
   const existingEvidenceFiles = payload.evidenceFiles ?? {};
   // Count against the same sanitized slug buildWorkflowDocumentRawFileName uses
@@ -1805,6 +1841,7 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   const rawDir = path.join(absoluteFolderPath, "raw");
   await mkdir(rawDir, { recursive: true });
 
+  const writtenRawPaths = [];
   for (const write of preparedUploads.writes) {
     const targetPath = assertPathWithinDirectory(
       rawDir,
@@ -1812,26 +1849,23 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
       "ชื่อไฟล์แนบไม่ถูกต้อง",
     );
     await writeFile(targetPath, write.buffer);
+    writtenRawPaths.push(targetPath);
   }
 
-  // Close the TOCTOU window: handleWorkflowDocumentSubmission reads the existing
-  // document, confirms it is not "completed", then awaits this function — which
-  // does its own mkdir/writeFile/PDF-generation work before this point. A
-  // concurrent .../complete request can land in that window and complete the
-  // document from underneath us; if we then wrote finalPayload (built from the
-  // pre-completion snapshot) unconditionally, we would silently revert the
-  // freshly completed record back to its old status. Re-read the stored status
-  // right before the commit — as close to it as possible — and refuse if the
-  // document has since become completed. The route's own early check stays too,
-  // for a fast, clear error in the common (non-racing) case.
-  if (finalPayload.documentNo) {
-    const currentOnDisk = await getWorkflowDocument(rootDir, finalPayload.documentKind, finalPayload.documentNo);
-    if (currentOnDisk?.status === "completed") {
-      throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
+  let pdfFiles;
+  try {
+    ({ pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload, { beforeCommit: assertNotCompletedOnDisk }));
+  } catch (error) {
+    // Only the completed-guard refusal (not, say, a PDF-generation failure —
+    // which happens *after* the JSON commit succeeds, so the raw files it
+    // references are no longer orphans) means this attempt's raw files were
+    // never committed to anything. Clean those up so a refused save — including
+    // a naive client retry — never leaves an unreferenced file behind.
+    if (error.message === WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE && writtenRawPaths.length) {
+      await Promise.all(writtenRawPaths.map((targetPath) => rm(targetPath, { force: true }).catch(() => {})));
     }
+    throw error;
   }
-
-  const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload);
 
   return {
     documentKind: finalPayload.documentKind,
@@ -2066,4 +2100,5 @@ module.exports = {
   saveWorkflowDocument,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
+  writeWorkflowDocumentFiles,
 };

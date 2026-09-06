@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -622,6 +623,129 @@ test("saveWorkflowDocument re-checks status immediately before writing and refus
     assert.equal(afterAttempt.status, "completed", "the refused save must not have reverted the completed status");
     assert.equal(afterAttempt.completedBy, "คนอื่น", "the refused save must not have touched the real completion audit stamp");
     assert.equal(afterAttempt.title, "เอกสารก่อนเสร็จสิ้น", "the refused save must not have overwritten the stored title");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveWorkflowDocument refused by the completed guard leaves no orphaned raw evidence file behind", async () => {
+  // A save that the completed-on-disk guard refuses must not have left any new
+  // file in the document's raw/ folder — such a file would be unreferenced by
+  // the persisted evidenceFiles metadata (the refused save never committed),
+  // and every retry of a naive client would leak another one. Drive it the
+  // same deterministic way as the race test above: mutate the stored JSON on
+  // disk to "completed" behind saveWorkflowDocument's back, then attempt an
+  // edit that also uploads a new evidence file (mirroring the reviewer's
+  // sneaky_001.jpg repro), and assert the raw folder ends up exactly as it
+  // started.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const created = await serverLogic.saveWorkflowDocument({
+      rootDir,
+      payload: docLogic.buildWorkflowDocumentPayload({
+        documentKind: "purchase_order",
+        sequence: "1",
+        accountingMonth: "2026-09",
+        documentDate: "2026-09-06",
+        title: "เอกสารก่อนเสร็จสิ้น",
+        businessPurpose: "ทดสอบ",
+        lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+      }, { now: () => "2026-09-06T12:00:00.000Z" }),
+      uploads: [],
+    });
+
+    const preCompletionRecord = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", created.documentNo);
+    const rawDir = join(rootDir, preCompletionRecord.folderPath, "raw");
+    const rawFilesBefore = existsSync(rawDir) ? (await readdir(rawDir)).sort() : [];
+
+    const stalePayload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "พยายามแนบไฟล์ระหว่างแข่งขัน",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการแก้ไข", quantity: "2", unitCost: "20" }],
+      documentNo: preCompletionRecord.documentNo,
+      folderPath: preCompletionRecord.folderPath,
+      status: preCompletionRecord.status,
+      statusHistory: preCompletionRecord.payload.statusHistory,
+      completedAt: preCompletionRecord.payload.completedAt,
+      completedBy: preCompletionRecord.payload.completedBy,
+      createdAt: preCompletionRecord.payload.createdAt,
+    }, { now: () => "2026-09-06T12:05:00.000Z" });
+
+    const { readFile: readFileAsync } = await import("node:fs/promises");
+    const dataPath = join(rootDir, preCompletionRecord.folderPath, "data", "workflow-document.json");
+    const onDisk = JSON.parse(await readFileAsync(dataPath, "utf8"));
+    onDisk.status = "completed";
+    onDisk.statusLabel = docLogic.WORKFLOW_DOCUMENT_STATUS_LABELS.completed;
+    onDisk.completedAt = "2026-09-06T12:03:00.000Z";
+    onDisk.completedBy = "คนอื่น";
+    onDisk.statusHistory = [
+      ...onDisk.statusHistory,
+      { fromStatus: "draft", toStatus: "completed", changedAt: "2026-09-06T12:03:00.000Z", note: "completed" },
+    ];
+    await writeFile(dataPath, `${JSON.stringify(onDisk, null, 2)}\n`, "utf8");
+
+    const sneakyUploads = [
+      { evidenceKey: "evidence", originalName: "sneaky.jpg", buffer: Buffer.from("sneaky"), type: "image/jpeg" },
+    ];
+
+    await assert.rejects(
+      () => serverLogic.saveWorkflowDocument({ rootDir, payload: stalePayload, uploads: sneakyUploads }),
+      /ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้/,
+      "a save built from a stale pre-completion snapshot must be refused once the document has since been completed",
+    );
+
+    const rawFilesAfter = existsSync(rawDir) ? (await readdir(rawDir)).sort() : [];
+    assert.deepEqual(rawFilesAfter, rawFilesBefore, "a refused save must not leave any new file in raw/");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("writeWorkflowDocumentFiles checks beforeCommit immediately before the json commit, after the directories are created", async () => {
+  // Issue: the guard used to live only in saveWorkflowDocument, several awaited
+  // mkdir calls (and a markdown write) away from the actual commit write in
+  // writeWorkflowDocumentFiles. Each await is an event-loop yield a concurrent
+  // .../complete request can land in. This test exercises writeWorkflowDocumentFiles
+  // directly (it is not deterministically reachable through saveWorkflowDocument's
+  // public API without real concurrency) to confirm: the mkdir calls still run,
+  // beforeCommit is awaited immediately after them, and if it refuses, the json
+  // commit file is never written.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "ทดสอบ beforeCommit",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+    payload.folderPath = "documents/purchase_order/2026-09/PO-TEST-0001";
+
+    let beforeCommitCalled = false;
+    await assert.rejects(
+      () => serverLogic.writeWorkflowDocumentFiles(rootDir, payload, {
+        beforeCommit: async () => {
+          beforeCommitCalled = true;
+          throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
+        },
+      }),
+      /ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้/,
+    );
+
+    assert.equal(beforeCommitCalled, true, "beforeCommit must be awaited before the commit write");
+
+    const dataDir = join(rootDir, payload.folderPath, "data");
+    assert.equal(existsSync(dataDir), true, "the mkdir calls must still have run before beforeCommit was checked");
+    assert.equal(
+      existsSync(join(dataDir, "workflow-document.json")),
+      false,
+      "the json commit must not be written once beforeCommit refuses",
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
