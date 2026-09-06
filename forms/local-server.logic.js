@@ -2074,9 +2074,12 @@ async function getWorkflowTemplate(rootDir, templateId) {
 }
 
 async function persistWorkflowTransaction(rootDir, transaction, childDocuments = []) {
+  if (!transaction.folderPath) {
+    throw new Error("ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  }
   const absoluteFolderPath = assertPathWithinDirectory(
     rootDir,
-    path.join(rootDir, transaction.folderPath || ""),
+    path.join(rootDir, transaction.folderPath),
     "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง",
   );
   const dataDir = path.join(absoluteFolderPath, "data");
@@ -2101,6 +2104,11 @@ async function persistWorkflowTransaction(rootDir, transaction, childDocuments =
   return absoluteFolderPath;
 }
 
+// Bounds the retry loop in startWorkflowTransaction below so a pathological
+// case (e.g. something external repeatedly pre-creating the next candidate
+// folder) fails loudly instead of spinning forever.
+const WORKFLOW_TRANSACTION_ALLOCATION_MAX_ATTEMPTS = 20;
+
 async function startWorkflowTransaction({
   rootDir,
   templateId,
@@ -2113,15 +2121,43 @@ async function startWorkflowTransaction({
     throw new Error("ไม่พบ template ที่ระบุ");
   }
 
-  const { sequence } = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
-  const transaction = buildWorkflowTransactionPayload(
-    { accountingMonth, title, sequence, template },
-    { now },
-  );
+  // Transaction numbers are allocated by scanning existing folder names for
+  // the highest sequence used so far (getNextWorkflowTransactionInfo), which
+  // is not by itself a reservation: two concurrent calls can both scan before
+  // either has written anything and both land on the same "next" number.
+  // mkdir with recursive:false turns folder creation into the reservation
+  // itself — it fails with EEXIST if the folder already exists, so only one
+  // concurrent caller can win a given transaction folder. On EEXIST we
+  // re-scan (another caller just took that sequence number) and retry with
+  // whatever the next number now is.
+  const monthDir = getWorkflowTransactionMonthDir(rootDir, accountingMonth);
+  await mkdir(monthDir, { recursive: true });
 
-  await persistWorkflowTransaction(rootDir, transaction, []);
+  for (let attempt = 0; attempt < WORKFLOW_TRANSACTION_ALLOCATION_MAX_ATTEMPTS; attempt += 1) {
+    const { sequence } = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
+    const transaction = buildWorkflowTransactionPayload(
+      { accountingMonth, title, sequence, template },
+      { now },
+    );
 
-  return transaction;
+    const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
+    try {
+      await mkdir(absoluteFolderPath, { recursive: false });
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+
+    // The folder is now reserved under this exact transaction.folderPath, so
+    // persistWorkflowTransaction writes into the same folder we just claimed.
+    await persistWorkflowTransaction(rootDir, transaction, []);
+
+    return transaction;
+  }
+
+  throw new Error("ไม่สามารถออกเลขที่ธุรกรรมได้ กรุณาลองใหม่อีกครั้ง");
 }
 
 async function findAllWorkflowTransactions(rootDir) {
@@ -2234,17 +2270,17 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
 }
 
 async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fileName }) {
-  if (!transactionNo) throw new Error("Missing transaction number");
-  if (!["pdf"].includes(section)) throw new Error("Invalid file section");
+  if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
+  if (!["pdf"].includes(section)) throw new Error("ส่วนไฟล์ไม่ถูกต้อง");
   if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
-    throw new Error("Invalid file name");
+    throw new Error("ชื่อไฟล์ไม่ถูกต้อง");
   }
 
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
-  if (!transaction) throw new Error("Workflow transaction not found");
+  if (!transaction) throw new Error("ไม่พบธุรกรรม");
 
   const baseDir = path.resolve(rootDir, transaction.folderPath, section);
-  const absolutePath = assertPathWithinDirectory(baseDir, path.resolve(baseDir, fileName), "Invalid file name");
+  const absolutePath = assertPathWithinDirectory(baseDir, path.resolve(baseDir, fileName), "ชื่อไฟล์ไม่ถูกต้อง");
 
   return { absolutePath, fileName, section };
 }
@@ -2372,6 +2408,7 @@ module.exports = {
   listWorkflowTemplates,
   listWorkflowTransactions,
   parseMultipartForm,
+  persistWorkflowTransaction,
   receiveSubstituteReceiptStock,
   refreshWorkflowTransaction,
   saveExpenseDraft,

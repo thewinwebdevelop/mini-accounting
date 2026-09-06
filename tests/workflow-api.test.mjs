@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -60,6 +60,143 @@ test("getNextWorkflowTransactionInfo scans workflow transaction folders", async 
       sequence: "4",
       transactionNo: "TXN-2026-09-0004",
     });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("getNextWorkflowTransactionInfo ignores unrelated directory names in the month folder", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const monthDir = join(rootDir, "documents", "2026", "09", "workflow-transactions");
+    await mkdir(join(monthDir, "TXN-2026-09-0002_something"), { recursive: true });
+    await mkdir(join(monthDir, ".DS_Store-ish-folder"), { recursive: true });
+    await mkdir(join(monthDir, "REQ-2026-09-0001_unrelated-prefix"), { recursive: true });
+    assert.deepEqual(await serverLogic.getNextWorkflowTransactionInfo(rootDir, "2026-09"), {
+      sequence: "3",
+      transactionNo: "TXN-2026-09-0003",
+    });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("startWorkflowTransaction allocates sequential numbers one after another within the same month", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const first = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ธุรกรรมที่หนึ่ง",
+    });
+    const second = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ธุรกรรมที่สอง",
+    });
+    const third = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ธุรกรรมที่สาม",
+    });
+
+    assert.deepEqual(
+      [first.transactionNo, second.transactionNo, third.transactionNo],
+      ["TXN-2026-09-0001", "TXN-2026-09-0002", "TXN-2026-09-0003"],
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("startWorkflowTransaction allocates distinct numbers when two calls race for the same month (concurrent, no folder yet)", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const [first, second] = await Promise.all([
+      serverLogic.startWorkflowTransaction({
+        rootDir,
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ธุรกรรมพร้อมกัน",
+      }),
+      serverLogic.startWorkflowTransaction({
+        rootDir,
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ธุรกรรมพร้อมกัน",
+      }),
+    ]);
+
+    // The core defect: without a reservation, both concurrent calls resolve
+    // the same "next" sequence number and both persist under it.
+    assert.notEqual(first.transactionNo, second.transactionNo);
+
+    const [reloadedFirst, reloadedSecond] = await Promise.all([
+      serverLogic.getWorkflowTransaction(rootDir, first.transactionNo),
+      serverLogic.getWorkflowTransaction(rootDir, second.transactionNo),
+    ]);
+    assert.ok(reloadedFirst, "first transaction must be independently retrievable by its own number");
+    assert.ok(reloadedSecond, "second transaction must be independently retrievable by its own number");
+    assert.equal(reloadedFirst.transactionNo, first.transactionNo);
+    assert.equal(reloadedSecond.transactionNo, second.transactionNo);
+
+    const monthDir = join(rootDir, "documents", "2026", "09", "workflow-transactions");
+    const folders = await readdir(monthDir);
+    assert.equal(folders.length, 2, "two distinct transaction folders must exist on disk");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("persistWorkflowTransaction rejects an empty or missing folderPath instead of writing into rootDir", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    await assert.rejects(
+      () => serverLogic.persistWorkflowTransaction(rootDir, { transactionNo: "TXN-2026-09-0001", folderPath: "" }, []),
+      /ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง/,
+    );
+    await assert.rejects(
+      () => serverLogic.persistWorkflowTransaction(rootDir, { transactionNo: "TXN-2026-09-0001" }, []),
+      /ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง/,
+    );
+
+    // Neither rejected attempt may have created anything directly under rootDir.
+    const rootEntries = await readdir(rootDir).catch(() => []);
+    assert.deepEqual(rootEntries, []);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("getWorkflowTransactionFile raises Thai error messages", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+
+    await assert.rejects(
+      () => serverLogic.getWorkflowTransactionFile({ rootDir, transactionNo: "", section: "pdf", fileName: "a.pdf" }),
+      /ไม่มีเลขที่ธุรกรรม/,
+    );
+    await assert.rejects(
+      () => serverLogic.getWorkflowTransactionFile({ rootDir, transactionNo: txn.transactionNo, section: "data", fileName: "a.pdf" }),
+      /ส่วนไฟล์ไม่ถูกต้อง/,
+    );
+    await assert.rejects(
+      () => serverLogic.getWorkflowTransactionFile({ rootDir, transactionNo: txn.transactionNo, section: "pdf", fileName: "../a.pdf" }),
+      /ชื่อไฟล์ไม่ถูกต้อง/,
+    );
+    await assert.rejects(
+      () => serverLogic.getWorkflowTransactionFile({ rootDir, transactionNo: "TXN-2026-09-9999", section: "pdf", fileName: "a.pdf" }),
+      /ไม่พบธุรกรรม/,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
