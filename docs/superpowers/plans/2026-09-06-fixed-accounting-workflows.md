@@ -21,8 +21,8 @@
 - Workflow next-step unlocking is based on child document completion, not a separate workflow approval state.
 - Documents must be created in strict template order. A step after the first incomplete step is `blocked`, even when that later step's own child document already exists and independently reports `completed` (e.g. a document created out of band, or a stale/duplicate document number reused from another transaction). This is not only a UI affordance: the server must refuse to let a document be started for any step that is not the transaction's currently unlocked step. `deriveWorkflowProgress()` (Task 2) computes the block; the `POST /api/workflow-transactions/:transactionNo/start-document/:stepId` handler (Task 10) enforces it.
 - Existing standalone pages must still work without `transactionNo`.
-- Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`, Task 6) lets the user reuse `payee`, `purpose`, `lines`, or `totals` from an earlier `completed` child document in the same transaction when opening a later one, per group, never all-or-nothing. It is built from one canonical transaction context (not N-by-N per-kind mappings) via a `toWorkflowContext(payload)` / `applyWorkflowContext(context, groups)` adapter pair per document kind. When two or more `completed` documents supply the same group, the most recently completed one wins that group; an earlier `completed` document only fills a group no later document supplied. Only documents whose workflow status (per `normalizeDocumentWorkflowStatus()`, Task 2) is `completed` are ever used as a source. The following fields are never copied by any group, on any document kind: `documentNo`, `documentDate` (a prefilled document always defaults its own date to today, never the source document's date), `status`, `statusHistory`, `completedAt`, `completedBy`, signature fields, and evidence/raw file lists — the canonical group shapes structurally have no room for these fields, so no adapter ever emits them. `goods_receipt` line **quantities** are additionally never prefilled (they must reflect goods actually received, so a short delivery stays visible) even though `goods_receipt` line descriptions and stock SKUs may be prefilled. Every prefilled value remains a fully editable default, never a lock, and the UI marks prefilled fields with the source document number that supplied them.
-- Not every document kind can source or receive every group: `expense_request`'s `expenseLines` are itemized by amount/VAT/withholding-tax, not by quantity × unit cost, so `expense_request` never sources or receives the `lines` group; conversely, every other kind (`purchase_order`, `substitute_receipt`, `payment_voucher`, `cash_spend_declaration`, `payee_acknowledgement`, `goods_receipt`) always derives its own totals from its lines when saved, so the `totals` group is only ever offered for `expense_request`. See Task 6 for the full per-kind field mapping.
+- Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`, Task 6) lets the user reuse `payee`, `purpose`, or `lines` from an earlier `completed` child document in the same transaction when opening a later one, per group, never all-or-nothing. It is built from one canonical transaction context (not N-by-N per-kind mappings) via a `toWorkflowContext(payload)` / `applyWorkflowContext(context, groups)` adapter pair per document kind. When two or more `completed` documents supply the same group, the most recently completed one wins that group; an earlier `completed` document only fills a group no later document supplied. Only documents whose workflow status (per `normalizeDocumentWorkflowStatus()`, Task 2) is `completed` are ever used as a source. The following fields are never copied by any group, on any document kind: `documentNo`, `documentDate` (a prefilled document always defaults its own date to today, never the source document's date), `status`, `statusHistory`, `completedAt`, `completedBy`, signature fields, and evidence/raw file lists — the canonical group shapes structurally have no room for these fields, so no adapter ever emits them. `goods_receipt` line **quantities** are additionally never prefilled (they must reflect goods actually received, so a short delivery stays visible) even though `goods_receipt` line descriptions and stock SKUs may be prefilled. Every prefilled value remains a fully editable default, never a lock, and the UI marks prefilled fields with the source document number that supplied them.
+- **Decision D10** (`.superpowers/sdd/progress.md`, user-approved, overrides the original Task 6 design): `expense_request` **does** source and receive the `lines` group, mapped line by line, because the product owner rejected the original single-seeded-placeholder-line design for `totals`. Sourcing: each `expenseLines` entry becomes one canonical line (`quantity` fixed at `"1"`, `unitCost` and `lineTotal` both set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`). Receiving: each canonical line becomes one `expenseLines` entry (`description` carried over verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, `vatAmount`/`withholdingTax` fixed at `"0.00"` — these six templates are all no-tax-invoice cases, so VAT is genuinely zero). The canonical `quantity`/`unitCost` have no target field on an expense line and are dropped. Every document kind can now source and receive all three tickable groups uniformly — there is no longer any kind-specific exclusion. **Consequence: `totals` is no longer a group at all**, tickable or otherwise — every kind (including `expense_request`, now that it derives totals from its own `expenseLines` the same way every other kind derives totals from its `lines`) recomputes its totals from its own lines on save, so an independently-carried `totals` value would only ever go stale. The canonical context and every group list in this plan carry exactly three groups: `payee`, `purpose`, `lines`. See Task 6 for the full per-kind field mapping.
 - `goods_receipt` is a lightweight standalone document (route `/workflow-document?documentKind=goods_receipt`, prefix `GR-YYYY-MM-0001`), exactly like `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement`. It is NOT the existing `/inventory-purchase-in` route. Do not modify the inventory purchase-in system (`forms/inventory.logic.js`, `createPurchaseInMovement()`) in any way while implementing this plan — stock movements remain owned exclusively by the existing `receiveSubstituteReceiptStock()` flow, which is unrelated to workflow document completion.
 - `substitute_receipt` workflow completion is hybrid, keyed on `receiptType`: native `received` reports workflow `completed` only for `receiptType === "stock_purchase"`; native `approved` reports workflow `completed` only for `receiptType === "general_expense"`. Every other native `approved`, and missing/unknown status, reports workflow `in_progress`. The explicit `completeSubstituteReceipt()` action is available regardless of `receiptType` and always stamps native `status: "completed"`.
 - Workflow transaction completion and sync are Drive-only, driven by the template's `syncGoogleDrive` toggle snapshotted onto the transaction: Drive sync runs automatically right after all steps are `completed` when the toggle is `true`; when the toggle is `false`, the transaction page exposes a manual "Sync Drive" button instead. Manual sync must remain callable independent of the toggle value once the transaction is completed. The workflow layer never writes a Google Sheets row — see the D6 deviation note below.
@@ -55,7 +55,7 @@
 - Create `forms/workflow-return-link.browser.js`
   - Tiny, dependency-free helper exposing `sanitizeWorkflowReturnTo(value)` (validates the value is a same-origin relative path). Loaded via its own `<script>` tag by `forms/expense-request.html`, `forms/substitute-receipt.html`, and `forms/workflow-document.html` before their own inline/controller scripts run, so all three pages validate `returnTo` the same way without each hand-rolling the check or creating a dependency on another page's browser-logic file.
 - Create `forms/workflow-prefill.logic.js`
-  - Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`): one canonical transaction context plus a `toWorkflowContext(payload)`/`applyWorkflowContext(context, groups)` adapter pair per document kind (14 functions for the 7 kinds), `buildWorkflowPrefillContext()` implementing the most-recently-completed-wins precedence rule, and `RECEIVABLE_PREFILL_GROUPS` stating which of `payee`/`purpose`/`lines`/`totals` each kind can receive. Pure — no filesystem, no network, no bare `new Date()`. Same CommonJS/`window` dual-export tail as the other `forms/*.logic.js` modules, loadable client-side like `forms/workflow-return-link.browser.js`.
+  - Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`, revised by decision D10): one canonical transaction context plus a `toWorkflowContext(payload)`/`applyWorkflowContext(context, groups)` adapter pair per document kind (14 functions for the 7 kinds), `buildWorkflowPrefillContext()` implementing the most-recently-completed-wins precedence rule, and `RECEIVABLE_PREFILL_GROUPS` stating which of `payee`/`purpose`/`lines` each kind can receive (D10: uniformly all three, for every kind — `totals` is no longer a group). Pure — no filesystem, no network, no bare `new Date()`. Same CommonJS/`window` dual-export tail as the other `forms/*.logic.js` modules, loadable client-side like `forms/workflow-return-link.browser.js`.
 - Create `scripts/generate_workflow_packet_pdf.py`
   - Generates a transaction packet/index PDF that links/summarizes child document PDFs and raw files.
 - Create `scripts/generate_workflow_document_pdf.py`
@@ -899,7 +899,7 @@ Markup:
 Behavior in `forms/workflow-document.logic.browser.js`:
 
 - `fetchWorkflowPrefill({ transactionNo, documentKind, stepId })` calls the endpoint above and returns `null` on any error (network failure, 404 before Task 10 lands, or a 400 from a step mismatch) instead of throwing, so a missing/not-yet-built endpoint never blocks the form from loading.
-- `renderPrefillBanner(prefill)` is only called when `prefill.availableGroups.length > 0`; it renders one checkbox per group in `availableGroups` (Thai labels: `payee` → "ผู้รับเงิน/คู่ค้า", `purpose` → "วัตถุประสงค์", `lines` → "รายการ", `totals` → "ยอดเงิน"), each labeled with its source document number from `prefill.sources[group]` (e.g. "ผู้รับเงิน/คู่ค้า (จาก PO-2026-09-0001)"), and un-hides `#workflowPrefillBanner`.
+- `renderPrefillBanner(prefill)` is only called when `prefill.availableGroups.length > 0`; it renders one checkbox per group in `availableGroups` (Thai labels: `payee` → "ผู้รับเงิน/คู่ค้า", `purpose` → "วัตถุประสงค์", `lines` → "รายการ" — three groups total, per decision D10; there is no `totals` group), each labeled with its source document number from `prefill.sources[group]` (e.g. "ผู้รับเงิน/คู่ค้า (จาก PO-2026-09-0001)"), and un-hides `#workflowPrefillBanner`.
 - Clicking `#workflowPrefillApply` reads the checked groups, calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(prefill.context, documentKind, checkedGroups)`, merges the returned patch onto the (still-blank) form fields, and visibly marks each populated field with its source document number (a small caption/badge next to the field, not a `readonly`/`disabled` attribute — prefilled values stay fully editable, per the never-a-lock rule in Global Constraints).
 - Clicking `#workflowPrefillDismiss` hides the banner without touching any field.
 
@@ -1172,30 +1172,35 @@ git commit -m "feat: store workflow templates and transactions"
 
 > **Deviation note (D8):** Cross-document prefill does not appear in `docs/superpowers/specs/2026-09-06-fixed-accounting-workflows-design.md` at all — it is a pure product-owner addition on top of the spec's existing standalone-document-reuse architecture. Nothing in the spec conflicts with it, so this is an addition, not a deviation from stated spec text. The spec file is left unedited, consistent with how this plan already treats D6.
 
+> **Revision note (D10):** the first cut of this task made `expense_request` the only kind that could receive a `totals` group (applied as one seeded placeholder expense line) and the only kind that could never source or receive `lines`. The product owner rejected that in favor of `expense_request` participating in `lines` like every other kind, mapped line by line in both directions. This revision applies that ruling: `totals` is gone as a group entirely, and the field table, `RECEIVABLE_PREFILL_GROUPS`, the adapters, and the tests below all reflect the line-by-line mapping. Everything else about this task (the canonical-context design, the precedence rule, the never-auto-copied list, the deferred route wiring in Task 10) is unchanged.
+
 **Design:** one canonical transaction context, not N-by-N pairwise mappings. Seven document kinds would mean 42 mappings; instead each kind gets exactly two small adapters — `toWorkflowContext(payload)` and `applyWorkflowContext(context, groups)` — for 14 functions total, growing linearly as new kinds are added.
 
-Canonical shape, reconciled against the real payload builders (`buildExpensePayload()` in `forms/expense-request.logic.js`, `buildSubstituteReceiptPayload()` in `forms/substitute-receipt.logic.js`, and the lightweight `buildWorkflowDocumentPayload()` shell shared by `purchase_order`/`payment_voucher`/`cash_spend_declaration`/`payee_acknowledgement`/`goods_receipt`, spec'd in Task 4):
+Canonical shape, reconciled against the real payload builders (`buildExpensePayload()`/`calculateExpenseTotals()` in `forms/expense-request.logic.js`, `buildSubstituteReceiptPayload()` in `forms/substitute-receipt.logic.js`, and the lightweight `buildWorkflowDocumentPayload()` shell shared by `purchase_order`/`payment_voucher`/`cash_spend_declaration`/`payee_acknowledgement`/`goods_receipt`, spec'd in Task 4):
 
 ```
 {
   payee:   { name, taxId, address, bankName, accountNo },
   purpose: { title, businessPurpose },
   lines:   [{ description, quantity, unitCost, lineTotal, stockSkuId }],
-  totals:  { amountBeforeVat, vatAmount, withholdingTax, grossAmount, netPayment },
   parties: { requesterName, requesterRole },
   sources: { payee: "PO-2026-09-0001", lines: "SR-2026-09-0001", ... },
 }
 ```
 
-`payee`, `purpose`, `lines`, `totals` are the four groups the user ticks independently (checkboxes in the UI, Task 4/Task 7). `parties` and `sources` are **not** user-tickable: `parties` (requester name/role) always rides along automatically whenever a source document supplies it, regardless of which of the four boxes the user checks — it is low-friction metadata about who is asking, not binding document content, so there is no reason to gate it behind a checkbox. `sources` is metadata for the UI (which document number supplied which group) and is always present.
+There is deliberately no `totals` group (D10). Every kind — `expense_request` included, now that it maps line-for-line like the rest — recomputes its own totals from its own lines when it saves (`calculateExpenseTotals()` for `expense_request`, the equivalent line-sum for every other kind), so an independently-carried total would only ever go stale between prefill and save. A caller that wants to *show* a reference total (e.g. "the source document totalled 1,070.00 บาท") can already do so today by looking up the source document via `sources.lines` and reading its own stored `totals` — nothing in this task needs to duplicate that number into the canonical context to make it displayable.
+
+`payee`, `purpose`, `lines` are the three groups the user ticks independently (checkboxes in the UI, Task 4/Task 7). `parties` and `sources` are **not** user-tickable: `parties` (requester name/role) always rides along automatically whenever a source document supplies it, regardless of which of the three boxes the user checks — it is low-friction metadata about who is asking, not binding document content, so there is no reason to gate it behind a checkbox. `sources` is metadata for the UI (which document number supplied which group) and is always present.
 
 Field-shape reconciliation, per kind — this is the actual field mapping the adapters below implement:
 
-| Kind | `payee` source fields | `purpose` source fields | `lines` source fields | `totals` source fields | `parties` source fields |
-|---|---|---|---|---|---|
-| `expense_request` | `paymentTargetName`→name, `paymentBankName`→bankName, `paymentAccountNo`→accountNo (no `taxId`/`address` — not collected) | `requestTitle`→title, `businessPurpose` | **none** — `expenseLines` are amount/VAT/withholding-tax entries, not quantity×unit-cost lines | `totals.{amountBeforeVat,vatAmount,withholdingTax,grossAmount,netPayment}` (full) | `requesterName`, `requesterRole` |
-| `substitute_receipt` | `payeeName`→name, `payeeTaxId`→taxId (no `bankName`/`accountNo` — only `paymentChannel`/`paymentReference`, not structured bank fields) | `receiptTitle`→title, `businessPurpose` | `lines[].{description,quantity,unitCost,lineTotal,stockSkuId}` (drops `vendorSku` — not part of the canonical shape) | `totals.totalAmount`→grossAmount only (no VAT/withholding breakdown) | **none** — no requester field on this document |
-| `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement` / `goods_receipt` (generic `workflow-document` shell) | `payeeName`→name only (the generic shell, as spec'd in Task 4, has no `taxId`/`address`/`bankName`/`accountNo` fields — a known limitation of the lightweight shell, not of this adapter) | `title`, `businessPurpose` | `lines[].{description,quantity,unitCost,lineTotal,stockSkuId}` (`stockSkuId` is a small addition to Task 4's line shape — see the note at the end of this task) | **not receivable** (see `RECEIVABLE_PREFILL_GROUPS` below) — always derived from `lines` when saved | `requesterName` only (no `requesterRole` field on the generic shell) |
+| Kind | `payee` source fields | `purpose` source fields | `lines` source fields | `parties` source fields |
+|---|---|---|---|---|
+| `expense_request` | `paymentTargetName`→name, `paymentBankName`→bankName, `paymentAccountNo`→accountNo (no `taxId`/`address` — not collected) | `requestTitle`→title, `businessPurpose` | `expenseLines[].{description,amountBeforeVat}` → one canonical line each: `description` verbatim, `quantity` fixed at `"1"`, `unitCost` and `lineTotal` both set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`. `vatAmount`/`withholdingTax` are dropped — the canonical line shape has no slot for them (D10) | `requesterName`, `requesterRole` |
+| `substitute_receipt` | `payeeName`→name, `payeeTaxId`→taxId (no `bankName`/`accountNo` — only `paymentChannel`/`paymentReference`, not structured bank fields) | `receiptTitle`→title, `businessPurpose` | `lines[].{description,quantity,unitCost,lineTotal,stockSkuId}` (drops `vendorSku` — not part of the canonical shape) | **none** — no requester field on this document |
+| `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement` / `goods_receipt` (generic `workflow-document` shell) | `payeeName`→name only (the generic shell, as spec'd in Task 4, has no `taxId`/`address`/`bankName`/`accountNo` fields — a known limitation of the lightweight shell, not of this adapter) | `title`, `businessPurpose` | `lines[].{description,quantity,unitCost,lineTotal,stockSkuId}` (`stockSkuId` is a small addition to Task 4's line shape — see the note at the end of this task) | `requesterName` only (no `requesterRole` field on the generic shell) |
+
+**`expense_request`'s receiving direction (D10):** `applyWorkflowContextToExpenseRequest()` maps `context.lines` (when the `lines` group is requested) onto `expenseLines`, one canonical line to one expense line: `description` carried over verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, and `vatAmount`/`withholdingTax` fixed at `"0.00"` — these six templates are all no-tax-invoice cases, so VAT is genuinely zero, and one row per real source line means the totals still reconcile line-for-line against the source document. The canonical `quantity`/`unitCost` have no target field on an expense line and are dropped.
 
 **Note on Task 4:** Task 4's line item shape (`{ description, quantity, unitCost }`) needs one additional optional field, `stockSkuId`, so `goods_receipt` and `purchase_order` lines can carry a stock SKU reference the way `substitute_receipt` lines already do. Task 4 is not yet implemented, so add `stockSkuId: cleanText(line.stockSkuId)` (or equivalent) to `buildWorkflowDocumentPayload()`'s per-line normalization when Task 4 is built; this task's tests assume it is there.
 
@@ -1203,11 +1208,11 @@ Field-shape reconciliation, per kind — this is the actual field mapping the ad
 
 **Never auto-copied**, on any group, any kind: `documentNo`, `documentDate` (a prefilled document's date always defaults to today via the target form's own boot logic, never the source document's date), `status`, `statusHistory`, `completedAt`, `completedBy`, signature fields, evidence/raw file lists. This list is enforced **structurally**: no group in the canonical shape has a slot for any of these fields, and no adapter's `toWorkflowContext()` ever reads them onto the context — there is no downstream filter to bypass. `goods_receipt` line **quantities** are the one additional, kind-specific exclusion: `applyWorkflowContextToGoodsReceipt()` always clears `quantity` back to `""` on every line it applies, even though `description` and `stockSkuId` carry over, because a received quantity must reflect what actually arrived — prefilling it from the purchase order would hide a short delivery.
 
-**Not every kind can receive every group.** `expense_request` never receives `lines` (no compatible shape, see the field table above). Every other kind always recomputes its own `totals` from its `lines` when its `buildXPayload()` runs, so offering an independent `totals` checkbox for those kinds would let the user set a total that stops matching the lines the moment the document is saved — `totals` is therefore only ever offered for `expense_request`, applied as one seeded expense line (see `applyWorkflowContextToExpenseRequest()` below) rather than as a raw total, so it still round-trips correctly through `calculateExpenseTotals()`. This is `RECEIVABLE_PREFILL_GROUPS`:
+**Every kind can now receive every group (D10).** The original design excluded `expense_request` from `lines` and reserved `totals` for it alone; D10 replaced both exclusions with the line-by-line mapping above, so all seven kinds now source and receive the same three groups uniformly. `RECEIVABLE_PREFILL_GROUPS` is kept as a per-kind map (rather than one flat array) purely so a future document kind that genuinely cannot support one of these groups has somewhere to say so — today every entry is identical:
 
 ```js
 const RECEIVABLE_PREFILL_GROUPS = {
-  expense_request: ["payee", "purpose", "totals"],
+  expense_request: ["payee", "purpose", "lines"],
   substitute_receipt: ["payee", "purpose", "lines"],
   purchase_order: ["payee", "purpose", "lines"],
   payment_voucher: ["payee", "purpose", "lines"],
@@ -1224,7 +1229,7 @@ const RECEIVABLE_PREFILL_GROUPS = {
 - Modify: `tests/workflow-api.test.mjs`
 
 **Interfaces:**
-- Produces: `PREFILL_GROUPS` (`["payee", "purpose", "lines", "totals"]`)
+- Produces: `PREFILL_GROUPS` (`["payee", "purpose", "lines"]`)
 - Produces: `RECEIVABLE_PREFILL_GROUPS` (map of `documentKind` -> array of receivable group names, above)
 - Produces adapters (14 functions): `expenseRequestToWorkflowContext` / `applyWorkflowContextToExpenseRequest`, `substituteReceiptToWorkflowContext` / `applyWorkflowContextToSubstituteReceipt`, `purchaseOrderToWorkflowContext` / `applyWorkflowContextToPurchaseOrder`, `paymentVoucherToWorkflowContext` / `applyWorkflowContextToPaymentVoucher`, `cashSpendDeclarationToWorkflowContext` / `applyWorkflowContextToCashSpendDeclaration`, `payeeAcknowledgementToWorkflowContext` / `applyWorkflowContextToPayeeAcknowledgement`, `goodsReceiptToWorkflowContext` / `applyWorkflowContextToGoodsReceipt`
 - Produces: `WORKFLOW_CONTEXT_ADAPTERS` (registry: `documentKind` -> `{ toWorkflowContext, applyWorkflowContext }`)
@@ -1243,7 +1248,7 @@ import test from "node:test";
 
 import workflowPrefillLogic from "../forms/workflow-prefill.logic.js";
 
-test("expense_request adapter extracts payee, purpose, totals, and parties but never lines", () => {
+test("expense_request adapter extracts payee, purpose, parties, and lines mapped from expenseLines (D10)", () => {
   const context = workflowPrefillLogic.expenseRequestToWorkflowContext({
     requestTitle: "เบิกค่าส่งของ",
     businessPurpose: "ค่าส่งสินค้า",
@@ -1252,30 +1257,31 @@ test("expense_request adapter extracts payee, purpose, totals, and parties but n
     paymentAccountNo: "1112223334",
     requesterName: "คุณต้า",
     requesterRole: "ผู้จัดการ",
-    totals: { amountBeforeVat: "100.00", vatAmount: "0.00", grossAmount: "100.00", withholdingTax: "0.00", netPayment: "100.00" },
+    expenseLines: [
+      { description: "ค่าขนส่ง", amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
+    ],
   });
 
   assert.deepEqual(context.payee, { name: "คุณต้า", bankName: "SCB", accountNo: "1112223334" });
   assert.deepEqual(context.purpose, { title: "เบิกค่าส่งของ", businessPurpose: "ค่าส่งสินค้า" });
-  assert.deepEqual(context.totals, { amountBeforeVat: "100.00", vatAmount: "0.00", grossAmount: "100.00", withholdingTax: "0.00", netPayment: "100.00" });
   assert.deepEqual(context.parties, { requesterName: "คุณต้า", requesterRole: "ผู้จัดการ" });
-  assert.equal(context.lines, undefined);
+  assert.deepEqual(context.lines, [
+    { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "" },
+  ]);
 });
 
-test("substitute_receipt adapter extracts payee name+taxId, purpose, lines with stockSkuId, and only grossAmount for totals", () => {
+test("substitute_receipt adapter extracts payee name+taxId, purpose, and lines with stockSkuId", () => {
   const context = workflowPrefillLogic.substituteReceiptToWorkflowContext({
     receiptTitle: "",
     businessPurpose: "ซื้อวัสดุ",
     payeeName: "ร้านค้า A",
     payeeTaxId: "1234567890123",
     lines: [{ description: "กระดาษ", quantity: "5", unitCost: "20.00", lineTotal: "100.00", stockSkuId: "SKU-100", vendorSku: "V-9" }],
-    totals: { totalAmount: "100.00" },
   });
 
   assert.deepEqual(context.payee, { name: "ร้านค้า A", taxId: "1234567890123" });
   assert.deepEqual(context.purpose, { businessPurpose: "ซื้อวัสดุ" });
   assert.deepEqual(context.lines, [{ description: "กระดาษ", quantity: "5", unitCost: "20.00", lineTotal: "100.00", stockSkuId: "SKU-100" }]);
-  assert.deepEqual(context.totals, { grossAmount: "100.00" });
   assert.equal(context.parties, undefined);
 });
 
@@ -1300,7 +1306,6 @@ test("the five generic workflow-document adapters extract payee name, purpose, l
     assert.deepEqual(context.purpose, { title: "คืนเงินกรรมการ", businessPurpose: "คืนเงินสำรองจ่าย" });
     assert.deepEqual(context.lines, [{ description: "ค่าส่งเข้าคลัง", quantity: "1", unitCost: "120.00", lineTotal: "120.00", stockSkuId: "" }]);
     assert.deepEqual(context.parties, { requesterName: "คุณต้า" });
-    assert.equal(context.totals, undefined);
   }
 });
 
@@ -1315,23 +1320,46 @@ test("applyWorkflowContextToGoodsReceipt clears quantity while keeping descripti
   assert.equal(patch.lines[0].quantity, "");
 });
 
-test("applyWorkflowContextToExpenseRequest seeds one expense line from context.totals", () => {
+test("applyWorkflowContextToExpenseRequest maps payee/purpose fields and one expenseLines entry per canonical line (D10)", () => {
   const context = {
     payee: { name: "คุณต้า", bankName: "SCB", accountNo: "1112223334" },
     purpose: { title: "เบิกค่าส่ง", businessPurpose: "ค่าส่งสินค้า" },
-    totals: { amountBeforeVat: "100.00", vatAmount: "7.00", withholdingTax: "0.00", grossAmount: "107.00", netPayment: "107.00" },
+    lines: [{ description: "ค่าขนส่งเข้าคลัง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "" }],
   };
-  const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest(context, ["payee", "purpose", "totals"]);
+  const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest(context, ["payee", "purpose", "lines"]);
 
   assert.equal(patch.paymentTargetName, "คุณต้า");
   assert.equal(patch.paymentBankName, "SCB");
   assert.equal(patch.paymentAccountNo, "1112223334");
   assert.equal(patch.requestTitle, "เบิกค่าส่ง");
   assert.equal(patch.businessPurpose, "ค่าส่งสินค้า");
-  assert.equal(patch.expenseLines.length, 1);
-  assert.equal(patch.expenseLines[0].amountBeforeVat, "100.00");
-  assert.equal(patch.expenseLines[0].vatAmount, "7.00");
-  assert.equal(patch.expenseLines[0].withholdingTax, "0.00");
+  assert.deepEqual(patch.expenseLines, [
+    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
+  ]);
+});
+
+test("expense_request lines round-trip: sourcing maps one canonical line per expenseLines entry, receiving maps back with VAT/withholding zeroed and description preserved (D10)", () => {
+  const sourceContext = workflowPrefillLogic.expenseRequestToWorkflowContext({
+    expenseLines: [
+      { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "250.00", vatAmount: "17.50", withholdingTax: "5.00" },
+      { description: "ค่าบรรจุภัณฑ์", amountBeforeVat: "80.00", vatAmount: "0.00", withholdingTax: "0.00" },
+    ],
+  });
+
+  assert.deepEqual(sourceContext.lines, [
+    { description: "ค่าขนส่งเข้าคลัง", quantity: "1", unitCost: "250.00", lineTotal: "250.00", stockSkuId: "" },
+    { description: "ค่าบรรจุภัณฑ์", quantity: "1", unitCost: "80.00", lineTotal: "80.00", stockSkuId: "" },
+  ]);
+
+  const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest({ lines: sourceContext.lines }, ["lines"]);
+
+  // Descriptions survive verbatim, and VAT/withholding land at zero even though the
+  // original expense lines had nonzero VAT/withholding — these six templates are all
+  // no-tax-invoice cases, so VAT is genuinely zero on a prefilled line (D10).
+  assert.deepEqual(patch.expenseLines, [
+    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "250.00", vatAmount: "0.00", withholdingTax: "0.00" },
+    { description: "ค่าบรรจุภัณฑ์", amountBeforeVat: "80.00", vatAmount: "0.00", withholdingTax: "0.00" },
+  ]);
 });
 
 test("buildWorkflowPrefillContext lets the most recently completed document win per group; earlier ones fill the rest", () => {
@@ -1407,25 +1435,27 @@ test("buildWorkflowPrefillContext groups never carry excluded fields like docume
     paymentAccountNo: "1234567890",
     requesterName: "คุณต้า",
     requesterRole: "ผู้จัดการ",
-    totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" },
+    expenseLines: [
+      { description: "เบิกค่าส่ง", amountBeforeVat: "100.00", vatAmount: "7.00", withholdingTax: "0.00", vendorInvoiceNo: "INV-001" },
+    ],
   };
 
   const { context } = workflowPrefillLogic.buildWorkflowPrefillContext([source], "expense_request");
 
   assert.deepEqual(Object.keys(context.payee).sort(), ["accountNo", "bankName", "name"]);
   assert.deepEqual(Object.keys(context.purpose).sort(), ["businessPurpose", "title"]);
-  assert.deepEqual(Object.keys(context.totals).sort(), ["amountBeforeVat", "grossAmount", "netPayment", "vatAmount", "withholdingTax"]);
   assert.equal(context.payee.documentNo, undefined);
   assert.equal(context.purpose.status, undefined);
-  assert.equal(context.totals.signature, undefined);
+  // The canonical line shape has no room for vatAmount/withholdingTax or any extra
+  // per-line field the source document happened to carry (e.g. vendorInvoiceNo).
+  assert.deepEqual(Object.keys(context.lines[0]).sort(), ["description", "lineTotal", "quantity", "stockSkuId", "unitCost"]);
 });
 
-test("RECEIVABLE_PREFILL_GROUPS: totals is only receivable by expense_request; lines is never receivable by expense_request", () => {
-  assert.deepEqual(workflowPrefillLogic.RECEIVABLE_PREFILL_GROUPS.expense_request.slice().sort(), ["payee", "purpose", "totals"]);
-  for (const kind of ["substitute_receipt", "purchase_order", "payment_voucher", "cash_spend_declaration", "payee_acknowledgement", "goods_receipt"]) {
-    assert.ok(workflowPrefillLogic.RECEIVABLE_PREFILL_GROUPS[kind].includes("lines"));
-    assert.ok(!workflowPrefillLogic.RECEIVABLE_PREFILL_GROUPS[kind].includes("totals"));
+test("RECEIVABLE_PREFILL_GROUPS: every kind can receive payee, purpose, and lines; totals is not a group at all (D10)", () => {
+  for (const kind of Object.keys(workflowPrefillLogic.RECEIVABLE_PREFILL_GROUPS)) {
+    assert.deepEqual(workflowPrefillLogic.RECEIVABLE_PREFILL_GROUPS[kind].slice().sort(), ["lines", "payee", "purpose"]);
   }
+  assert.deepEqual(workflowPrefillLogic.PREFILL_GROUPS.slice().sort(), ["lines", "payee", "purpose"]);
 });
 ```
 
@@ -1441,7 +1471,7 @@ Implement the 14 functions per the field table above. Every `toWorkflowContext()
 
 `applyWorkflowContextToGoodsReceipt()` wraps the shared generic `applyWorkflowContext` and then maps `quantity` to `""` on every line, per the never-copied rule above.
 
-`applyWorkflowContextToExpenseRequest()` maps `payee`/`purpose` onto `paymentTargetName`/`paymentBankName`/`paymentAccountNo`/`requestTitle`/`businessPurpose` directly, and maps `totals` (when requested) onto a single seeded `expenseLines` entry `{ description: "ยอดตามเอกสารอ้างอิงใน Workflow", amountBeforeVat, vatAmount, withholdingTax }` — a fixed, editable Thai placeholder description, not the source document's own title. This keeps `expense_request`'s own `calculateExpenseTotals()` (which always derives totals from `expenseLines`) consistent with the prefilled numbers once the user saves.
+`expenseRequestToWorkflowContext()` (D10) maps `expenseLines` onto `lines`: each entry becomes one canonical line with `description` carried over verbatim, `quantity` fixed at `"1"`, `unitCost` and `lineTotal` both set to the expense line's `amountBeforeVat` (so the `unitCost * quantity = lineTotal` invariant every other adapter's lines already satisfy still holds), and `stockSkuId` fixed at `""` (expense lines carry no SKU reference). `vatAmount`/`withholdingTax` are dropped — the canonical line shape has no slot for them. `applyWorkflowContextToExpenseRequest()` (D10) maps `payee`/`purpose` onto `paymentTargetName`/`paymentBankName`/`paymentAccountNo`/`requestTitle`/`businessPurpose` directly, and maps `lines` (when requested) onto `expenseLines`, one canonical line to one expense line: `description` carried over verbatim, `amountBeforeVat` set to the canonical line's `lineTotal`, and `vatAmount`/`withholdingTax` both fixed at `"0.00"` — these six templates are all no-tax-invoice cases, so VAT is genuinely zero on every prefilled line, and one row per source line keeps the totals reconciling line-for-line. `quantity`/`unitCost` have no target field on an expense line and are dropped. Neither function ever reads or writes a `totals` field — there is no such group any more (D10).
 
 Assemble `WORKFLOW_CONTEXT_ADAPTERS` keyed by `documentKind`.
 
@@ -1455,7 +1485,7 @@ function isGroupNonEmpty(value) {
 }
 
 function buildWorkflowPrefillContext(childDocuments = [], targetDocumentKind, options = {}) {
-  const context = { payee: {}, purpose: {}, lines: [], totals: {}, parties: {} };
+  const context = { payee: {}, purpose: {}, lines: [], parties: {} };
   const sources = {};
 
   const completedInOrder = childDocuments
@@ -1472,7 +1502,7 @@ function buildWorkflowPrefillContext(childDocuments = [], targetDocumentKind, op
     const adapter = WORKFLOW_CONTEXT_ADAPTERS[doc.documentKind];
     if (!adapter) continue;
     const partial = adapter.toWorkflowContext(doc);
-    for (const group of ["payee", "purpose", "totals", "parties"]) {
+    for (const group of ["payee", "purpose", "parties"]) {
       if (isGroupNonEmpty(partial[group])) {
         context[group] = partial[group];
         sources[group] = normalized.documentNo;
@@ -1721,7 +1751,7 @@ if (safeReturnTo) {
 
 Decision D8 (`.superpowers/sdd/progress.md`, Task 6). Add the same banner Task 4 adds to the generic workflow-document shell (identical markup, ids, and Thai strings — `#workflowPrefillBanner`, `#workflowPrefillApply` "ใช้ข้อมูลเดิม", `#workflowPrefillDismiss` "กรอกใหม่") to `forms/expense-request.html` and `forms/substitute-receipt.html`. Load `<script src="./workflow-prefill.logic.js"></script>` after `workflow-return-link.browser.js` and before each page's own controller script.
 
-When `workflowContext.transactionNo` and `workflowContext.workflowStepId` are both present, fetch `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=<expense_request|substitute_receipt>&stepId=${workflowStepId}` on boot; on any error (including 404 before Task 10's route exists) or an empty `availableGroups`, leave the banner hidden. On success with a non-empty `availableGroups`, render one checkbox per available group labeled with its `sources[group]` document number, same as Task 4. Applying calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(context, documentKind, checkedGroups)` and merges the result onto the still-blank fields, marking each with its source document number — fields stay fully editable, never `readonly`/`disabled`, per Global Constraints. Note for `expense_request` specifically: since `expense_request` cannot receive `lines` (see Task 6) and its `totals` group is applied as one seeded `expenseLines` entry, the banner for this page will only ever offer up to three checkboxes — `payee`, `purpose`, `totals` — never `lines`.
+When `workflowContext.transactionNo` and `workflowContext.workflowStepId` are both present, fetch `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=<expense_request|substitute_receipt>&stepId=${workflowStepId}` on boot; on any error (including 404 before Task 10's route exists) or an empty `availableGroups`, leave the banner hidden. On success with a non-empty `availableGroups`, render one checkbox per available group labeled with its `sources[group]` document number, same as Task 4. Applying calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(context, documentKind, checkedGroups)` and merges the result onto the still-blank fields, marking each with its source document number — fields stay fully editable, never `readonly`/`disabled`, per Global Constraints. Note for `expense_request` specifically (decision D10, revising the original design in this note): `expense_request` now receives `lines` like every other kind — each canonical line becomes one `expenseLines` entry (see Task 6) — so the banner for this page offers the same three checkboxes as every other page: `payee`, `purpose`, `lines`. There is no `totals` checkbox anywhere; no kind receives a `totals` group any more.
 
 This is also a forward reference to Task 6/Task 10, exactly like Task 4's Step 10 — inert (a failed fetch, banner stays hidden) until both land, and Task 7's own tests only assert on static markup so this does not block them.
 
@@ -2557,14 +2587,17 @@ A second follow-up pass applied two more product-owner decisions, D5 and D6 (`.s
 
 (At the time of the D5/D6 pass, the task now called "Workflow Completion And Sync" and "HTTP Routes" were Task 8 and Task 9; the paragraph above already uses their current numbers, Task 9 and Task 10, after the third pass below renumbered them again.)
 
-A third follow-up pass added decision D8 (`.superpowers/sdd/progress.md`): cross-document prefill. A new **Task 6, Cross-Document Prefill**, is inserted immediately after Task 5; every task from the former Task 6 onward shifted up by one (former Task 6 → 7, 7 → 8, 8 → 9, 9 → 10, 10 → 11, 11 → 12), and every cross-reference to those tasks anywhere in the plan — including inside the D5/D6 paragraphs above and the gap-closure paragraph before them — was rewritten to the new numbers. Task 6 defines one canonical transaction context (`payee`/`purpose`/`lines`/`totals`/`parties`) and a `toWorkflowContext()`/`applyWorkflowContext()` adapter pair per document kind (14 functions for 7 kinds, not 42 pairwise mappings), the most-recently-`completed`-wins precedence rule, and the never-copied field list (`documentNo`, `documentDate`, `status`, `statusHistory`, `completedAt`/`completedBy`, signatures, evidence/raw files, plus `goods_receipt` line quantities specifically). `getWorkflowTransactionPrefill()` (the orchestration function, added to `forms/local-server.logic.js` in Task 6) is deliberately left unwired to HTTP until Task 10 (Step 5b), matching how every other `/api/workflow-transactions/...` route is centralized there regardless of which earlier task built its underlying storage/logic function. The prefill banner UI is added to Task 4 (the lightweight document shell) and to Task 7 (Pass Workflow Context Into Existing Standalone Forms) rather than waiting for Task 11's dedicated UI task, since those are the tasks that already own the standalone document forms the banner appears on; both tasks note explicitly that the banner's fetch call is inert (harmlessly 404s) until Task 6's logic and Task 10's route wiring both land, since Task 4 runs before either.
+A third follow-up pass added decision D8 (`.superpowers/sdd/progress.md`): cross-document prefill. A new **Task 6, Cross-Document Prefill**, is inserted immediately after Task 5; every task from the former Task 6 onward shifted up by one (former Task 6 → 7, 7 → 8, 8 → 9, 9 → 10, 10 → 11, 11 → 12), and every cross-reference to those tasks anywhere in the plan — including inside the D5/D6 paragraphs above and the gap-closure paragraph before them — was rewritten to the new numbers. Task 6 defines one canonical transaction context (at the time, `payee`/`purpose`/`lines`/`totals`/`parties` — see the D10 paragraph below, which removed `totals`) and a `toWorkflowContext()`/`applyWorkflowContext()` adapter pair per document kind (14 functions for 7 kinds, not 42 pairwise mappings), the most-recently-`completed`-wins precedence rule, and the never-copied field list (`documentNo`, `documentDate`, `status`, `statusHistory`, `completedAt`/`completedBy`, signatures, evidence/raw files, plus `goods_receipt` line quantities specifically). `getWorkflowTransactionPrefill()` (the orchestration function, added to `forms/local-server.logic.js` in Task 6) is deliberately left unwired to HTTP until Task 10 (Step 5b), matching how every other `/api/workflow-transactions/...` route is centralized there regardless of which earlier task built its underlying storage/logic function. The prefill banner UI is added to Task 4 (the lightweight document shell) and to Task 7 (Pass Workflow Context Into Existing Standalone Forms) rather than waiting for Task 11's dedicated UI task, since those are the tasks that already own the standalone document forms the banner appears on; both tasks note explicitly that the banner's fetch call is inert (harmlessly 404s) until Task 6's logic and Task 10's route wiring both land, since Task 4 runs before either.
+
+A fourth follow-up pass applied decision D10 (`.superpowers/sdd/progress.md`, user-approved), which rejected part of the D8/Task 6 design above: the product owner rejected `expense_request` receiving a `totals` group as one seeded placeholder line, and instead ruled that `expense_request` participates in the `lines` group like every other kind, mapped line by line in both directions (sourcing: each `expenseLines` entry becomes one canonical line with `quantity` fixed at `"1"` and `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`; receiving: each canonical line becomes one `expenseLines` entry with `amountBeforeVat` set to the canonical line's `lineTotal` and `vatAmount`/`withholdingTax` fixed at `"0.00"`). Consequence: `totals` is gone from the canonical context and from every group list in the plan — the tickable groups are now exactly `payee`, `purpose`, `lines` everywhere (Task 6's design/table/`RECEIVABLE_PREFILL_GROUPS`/tests, the Global Constraints bullet, the Task 4 and Task 7 banner sections, and this Self-Review's D8 bullet below were all updated). No task numbering changed for this pass — task headings and their `Task N` extraction markers are untouched.
 
 ## Self-Review
 
 - Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive-only sync (auto + manual fallback; no workflow-level Sheets sync, decision D6), strict document ordering enforced server-side (decision D5), cross-document prefill with per-group opt-in (decision D8), APIs, UI, and tests. Cross-document prefill is not in the original spec document — it is a pure PM-approved addition layered onto the existing standalone-document-reuse architecture; no spec text conflicts with it (see the D8 deviation note at the end of Task 6).
-- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (Task 9 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`; Task 10 exposes the Drive-only HTTP routes; Task 11 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 8's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward) — D5 (strict document order is unambiguous in Task 2's `deriveWorkflowProgress()` spec and test, and enforced server-side in Task 10's `start-document` handler) — D6 (no workflow-level Sheets row anywhere in the plan; `syncGoogleDrive` is the sole workflow sync toggle; deviation from the spec's `## Sync Rules` section recorded in a dedicated note) — D8 (new Task 6 implements the canonical prefill context, per-kind adapters, and precedence rule; Task 10 Step 5b wires the `GET .../prefill` route; Task 4 and Task 7 add the prefill banner UI; the never-copied field list, including `goods_receipt` quantities, is stated once in Global Constraints and enforced structurally by the adapters in Task 6).
+- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (Task 9 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`; Task 10 exposes the Drive-only HTTP routes; Task 11 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 8's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward) — D5 (strict document order is unambiguous in Task 2's `deriveWorkflowProgress()` spec and test, and enforced server-side in Task 10's `start-document` handler) — D6 (no workflow-level Sheets row anywhere in the plan; `syncGoogleDrive` is the sole workflow sync toggle; deviation from the spec's `## Sync Rules` section recorded in a dedicated note) — D8 (new Task 6 implements the canonical prefill context, per-kind adapters, and precedence rule; Task 10 Step 5b wires the `GET .../prefill` route; Task 4 and Task 7 add the prefill banner UI; the never-copied field list, including `goods_receipt` quantities, is stated once in Global Constraints and enforced structurally by the adapters in Task 6) — D10 (Task 6's field table, `RECEIVABLE_PREFILL_GROUPS`, adapter implementation notes, and adapter tests all implement `expense_request`'s line-by-line `lines` mapping in both directions; `totals` is removed as a group everywhere — the canonical context, Global Constraints, and the Task 4/Task 7 banner sections all state the three-group list `payee`/`purpose`/`lines`).
 - Placeholder scan: No TBD/TODO placeholders, including the former `findLightweightWorkflowDocuments() { return []; }` stub. Each task includes concrete files, interfaces, tests, commands, and commit messages.
 - Type consistency: Public helper names introduced in earlier tasks are reused with the same names later. `LIGHTWEIGHT_DOCUMENT_KINDS` and `DOCUMENT_PREFIXES` both carry `goods_receipt` as a fifth entry; `DOCUMENT_TYPE_DEFINITIONS`' key order is unchanged from the original plan (only `goods_receipt.route` changed). `PREFILL_GROUPS`, `RECEIVABLE_PREFILL_GROUPS`, and the 14 adapter function names introduced in Task 6 are reused unchanged in Task 4, Task 7, and Task 10.
 - Task numbering: Tasks 1–5 are unchanged. **Task 6 (Cross-Document Prefill) is new** (decision D8). The former Task 6 (Pass Workflow Context Into Existing Standalone Forms) is now Task 7, former Task 7 (Workflow Packet PDF And Aggregated Files) is now Task 8, former Task 8 (Workflow Completion And Sync) is now Task 9, former Task 9 (HTTP Routes) is now Task 10, former Task 10 (UI) is now Task 11, and former Task 11 (Navigation And Final Verification) is now Task 12. Every cross-reference to a renumbered task anywhere in the plan — including inside the historical D5/D6 gap-closure paragraphs in Handoff Notes — was checked and updated to the new number. Total task count is now 12.
 - Gap-closure follow-up (earlier pass): (1) Task 5 gained Step 8, `getWorkflowTransactionFile()` implementation with its containment guard and allowed-`section` rationale (`pdf` only), plus a traversal/legitimate-file test appended to Step 1; Task 4 gained the equivalent Step 7 (`getWorkflowDocumentFile()`, sections `pdf`/`raw`) with its own test. (2) Every page that consumes `returnTo` (`workflow-document.html`, `expense-request.html`, `substitute-receipt.html`) now validates it through one shared `sanitizeWorkflowReturnTo()` helper (new Task 4 Step 8, file `forms/workflow-return-link.browser.js`) before ever assigning it to `href`; Task 7's Steps 1, 3, and 5 were updated to load and use it, with new HTML-test assertions in both tasks; a Global Constraints bullet states the rule once. (3) The workflow-completion task's Sheets-sync step now cites the verified `recordMonthlyExpense()` upsert-by-`sourceKey` behavior (`forms/google-sheets.logic.js:235`) as fact, closing the open question without changing that task's behavior.
-- Prefill follow-up (this pass): (1) New Task 6 defines `forms/workflow-prefill.logic.js` (pure, dual-export) with 14 per-kind adapter functions, `buildWorkflowPrefillContext()` (most-recently-`completed`-wins precedence, using `normalizeDocumentWorkflowStatus()` from Task 2 to decide what counts as a source), `applyWorkflowPrefillGroups()`, and `getWorkflowTransactionPrefill()` in `forms/local-server.logic.js` (consumes Task 5's `findWorkflowChildDocuments()` and `getWorkflowTransaction()`). (2) The field-shape mismatch between kinds is resolved explicitly rather than papered over: `expense_request`'s amount/VAT/withholding-tax expense lines have no quantity/unit-cost shape, so `expense_request` never sources or receives `lines`; every other kind derives its own totals from its lines when saved, so `totals` is only ever offered for `expense_request` (as one seeded expense line, since `expense_request` has no standalone totals input either) — `RECEIVABLE_PREFILL_GROUPS` states this per kind and the `GET .../prefill` response's `availableGroups` reflects it. (3) `goods_receipt`'s `applyWorkflowContext()` always clears line `quantity` while still copying `description`/`stockSkuId`, with a dedicated test. (4) Route wiring for `GET /api/workflow-transactions/:transactionNo/prefill` was deliberately placed in Task 10 (Step 5b), not Task 6, for consistency with how Task 5's and Task 8's storage/generation functions also wait for Task 10 to get an HTTP route. (5) The prefill banner UI was added to Task 4 and Task 7 (not deferred to Task 11) since those tasks already own the forms it appears on; both note the resulting forward reference to Task 6/Task 10 is inert (a 404) until those tasks land, same as how Task 4 already references workflow query-string context before Task 11 builds the transaction page that sets it.
+- Prefill follow-up (earlier pass, design since revised by D10 below): (1) New Task 6 defines `forms/workflow-prefill.logic.js` (pure, dual-export) with 14 per-kind adapter functions, `buildWorkflowPrefillContext()` (most-recently-`completed`-wins precedence, using `normalizeDocumentWorkflowStatus()` from Task 2 to decide what counts as a source), `applyWorkflowPrefillGroups()`, and `getWorkflowTransactionPrefill()` in `forms/local-server.logic.js` (consumes Task 5's `findWorkflowChildDocuments()` and `getWorkflowTransaction()`). (2) `goods_receipt`'s `applyWorkflowContext()` always clears line `quantity` while still copying `description`/`stockSkuId`, with a dedicated test. (3) Route wiring for `GET /api/workflow-transactions/:transactionNo/prefill` was deliberately placed in Task 10 (Step 5b), not Task 6, for consistency with how Task 5's and Task 8's storage/generation functions also wait for Task 10 to get an HTTP route. (4) The prefill banner UI was added to Task 4 and Task 7 (not deferred to Task 11) since those tasks already own the forms it appears on; both note the resulting forward reference to Task 6/Task 10 is inert (a 404) until those tasks land, same as how Task 4 already references workflow query-string context before Task 11 builds the transaction page that sets it.
+- D10 follow-up (this pass): the field-shape mismatch between `expense_request` and every other kind is resolved by mapping line-for-line instead of excluding `expense_request` from `lines`: sourcing (`expenseRequestToWorkflowContext()`) turns each `expenseLines` entry into one canonical line (`quantity` fixed at `"1"`, `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`); receiving (`applyWorkflowContextToExpenseRequest()`) turns each canonical line into one `expenseLines` entry (`description` verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, `vatAmount`/`withholdingTax` fixed at `"0.00"`, since these six templates are all no-tax-invoice cases). `RECEIVABLE_PREFILL_GROUPS` is now identical for all seven kinds (`payee`/`purpose`/`lines`). `totals` is removed as a group entirely — the canonical context, `PREFILL_GROUPS`, every group list, and the Task 4/Task 7 banner sections now name exactly three groups — because every kind, `expense_request` included, already recomputes its own totals from its own lines on save. Task 6's Step 1 test block gained a dedicated round-trip test proving a source line's `description` survives verbatim and `vatAmount`/`withholdingTax` land at `"0.00"` on the receiving side even when the original expense line had nonzero VAT/withholding.
