@@ -14,7 +14,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "ซื้อสต๊อก ไม่มีใบกำกับภาษี ชำระเงินโอนจากบัญชีบริษัท",
     description: "สำหรับการซื้อสินค้าเข้าคลังที่ไม่มีใบกำกับภาษี และชำระเงินโดยการโอนจากบัญชีธนาคารของบริษัท",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "purchase_order" },
@@ -30,7 +29,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "ซื้อสต๊อก ไม่มีใบกำกับภาษี ชำระเงินโอนบัญชีเจ้าของ",
     description: "สำหรับการซื้อสินค้าเข้าคลังที่ไม่มีใบกำกับภาษี และชำระเงินโดยการโอนจากบัญชีส่วนตัวของเจ้าของ",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "purchase_order" },
@@ -47,7 +45,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "รายจ่ายเจ้าของ ชำระเงินโอนบัญชี",
     description: "สำหรับบันทึกรายจ่ายของเจ้าของบริษัท ชำระเงินโดยการโอนบัญชี",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
@@ -62,7 +59,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "รายจ่ายเจ้าของ ชำระเงินสด",
     description: "สำหรับบันทึกรายจ่ายของเจ้าของบริษัท ชำระเงินสด",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
@@ -78,7 +74,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "รายจ่ายบุคคลภายนอก ชำระเงินสด",
     description: "สำหรับบันทึกรายจ่ายจากบุคคลภายนอก ชำระเงินสด",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
@@ -95,7 +90,6 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     name: "รายจ่ายบุคคลภายนอก ชำระเงินโอนบัญชี",
     description: "สำหรับบันทึกรายจ่ายจากบุคคลภายนอก ชำระเงินโดยการโอนบัญชี",
     syncGoogleDrive: false,
-    syncGoogleSheets: false,
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
@@ -150,7 +144,6 @@ function normalizeWorkflowTemplate(template, options) {
     name: typeof template.name === "string" ? template.name.trim() : template.name,
     description: typeof template.description === "string" ? template.description.trim() : template.description,
     syncGoogleDrive: !!template.syncGoogleDrive,
-    syncGoogleSheets: !!template.syncGoogleSheets,
     active: template.active !== false,
     documentSteps: (template.documentSteps || []).map((step, index) => ({
       stepId: `step-${String(index + 1).padStart(3, "0")}`,
@@ -217,7 +210,6 @@ function buildWorkflowTransactionPayload(data = {}, options = {}) {
     folderPath,
     status: "in_progress",
     syncGoogleDrive: !!templateSnapshot.syncGoogleDrive,
-    syncGoogleSheets: !!templateSnapshot.syncGoogleSheets,
     steps,
     currentStepId: steps.length ? steps[0].stepId : null,
     createdAt: now,
@@ -269,19 +261,21 @@ function deriveWorkflowProgress(transaction, childDocuments = []) {
     workflowStepId: doc.workflowStepId,
   }));
 
-  let unlocked = false;
+  // Documents must be produced in strict template order: once a step is not yet
+  // complete, every later step is blocked regardless of that step's own status.
+  let blocked = false;
   const steps = (transaction.steps || []).map((step) => {
     const match = normalizedDocs.find((doc) => doc.workflowStepId === step.stepId)
       || normalizedDocs.find((doc) => !doc.workflowStepId && doc.documentKind === step.documentKind);
 
     let workflowStatus;
-    if (match && match.workflowStatus === "completed") {
-      workflowStatus = "completed";
-    } else if (!unlocked) {
-      workflowStatus = match ? match.workflowStatus : "not_started";
-      unlocked = true;
-    } else {
+    if (blocked) {
       workflowStatus = "blocked";
+    } else if (match && match.workflowStatus === "completed") {
+      workflowStatus = "completed";
+    } else {
+      workflowStatus = match ? match.workflowStatus : "not_started";
+      blocked = true;
     }
 
     return { ...step, workflowStatus };
@@ -357,25 +351,6 @@ ${rawRows}
 `;
 }
 
-function buildWorkflowSheetEntry(transaction = {}, childDocuments = [], driveMetadata = {}, completedAt = "") {
-  return {
-    sourceKey: `workflow_transaction:${transaction.transactionNo}`,
-    approvedAt: completedAt,
-    accountingMonth: transaction.accountingMonth || "",
-    documentType: "Workflow ธุรกรรมเอกสาร",
-    documentNo: transaction.transactionNo,
-    payeeName: "",
-    title: transaction.title || "",
-    category: transaction.templateSnapshot?.name || "",
-    amountBeforeVat: "0.00",
-    vatAmount: "0.00",
-    grossAmount: "0.00",
-    withholdingTax: "0.00",
-    netPayment: "0.00",
-    documentUrl: driveMetadata?.driveFolderUrl || "",
-  };
-}
-
 const WorkflowLogic = {
   DOCUMENT_TYPE_DEFINITIONS,
   DEFAULT_WORKFLOW_TEMPLATES,
@@ -388,7 +363,6 @@ const WorkflowLogic = {
   normalizeDocumentWorkflowStatus,
   deriveWorkflowProgress,
   formatWorkflowSummaryMarkdown,
-  buildWorkflowSheetEntry,
 };
 
 if (typeof module !== "undefined" && module.exports) {

@@ -44,12 +44,11 @@ test("stock company bank template contains the requested document order", () => 
   ]);
 });
 
-test("template normalization preserves order and sync toggles", () => {
+test("template normalization preserves order and sync toggle", () => {
   const normalized = normalizeWorkflowTemplate({
     templateId: "custom_stock",
     name: "ซื้อสต๊อกแบบ custom",
     syncGoogleDrive: true,
-    syncGoogleSheets: false,
     documentSteps: [
       { documentKind: "purchase_order" },
       { documentKind: "payment_voucher" },
@@ -58,7 +57,6 @@ test("template normalization preserves order and sync toggles", () => {
 
   assert.equal(normalized.templateId, "custom_stock");
   assert.equal(normalized.syncGoogleDrive, true);
-  assert.equal(normalized.syncGoogleSheets, false);
   assert.deepEqual(normalized.documentSteps.map((step) => step.stepId), ["step-001", "step-002"]);
 });
 
@@ -409,6 +407,31 @@ test("deriveWorkflowProgress reports not_started when there are no child documen
   assert.equal(next.currentStepId, "step-001");
 });
 
+test("deriveWorkflowProgress blocks a later step even when its own child document is already completed, if an earlier step is incomplete", () => {
+  const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
+  const transaction = workflowLogic.buildWorkflowTransactionPayload({
+    sequence: "4",
+    accountingMonth: "2026-09",
+    title: "ซื้อสต๊อกข้ามลำดับ",
+    template,
+  });
+
+  const next = workflowLogic.deriveWorkflowProgress(transaction, [
+    {
+      documentKind: "substitute_receipt",
+      documentNo: "SR-2026-09-0001",
+      workflowStepId: "step-002",
+      transactionNo: transaction.transactionNo,
+      status: "completed",
+      statusLabel: "เสร็จสิ้น",
+    },
+  ]);
+
+  assert.equal(next.steps[0].workflowStatus, "not_started");
+  assert.equal(next.steps[1].workflowStatus, "blocked");
+  assert.equal(next.currentStepId, "step-001");
+});
+
 test("formatWorkflowSummaryMarkdown renders template, step, document, and file tables", () => {
   const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
   const transaction = workflowLogic.buildWorkflowTransactionPayload({
@@ -439,39 +462,4 @@ test("formatWorkflowSummaryMarkdown renders template, step, document, and file t
   assert.match(markdown, /PO-2026-09-0001/);
   assert.match(markdown, /PO-2026-09-0001\.pdf/);
   assert.match(markdown, /A1_quote_001\.jpg/);
-});
-
-test("buildWorkflowSheetEntry returns the recordMonthlyExpense row shape", () => {
-  const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
-  const transaction = workflowLogic.buildWorkflowTransactionPayload({
-    sequence: "1",
-    accountingMonth: "2026-09",
-    title: "ซื้อสต๊อกล็อตกันยายน",
-    template,
-  }, { now: () => "2026-09-06T12:00:00.000Z" });
-
-  const entry = workflowLogic.buildWorkflowSheetEntry(transaction, [], { driveFolderUrl: "https://drive.google.com/drive/folders/abc" }, "2026-09-06T15:00:00.000Z");
-
-  assert.deepEqual(Object.keys(entry), [
-    "sourceKey",
-    "approvedAt",
-    "accountingMonth",
-    "documentType",
-    "documentNo",
-    "payeeName",
-    "title",
-    "category",
-    "amountBeforeVat",
-    "vatAmount",
-    "grossAmount",
-    "withholdingTax",
-    "netPayment",
-    "documentUrl",
-  ]);
-  assert.equal(entry.sourceKey, "workflow_transaction:TXN-2026-09-0001");
-  assert.equal(entry.documentType, "Workflow ธุรกรรมเอกสาร");
-  assert.equal(entry.documentNo, "TXN-2026-09-0001");
-  assert.equal(entry.accountingMonth, "2026-09");
-  assert.equal(entry.approvedAt, "2026-09-06T15:00:00.000Z");
-  assert.equal(entry.documentUrl, "https://drive.google.com/drive/folders/abc");
 });
