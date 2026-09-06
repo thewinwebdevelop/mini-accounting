@@ -38,6 +38,10 @@ const {
   normalizeWorkflowTemplate,
   validateWorkflowTemplate,
 } = require("./workflow.logic.js");
+const {
+  buildWorkflowPrefillContext,
+  RECEIVABLE_PREFILL_GROUPS,
+} = require("./workflow-prefill.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
 const { recordMonthlyExpense } = require("./google-sheets.logic.js");
@@ -2212,6 +2216,13 @@ async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
   const records = await listWorkflowDocuments(rootDir, { transactionNo });
 
   return Promise.all(records.map(async (record) => ({
+    // The full stored payload (title, payeeName, businessPurpose, lines,
+    // requesterName, ...) is spread first so cross-document prefill (Task 6)
+    // has real field values to read; the explicit keys below are listed
+    // afterwards purely to override the payload's own copies with the
+    // authoritative ones this scan already resolved (folderPath, freshly
+    // listed pdf/raw files), never to hide anything.
+    ...record.payload,
     documentKind: record.documentKind,
     documentNo: record.documentNo,
     status: record.status,
@@ -2234,9 +2245,18 @@ async function findWorkflowChildDocuments(rootDir, transactionNo) {
     findLightweightWorkflowDocuments(rootDir, transactionNo),
   ]);
 
-  const expenseRequestDocs = expenseRequests
-    .filter((record) => record.transactionNo === transactionNo)
-    .map((record) => ({ ...record, documentKind: "expense_request" }));
+  // findSubmittedExpenseRequests only returns a curated listing-page summary
+  // (requestTitle is even reconstructed from the folder name, not the raw
+  // payload text) — it has no businessPurpose, paymentTargetName/BankName/
+  // AccountNo, requesterRole, or expenseLines at all. Cross-document prefill
+  // (Task 6) needs the real stored fields, so the full submission.json is
+  // re-read per matching request here, the same way substitute receipts
+  // already carry their full payload via `record.payload` below.
+  const matchingExpenseRequests = expenseRequests.filter((record) => record.transactionNo === transactionNo);
+  const expenseRequestDocs = await Promise.all(matchingExpenseRequests.map(async (record) => {
+    const full = await getSubmittedExpenseRequest(rootDir, record.requestNo);
+    return { ...full.payload, documentKind: "expense_request" };
+  }));
 
   const substituteReceiptDocs = substituteReceipts
     .filter((record) => record.payload?.transactionNo === transactionNo)
@@ -2267,6 +2287,30 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
   await persistWorkflowTransaction(rootDir, updated, childDocuments);
 
   return updated;
+}
+
+// A document never sources prefill data from its own step (the
+// siblingDocuments filter below) — mainly relevant if a step is ever
+// re-opened after already having a child document. The HTTP route for this
+// (GET /api/workflow-transactions/:transactionNo/prefill) is wired in a later
+// task, the same way Task 5's storage functions waited for their route.
+async function getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId }) {
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) throw new Error("ไม่พบ Workflow transaction");
+
+  const step = transaction.steps.find((item) => item.stepId === stepId);
+  if (!step) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
+  if (documentKind && documentKind !== step.documentKind) {
+    throw new Error("ประเภทเอกสารไม่ตรงกับขั้นตอนนี้");
+  }
+
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+  const siblingDocuments = childDocuments.filter((doc) => doc.workflowStepId !== stepId);
+  const { context, sources } = buildWorkflowPrefillContext(siblingDocuments, step.documentKind);
+  const availableGroups = (RECEIVABLE_PREFILL_GROUPS[step.documentKind] || [])
+    .filter((group) => Object.prototype.hasOwnProperty.call(sources, group));
+
+  return { context, sources, availableGroups };
 }
 
 async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fileName }) {
@@ -2399,6 +2443,7 @@ module.exports = {
   getWorkflowTemplate,
   getWorkflowTransaction,
   getWorkflowTransactionFile,
+  getWorkflowTransactionPrefill,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,

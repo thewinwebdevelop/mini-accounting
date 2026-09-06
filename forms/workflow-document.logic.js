@@ -110,6 +110,10 @@ function normalizeLine(line = {}) {
     quantity,
     unitCost: money(unitCostCents),
     lineTotal: money(lineTotalCents),
+    // Optional stock SKU reference, the same way substitute_receipt lines
+    // already carry one — added so goods_receipt and purchase_order lines can
+    // round-trip a SKU through cross-document prefill (Task 6).
+    stockSkuId: cleanText(line.stockSkuId),
   };
 }
 

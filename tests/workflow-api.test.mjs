@@ -441,3 +441,134 @@ test("refreshWorkflowTransaction injects documentKind so expense_request and the
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("getWorkflowTransactionPrefill builds context from completed sibling documents and reports availableGroups", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ทดสอบ prefill",
+    });
+    // saveWorkflowDocument (Task 4/5) expects an already-built payload — it
+    // does not call buildWorkflowDocumentPayload itself, matching every other
+    // saveWorkflowDocument call in this suite (see the purchase_order save
+    // above in "refreshWorkflowTransaction really scans lightweight
+    // documents..."). documentNo/folderPath must be computed here, not passed
+    // as raw sequence/date fields.
+    const poPayload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "สั่งซื้อวัสดุ",
+      requesterName: "คุณต้า",
+      payeeName: "ร้านค้า A",
+      businessPurpose: "ซื้อวัสดุสำนักงาน",
+      lines: [{ description: "กระดาษ A4", quantity: "10", unitCost: "100.00" }],
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.templateSnapshot.templateId,
+      workflowStepId: txn.steps[0].stepId,
+    });
+    const po = await serverLogic.saveWorkflowDocument({ rootDir, payload: poPayload });
+    await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo, completedBy: "บัญชี" });
+
+    const prefill = await serverLogic.getWorkflowTransactionPrefill({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      documentKind: "substitute_receipt",
+      stepId: txn.steps[1].stepId,
+    });
+
+    assert.equal(prefill.context.payee.name, "ร้านค้า A");
+    assert.equal(prefill.sources.payee, po.documentNo);
+    assert.deepEqual(prefill.availableGroups.slice().sort(), ["lines", "payee", "purpose"]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("getWorkflowTransactionPrefill rejects a documentKind that does not match the step's template document kind", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ทดสอบ prefill ผิดประเภท",
+    });
+    await assert.rejects(() => serverLogic.getWorkflowTransactionPrefill({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      documentKind: "payment_voucher",
+      stepId: txn.steps[0].stepId,
+    }));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("getWorkflowTransactionPrefill sources payee, purpose, and lines from a completed expense_request", async () => {
+  // findSubmittedExpenseRequests (the listing-page scan) only returns a
+  // curated summary with no businessPurpose/paymentTargetName/paymentBankName/
+  // paymentAccountNo/requesterRole/expenseLines at all — findWorkflowChildDocuments
+  // must re-read the full submission via getSubmittedExpenseRequest so an
+  // expense_request source document is not silently reduced to almost nothing.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "ทดสอบ prefill จากใบเบิกค่าใช้จ่าย",
+    });
+    const savedExpense = await serverLogic.saveExpenseSubmission({
+      rootDir,
+      payload: {
+        requestType: "reimbursement",
+        accountingMonth: "2026-09",
+        requesterName: "คุณต้า",
+        requesterRole: "ผู้จัดการ",
+        businessPurpose: "ค่าส่งสินค้า",
+        paymentTargetName: "ขนส่งตัวอย่าง",
+        paymentBankName: "SCB",
+        paymentAccountNo: "1112223334",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[0].stepId,
+        expenseLines: [
+          { description: "ค่าขนส่ง", vendor: "ขนส่งตัวอย่าง", amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
+        ],
+      },
+    });
+    await serverLogic.approveExpenseRequest({
+      rootDir,
+      requestNo: savedExpense.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    await serverLogic.completeExpenseRequest({ rootDir, requestNo: savedExpense.requestNo, completedBy: "บัญชี" });
+
+    const prefill = await serverLogic.getWorkflowTransactionPrefill({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      documentKind: txn.steps[1].documentKind,
+      stepId: txn.steps[1].stepId,
+    });
+
+    assert.equal(prefill.context.payee.name, "ขนส่งตัวอย่าง");
+    assert.equal(prefill.context.payee.bankName, "SCB");
+    assert.equal(prefill.context.payee.accountNo, "1112223334");
+    assert.equal(prefill.context.purpose.businessPurpose, "ค่าส่งสินค้า");
+    assert.deepEqual(prefill.context.lines, [
+      { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "" },
+    ]);
+    assert.equal(prefill.context.parties.requesterName, "คุณต้า");
+    assert.equal(prefill.context.parties.requesterRole, "ผู้จัดการ");
+    assert.equal(prefill.sources.payee, savedExpense.requestNo);
+    assert.deepEqual(prefill.availableGroups.slice().sort(), ["lines", "payee", "purpose"]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
