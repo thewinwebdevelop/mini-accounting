@@ -20,6 +20,11 @@
 - All standalone document types used in workflow must expose or normalize a `completed` state.
 - Workflow next-step unlocking is based on child document completion, not a separate workflow approval state.
 - Existing standalone pages must still work without `transactionNo`.
+- `goods_receipt` is a lightweight standalone document (route `/workflow-document?documentKind=goods_receipt`, prefix `GR-YYYY-MM-0001`), exactly like `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement`. It is NOT the existing `/inventory-purchase-in` route. Do not modify the inventory purchase-in system (`forms/inventory.logic.js`, `createPurchaseInMovement()`) in any way while implementing this plan — stock movements remain owned exclusively by the existing `receiveSubstituteReceiptStock()` flow, which is unrelated to workflow document completion.
+- `substitute_receipt` workflow completion is hybrid, keyed on `receiptType`: native `received` reports workflow `completed` only for `receiptType === "stock_purchase"`; native `approved` reports workflow `completed` only for `receiptType === "general_expense"`. Every other native `approved`, and missing/unknown status, reports workflow `in_progress`. The explicit `completeSubstituteReceipt()` action is available regardless of `receiptType` and always stamps native `status: "completed"`.
+- Workflow transaction completion and sync are driven by the template's `syncGoogleDrive`/`syncGoogleSheets` toggles snapshotted onto the transaction: sync runs automatically right after all steps are `completed` when the matching toggle is `true`; when a toggle is `false`, the transaction page exposes a manual sync button for that channel instead. Manual sync must remain callable independent of the toggle value once the transaction is completed.
+- Any route that serves a file by name (transaction packet files, workflow-document PDFs/raw files) must resolve the path the same way `getExpenseRequestFile()` does today: resolve against the section directory and reject any resolved path that does not start with `${baseDir}${path.sep}`, so a crafted `fileName` cannot traverse outside the document/transaction folder. `getWorkflowTransactionFile()` (Task 5) and `getWorkflowDocumentFile()` (Task 4) are the concrete implementations of this rule — see those tasks for the allowed `section` values.
+- `returnTo` must be treated as untrusted input everywhere it is consumed (expense request, substitute receipt, and lightweight workflow-document pages): before assigning it to a link's `href`, validate it is a same-origin relative path — starts with a single `/`, does not start with `//`, and does not contain `\` — otherwise leave the return link hidden. Use the shared `sanitizeWorkflowReturnTo()` helper (Task 4) rather than re-implementing this check per page.
 - Use `scripts/test.sh` for final verification.
 
 ---
@@ -37,33 +42,36 @@
 - Create `forms/workflow.logic.browser.js`
   - Browser controller shared by workflow template/list/detail pages.
 - Create `forms/workflow-document.logic.js`
-  - Owns lightweight standalone document kinds that do not yet have dedicated pages: purchase order, payment voucher, cash spend declaration, and payee acknowledgement.
+  - Owns lightweight standalone document kinds that do not yet have dedicated pages: purchase order, payment voucher, cash spend declaration, payee acknowledgement, and goods receipt. Never touches `forms/inventory.logic.js` or inventory stock movements.
 - Create `forms/workflow-document.html`
   - Generic standalone form for lightweight workflow-compatible documents; it must also work without workflow context.
 - Create `forms/workflow-document.logic.browser.js`
   - Browser controller for the generic standalone document shell.
+- Create `forms/workflow-return-link.browser.js`
+  - Tiny, dependency-free helper exposing `sanitizeWorkflowReturnTo(value)` (validates the value is a same-origin relative path). Loaded via its own `<script>` tag by `forms/expense-request.html`, `forms/substitute-receipt.html`, and `forms/workflow-document.html` before their own inline/controller scripts run, so all three pages validate `returnTo` the same way without each hand-rolling the check or creating a dependency on another page's browser-logic file.
 - Create `scripts/generate_workflow_packet_pdf.py`
   - Generates a transaction packet/index PDF that links/summarizes child document PDFs and raw files.
 - Create `scripts/generate_workflow_document_pdf.py`
   - Generates PDFs for lightweight standalone documents.
 - Modify `forms/local-server.logic.js`
-  - Add workflow template storage, workflow transaction storage, sequence generation, child document lookup, progress refresh, packet generation, sync functions, and exported helpers.
+  - Add workflow template storage, workflow transaction storage, sequence generation, child document lookup, progress refresh, packet generation, workflow transaction completion, auto/manual Drive and Sheets sync functions, and exported helpers.
 - Modify `local-server.mjs`
-  - Add static routes and API handlers for templates, transactions, and packet files.
+  - Add static routes and API handlers for templates, transactions, transaction completion, transaction sync (Drive and Sheets), and packet files.
 - Modify `forms/expense-request.logic.js`
   - Preserve workflow relation fields and add `completed` status support.
 - Modify `forms/substitute-receipt.logic.js`
   - Preserve workflow relation fields and add/normalize `completed` status support.
 - Modify `forms/expense-request.html` and `forms/substitute-receipt.html`
-  - Read workflow query params, include them in saved payloads, and show a return link back to the workflow transaction.
+  - Read workflow query params, include them in saved payloads, and show a return link back to the workflow transaction, validated through the shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, Task 4) before it is ever assigned to `href`.
 - Modify list pages only where useful to show transaction badges.
 - Create `tests/workflow.logic.test.mjs`
 - Create `tests/workflow-api.test.mjs`
 - Create `tests/workflow-pages.html.test.mjs`
 - Create `tests/workflow-document.logic.test.mjs`
 - Create `tests/workflow-document.html.test.mjs`
+- Create `scripts/test_workflow_document_pdf.py`
 - Create `scripts/test_workflow_packet_pdf.py`
-- Modify `scripts/test.sh` to include the new Python PDF test.
+- Modify `scripts/test.sh` to register each new Python PDF test as it is created (Task 4 adds `test_workflow_document_pdf`, Task 7 adds `test_workflow_packet_pdf` to the same command).
 
 ---
 
@@ -170,12 +178,14 @@ const DOCUMENT_TYPE_DEFINITIONS = {
   purchase_order: { documentKind: "purchase_order", label: "ใบสั่งซื้อ", route: "/workflow-document?documentKind=purchase_order", standalone: true },
   substitute_receipt: { documentKind: "substitute_receipt", label: "ใบรับรองแทนใบเสร็จรับเงิน", route: "/substitute-receipt", standalone: true },
   payment_voucher: { documentKind: "payment_voucher", label: "ใบสำคัญจ่าย", route: "/workflow-document?documentKind=payment_voucher", standalone: true },
-  goods_receipt: { documentKind: "goods_receipt", label: "ใบรับของ/ใบรับสินค้าเข้าคลัง", route: "/inventory-purchase-in", standalone: true },
+  goods_receipt: { documentKind: "goods_receipt", label: "ใบรับของ/ใบรับสินค้าเข้าคลัง", route: "/workflow-document?documentKind=goods_receipt", standalone: true },
   expense_request: { documentKind: "expense_request", label: "ใบเบิกค่าใช้จ่าย", route: "/expense-request", standalone: true },
   cash_spend_declaration: { documentKind: "cash_spend_declaration", label: "ใบรับรองการจ่ายเงินสดส่วนตัว", route: "/workflow-document?documentKind=cash_spend_declaration", standalone: true },
   payee_acknowledgement: { documentKind: "payee_acknowledgement", label: "ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย", route: "/workflow-document?documentKind=payee_acknowledgement", standalone: true },
 };
 ```
+
+`goods_receipt` is a lightweight standalone document handled by the same `/workflow-document` shell as `purchase_order` / `payment_voucher` / `cash_spend_declaration` / `payee_acknowledgement` (see Task 4). It is deliberately NOT the existing `/inventory-purchase-in` route: that route produces an inventory stock movement via `createPurchaseInMovement()` (`forms/inventory.logic.js`), which has no `documentNo`, folder, status, PDF, raw files, or `transactionNo`, so it cannot satisfy the Standalone Document Contract or ever reach workflow `completed`. Do not modify `forms/inventory.logic.js` or `createPurchaseInMovement()` anywhere in this plan; inventory stock movements remain owned exclusively by the existing `receiveSubstituteReceiptStock()` flow, which is unrelated to `goods_receipt` workflow documents.
 
 - [ ] **Step 4: Implement default template seeds**
 
@@ -274,6 +284,44 @@ test("normalizeDocumentWorkflowStatus maps completed child documents", () => {
   });
 });
 
+test("normalizeDocumentWorkflowStatus reports substitute_receipt completion by receiptType", () => {
+  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
+    documentKind: "substitute_receipt",
+    receiptNo: "SR-2026-09-0001",
+    transactionNo: "TXN-2026-09-0001",
+    receiptType: "stock_purchase",
+    status: "received",
+    statusLabel: "รับสินค้าแล้ว",
+  }).workflowStatus, "completed");
+
+  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
+    documentKind: "substitute_receipt",
+    receiptNo: "SR-2026-09-0002",
+    transactionNo: "TXN-2026-09-0001",
+    receiptType: "general_expense",
+    status: "approved",
+    statusLabel: "อนุมัติแล้ว",
+  }).workflowStatus, "completed");
+
+  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
+    documentKind: "substitute_receipt",
+    receiptNo: "SR-2026-09-0003",
+    transactionNo: "TXN-2026-09-0001",
+    receiptType: "stock_purchase",
+    status: "approved",
+    statusLabel: "อนุมัติแล้ว",
+  }).workflowStatus, "in_progress");
+
+  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
+    documentKind: "substitute_receipt",
+    receiptNo: "SR-2026-09-0004",
+    transactionNo: "TXN-2026-09-0001",
+    receiptType: "general_expense",
+    status: "received",
+    statusLabel: "รับสินค้าแล้ว",
+  }).workflowStatus, "in_progress");
+});
+
 test("deriveWorkflowProgress unlocks next document only after current child is completed", () => {
   const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
   const transaction = workflowLogic.buildWorkflowTransactionPayload({
@@ -315,12 +363,15 @@ Expected: FAIL because transaction helpers are missing.
 
 `normalizeDocumentWorkflowStatus()` must detect document numbers from `documentNo`, `requestNo`, `receiptNo`, `voucherNo`, `purchaseOrderNo`, or `goodsReceiptNo`.
 
-It must map native status:
+It must map native status per document kind (substitute_receipt completion is hybrid, keyed on `receiptType`; every other kind, including the lightweight `goods_receipt` document, only reports `completed` on native `completed`):
 
-- `completed` -> workflow `completed`
-- `received` -> workflow `completed` only when `documentKind === "substitute_receipt"` or `documentKind === "goods_receipt"`
-- `approved` -> workflow `in_progress`
-- missing/unknown -> workflow `in_progress`
+- `completed` -> workflow `completed` (any `documentKind`)
+- `documentKind === "substitute_receipt"` and `receiptType === "stock_purchase"`: native `received` -> workflow `completed`
+- `documentKind === "substitute_receipt"` and `receiptType === "general_expense"`: native `approved` -> workflow `completed`
+- every other `approved` (including `substitute_receipt` combinations not listed above, `goods_receipt`, and the other lightweight document kinds) -> workflow `in_progress`
+- missing/unknown status -> workflow `in_progress`
+
+This is the auto-completion signal only. `completeSubstituteReceipt()` (Task 3) and `completeWorkflowDocument()` (Task 4) remain available regardless of `receiptType` as an explicit override that always stamps native `status: "completed"`, which then satisfies the plain `completed -> completed` rule above.
 
 - [ ] **Step 5: Implement progress derivation**
 
@@ -495,6 +546,7 @@ git commit -m "feat: mark standalone documents completed for workflows"
 - Create: `forms/workflow-document.logic.js`
 - Create: `forms/workflow-document.html`
 - Create: `forms/workflow-document.logic.browser.js`
+- Create: `forms/workflow-return-link.browser.js`
 - Create: `scripts/generate_workflow_document_pdf.py`
 - Create: `tests/workflow-document.logic.test.mjs`
 - Create: `tests/workflow-document.html.test.mjs`
@@ -512,14 +564,20 @@ git commit -m "feat: mark standalone documents completed for workflows"
 - Produces: `listWorkflowDocuments(rootDir, filters)`
 - Produces: `getWorkflowDocument(rootDir, documentKind, documentNo)`
 - Produces: `saveWorkflowDocument({ rootDir, payload, uploads })`
+- Produces: `getWorkflowDocumentFile({ rootDir, documentKind, documentNo, section, fileName })`
+- Produces: `sanitizeWorkflowReturnTo(value)` (browser helper, `forms/workflow-return-link.browser.js`)
 
 - [ ] **Step 1: Write failing logic tests**
 
 ```js
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import docLogic from "../forms/workflow-document.logic.js";
+import serverLogic from "../forms/local-server.logic.js";
 
 test("lightweight workflow documents expose required standalone kinds", () => {
   assert.deepEqual(docLogic.LIGHTWEIGHT_DOCUMENT_KINDS, [
@@ -527,6 +585,7 @@ test("lightweight workflow documents expose required standalone kinds", () => {
     "payment_voucher",
     "cash_spend_declaration",
     "payee_acknowledgement",
+    "goods_receipt",
   ]);
 });
 
@@ -563,13 +622,55 @@ test("validateWorkflowDocumentPayload requires traceable fields", () => {
     "เพิ่มรายการอย่างน้อย 1 รายการ",
   ]);
 });
+
+test("getWorkflowDocumentFile rejects path traversal and resolves legitimate files", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "payment_voucher",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "ทดสอบ",
+      requesterName: "คุณต้า",
+      payeeName: "ร้านค้า",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "100" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    const record = await serverLogic.getWorkflowDocument(rootDir, "payment_voucher", saved.documentNo);
+
+    const pdfDir = join(rootDir, record.folderPath, "pdf");
+    await mkdir(pdfDir, { recursive: true });
+    await writeFile(join(pdfDir, "01_payment_voucher.pdf"), "stub-pdf");
+
+    const legit = await serverLogic.getWorkflowDocumentFile({
+      rootDir,
+      documentKind: "payment_voucher",
+      documentNo: saved.documentNo,
+      section: "pdf",
+      fileName: "01_payment_voucher.pdf",
+    });
+    assert.ok(legit.absolutePath.startsWith(pdfDir));
+
+    await assert.rejects(() => serverLogic.getWorkflowDocumentFile({
+      rootDir,
+      documentKind: "payment_voucher",
+      documentNo: saved.documentNo,
+      section: "raw",
+      fileName: "../data/workflow-document.json",
+    }));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 ```
 
 - [ ] **Step 2: Run logic tests to verify failure**
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-document.logic.test.mjs`
 
-Expected: FAIL because `forms/workflow-document.logic.js` does not exist.
+Expected: FAIL because `forms/workflow-document.logic.js` does not exist yet, and (once it exists) because `getWorkflowDocumentFile` is not yet exported from `forms/local-server.logic.js`.
 
 - [ ] **Step 3: Implement lightweight document logic**
 
@@ -581,8 +682,11 @@ const DOCUMENT_PREFIXES = {
   payment_voucher: "PV",
   cash_spend_declaration: "CSD",
   payee_acknowledgement: "PAR",
+  goods_receipt: "GR",
 };
 ```
+
+`LIGHTWEIGHT_DOCUMENT_KINDS` must list all five kinds in this order: `purchase_order`, `payment_voucher`, `cash_spend_declaration`, `payee_acknowledgement`, `goods_receipt`. `goods_receipt` documents created here are unrelated to inventory stock movements — do not call into `forms/inventory.logic.js` from this file.
 
 Status labels:
 
@@ -661,9 +765,54 @@ In `local-server.mjs`, add:
 - `POST /api/workflow-documents`
 - `GET /api/workflow-documents/:documentKind/:documentNo`
 - `POST /api/workflow-documents/:documentKind/:documentNo/complete`
-- file route for PDF/raw
+- file route for PDF/raw (implemented in Step 7 below)
 
-- [ ] **Step 7: Create generic standalone HTML page**
+- [ ] **Step 7: Implement `getWorkflowDocumentFile()` and wire the file route**
+
+This is the file-serving guard for lightweight workflow documents, mirrored verbatim in shape from `getExpenseRequestFile()` (`forms/local-server.logic.js:1500-1522`), added to `forms/local-server.logic.js`:
+
+```js
+async function getWorkflowDocumentFile({ rootDir, documentKind, documentNo, section, fileName }) {
+  if (!documentNo) throw new Error("Missing document number");
+  if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Invalid file name");
+  }
+
+  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+  if (!record) throw new Error("Workflow document not found");
+
+  const baseDir = path.resolve(rootDir, record.folderPath, section);
+  const absolutePath = path.resolve(baseDir, fileName);
+  if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    throw new Error("Invalid file name");
+  }
+
+  return { absolutePath, fileName, section };
+}
+```
+
+Only `pdf` and `raw` are allowed `section` values — the same two sections `getExpenseRequestFile()` allows — because those are the only lightweight-document subfolders meant to be downloaded by filename (the generated PDF and uploaded evidence files). `data/workflow-document.json` and `working-md/workflow-document.md` are internal/derived state read through `getWorkflowDocument()`, never served as raw files by name — same rationale as `getWorkflowTransactionFile()` in Task 5.
+
+In `local-server.mjs`, add `GET /workflow-documents/:documentKind/:documentNo/:section/:fileName` (matching the existing expense-request/substitute-receipt file-route path shape) that calls `getWorkflowDocumentFile()` and streams `absolutePath`, returning 404 on any thrown error.
+
+- [ ] **Step 8: Create the shared `returnTo` validation helper**
+
+Create `forms/workflow-return-link.browser.js` as a plain classic script (no module wrapper, matching `forms/workflow.logic.browser.js`'s style) so `sanitizeWorkflowReturnTo` is globally available to any page that loads it with a `<script>` tag:
+
+```js
+function sanitizeWorkflowReturnTo(value) {
+  if (typeof value !== "string" || value === "") return "";
+  if (!value.startsWith("/")) return "";
+  if (value.startsWith("//")) return "";
+  if (value.includes("\\")) return "";
+  return value;
+}
+```
+
+This is the single implementation used by `forms/workflow-document.html` (this task), `forms/expense-request.html`, and `forms/substitute-receipt.html` (Task 6) — none of those pages re-implement the check. It has no dependency on any other browser-logic file, so loading it from expense-request/substitute-receipt does not pull in `workflow-document.logic.browser.js` or vice versa.
+
+- [ ] **Step 9: Create generic standalone HTML page**
 
 The page must include:
 
@@ -673,17 +822,28 @@ The page must include:
 - evidence uploads
 - save button
 - complete button
-- return-to-workflow link when `returnTo` exists
+- a `<script src="./workflow-return-link.browser.js"></script>` tag, loaded before this page's own inline/controller script
+- return-to-workflow link, shown only when `sanitizeWorkflowReturnTo(returnTo)` returns a non-empty value; assign that sanitized value (never the raw query param) to the link's `href`, and keep the link hidden otherwise
 
-- [ ] **Step 8: Add tests to `scripts/test.sh`**
+Add matching assertions to `tests/workflow-document.html.test.mjs`:
 
-Run both new Python tests:
-
-```bash
-(cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_document_pdf test_workflow_packet_pdf -v)
+```js
+test("workflow document shell validates returnTo before showing the return link", async () => {
+  const html = await readFile(new URL("../forms/workflow-document.html", import.meta.url), "utf8");
+  assert.match(html, /workflow-return-link\.browser\.js/);
+  assert.match(html, /sanitizeWorkflowReturnTo/);
+});
 ```
 
-- [ ] **Step 9: Run targeted tests**
+- [ ] **Step 10: Add this task's test to `scripts/test.sh`**
+
+`test_workflow_packet_pdf` is not created until Task 7 — only register the Python test this task actually creates, so `./scripts/test.sh` keeps passing for Tasks 4 through 6:
+
+```bash
+(cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_document_pdf -v)
+```
+
+- [ ] **Step 11: Run targeted tests**
 
 Run:
 
@@ -694,10 +854,10 @@ PYTHONPATH=scripts /Users/tar/.cache/codex-runtimes/codex-primary-runtime/depend
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add forms/workflow-document.logic.js forms/workflow-document.html forms/workflow-document.logic.browser.js scripts/generate_workflow_document_pdf.py scripts/test_workflow_document_pdf.py tests/workflow-document.logic.test.mjs tests/workflow-document.html.test.mjs forms/local-server.logic.js local-server.mjs scripts/test.sh
+git add forms/workflow-document.logic.js forms/workflow-document.html forms/workflow-document.logic.browser.js forms/workflow-return-link.browser.js scripts/generate_workflow_document_pdf.py scripts/test_workflow_document_pdf.py tests/workflow-document.logic.test.mjs tests/workflow-document.html.test.mjs forms/local-server.logic.js local-server.mjs scripts/test.sh
 git commit -m "feat: add lightweight standalone workflow documents"
 ```
 
@@ -725,7 +885,7 @@ git commit -m "feat: add lightweight standalone workflow documents"
 
 ```js
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -788,6 +948,46 @@ test("getNextWorkflowTransactionInfo scans workflow transaction folders", async 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("getWorkflowTransactionFile rejects path traversal and resolves legitimate pdf files", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+    const loaded = await serverLogic.getWorkflowTransaction(rootDir, txn.transactionNo);
+    const pdfDir = join(rootDir, loaded.folderPath, "pdf");
+    await mkdir(pdfDir, { recursive: true });
+    await writeFile(join(pdfDir, "99_ชุดรวมเอกสาร_workflow-transaction.pdf"), "stub-pdf");
+
+    const legit = await serverLogic.getWorkflowTransactionFile({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      section: "pdf",
+      fileName: "99_ชุดรวมเอกสาร_workflow-transaction.pdf",
+    });
+    assert.ok(legit.absolutePath.startsWith(pdfDir));
+
+    await assert.rejects(() => serverLogic.getWorkflowTransactionFile({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      section: "pdf",
+      fileName: "../data/workflow-transaction.json",
+    }));
+
+    await assert.rejects(() => serverLogic.getWorkflowTransactionFile({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      section: "data",
+      fileName: "workflow-transaction.json",
+    }));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -826,30 +1026,56 @@ Create `findWorkflowChildDocuments(rootDir, transactionNo)`. For MVP, scan:
 
 - expense requests from `findSubmittedExpenseRequests(rootDir)`
 - substitute receipts from `findSubmittedSubstituteReceipts(rootDir)`
+- lightweight documents (`purchase_order`, `payment_voucher`, `cash_spend_declaration`, `payee_acknowledgement`, `goods_receipt`) from `findLightweightWorkflowDocuments(rootDir, transactionNo)`
 
-Filter records where `payload.transactionNo === transactionNo`. Add an empty extension point for future lightweight document kinds:
+Filter records where `payload.transactionNo === transactionNo`.
 
-```js
-async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
-  return [];
-}
-```
+`findLightweightWorkflowDocuments()` must be a real implementation, not a stub returning `[]` — every one of the six default templates contains at least one lightweight document, so a stub would make every template unable to advance past its lightweight steps. It must scan the lightweight document storage created in Task 4 (`listWorkflowDocuments(rootDir, { transactionNo })` from `forms/workflow-document.logic.js`, or an equivalent directory scan under `documents/YYYY/MM/<documentKind>/`), filter to the given `transactionNo`, and return one record per lightweight document carrying at least: `documentKind`, `documentNo`, `status`, `statusLabel`, `folderPath`, `pdfFiles`, `rawFiles`, `workflowStepId`, `completedAt`, `completedBy`.
+
+Expense-request and substitute-receipt records loaded from `findSubmittedExpenseRequests()` / `findSubmittedSubstituteReceipts()` do not store a `documentKind` field on their payload — the child-document lookup must inject the correct `documentKind` (`"expense_request"` / `"substitute_receipt"`) onto each record before handing it to `normalizeDocumentWorkflowStatus()`, otherwise the hybrid `substitute_receipt` completion rule and the generic status mapping cannot dispatch correctly.
 
 - [ ] **Step 7: Implement refresh**
 
 `refreshWorkflowTransaction()` loads the transaction, loads child documents, calls `deriveWorkflowProgress()`, rewrites JSON/markdown, regenerates packet PDF after Task 7, and returns the updated transaction.
 
-- [ ] **Step 8: Export workflow functions**
+- [ ] **Step 8: Implement `getWorkflowTransactionFile()`**
+
+Mirror `getExpenseRequestFile()` (`forms/local-server.logic.js:1500-1522`) verbatim in shape:
+
+```js
+async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fileName }) {
+  if (!transactionNo) throw new Error("Missing transaction number");
+  if (!["pdf"].includes(section)) throw new Error("Invalid file section");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Invalid file name");
+  }
+
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) throw new Error("Workflow transaction not found");
+
+  const baseDir = path.resolve(rootDir, transaction.folderPath, section);
+  const absolutePath = path.resolve(baseDir, fileName);
+  if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    throw new Error("Invalid file name");
+  }
+
+  return { absolutePath, fileName, section };
+}
+```
+
+Only `pdf` is an allowed `section` for a transaction folder. The transaction directory (Global Constraints, `documents/YYYY/MM/workflow-transactions/TXN-.../`) has three subfolders: `data/` (raw `workflow-transaction.json`, read through `getWorkflowTransaction()`/the JSON API), `working-md/` (the human-readable `workflow-summary.md` source, same rationale), and `pdf/` (the packet PDF generated in Task 7 — the only artifact meant to be downloaded by filename through this route). Do not add `data` or `working-md` to the allowed set: unlike `raw/` on expense-request, substitute-receipt, or lightweight-document folders, nothing in `data/`/`working-md/` is an uploaded or generated artifact meant for direct download — it is server-authored JSON/markdown already reachable through its own read path, so serving it by arbitrary filename would only add attack surface with no benefit.
+
+- [ ] **Step 9: Export workflow functions**
 
 Add all functions listed in this task's interface to `module.exports`.
 
-- [ ] **Step 9: Run tests**
+- [ ] **Step 10: Run tests**
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
 
 Expected: PASS, except packet-related assertions should wait until Task 7.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add forms/local-server.logic.js tests/workflow-api.test.mjs
@@ -866,9 +1092,11 @@ git commit -m "feat: store workflow templates and transactions"
 - Modify: related inline browser scripts in those files
 - Modify: `tests/expense-request.html.test.mjs`
 - Modify: `tests/substitute-receipt.html.test.mjs`
+- Consume (already created in Task 4, not modified here): `forms/workflow-return-link.browser.js`
 
 **Interfaces:**
 - Consumes query params: `transactionNo`, `workflowTemplateId`, `workflowStepId`, `returnTo`
+- Consumes: `sanitizeWorkflowReturnTo(value)` from `forms/workflow-return-link.browser.js` (Task 4)
 - Produces saved payload fields with the same names.
 
 - [ ] **Step 1: Write failing HTML tests**
@@ -881,6 +1109,8 @@ test("expense request form preserves workflow context query params", async () =>
   assert.match(html, /workflowStepId/);
   assert.match(html, /returnTo/);
   assert.match(html, /กลับไปที่ Workflow/);
+  assert.match(html, /workflow-return-link\.browser\.js/);
+  assert.match(html, /sanitizeWorkflowReturnTo/);
 });
 
 test("substitute receipt form preserves workflow context query params", async () => {
@@ -890,6 +1120,8 @@ test("substitute receipt form preserves workflow context query params", async ()
   assert.match(html, /workflowStepId/);
   assert.match(html, /returnTo/);
   assert.match(html, /กลับไปที่ Workflow/);
+  assert.match(html, /workflow-return-link\.browser\.js/);
+  assert.match(html, /sanitizeWorkflowReturnTo/);
 });
 ```
 
@@ -915,6 +1147,8 @@ Add a return link near top actions:
 <a class="button secondary" id="workflowReturnLink" href="/workflow-transactions" hidden>กลับไปที่ Workflow</a>
 ```
 
+Add `<script src="./workflow-return-link.browser.js"></script>` before this page's own inline script / `<page-name>.logic.browser.js` tag, so `sanitizeWorkflowReturnTo()` is available globally when the boot script runs.
+
 - [ ] **Step 4: Read query params in browser scripts**
 
 In each page's script, add:
@@ -932,7 +1166,17 @@ Set hidden input values during boot. When collecting payload, include the three 
 
 - [ ] **Step 5: Show return link after save/approve/complete**
 
-If `returnTo` is present, set `workflowReturnLink.href = returnTo` and unhide it. Keep it hidden for standalone use.
+`returnTo` is attacker-controllable query-string input (a hand-crafted link such as `/expense-request?returnTo=https://evil.example` would otherwise leave the user a return button that navigates off-site right after they save/approve a real accounting document). Never assign it to `href` directly. Instead:
+
+```js
+const safeReturnTo = window.sanitizeWorkflowReturnTo(workflowContext.returnTo);
+if (safeReturnTo) {
+  workflowReturnLink.href = safeReturnTo;
+  workflowReturnLink.hidden = false;
+}
+```
+
+`sanitizeWorkflowReturnTo()` (from `forms/workflow-return-link.browser.js`, loaded in Step 3) returns the value unchanged only if it starts with a single `/`, does not start with `//`, and does not contain `\`; otherwise it returns `""`. Keep the link hidden for standalone use and whenever validation fails.
 
 - [ ] **Step 6: Run tests**
 
@@ -1010,12 +1254,12 @@ Output filename:
 
 `pdf/99_ชุดรวมเอกสาร_workflow-transaction.pdf`
 
-- [ ] **Step 4: Add Python test to `scripts/test.sh`**
+- [ ] **Step 4: Add this task's test to `scripts/test.sh`**
 
-Change the Python test command to:
+Append `test_workflow_packet_pdf` to the same command Task 4 registered — do not drop `test_workflow_document_pdf`:
 
 ```bash
-(cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_packet_pdf -v)
+(cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_document_pdf test_workflow_packet_pdf -v)
 ```
 
 - [ ] **Step 5: Add server packet generation**
@@ -1057,14 +1301,201 @@ git commit -m "feat: generate workflow transaction packets"
 
 ---
 
-### Task 8: HTTP Routes
+### Task 8: Workflow Completion And Sync
+
+**Files:**
+- Modify: `forms/local-server.logic.js`
+- Test: `tests/workflow-api.test.mjs`
+
+**Interfaces:**
+- Produces: `completeWorkflowTransaction({ rootDir, transactionNo, completedBy, now, driveUploader, sheetsRecorder })`
+- Produces: `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader, now })`
+- Produces: `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder, now })`
+
+No task before this one calls `buildWorkflowSheetEntry()` (Task 2) or wires transaction-level Drive/Sheets sync, even though the spec requires `POST /.../complete`, `POST /.../sync-drive`, and "one Sheets summary row per completed transaction." This task closes that gap. Follow the existing standalone-document pattern before writing code: read `approveExpenseRequest()`, `syncExpenseRequestToDrive()`, and `recordExpenseSheetMetadata()` in `forms/local-server.logic.js` (around lines 538, 1373, and 1524) — they show the established shape for injecting a stubbable uploader/recorder with a default (`driveUploader = uploadFolderToGoogleDrive`, `expenseRecorder = recordMonthlyExpense`), writing `{ syncStatus, ... }` metadata back onto the record, and turning a sync failure into a `sync_failed` status instead of throwing.
+
+- [ ] **Step 1: Write failing tests**
+
+```js
+test("completeWorkflowTransaction refuses completion while a step is incomplete", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+    await assert.rejects(
+      () => serverLogic.completeWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo, completedBy: "บัญชี" }),
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+async function completeSingleStepTransaction(rootDir, templateOverrides) {
+  const template = await serverLogic.saveWorkflowTemplate({
+    rootDir,
+    template: {
+      templateId: `single_step_${Date.now()}`,
+      name: "ทดสอบ single step",
+      syncGoogleDrive: false,
+      syncGoogleSheets: false,
+      documentSteps: [{ documentKind: "payment_voucher" }],
+      ...templateOverrides,
+    },
+  });
+  const txn = await serverLogic.startWorkflowTransaction({
+    rootDir,
+    templateId: template.templateId,
+    accountingMonth: "2026-09",
+    title: "ทดสอบ complete",
+  });
+  const doc = await serverLogic.saveWorkflowDocument({
+    rootDir,
+    payload: {
+      documentKind: "payment_voucher",
+      sequence: "1",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "จ่ายเงิน",
+      requesterName: "คุณต้า",
+      payeeName: "ร้านค้า",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "100" }],
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: template.templateId,
+      workflowStepId: txn.steps[0].stepId,
+    },
+  });
+  await serverLogic.completeWorkflowDocument({
+    rootDir,
+    documentKind: "payment_voucher",
+    documentNo: doc.documentNo,
+    completedBy: "บัญชี",
+  });
+  await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+  return txn;
+}
+
+test("completeWorkflowTransaction succeeds and auto-syncs when template toggles are on", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: true, syncGoogleSheets: true });
+    let driveCalls = 0;
+    let sheetCalls = 0;
+    const completed = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      driveUploader: async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; },
+      sheetsRecorder: async () => { sheetCalls += 1; return { syncStatus: "synced" }; },
+    });
+
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(driveCalls, 1);
+    assert.equal(sheetCalls, 1);
+    assert.equal(completed.driveSync.syncStatus, "synced");
+    assert.equal(completed.sheetSync.syncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeWorkflowTransaction does not auto-sync when toggles are off, and manual sync works afterward", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: false, syncGoogleSheets: false });
+    let driveCalls = 0;
+    let sheetCalls = 0;
+    const stubDrive = async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; };
+    const stubSheets = async () => { sheetCalls += 1; return { syncStatus: "synced" }; };
+
+    const completed = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      driveUploader: stubDrive,
+      sheetsRecorder: stubSheets,
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(driveCalls, 0);
+    assert.equal(sheetCalls, 0);
+
+    const manualDrive = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: txn.transactionNo, driveUploader: stubDrive });
+    assert.equal(driveCalls, 1);
+    assert.equal(manualDrive.syncStatus, "synced");
+
+    const manualSheets = await serverLogic.syncWorkflowTransactionToSheets({ rootDir, transactionNo: txn.transactionNo, sheetsRecorder: stubSheets });
+    assert.equal(sheetCalls, 1);
+    assert.equal(manualSheets.syncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+- [ ] **Step 2: Run tests to verify failure**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
+
+Expected: FAIL because `completeWorkflowTransaction`, `syncWorkflowTransactionToDrive`, and `syncWorkflowTransactionToSheets` do not exist yet.
+
+- [ ] **Step 3: Implement `completeWorkflowTransaction()`**
+
+Load the transaction with `getWorkflowTransaction()`, load its child documents (the same lookup `refreshWorkflowTransaction()` uses), and call `deriveWorkflowProgress()`. If any step's `workflowStatus !== "completed"`, throw a Thai error (e.g. `"ยังไม่เสร็จสิ้นทุกขั้นตอนของ Workflow"`) and make no changes. Otherwise:
+
+- set `status: "completed"`, `completedAt: now()`, `completedBy`
+- append a status history entry (same shape as `appendExpenseRequestStatus()`/`appendSubstituteReceiptStatus()`)
+- rewrite `data/workflow-transaction.json` and `working-md/workflow-summary.md` (`formatWorkflowSummaryMarkdown()`)
+- regenerate the packet PDF via the Task 7 helper
+- if `transaction.templateSnapshot.syncGoogleDrive` (the value snapshotted at start time, not a live template lookup) is `true`, call `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader })` internally and attach the result as `transaction.driveSync`
+- if `transaction.templateSnapshot.syncGoogleSheets` is `true`, call `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder })` internally and attach the result as `transaction.sheetSync`
+- when a toggle is `false`, leave the matching `driveSync`/`sheetSync` field as `{ syncStatus: "not_required" }` so the UI can tell "not needed" apart from "not yet synced"
+- accept `driveUploader` and `sheetsRecorder` as injectable parameters (defaults below) so both the auto-sync-on and auto-sync-off paths are testable without hitting the network
+- return the updated transaction, including `driveSync`/`sheetSync`
+
+- [ ] **Step 4: Implement manual sync fallbacks**
+
+`syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader = uploadFolderToGoogleDrive, now = () => new Date().toISOString() })` and `syncWorkflowTransactionToSheets({ rootDir, transactionNo, sheetsRecorder = recordMonthlyExpense, now = () => new Date().toISOString() })`:
+
+- load the transaction; throw if not found
+- require `transaction.status === "completed"` — refuse to sync an incomplete transaction, mirroring the enable condition the UI uses to show these buttons
+- Drive: call `driveUploader({ rootDir, folderPath: transaction.folderPath })`, write `{ syncStatus: "synced", driveFolderId, driveFolderUrl, drivePath, uploadedFileCount, syncedAt, updatedAt }` (or `{ syncStatus: "sync_failed", error, updatedAt }` on rejection, without throwing past this function) into `transaction.driveSync`, persist the transaction JSON, and return the same metadata object — this is exactly the `syncExpenseRequestToDrive()` shape applied to a workflow transaction folder instead of a document folder
+- Sheets: build one row with `buildWorkflowSheetEntry(transaction, childDocuments, driveMetadata, syncedAt)` (Task 2) with `sourceKey: workflow_transaction:${transaction.transactionNo}` so re-running sync updates rather than duplicates the row, call `sheetsRecorder({ rootDir, entry, now })`, store the result as `transaction.sheetSync`, persist, and return it
+
+  Verified fact (no further dedupe layer needed here): `recordMonthlyExpense()` in `forms/google-sheets.logic.js` already upserts on `sourceKey` — line 235 does `rows.findIndex((existingRow, index) => index > 0 && existingRow[0] === entry.sourceKey)` and updates that row in place when found, only appending a new row when no match exists. So passing `sourceKey: workflow_transaction:${transactionNo}` on every call (auto-sync and every manual re-sync) genuinely yields one Sheets row per transaction; do not add a separate duplicate-check before calling `sheetsRecorder()`.
+- both functions are callable standalone (manual button press) and are also the functions `completeWorkflowTransaction()` calls internally for auto-sync — do not fork the logic into two implementations
+
+- [ ] **Step 5: Export functions**
+
+Add `completeWorkflowTransaction`, `syncWorkflowTransactionToDrive`, and `syncWorkflowTransactionToSheets` to `module.exports`.
+
+- [ ] **Step 6: Run tests**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add forms/local-server.logic.js tests/workflow-api.test.mjs
+git commit -m "feat: complete workflow transactions and sync them to Drive/Sheets"
+```
+
+---
+
+### Task 9: HTTP Routes
 
 **Files:**
 - Modify: `local-server.mjs`
 - Test: `tests/workflow-api.test.mjs`
 
 **Interfaces:**
-- Consumes server logic from Task 5 and Task 7.
+- Consumes server logic from Task 5, Task 7, and Task 8.
 - Produces API routes from the spec.
 
 - [ ] **Step 1: Write failing static route tests**
@@ -1080,6 +1511,12 @@ test("local server exposes workflow template and transaction routes", async () =
   assert.match(source, /\/api\/workflow-transactions/);
   assert.match(source, /start-document/);
   assert.match(source, /refreshWorkflowTransaction/);
+  assert.match(source, /completeWorkflowTransaction/);
+  assert.match(source, /syncWorkflowTransactionToDrive/);
+  assert.match(source, /syncWorkflowTransactionToSheets/);
+  assert.match(source, /\/complete/);
+  assert.match(source, /\/sync-drive/);
+  assert.match(source, /\/sync-sheets/);
 });
 ```
 
@@ -1103,6 +1540,9 @@ listWorkflowTransactions,
 refreshWorkflowTransaction,
 saveWorkflowTemplate,
 startWorkflowTransaction,
+completeWorkflowTransaction,
+syncWorkflowTransactionToDrive,
+syncWorkflowTransactionToSheets,
 ```
 
 - [ ] **Step 4: Add static page routes**
@@ -1120,7 +1560,7 @@ In `safeStaticPath()` route map:
 
 - [ ] **Step 5: Add API handlers**
 
-Follow existing `sendJson()` error style. Add handlers for listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, and serving transaction packet files.
+Follow existing `sendJson()` error style. Add handlers for listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, completing a transaction (`completeWorkflowTransaction`), manually syncing a transaction to Drive (`syncWorkflowTransactionToDrive`), manually syncing a transaction to Sheets (`syncWorkflowTransactionToSheets`), and serving transaction packet files.
 
 For `start-document`, return the standalone document URL:
 
@@ -1145,8 +1585,9 @@ POST routes:
 - `/api/workflow-transactions`
 - `/api/workflow-transactions/:transactionNo/start-document/:stepId`
 - `/api/workflow-transactions/:transactionNo/refresh`
-- `/api/workflow-transactions/:transactionNo/complete`
-- `/api/workflow-transactions/:transactionNo/sync-drive`
+- `/api/workflow-transactions/:transactionNo/complete` (calls `completeWorkflowTransaction`, refuses unless every step is `completed`, auto-syncs per the transaction's snapshotted toggles)
+- `/api/workflow-transactions/:transactionNo/sync-drive` (calls `syncWorkflowTransactionToDrive`, manual fallback usable any time after completion)
+- `/api/workflow-transactions/:transactionNo/sync-sheets` (calls `syncWorkflowTransactionToSheets`, manual fallback usable any time after completion)
 
 GET routes:
 
@@ -1172,7 +1613,7 @@ git commit -m "feat: expose workflow template routes"
 
 ---
 
-### Task 9: Workflow Template, Transaction List, And Progress UI
+### Task 10: Workflow Template, Transaction List, And Progress UI
 
 **Files:**
 - Create: `forms/workflow-templates.html`
@@ -1182,7 +1623,7 @@ git commit -m "feat: expose workflow template routes"
 - Test: `tests/workflow-pages.html.test.mjs`
 
 **Interfaces:**
-- Consumes API routes from Task 8.
+- Consumes API routes from Task 9.
 - Produces usable MVP pages.
 
 - [ ] **Step 1: Write failing HTML tests**
@@ -1219,6 +1660,17 @@ test("workflow transaction page shows progress checklist and standalone document
   assert.match(html, /start-document/);
   assert.match(html, /refresh/);
   assert.match(html, /เปิดเอกสาร/);
+});
+
+test("workflow transaction page shows manual sync buttons and auto-sync status", async () => {
+  const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
+  assert.match(html, /id="syncDriveButton"/);
+  assert.match(html, /id="syncSheetsButton"/);
+  assert.match(html, /id="driveSyncStatus"/);
+  assert.match(html, /id="sheetSyncStatus"/);
+  assert.match(html, /sync-drive/);
+  assert.match(html, /sync-sheets/);
+  assert.match(html, /\/complete/);
 });
 ```
 
@@ -1267,6 +1719,10 @@ Render:
 - locked steps disabled until previous document is complete
 - PDF/raw file links grouped by child document
 - packet PDF link
+- a "complete transaction" button, enabled only when every step is `completed` and the transaction is not already `completed`; calls `POST /api/workflow-transactions/:transactionNo/complete`
+- sync section driven by the transaction's `driveSync`/`sheetSync` state and the template snapshot's `syncGoogleDrive`/`syncGoogleSheets` toggles, shown only once the transaction is `completed`:
+  - when a toggle is `true`: show `#driveSyncStatus` / `#sheetSyncStatus` text reflecting the auto-sync result (e.g. synced / failed / pending) — no button
+  - when a toggle is `false`: show `#syncDriveButton` / `#syncSheetsButton` respectively, calling `POST .../sync-drive` and `POST .../sync-sheets`, and update the matching status text after the call resolves
 
 - [ ] **Step 6: Implement browser controller**
 
@@ -1282,7 +1738,10 @@ async function startTransaction() { /* POST /api/workflow-transactions */ }
 async function loadTransaction() { /* GET transaction by transactionNo */ }
 async function refreshTransaction() { /* POST refresh */ }
 async function startDocument(stepId) { /* POST start-document and navigate to returned url */ }
-function renderTransaction(transaction) { /* checklist + files */ }
+function renderTransaction(transaction) { /* checklist + files + sync section */ }
+async function completeTransaction() { /* POST .../complete, then re-render */ }
+async function syncTransactionDrive() { /* POST .../sync-drive, then re-render */ }
+async function syncTransactionSheets() { /* POST .../sync-sheets, then re-render */ }
 ```
 
 - [ ] **Step 7: Run tests**
@@ -1300,7 +1759,7 @@ git commit -m "feat: add workflow group pages"
 
 ---
 
-### Task 10: Navigation And Final Verification
+### Task 11: Navigation And Final Verification
 
 **Files:**
 - Modify: `forms/index.html`
@@ -1369,6 +1828,8 @@ Manual smoke checklist:
 - Opening a document passes `transactionNo`, `workflowTemplateId`, and `workflowStepId` in the URL.
 - Completing the child document and refreshing the transaction unlocks the next document.
 - Packet PDF link appears in the transaction page.
+- After the last document is completed, the "complete transaction" button becomes enabled; clicking it marks the transaction `completed`.
+- For a template with a sync toggle on, completion shows an auto-sync status instead of a button; for a toggle off, completion shows a manual sync button that succeeds when clicked.
 
 - [ ] **Step 6: Commit verification fixes**
 
@@ -1384,11 +1845,11 @@ git commit -m "fix: polish workflow group mvp"
 
 Work only inside:
 
-`/Users/tar/Documents/หจกสวีทเฮาส์/.worktrees/fixed-accounting-workflows`
+`/Users/tar/Documents/หจกสวีทเฮาส์/.claude/worktrees/fixed-accounting-workflows-c59bfb`
 
 Branch:
 
-`codex/fixed-accounting-workflows`
+`claude/fixed-accounting-workflows-c59bfb`
 
 Baseline before the plan:
 
@@ -1396,10 +1857,17 @@ Baseline before the plan:
 
 Important architecture correction:
 
-Workflow is not a duplicate workflow engine with its own document forms. It is a transaction-level group/progress layer over standalone documents. Each standalone document must finish its own internal process and expose `completed` before workflow unlocks the next document.
+Workflow is not a duplicate workflow engine with its own document forms. It is a transaction-level group/progress layer over standalone documents. Each standalone document must finish its own internal process and expose `completed` before workflow unlocks the next document. `goods_receipt` is one of the lightweight standalone documents handled by the generic `/workflow-document` shell (Task 4) — it is unrelated to the existing `/inventory-purchase-in` stock-movement flow, and nothing in this plan touches `forms/inventory.logic.js`.
+
+Decision ledger: `.superpowers/sdd/progress.md` records the four PM decisions this revision applies (goods_receipt as a 5th lightweight kind, hybrid substitute_receipt completion, toggle-driven completion/sync with manual fallback, and the reporting cadence for the executing agent) plus two plan-defect fixes (`findLightweightWorkflowDocuments` must be real, and `scripts/test.sh` must only register each task's own Python test). Read it before starting Task 1.
+
+A follow-up architecture/security pass closed three gaps the first revision flagged but left open: `getWorkflowTransactionFile()` now has a real implementation step (Task 5, Step 8) and `getWorkflowDocumentFile()` was added to Task 4 (Step 7) with the same path-traversal guard as `getExpenseRequestFile()`; `returnTo` is now validated through a shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, created in Task 4 Step 8, consumed in Task 4's own shell and in Task 6) instead of being assigned to `href` unchecked; and Task 8's Sheets-sync step now cites the verified upsert behavior of `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) so no implementer adds a redundant dedupe layer. Details: `.superpowers/sdd/architecture-gap-closure-report.md`.
 
 ## Self-Review
 
-- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, APIs, UI, and tests.
-- Placeholder scan: No TBD/TODO placeholders. Each task includes concrete files, interfaces, tests, commands, and commit messages.
-- Type consistency: Public helper names introduced in earlier tasks are reused with the same names later.
+- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive/Sheets sync (auto + manual fallback), APIs, UI, and tests.
+- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (new Task 8 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`/`syncWorkflowTransactionToSheets`; Task 9 exposes the three HTTP routes; Task 10 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 7's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward).
+- Placeholder scan: No TBD/TODO placeholders, including the former `findLightweightWorkflowDocuments() { return []; }` stub. Each task includes concrete files, interfaces, tests, commands, and commit messages.
+- Type consistency: Public helper names introduced in earlier tasks are reused with the same names later. `LIGHTWEIGHT_DOCUMENT_KINDS` and `DOCUMENT_PREFIXES` both carry `goods_receipt` as a fifth entry; `DOCUMENT_TYPE_DEFINITIONS`' key order is unchanged from the original plan (only `goods_receipt.route` changed).
+- Task numbering: Tasks 1–7 are unchanged. Task 8 (Workflow Completion And Sync) is new. The original Task 8 (HTTP Routes) is now Task 9, the original Task 9 (UI) is now Task 10, and the original Task 10 (Navigation And Final Verification) is now Task 11. Every cross-reference to a renumbered task was checked and updated. This total of 11 tasks is unchanged by the follow-up gap-closure pass — that pass only inserted steps inside Task 4, Task 5, Task 6, and Task 8, renumbering each task's own later steps; no task was added, removed, or renumbered.
+- Gap-closure follow-up (this pass): (1) Task 5 gained Step 8, `getWorkflowTransactionFile()` implementation with its containment guard and allowed-`section` rationale (`pdf` only), plus a traversal/legitimate-file test appended to Step 1; Task 4 gained the equivalent Step 7 (`getWorkflowDocumentFile()`, sections `pdf`/`raw`) with its own test. (2) Every page that consumes `returnTo` (`workflow-document.html`, `expense-request.html`, `substitute-receipt.html`) now validates it through one shared `sanitizeWorkflowReturnTo()` helper (new Task 4 Step 8, file `forms/workflow-return-link.browser.js`) before ever assigning it to `href`; Task 6's Steps 1, 3, and 5 were updated to load and use it, with new HTML-test assertions in both tasks; a Global Constraints bullet states the rule once. (3) Task 8's Sheets-sync step now cites the verified `recordMonthlyExpense()` upsert-by-`sourceKey` behavior (`forms/google-sheets.logic.js:235`) as fact, closing the open question without changing Task 8's behavior.
