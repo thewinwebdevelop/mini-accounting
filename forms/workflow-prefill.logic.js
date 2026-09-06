@@ -355,10 +355,32 @@ function isGroupNonEmpty(value) {
 // earlier `completed` document only fills a group that no later `completed`
 // document supplied. Only documents whose *workflow* status
 // (normalizeDocumentWorkflowStatus, Task 2 — not native status) is
-// "completed" are ever used as a source. Recency is `completedAt` (ISO
-// string, lexicographically comparable); documents with equal or missing
-// completedAt fall back to their position in `childDocuments` (stable order —
-// callers pass documents in template step order).
+// "completed" are ever used as a source.
+//
+// Recency is the document's `workflowStepId` ("step-001", "step-002", …),
+// NOT `completedAt`. `completedAt` looks tempting (it's an ISO string, so
+// lexicographic comparison "just works"), but it is not reliably stamped: the
+// hybrid substitute_receipt completion rule (workflow.logic.js
+// deriveChildWorkflowStatus) reports a receipt as workflow-completed on
+// native status alone (general_expense+approved, stock_purchase+received)
+// without ever setting completedAt, so it can be "" on a completed source.
+// "" sorts before every real ISO string, which made a completed-but-unstamped
+// document look like the *oldest* one regardless of when it actually
+// completed. workflowStepId has no such gap: every child document carries
+// one, it sorts lexicographically into exactly template order, and a
+// separate binding rule already forces documents to be produced in strict
+// template order (a step after the first incomplete step is `blocked`) — so
+// step order IS completion order, deterministically, with no dependence on
+// whether a clock value was ever stamped. Do not switch this back to
+// completedAt.
+//
+// Sources are sorted by workflowStepId descending (latest step first) and
+// only fill a group that is still empty, which is precedence stated the
+// other way around: the first (latest) source to supply a non-empty group
+// wins, and earlier sources fill only what's left empty. Documents with no
+// workflowStepId (or an equal one) fall back to descending array index —
+// callers pass documents in template step order, so a later array position
+// is a later step.
 function buildWorkflowPrefillContext(childDocuments = [], targetDocumentKind, options = {}) {
   const normalizeDocumentWorkflowStatus = resolveWorkflowLogic()?.normalizeDocumentWorkflowStatus;
 
@@ -369,10 +391,10 @@ function buildWorkflowPrefillContext(childDocuments = [], targetDocumentKind, op
     .map((doc, index) => ({ doc, index, normalized: normalizeDocumentWorkflowStatus(doc) }))
     .filter((entry) => entry.normalized.workflowStatus === "completed")
     .sort((a, b) => {
-      const left = a.doc.completedAt || "";
-      const right = b.doc.completedAt || "";
-      if (left === right) return a.index - b.index;
-      return left < right ? -1 : 1;
+      const left = a.doc.workflowStepId || "";
+      const right = b.doc.workflowStepId || "";
+      if (left === right) return b.index - a.index;
+      return left > right ? -1 : 1;
     });
 
   for (const { doc, normalized } of completedInOrder) {
@@ -380,12 +402,12 @@ function buildWorkflowPrefillContext(childDocuments = [], targetDocumentKind, op
     if (!adapter) continue;
     const partial = adapter.toWorkflowContext(doc);
     for (const group of ["payee", "purpose", "parties"]) {
-      if (isGroupNonEmpty(partial[group])) {
+      if (!sources[group] && isGroupNonEmpty(partial[group])) {
         context[group] = partial[group];
         sources[group] = normalized.documentNo;
       }
     }
-    if (isGroupNonEmpty(partial.lines)) {
+    if (!sources.lines && isGroupNonEmpty(partial.lines)) {
       context.lines = partial.lines;
       sources.lines = normalized.documentNo;
     }

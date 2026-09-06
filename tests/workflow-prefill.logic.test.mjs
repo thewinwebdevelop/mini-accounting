@@ -167,6 +167,177 @@ test("buildWorkflowPrefillContext lets the most recently completed document win 
   assert.equal(sources.purpose, "PO-2026-09-0001");
 });
 
+test("buildWorkflowPrefillContext: a later step wins over an earlier step even when the later step has an empty completedAt (hybrid substitute_receipt completion never stamps completedAt)", () => {
+  // Reproduction: purchase_order -> substitute_receipt -> payment_voucher.
+  // The substitute_receipt reaches workflow-completed via the hybrid rule
+  // (general_expense + approved) without ever getting a completedAt stamp,
+  // so it is "" even though it completed strictly after the purchase order.
+  const po = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0010",
+    workflowStepId: "step-001",
+    status: "completed",
+    completedAt: "2026-09-01T08:00:00.000Z",
+    businessPurpose: "ซื้อวัสดุสำนักงาน",
+    payeeName: "ร้านค้า A",
+    lines: [{ description: "กระดาษ", quantity: "10", unitCost: "100.00", lineTotal: "1000.00" }],
+  };
+  const sr = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0010",
+    workflowStepId: "step-002",
+    status: "approved",
+    receiptType: "general_expense",
+    completedAt: "",
+    payeeName: "ร้านค้า B",
+    businessPurpose: "",
+    lines: [{ description: "หมึกพิมพ์", quantity: "2", unitCost: "50.00", lineTotal: "100.00" }],
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([po, sr], "payment_voucher");
+
+  assert.equal(context.payee.name, "ร้านค้า B");
+  assert.equal(sources.payee, "SR-2026-09-0010");
+  assert.deepEqual(context.lines.map((line) => line.description), ["หมึกพิมพ์"]);
+  assert.equal(sources.lines, "SR-2026-09-0010");
+  // sr's businessPurpose was empty, so po's purpose fills the gap.
+  assert.equal(context.purpose.businessPurpose, "ซื้อวัสดุสำนักงาน");
+  assert.equal(sources.purpose, "PO-2026-09-0010");
+});
+
+test("buildWorkflowPrefillContext: a later step wins over an earlier step when both have empty completedAt", () => {
+  const po = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0011",
+    workflowStepId: "step-001",
+    status: "completed",
+    completedAt: "",
+    payeeName: "ร้านค้า A",
+  };
+  const sr = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0011",
+    workflowStepId: "step-002",
+    status: "approved",
+    receiptType: "general_expense",
+    completedAt: "",
+    payeeName: "ร้านค้า B",
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([po, sr], "payment_voucher");
+
+  assert.equal(context.payee.name, "ร้านค้า B");
+  assert.equal(sources.payee, "SR-2026-09-0011");
+});
+
+test("buildWorkflowPrefillContext: a later step wins over an earlier step when both have real completedAt timestamps", () => {
+  const po = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0012",
+    workflowStepId: "step-001",
+    status: "completed",
+    completedAt: "2026-09-01T08:00:00.000Z",
+    payeeName: "ร้านค้า A",
+  };
+  const sr = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0012",
+    workflowStepId: "step-002",
+    status: "completed",
+    completedAt: "2026-09-02T08:00:00.000Z",
+    payeeName: "ร้านค้า B",
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([po, sr], "payment_voucher");
+
+  assert.equal(context.payee.name, "ร้านค้า B");
+  assert.equal(sources.payee, "SR-2026-09-0012");
+});
+
+test("buildWorkflowPrefillContext: a later step wins even when its real completedAt is earlier than the earlier step's (step order governs, not the clock)", () => {
+  const po = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0013",
+    workflowStepId: "step-001",
+    status: "completed",
+    // Deliberately later than sr's timestamp below, to prove ordering does
+    // not fall back to comparing clock values once workflowStepId decides it.
+    completedAt: "2026-09-10T08:00:00.000Z",
+    payeeName: "ร้านค้า A",
+  };
+  const sr = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0013",
+    workflowStepId: "step-002",
+    status: "completed",
+    completedAt: "2026-09-02T08:00:00.000Z",
+    payeeName: "ร้านค้า B",
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([po, sr], "payment_voucher");
+
+  assert.equal(context.payee.name, "ร้านค้า B");
+  assert.equal(sources.payee, "SR-2026-09-0013");
+});
+
+test("buildWorkflowPrefillContext: sources with no workflowStepId at all still fall back to array position for a stable, deterministic result", () => {
+  const first = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0014",
+    status: "completed",
+    completedAt: "2026-09-05T08:00:00.000Z",
+    payeeName: "ร้านค้า A",
+  };
+  const second = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0014",
+    status: "completed",
+    completedAt: "2026-09-01T08:00:00.000Z",
+    payeeName: "ร้านค้า B",
+  };
+
+  const run1 = workflowPrefillLogic.buildWorkflowPrefillContext([first, second], "payment_voucher");
+  const run2 = workflowPrefillLogic.buildWorkflowPrefillContext([first, second], "payment_voucher");
+
+  // Later array position wins (callers pass documents in template step
+  // order), and repeated calls with the same input give the same result.
+  assert.equal(run1.context.payee.name, "ร้านค้า B");
+  assert.equal(run1.sources.payee, "SR-2026-09-0014");
+  assert.deepEqual(run1, run2);
+});
+
+test("buildWorkflowPrefillContext: a later step supplying only payee must not blank out purpose/lines supplied by an earlier step", () => {
+  const po = {
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0015",
+    workflowStepId: "step-001",
+    status: "completed",
+    completedAt: "2026-09-01T08:00:00.000Z",
+    businessPurpose: "ซื้อวัสดุสำนักงาน",
+    payeeName: "ร้านค้า A",
+    lines: [{ description: "กระดาษ", quantity: "10", unitCost: "100.00", lineTotal: "1000.00" }],
+  };
+  const sr = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0015",
+    workflowStepId: "step-002",
+    status: "approved",
+    receiptType: "general_expense",
+    completedAt: "",
+    payeeName: "ร้านค้า B",
+    // No businessPurpose, no lines at all.
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([po, sr], "payment_voucher");
+
+  assert.equal(context.payee.name, "ร้านค้า B");
+  assert.equal(sources.payee, "SR-2026-09-0015");
+  assert.equal(context.purpose.businessPurpose, "ซื้อวัสดุสำนักงาน");
+  assert.equal(sources.purpose, "PO-2026-09-0015");
+  assert.deepEqual(context.lines.map((line) => line.description), ["กระดาษ"]);
+  assert.equal(sources.lines, "PO-2026-09-0015");
+});
+
 test("buildWorkflowPrefillContext ignores documents that are not workflow-completed", () => {
   const draftPo = {
     documentKind: "purchase_order",
