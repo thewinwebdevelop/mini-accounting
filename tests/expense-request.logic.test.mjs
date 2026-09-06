@@ -4,6 +4,7 @@ import test from "node:test";
 import logic from "../forms/expense-request.logic.js";
 
 const {
+  EXPENSE_REQUEST_STATUS_LABELS,
   buildRawFileName,
   buildExpensePayload,
   calculateExpenseTotals,
@@ -295,4 +296,59 @@ test("formatPayloadMarkdown lists stored raw filenames for uploaded evidence", (
   assert.match(markdown, /หจก\.สวีทเฮาส์ เดซี่/);
   assert.match(markdown, /0103569007277/);
   assert.match(markdown, /A2_tax-invoice_001\.jpg, A2_tax-invoice_002\.pdf/);
+});
+
+test("buildExpensePayload preserves workflow relation fields and completed status", () => {
+  const payload = buildExpensePayload({
+    sequence: "1",
+    accountingMonth: "2026-09",
+    requestType: "reimbursement",
+    requesterName: "คุณต้า",
+    businessPurpose: "เบิกค่าใช้จ่าย",
+    paymentTargetName: "คุณต้า",
+    transactionNo: "TXN-2026-09-0001",
+    workflowTemplateId: "director_expense_transfer",
+    workflowStepId: "step-001",
+    status: "completed",
+    completedAt: "2026-09-06T14:00:00.000Z",
+    completedBy: "บัญชี",
+    expenseLines: [{ description: "ค่าส่ง", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.equal(payload.transactionNo, "TXN-2026-09-0001");
+  assert.equal(payload.workflowTemplateId, "director_expense_transfer");
+  assert.equal(payload.workflowStepId, "step-001");
+  assert.equal(payload.status, "completed");
+  assert.equal(payload.statusLabel, "เสร็จสิ้น");
+  assert.equal(payload.completedAt, "2026-09-06T14:00:00.000Z");
+  assert.equal(payload.completedBy, "บัญชี");
+});
+
+test("buildExpensePayload defaults workflow relation fields to empty strings for standalone requests", () => {
+  const payload = buildExpensePayload({
+    sequence: "2",
+    accountingMonth: "2026-09",
+    requestType: "reimbursement",
+    requesterName: "คุณต้า",
+    businessPurpose: "เบิกค่าใช้จ่าย",
+    paymentTargetName: "คุณต้า",
+    expenseLines: [{ description: "ค่าส่ง", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.equal(payload.transactionNo, "");
+  assert.equal(payload.workflowTemplateId, "");
+  assert.equal(payload.workflowStepId, "");
+  assert.equal(payload.completedAt, "");
+  assert.equal(payload.completedBy, "");
+  assert.equal(payload.status, "submitted");
+  assert.equal(payload.statusLabel, EXPENSE_REQUEST_STATUS_LABELS.submitted);
+});
+
+test("EXPENSE_REQUEST_STATUS_LABELS defines a Thai label for every status including completed", () => {
+  assert.deepEqual(EXPENSE_REQUEST_STATUS_LABELS, {
+    submitted: "บันทึกแล้ว",
+    approved: "อนุมัติแล้ว",
+    completed: "เสร็จสิ้น",
+    cancelled: "ยกเลิก",
+  });
 });

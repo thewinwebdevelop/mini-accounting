@@ -476,7 +476,7 @@ async function writeDriveSyncMetadata(rootDir, folderPath, metadata) {
 
 function normalizeExpenseRequestStatus(status) {
   const normalized = String(status || "submitted").trim();
-  if (!["submitted", "approved", "cancelled"].includes(normalized)) {
+  if (!["submitted", "approved", "completed", "cancelled"].includes(normalized)) {
     throw new Error(`Invalid expense request status: ${normalized}`);
   }
   return normalized;
@@ -485,6 +485,7 @@ function normalizeExpenseRequestStatus(status) {
 function getExpenseRequestNextAction(status) {
   if (status === "submitted") return "อนุมัติ";
   if (status === "approved") return "บันทึกรายจ่ายแล้ว";
+  if (status === "completed") return "เสร็จสิ้น";
   if (status === "cancelled") return "ยกเลิกแล้ว";
   return "ดูเอกสาร";
 }
@@ -1226,6 +1227,7 @@ function getSubstituteReceiptNextAction(status) {
   if (status === "pending_approval") return "อนุมัติ";
   if (status === "approved") return "รับสินค้าเข้าคลัง";
   if (status === "received") return "ดูเอกสาร";
+  if (status === "completed") return "เสร็จสิ้น";
   if (status === "draft") return "แก้ไขแบบร่าง";
   if (status === "cancelled") return "ยกเลิกแล้ว";
   return "ดูเอกสาร";
@@ -1351,7 +1353,10 @@ function appendSubstituteReceiptStatus(payload, toStatus, note, actor) {
 function appendExpenseRequestStatus(payload, toStatus, note, actor, now = () => new Date().toISOString()) {
   const fromStatus = normalizeExpenseRequestStatus(payload.status || "submitted");
   const targetStatus = normalizeExpenseRequestStatus(toStatus);
-  if (fromStatus === "cancelled" && targetStatus !== "cancelled") {
+  if ((fromStatus === "cancelled" || fromStatus === "completed") && targetStatus !== fromStatus) {
+    throw new Error(`Invalid expense request status transition: ${fromStatus} -> ${targetStatus}`);
+  }
+  if (targetStatus === "completed" && fromStatus !== "approved" && fromStatus !== "completed") {
     throw new Error(`Invalid expense request status transition: ${fromStatus} -> ${targetStatus}`);
   }
   const changedAt = now();
@@ -1497,6 +1502,61 @@ async function receiveSubstituteReceiptStock({
   };
 }
 
+async function completeExpenseRequest({
+  rootDir,
+  requestNo,
+  completedBy = "",
+  now = () => new Date().toISOString(),
+}) {
+  const request = await getSubmittedExpenseRequest(rootDir, requestNo);
+  const payload = {
+    ...request.payload,
+    folderPath: request.folderPath,
+  };
+  const completedAt = now();
+  appendExpenseRequestStatus(payload, "completed", "completed", completedBy, () => completedAt);
+  payload.completedAt = completedAt;
+  payload.completedBy = completedBy || "";
+  const { pdfFiles } = await writeSubmittedExpenseRequestFiles(rootDir, payload);
+
+  return {
+    requestNo: payload.requestNo,
+    status: payload.status,
+    completedAt: payload.completedAt,
+    completedBy: payload.completedBy,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
+async function completeSubstituteReceipt({
+  rootDir,
+  receiptNo,
+  completedBy = "",
+  now = () => new Date().toISOString(),
+}) {
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  const payload = {
+    ...receipt.payload,
+    folderPath: receipt.folderPath,
+  };
+  appendSubstituteReceiptStatus(payload, "completed", "completed", completedBy);
+  const completedAt = now();
+  payload.updatedAt = completedAt;
+  payload.completedAt = completedAt;
+  payload.completedBy = completedBy || "";
+  const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+
+  return {
+    receiptNo: payload.receiptNo,
+    status: payload.status,
+    completedAt: payload.completedAt,
+    completedBy: payload.completedBy,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
 async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) {
   if (!requestNo) throw new Error("Missing expense request number");
   if (!["pdf", "raw"].includes(section)) throw new Error("Invalid file section");
@@ -1616,6 +1676,8 @@ async function syncSubstituteReceiptToDrive({
 module.exports = {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  completeExpenseRequest,
+  completeSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptFile,

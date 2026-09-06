@@ -21,6 +21,8 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  completeExpenseRequest,
+  completeSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
@@ -96,6 +98,29 @@ function validSubstituteReceiptPayload(overrides = {}) {
 
 function validSlipUpload() {
   return [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }];
+}
+
+function validExpensePayload(overrides = {}) {
+  return {
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าส่งพัสดุ",
+    requestType: "reimbursement",
+    requesterName: "คุณต้า",
+    businessPurpose: "เบิกค่าใช้จ่าย",
+    paymentTargetName: "คุณต้า",
+    expenseLines: [
+      {
+        date: "2026-09-05",
+        category: "ค่าส่ง/ขนส่ง",
+        description: "ค่าส่งสินค้า",
+        vendor: "ขนส่งตัวอย่าง",
+        amountBeforeVat: "100",
+        vatAmount: "7",
+        withholdingTax: "3",
+      },
+    ],
+    ...overrides,
+  };
 }
 
 test("parseMultipartForm extracts payload fields and uploaded evidence files", () => {
@@ -645,6 +670,137 @@ test("approveSubstituteReceipt records an approved receipt into the monthly expe
   }
 });
 
+test("completeSubstituteReceipt marks an approved general expense receipt completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const completed = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(completed.completedAt, "2026-09-06T15:00:00.000Z");
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.statusLabel, "เสร็จสิ้น");
+    assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loaded.payload.completedBy, "บัญชี");
+    assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt marks a received stock purchase receipt completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "CMP", name: "เสื้อ CMP", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "CMP-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ CMP", quantity: "2", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+
+    const completed = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+    });
+    assert.equal(completed.status, "completed");
+
+    // Completing the receipt must not touch the already-recorded stock movement / balance.
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 2);
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.stockReceipt.movementIds.length, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt refuses to complete a receipt still pending approval", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+
+    await assert.rejects(
+      completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" }),
+      /Invalid substitute receipt status transition: pending_approval -> completed/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt does not allow receiving stock after completion", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "PST", name: "เสื้อ PST", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "PST-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ PST", quantity: "1", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
+
+    await assert.rejects(
+      receiveSubstituteReceiptStock({
+        rootDir,
+        receiptNo: submitted.receiptNo,
+        receivedDate: "2026-09-05",
+        receivedBy: "คลัง",
+      }),
+      /Invalid substitute receipt status transition: completed -> received/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("approveExpenseRequest moves a submitted request to approved and records monthly expense", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-approve-"));
   const recordedEntries = [];
@@ -712,6 +868,92 @@ test("approveExpenseRequest moves a submitted request to approved and records mo
     const approvedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(approvedRecord.status, "approved");
     assert.equal(approvedRecord.sheetSyncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest transitions approved request to completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    const completed = await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(completed.completedAt, "2026-09-06T15:00:00.000Z");
+
+    const loaded = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.statusLabel, "เสร็จสิ้น");
+    assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loaded.payload.completedBy, "บัญชี");
+    assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest refuses to complete a request that was never approved", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+
+    await assert.rejects(
+      completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" }),
+      /Invalid expense request status transition: submitted -> completed/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest is idempotent when a completed request is completed again", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+
+    const completedAgain = await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T16:00:00.000Z",
+    });
+    assert.equal(completedAgain.status, "completed");
+    assert.equal(completedAgain.completedAt, "2026-09-06T16:00:00.000Z");
+
+    // Cannot fall back to approved once completed.
+    await assert.rejects(
+      approveExpenseRequest({
+        rootDir,
+        requestNo: saved.requestNo,
+        approvedBy: "เจ้าของ",
+        expenseRecorder: async () => ({ syncStatus: "not_required" }),
+      }),
+      /Invalid expense request status transition: completed -> approved/,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

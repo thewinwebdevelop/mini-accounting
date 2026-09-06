@@ -17,12 +17,13 @@ const EVIDENCE_SLUGS = {
   otherEvidence: "other-evidence",
 };
 
-const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "cancelled", "voided"];
+const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "completed", "cancelled", "voided"];
 const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
   draft: "แบบร่าง",
   pending_approval: "รอตรวจอนุมัติ",
   approved: "อนุมัติแล้ว",
   received: "รับเข้าคลังแล้ว",
+  completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
   voided: "ยกเลิกหลังรับรู้",
 };
@@ -30,8 +31,9 @@ const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
 const SUBSTITUTE_RECEIPT_TRANSITIONS = {
   draft: new Set(["draft", "pending_approval", "cancelled"]),
   pending_approval: new Set(["draft", "pending_approval", "approved", "cancelled"]),
-  approved: new Set(["approved", "received", "cancelled"]),
-  received: new Set(["received", "voided"]),
+  approved: new Set(["approved", "received", "completed", "cancelled"]),
+  received: new Set(["received", "completed", "voided"]),
+  completed: new Set(["completed"]),
   cancelled: new Set(["cancelled"]),
   voided: new Set(["voided"]),
 };
@@ -241,6 +243,7 @@ function buildSubstituteReceiptPayload(data = {}) {
       branch: cleanText(data.company.branch),
       address: cleanText(data.company.address),
     } : undefined,
+    status: cleanText(data.status) || "draft",
     accountingMonth: cleanText(data.accountingMonth),
     receiptDate: cleanText(data.receiptDate),
     payeeName: cleanText(data.payeeName),
@@ -248,6 +251,11 @@ function buildSubstituteReceiptPayload(data = {}) {
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
     businessPurpose: cleanText(data.businessPurpose),
+    transactionNo: cleanText(data.transactionNo),
+    workflowTemplateId: cleanText(data.workflowTemplateId),
+    workflowStepId: cleanText(data.workflowStepId),
+    completedAt: cleanText(data.completedAt),
+    completedBy: cleanText(data.completedBy),
     lines,
     totals: {
       totalAmount: money(totalCents),
