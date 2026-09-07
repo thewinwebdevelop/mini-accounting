@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -569,6 +570,411 @@ test("getWorkflowTransactionPrefill sources payee, purpose, and lines from a com
     assert.equal(prefill.sources.payee, savedExpense.requestNo);
     assert.deepEqual(prefill.availableGroups.slice().sort(), ["lines", "payee", "purpose"]);
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HTTP routing tests below. These spawn the real local-server.mjs process and
+// exercise the workflow-template/workflow-transaction routes over HTTP, the
+// same pattern tests/workflow-document-api.test.mjs uses for the sibling
+// workflow-document routes. Bind port 0 (the OS picks a free port) and read
+// the actually-assigned port back out of the server's own startup log line.
+// ---------------------------------------------------------------------------
+
+async function waitForServerPort(child) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("local server did not start"));
+    }, 5000);
+
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      const match = text.match(/Expense request local web app: http:\/\/localhost:(\d+)\//);
+      if (match) {
+        clearTimeout(timeout);
+        resolve(Number(match[1]));
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`local server exited early with code ${code}`));
+    });
+  });
+}
+
+function spawnLocalServer(rootDir) {
+  return spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: "0",
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+async function stopServer(child) {
+  child.kill();
+  await new Promise((resolve) => child.once("exit", resolve));
+}
+
+async function requestJson(baseUrl, route, options = {}) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { "content-type": "application/json" }),
+      ...(options.headers || {}),
+    },
+  });
+  const body = await response.json();
+  return { status: response.status, ok: response.ok, body };
+}
+
+async function requestJsonOk(baseUrl, route, options = {}) {
+  const { ok, body, status } = await requestJson(baseUrl, route, options);
+  assert.equal(ok, true, body.error || `HTTP ${status}`);
+  return body;
+}
+
+function workflowDocumentFormData(overrides = {}) {
+  const formData = new FormData();
+  formData.append("payload", JSON.stringify({
+    documentKind: "purchase_order",
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    title: "สั่งซื้อสินค้าใน Workflow",
+    requesterName: "คุณต้า",
+    payeeName: "ร้านค้าตัวอย่าง",
+    businessPurpose: "ซื้อสินค้าเข้าคลัง",
+    lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
+    ...overrides,
+  }));
+  return formData;
+}
+
+async function startTransactionOverHttp(baseUrl, overrides = {}) {
+  return requestJsonOk(baseUrl, "/api/workflow-transactions", {
+    method: "POST",
+    body: JSON.stringify({
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ซื้อสต๊อกทดสอบผ่าน HTTP",
+      ...overrides,
+    }),
+  });
+}
+
+async function submitAndCompletePurchaseOrder(baseUrl, txn) {
+  const submitted = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+    method: "POST",
+    body: workflowDocumentFormData({
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[0].stepId,
+    }),
+  });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ completedBy: "คุณต้า" }),
+  });
+  return submitted;
+}
+
+test("GET /api/workflow-document-types exposes registered document kinds over HTTP", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const result = await requestJsonOk(baseUrl, "/api/workflow-document-types");
+    assert.equal(result.documentTypes.length, Object.keys(workflowLogic.DOCUMENT_TYPE_DEFINITIONS).length);
+    for (const type of result.documentTypes) {
+      assert.ok(type.documentKind);
+      assert.ok(type.label);
+    }
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET/POST /api/workflow-templates lists defaults and lets a client edit sync toggle and steps, but not server-owned fields", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const list = await requestJsonOk(baseUrl, "/api/workflow-templates");
+    assert.equal(list.templates.length, 6);
+    const target = list.templates.find((t) => t.templateId === "stock_no_tax_invoice_company_bank");
+    assert.ok(target);
+    const originalCreatedAt = target.createdAt;
+
+    const saved = await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: target.templateId,
+        name: "ชื่อใหม่ที่แก้ไขผ่าน HTTP",
+        syncGoogleDrive: true,
+        documentSteps: [
+          { documentKind: "purchase_order" },
+          { documentKind: "payment_voucher" },
+        ],
+        // Attempted forgery: none of these fields may be set by the client.
+        active: false,
+        createdAt: "2000-01-01T00:00:00.000Z",
+        syncGoogleSheets: true,
+      }),
+    });
+
+    assert.equal(saved.name, "ชื่อใหม่ที่แก้ไขผ่าน HTTP", "name is client-settable");
+    assert.equal(saved.syncGoogleDrive, true, "syncGoogleDrive toggle is client-settable");
+    assert.deepEqual(saved.documentSteps.map((step) => step.documentKind), ["purchase_order", "payment_voucher"], "documentSteps is client-settable");
+    assert.equal(saved.active, true, "active must stay server-owned, not forced to false by the client");
+    assert.notEqual(saved.createdAt, "2000-01-01T00:00:00.000Z", "createdAt must stay server-owned, not forgeable");
+    assert.equal(saved.createdAt, originalCreatedAt, "createdAt must be inherited from the existing record");
+    assert.equal("syncGoogleSheets" in saved, false, "the workflow layer never gets a syncGoogleSheets toggle");
+
+    const reloaded = await requestJsonOk(baseUrl, "/api/workflow-templates");
+    const reloadedTarget = reloaded.templates.find((t) => t.templateId === target.templateId);
+    assert.equal(reloadedTarget.active, true);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/workflow-templates rejects a missing templateId with a Thai error", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const result = await requestJson(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({ name: "ไม่มีรหัส" }),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.body.error, /รหัส/);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/workflow-transactions/next is not swallowed by the /:transactionNo route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    // If "/next" were swallowed by the generic /:transactionNo GET handler,
+    // this would 404 with "transaction not found" instead of returning the
+    // next sequence number.
+    const result = await requestJsonOk(baseUrl, "/api/workflow-transactions/next?accountingMonth=2026-09");
+    assert.deepEqual(result, { sequence: "1", transactionNo: "TXN-2026-09-0001" });
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/workflow-transactions/next rejects a malformed accountingMonth with a Thai error", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const result = await requestJson(baseUrl, "/api/workflow-transactions/next?accountingMonth=2026/09");
+    assert.equal(result.ok, false);
+    assert.match(result.body.error, /เดือนบัญชี/);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/workflow-transactions starts a transaction from only templateId/accountingMonth/title, and GET lists/fetches it", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl, {
+      // Attempted forgery: the client only supplies templateId/accountingMonth/title;
+      // none of these other fields may steer the server's own identifiers.
+      transactionNo: "TXN-2026-09-9999",
+      sequence: "9999",
+      folderPath: "../../../../tmp/escaped-via-workflow-transaction",
+      status: "completed",
+    });
+
+    assert.equal(txn.transactionNo, "TXN-2026-09-0001", "server must compute the real transaction number, ignoring the client's forged one");
+    assert.equal(txn.status, "in_progress", "status must be server-derived, not the client's forged completed");
+    assert.ok(txn.folderPath.startsWith("documents/2026/09/workflow-transactions/"), `folderPath must be server-derived, got ${txn.folderPath}`);
+    assert.equal(txn.steps[0].workflowStatus, "not_started");
+    assert.equal(txn.steps[1].workflowStatus, "blocked");
+
+    const fetched = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+    assert.equal(fetched.transactionNo, txn.transactionNo);
+
+    const list = await requestJsonOk(baseUrl, "/api/workflow-transactions");
+    assert.deepEqual(list.transactions.map((t) => t.transactionNo), [txn.transactionNo]);
+
+    const missing = await requestJson(baseUrl, "/api/workflow-transactions/TXN-2026-09-9999");
+    assert.equal(missing.status, 404);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/workflow-transactions rejects a malformed accountingMonth with a Thai error", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const result = await requestJson(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({ templateId: "stock_no_tax_invoice_company_bank", accountingMonth: "September", title: "x" }),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.body.error, /เดือนบัญชี/);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST refresh and start-document enforce strict template order, and self-refresh before checking", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl);
+    // Steps: purchase_order (query-string route already), substitute_receipt
+    // (bare route), payment_voucher (query-string route), goods_receipt.
+    const [poStep, receiptStep, voucherStep] = txn.steps;
+
+    // The current (first) step must be startable, and its URL must stay
+    // well-formed even though /workflow-document?documentKind=... already
+    // carries a query string.
+    const poOpen = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${poStep.stepId}`, {
+      method: "POST",
+    });
+    assert.equal((poOpen.url.match(/\?/g) || []).length, 1, `url must not contain two "?": ${poOpen.url}`);
+    const poParsed = new URL(poOpen.url, baseUrl);
+    assert.equal(poParsed.pathname, "/workflow-document");
+    assert.equal(poParsed.searchParams.get("documentKind"), "purchase_order");
+    assert.equal(poParsed.searchParams.get("transactionNo"), txn.transactionNo);
+    assert.equal(poParsed.searchParams.get("workflowTemplateId"), txn.workflowTemplateId);
+    assert.equal(poParsed.searchParams.get("workflowStepId"), poStep.stepId);
+    assert.equal(poParsed.searchParams.get("returnTo"), `/workflow-transaction?transactionNo=${txn.transactionNo}`);
+
+    // A locked step (payment_voucher, step index 2) must be refused even
+    // though it is a real step in the template.
+    const lockedAttempt = await requestJson(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${voucherStep.stepId}`, {
+      method: "POST",
+    });
+    assert.equal(lockedAttempt.ok, false, "a locked step must be refused server-side");
+    assert.match(lockedAttempt.body.error, /[ก-๙]/, "refusal must be a Thai error message");
+
+    // A crafted, entirely unknown stepId must also be refused.
+    const unknownAttempt = await requestJson(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/not-a-real-step`, {
+      method: "POST",
+    });
+    assert.equal(unknownAttempt.ok, false);
+
+    // Complete the purchase order directly (without ever calling /refresh)
+    // then immediately try to start substitute_receipt: start-document must
+    // refresh first so the newly-completed step unlocks the next one right away.
+    await submitAndCompletePurchaseOrder(baseUrl, txn);
+
+    const receiptOpen = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${receiptStep.stepId}`, {
+      method: "POST",
+    });
+    assert.equal((receiptOpen.url.match(/\?/g) || []).length, 1, `url for a route with no built-in query string must still be well-formed: ${receiptOpen.url}`);
+    const receiptParsed = new URL(receiptOpen.url, baseUrl);
+    assert.equal(receiptParsed.pathname, "/substitute-receipt");
+    assert.equal(receiptParsed.searchParams.get("transactionNo"), txn.transactionNo);
+    assert.equal(receiptParsed.searchParams.get("workflowStepId"), receiptStep.stepId);
+    assert.equal(receiptParsed.searchParams.get("returnTo"), `/workflow-transaction?transactionNo=${txn.transactionNo}`);
+
+    // Explicit /refresh must also reflect the same, now-persisted, progress.
+    const refreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, {
+      method: "POST",
+    });
+    assert.equal(refreshed.steps[0].workflowStatus, "completed");
+    assert.equal(refreshed.steps[1].workflowStatus, "not_started");
+    assert.equal(refreshed.steps[2].workflowStatus, "blocked");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET prefill route surfaces payee/purpose/lines groups from a completed sibling document", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl);
+    await submitAndCompletePurchaseOrder(baseUrl, txn);
+
+    const prefill = await requestJsonOk(
+      baseUrl,
+      `/api/workflow-transactions/${txn.transactionNo}/prefill?documentKind=substitute_receipt&stepId=${txn.steps[1].stepId}`,
+    );
+    assert.equal(prefill.context.payee.name, "ร้านค้าตัวอย่าง");
+    assert.deepEqual(prefill.availableGroups.slice().sort(), ["lines", "payee", "purpose"]);
+
+    const mismatched = await requestJson(
+      baseUrl,
+      `/api/workflow-transactions/${txn.transactionNo}/prefill?documentKind=payment_voucher&stepId=${txn.steps[0].stepId}`,
+    );
+    assert.equal(mismatched.ok, false, "a documentKind that does not match the step must be refused");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET workflow-transaction file route enforces the section/traversal guard and 404s cleanly", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl);
+
+    // getWorkflowTransactionFile() only allows section "pdf" — no packet PDF
+    // exists yet, so there is nothing to assert a successful fetch against.
+    // This route must be wired faithfully to what the guard actually does today.
+    const badSection = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/data/workflow-transaction.json`);
+    assert.equal(badSection.status, 404);
+
+    const traversal = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/..%2Fdata%2Fworkflow-transaction.json`);
+    assert.equal(traversal.status, 404);
+
+    const notFound = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/does-not-exist.pdf`);
+    assert.equal(notFound.status, 404);
+  } finally {
+    await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });
   }
 });

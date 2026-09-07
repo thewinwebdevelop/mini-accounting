@@ -22,6 +22,7 @@ const {
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getNextWorkflowDocumentInfo,
+  getNextWorkflowTransactionInfo,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptDraft,
@@ -29,16 +30,26 @@ const {
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
   getWorkflowDocumentFile,
+  getWorkflowTemplate,
+  getWorkflowTransaction,
+  getWorkflowTransactionFile,
+  getWorkflowTransactionPrefill,
   listExpenseDrafts,
   listExpenseRequests,
   listSubstituteReceipts,
+  listWorkflowDocumentTypes,
   listWorkflowDocuments,
+  listWorkflowTemplates,
+  listWorkflowTransactions,
   parseMultipartForm,
+  refreshWorkflowTransaction,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
+  saveWorkflowTemplate,
+  startWorkflowTransaction,
   receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
@@ -48,6 +59,9 @@ const {
   buildWorkflowDocumentPayload,
   validateWorkflowDocumentPayload,
 } = require("./forms/workflow-document.logic.js");
+const {
+  getDocumentTypeDefinition,
+} = require("./forms/workflow.logic.js");
 const {
   createProductCategory,
   createProduct,
@@ -220,6 +234,30 @@ function parseWorkflowDocumentFileRoute(urlPath) {
     section: decodeURIComponent(section),
     fileName: decodeURIComponent(fileName),
   };
+}
+
+function parseWorkflowTransactionFileRoute(urlPath) {
+  const prefix = "/api/workflow-transactions/";
+  const marker = "/files/";
+  if (!urlPath.startsWith(prefix)) return null;
+
+  const remainder = urlPath.slice(prefix.length);
+  const markerIndex = remainder.indexOf(marker);
+  if (markerIndex === -1) return null;
+
+  const fileRoute = remainder.slice(markerIndex + marker.length);
+  const sectionEnd = fileRoute.indexOf("/");
+  if (sectionEnd === -1) return null;
+
+  return {
+    transactionNo: decodeURIComponent(remainder.slice(0, markerIndex)),
+    section: decodeURIComponent(fileRoute.slice(0, sectionEnd)),
+    fileName: decodeURIComponent(fileRoute.slice(sectionEnd + 1)),
+  };
+}
+
+function isValidAccountingMonth(accountingMonth) {
+  return /^\d{4}-\d{2}$/.test(String(accountingMonth ?? ""));
 }
 
 function parseSubstituteReceiptFileRoute(urlPath) {
@@ -543,6 +581,223 @@ async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดเอกสารได้",
+    });
+  }
+}
+
+async function handleWorkflowDocumentTypesList(response) {
+  try {
+    sendJson(response, 200, { documentTypes: listWorkflowDocumentTypes() });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถแสดงประเภทเอกสารได้",
+    });
+  }
+}
+
+async function handleWorkflowTemplateList(response) {
+  try {
+    sendJson(response, 200, { templates: await listWorkflowTemplates(rootDir) });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถแสดงรายการ template ได้",
+    });
+  }
+}
+
+async function handleWorkflowTemplateSave(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const templateId = typeof body.templateId === "string" ? body.templateId.trim() : "";
+    if (!templateId) throw new Error("ระบุรหัส template");
+
+    const existing = await getWorkflowTemplate(rootDir, templateId);
+
+    // The client may only set name, description, the ordered document kinds,
+    // and the syncGoogleDrive toggle. Everything else (active/createdAt) is
+    // server-owned: derived from the existing record when editing, or a safe
+    // default when creating — never taken from the body. This mirrors how
+    // POST /api/workflow-documents refuses to trust status/completedBy/
+    // folderPath from the client (see handleWorkflowDocumentSubmission). In
+    // particular there is no syncGoogleSheets toggle here: the workflow layer
+    // deliberately never writes a Google Sheets row.
+    const template = {
+      templateId,
+      name: typeof body.name === "string" ? body.name : (existing?.name ?? ""),
+      description: typeof body.description === "string" ? body.description : (existing?.description ?? ""),
+      documentSteps: Array.isArray(body.documentSteps) ? body.documentSteps : (existing?.documentSteps ?? []),
+      syncGoogleDrive: typeof body.syncGoogleDrive === "boolean" ? body.syncGoogleDrive : !!existing?.syncGoogleDrive,
+      active: existing ? existing.active : true,
+      createdAt: existing?.createdAt,
+    };
+
+    const saved = await saveWorkflowTemplate({ rootDir, template });
+    sendJson(response, 200, saved);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถบันทึก template ได้",
+    });
+  }
+}
+
+async function handleNextWorkflowTransaction(url, response) {
+  try {
+    const accountingMonth = url.searchParams.get("accountingMonth") || "";
+    if (!isValidAccountingMonth(accountingMonth)) {
+      throw new Error("รูปแบบเดือนบัญชีไม่ถูกต้อง กรุณาระบุเป็น YYYY-MM");
+    }
+    const result = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถคำนวณเลขที่ธุรกรรมถัดไปได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionList(response) {
+  try {
+    sendJson(response, 200, { transactions: await listWorkflowTransactions(rootDir) });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถแสดงรายการธุรกรรมได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionStart(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    // The client supplies only templateId/accountingMonth/title. Every
+    // identifier, path, and status the transaction gets is derived by
+    // startWorkflowTransaction itself — nothing else from the body is ever
+    // forwarded into it, so a client cannot forge transactionNo, folderPath,
+    // or status the way Critical 3 let it forge a workflow-document's audit
+    // stamp.
+    const templateId = typeof body.templateId === "string" ? body.templateId.trim() : "";
+    const accountingMonth = typeof body.accountingMonth === "string" ? body.accountingMonth.trim() : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+
+    if (!templateId) throw new Error("ระบุรหัส template");
+    if (!isValidAccountingMonth(accountingMonth)) {
+      throw new Error("รูปแบบเดือนบัญชีไม่ถูกต้อง กรุณาระบุเป็น YYYY-MM");
+    }
+    if (!title) throw new Error("ระบุชื่อธุรกรรม");
+
+    const result = await startWorkflowTransaction({ rootDir, templateId, accountingMonth, title });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถเริ่มธุรกรรมได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionGet(transactionNo, response) {
+  try {
+    const record = await getWorkflowTransaction(rootDir, transactionNo);
+    if (!record) throw new Error("ไม่พบธุรกรรม");
+    sendJson(response, 200, record);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "ไม่สามารถโหลดธุรกรรมได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionRefresh(transactionNo, response) {
+  try {
+    const result = await refreshWorkflowTransaction({ rootDir, transactionNo });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "ไม่สามารถรีเฟรชธุรกรรมได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
+  try {
+    const documentKind = url.searchParams.get("documentKind") || "";
+    const stepId = url.searchParams.get("stepId") || "";
+    if (!stepId) throw new Error("ระบุขั้นตอนของ Workflow");
+    const result = await getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถดึงข้อมูลเติมล่วงหน้าได้",
+    });
+  }
+}
+
+function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, workflowStepId, returnTo }) {
+  const separator = route.includes("?") ? "&" : "?";
+  const params = new URLSearchParams({ transactionNo, workflowTemplateId, workflowStepId, returnTo });
+  return `${route}${separator}${params.toString()}`;
+}
+
+async function handleWorkflowTransactionStartDocument(transactionNo, stepId, response) {
+  try {
+    if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
+    if (!stepId) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
+
+    // Refresh first, deliberately: a child document completed moments ago
+    // must unlock the next step immediately, without forcing the user to
+    // press refresh before they can open it.
+    const transaction = await refreshWorkflowTransaction({ rootDir, transactionNo });
+
+    const step = (transaction.steps || []).find((item) => item.stepId === stepId);
+    if (!step) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
+
+    // Enforcement, not a UI affordance: compare against the freshly derived
+    // currentStepId (strict template order) so a crafted request for a
+    // locked step is refused server-side even if the UI would never send it.
+    if (transaction.currentStepId !== step.stepId) {
+      throw new Error("ขั้นตอนนี้ยังไม่พร้อมใช้งาน กรุณาทำขั้นตอนก่อนหน้าให้เสร็จสิ้นก่อน");
+    }
+
+    const definition = getDocumentTypeDefinition(step.documentKind);
+    if (!definition) throw new Error("ไม่พบประเภทเอกสารสำหรับขั้นตอนนี้");
+
+    const returnTo = `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`;
+    const url = buildWorkflowStepOpenUrl({
+      route: definition.route,
+      transactionNo,
+      workflowTemplateId: transaction.workflowTemplateId,
+      workflowStepId: step.stepId,
+      returnTo,
+    });
+
+    sendJson(response, 200, {
+      url,
+      documentKind: step.documentKind,
+      transactionNo,
+      workflowTemplateId: transaction.workflowTemplateId,
+      workflowStepId: step.stepId,
+      returnTo,
+    });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถเปิดเอกสารของขั้นตอนนี้ได้",
+    });
+  }
+}
+
+async function handleWorkflowTransactionFile(fileRoute, response) {
+  try {
+    const file = await getWorkflowTransactionFile({
+      rootDir,
+      transactionNo: fileRoute.transactionNo,
+      section: fileRoute.section,
+      fileName: fileRoute.fileName,
+    });
+    const body = await readFile(file.absolutePath);
+    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 404, {
+      error: error.message || "ไม่สามารถเปิดไฟล์ธุรกรรมได้",
     });
   }
 }
@@ -1200,6 +1455,35 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/workflow-templates") {
+    await handleWorkflowTemplateSave(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/workflow-transactions") {
+    await handleWorkflowTransactionStart(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/refresh")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/refresh", ""));
+    await handleWorkflowTransactionRefresh(transactionNo, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.includes("/start-document/")) {
+    const remainder = url.pathname.replace("/api/workflow-transactions/", "");
+    const [transactionNoRaw, stepIdRaw] = remainder.split("/start-document/");
+    await handleWorkflowTransactionStartDocument(
+      decodeURIComponent(transactionNoRaw || ""),
+      decodeURIComponent(stepIdRaw || ""),
+      response,
+    );
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/substitute-receipt-drafts") {
     await handleSubstituteReceiptDraftSave(request, response);
     return;
@@ -1273,6 +1557,29 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/substitute-receipts/next") {
       await handleNextSubstituteReceipt(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/workflow-document-types") {
+      await handleWorkflowDocumentTypesList(response);
+      return;
+    }
+
+    if (url.pathname === "/api/workflow-templates") {
+      await handleWorkflowTemplateList(response);
+      return;
+    }
+
+    // Must be checked before the generic "/api/workflow-transactions/:transactionNo"
+    // route below, or a request for the literal "next" would be swallowed and
+    // treated as a lookup for a transaction named "next".
+    if (url.pathname === "/api/workflow-transactions/next") {
+      await handleNextWorkflowTransaction(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/workflow-transactions") {
+      await handleWorkflowTransactionList(response);
       return;
     }
 
@@ -1395,6 +1702,24 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/prefill")) {
+      const transactionNo = decodeURIComponent(url.pathname
+        .replace("/api/workflow-transactions/", "")
+        .replace("/prefill", ""));
+      await handleWorkflowTransactionPrefill(transactionNo, url, response);
+      return;
+    }
+
+    if (
+      url.pathname.startsWith("/api/workflow-transactions/")
+      && !url.pathname.includes("/files/")
+      && !url.pathname.endsWith("/prefill")
+    ) {
+      const transactionNo = decodeURIComponent(url.pathname.replace("/api/workflow-transactions/", ""));
+      await handleWorkflowTransactionGet(transactionNo, response);
+      return;
+    }
+
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
       await handleExpenseRequestFile(fileRoute, response);
@@ -1410,6 +1735,12 @@ const server = createServer(async (request, response) => {
     const workflowDocumentFileRoute = parseWorkflowDocumentFileRoute(url.pathname);
     if (workflowDocumentFileRoute) {
       await handleWorkflowDocumentFile(workflowDocumentFileRoute, response);
+      return;
+    }
+
+    const workflowTransactionFileRoute = parseWorkflowTransactionFileRoute(url.pathname);
+    if (workflowTransactionFileRoute) {
+      await handleWorkflowTransactionFile(workflowTransactionFileRoute, response);
       return;
     }
 
