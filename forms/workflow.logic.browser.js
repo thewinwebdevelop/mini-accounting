@@ -12,9 +12,11 @@
 // handling.
 //
 // Functions still to come from later tasks, extending this same file:
-//   - completeTransaction() and syncTransactionDrive() (Task 11) and
-//     packet-link rendering (Task 10), added to renderTransaction() once
-//     transaction completion, Drive sync, and packet PDFs exist server-side.
+//   - completeTransaction() and syncTransactionDrive() (Task 11), added to
+//     renderTransaction() once transaction completion and Drive sync exist
+//     server-side.
+
+const WORKFLOW_PACKET_PDF_FILE_NAME = "99_ชุดรวมเอกสาร_workflow-transaction.pdf";
 
 const state = {
   documentTypes: [],
@@ -504,6 +506,24 @@ function renderTransactionHeader(transaction) {
   if (templateEl) templateEl.textContent = transaction.templateSnapshot?.name || transaction.workflowTemplateId || "-";
 }
 
+// The packet PDF is a transaction-level summary/index (template, step
+// statuses, every child document with its files) — not a replacement for any
+// child document's own PDF. It only exists once refreshWorkflowTransaction
+// has generated it (see forms/local-server.logic.js), so the link stays
+// hidden until transaction.pdfFiles actually carries it, matching how every
+// other conditional element on this page already behaves.
+function renderWorkflowPacketLink(link, transaction) {
+  if (!link) return;
+  const packetFile = (transaction.pdfFiles || []).find((file) => file.name === WORKFLOW_PACKET_PDF_FILE_NAME);
+  if (packetFile) {
+    link.href = packetFile.url;
+    link.hidden = false;
+  } else {
+    link.href = "#";
+    link.hidden = true;
+  }
+}
+
 function renderWorkflowProgress(container, transaction) {
   if (!container) return;
   const steps = transaction.steps || [];
@@ -646,6 +666,7 @@ function renderTransaction(transaction, childDocuments = []) {
   transactionPageState.childDocuments = childDocuments;
 
   renderTransactionHeader(transaction);
+  renderWorkflowPacketLink(document.querySelector("#workflowPacketLink"), transaction);
   renderWorkflowProgress(document.querySelector("#workflowProgress"), transaction);
   renderChecklist(
     document.querySelector("#documentChecklist"),

@@ -352,6 +352,22 @@ test("refreshWorkflowTransaction really scans lightweight documents and unblocks
   }
 });
 
+test("refreshWorkflowTransaction writes workflow summary packet", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+    const refreshed = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.ok(refreshed.pdfFiles.some((file) => file.name === "99_ชุดรวมเอกสาร_workflow-transaction.pdf"));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("refreshWorkflowTransaction injects documentKind so expense_request and the substitute_receipt hybrid rule dispatch correctly", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
@@ -973,6 +989,88 @@ test("GET workflow-transaction file route enforces the section/traversal guard a
 
     const notFound = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/does-not-exist.pdf`);
     assert.equal(notFound.status, 404);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../files/pdf/:fileName downloads the generated packet PDF", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await requestJsonOk(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "director_expense_cash",
+        accountingMonth: "2026-09",
+        title: "ทดสอบดาวน์โหลด packet",
+      }),
+    });
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    const download = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/${encodeURIComponent("99_ชุดรวมเอกสาร_workflow-transaction.pdf")}`);
+    assert.equal(download.status, 200);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET workflow-transaction detail carries the packet in its own pdfFiles, distinct from child documents', with a URL that really serves the PDF", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await requestJsonOk(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "director_expense_cash",
+        accountingMonth: "2026-09",
+        title: "ทดสอบ pdfFiles ของธุรกรรม",
+      }),
+    });
+
+    // Refresh is what actually generates the packet on disk.
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    // The bug under test: a later, plain GET (not the refresh response) must
+    // also carry the transaction's own pdfFiles — the page loads via GET,
+    // not via refresh, so refresh alone attaching pdfFiles is not enough.
+    const detail = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+
+    const packetFile = (detail.pdfFiles || []).find(
+      (file) => file.name === "99_ชุดรวมเอกสาร_workflow-transaction.pdf",
+    );
+    assert.ok(packetFile, "the transaction detail response must carry the packet in its own pdfFiles");
+
+    // The transaction's own pdfFiles must stay distinct from every child
+    // document's pdfFiles — a regression that mixed the two, or minted a
+    // child document's URL for the packet (or vice versa), must fail here
+    // even though the field is merely present.
+    for (const doc of detail.childDocuments || []) {
+      for (const file of doc.pdfFiles || []) {
+        assert.notEqual(
+          file.url,
+          packetFile.url,
+          "a child document's own PDF must not share the packet's download URL",
+        );
+      }
+    }
+
+    // Assert on the actually served response, not just the field: the URL
+    // must resolve through getWorkflowTransactionFile to real PDF bytes, not
+    // a 404 or an HTML/JSON error page that happens to return 200.
+    const download = await fetch(`${baseUrl}${packetFile.url}`);
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get("content-type"), "application/pdf");
+    const bytes = Buffer.from(await download.arrayBuffer());
+    assert.equal(bytes.subarray(0, 5).toString("latin1"), "%PDF-", "the served body must be a real PDF, not JSON/HTML");
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

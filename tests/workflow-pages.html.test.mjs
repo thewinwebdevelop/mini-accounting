@@ -801,12 +801,14 @@ async function setupTransactionPageSandbox({
     transactionTitleDisplay: new FakeNode("span"),
     transactionTemplateName: new FakeNode("span"),
     workflowProgress: new FakeNode("div"),
+    workflowPacketLink: new FakeNode("a"),
     documentChecklist: new FakeNode("ul"),
     documentChecklistItemTemplate: createDocumentChecklistItemTemplate(),
     childDocumentFiles: new FakeNode("ul"),
     refreshTransactionButton: new FakeNode("button"),
     transactionStatus: new FakeNode("div"),
   };
+  elementsById.workflowPacketLink.hidden = true;
   elementsById.transactionPage.dataset = {
     transactionsUrl: "/api/workflow-transactions",
   };
@@ -1140,4 +1142,41 @@ test("child document files are grouped per document and expose real PDF/raw link
     hrefs.some((href) => href.includes("/workflow-documents/purchase_order/PO-2026-09-0001/raw/A0_")),
     "the lightweight document's real uploaded evidence file must be linked using its actual stored file name",
   );
+});
+
+test("workflow transaction page includes a packet PDF link", async () => {
+  const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
+  assert.match(html, /id="workflowPacketLink"/);
+});
+
+test("the packet PDF link stays hidden until the transaction's pdfFiles carries the packet file", async () => {
+  const transaction = buildFourStepTransaction();
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+  });
+
+  assert.equal(elements.workflowPacketLink.hidden, true, "no pdfFiles yet, so the link must stay hidden");
+});
+
+test("the packet PDF link is unhidden and points at the packet file's download URL once it exists", async () => {
+  const transaction = buildFourStepTransaction();
+  const refreshedTransaction = {
+    ...transaction,
+    pdfFiles: [
+      {
+        name: "99_ชุดรวมเอกสาร_workflow-transaction.pdf",
+        url: "/api/workflow-transactions/TXN-2026-09-0001/files/pdf/99_%E0%B8%8A%E0%B8%B8%E0%B8%94%E0%B8%A3%E0%B8%A7%E0%B8%A1%E0%B9%80%E0%B8%AD%E0%B8%81%E0%B8%AA%E0%B8%B2%E0%B8%A3_workflow-transaction.pdf",
+      },
+    ],
+  };
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction,
+  });
+
+  assert.equal(elements.workflowPacketLink.hidden, false, "once pdfFiles carries the packet file, the link must be shown");
+  assert.equal(elements.workflowPacketLink.href, refreshedTransaction.pdfFiles[0].url);
 });
