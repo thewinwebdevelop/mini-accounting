@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import serverLogic from "../forms/local-server.logic.js";
+
 // Binding a fixed port let two runs of this suite collide. Bind port 0 (the OS
 // picks a free one) and read the actually-assigned port back out of the
 // server's own startup log line instead.
@@ -272,6 +274,122 @@ test("Critical 3: editing an existing document carries its documentNo/folderPath
     const stillCompleted = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
     assert.equal(stillCompleted.payload.status, "completed");
     assert.equal(stillCompleted.payload.title, "สั่งซื้อสินค้า Lot กันยายน (แก้ไข)", "a refused edit must not have changed the stored title");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// The five lightweight workflow document kinds have their own file route
+// (GET /workflow-documents/<documentKind>/<documentNo>/<section>/<fileName>,
+// handled by getWorkflowDocumentFile) which is neither the expense-request
+// nor the substitute-receipt file route. listPdfFiles/listRawFiles used to
+// hardcode the expense-request URL builder for every caller, so a purchase
+// order's pdfFiles/rawFiles carried a /api/expense-requests/... url that
+// resolved to nothing. Every one of the five kinds is exercised here — an
+// earlier regression on this branch shipped a six-entry table with only one
+// entry actually asserted, so each kind below gets its own real HTTP fetch,
+// not just a shared assertion helper trusted to cover all of them.
+const LIGHTWEIGHT_DOCUMENT_KINDS = [
+  "purchase_order",
+  "payment_voucher",
+  "cash_spend_declaration",
+  "payee_acknowledgement",
+  "goods_receipt",
+];
+
+function lightweightDocumentFormData(documentKind, transactionNo, overrides = {}) {
+  const formData = new FormData();
+  formData.append("payload", JSON.stringify({
+    documentKind,
+    transactionNo,
+    workflowStepId: `step-${documentKind}`,
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    title: `เอกสารทดสอบ ${documentKind}`,
+    requesterName: "คุณต้า",
+    payeeName: "ร้านค้าตัวอย่าง",
+    businessPurpose: "ทดสอบ URL ไฟล์ของเอกสาร workflow แบบเบา",
+    lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "10" }],
+    ...overrides,
+  }));
+  formData.append("evidence_evidence", new Blob([`evidence-for-${documentKind}`], { type: "text/plain" }), "evidence.txt");
+  return formData;
+}
+
+test("every lightweight workflow document kind serves its PDF and raw files from the workflow-document route, not the expense-request one", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-lightweight-files-"));
+  const child = spawnLocalServer(rootDir);
+  const transactionNo = "TXN-2026-09-0001";
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    for (const documentKind of LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: lightweightDocumentFormData(documentKind, transactionNo),
+      });
+      assert.equal(created.documentKind, documentKind);
+
+      // Complete once (first-time path), then again (the idempotent repeat-
+      // completion no-op) — the repeat branch is the one that used to hand
+      // back the wrong URL (forms/local-server.logic.js, completeWorkflowDocument).
+      await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "คุณต้า" }),
+      });
+      const completedAgain = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "someone-else" }),
+      });
+
+      assert.equal(completedAgain.pdfFiles.length, 1, `${documentKind}: expected exactly one generated PDF`);
+      const pdfFile = completedAgain.pdfFiles[0];
+      const expectedPdfUrl = `/workflow-documents/${documentKind}/${created.documentNo}/pdf/${pdfFile.name}`;
+      assert.equal(pdfFile.url, expectedPdfUrl, `${documentKind}: pdfFiles[0].url must be the real workflow-document route`);
+
+      const pdfResponse = await fetch(`${baseUrl}${pdfFile.url}`);
+      assert.equal(pdfResponse.status, 200, `${documentKind}: fetching pdfFiles[0].url must return the PDF, not 404`);
+      const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+      assert.ok(pdfBuffer.length > 0, `${documentKind}: served PDF must not be empty`);
+
+      // The old, buggy URL (borrowed from the expense-request route) must
+      // genuinely 404 — proof this document kind never had a real expense
+      // request behind it, and the fix did not just paper over the check.
+      const wrongUrl = `/api/expense-requests/${created.documentNo}/files/pdf/${pdfFile.name}`;
+      const wrongResponse = await fetch(`${baseUrl}${wrongUrl}`);
+      assert.equal(wrongResponse.status, 404, `${documentKind}: the old expense-request URL shape must not resolve`);
+    }
+
+    // findLightweightWorkflowDocuments (used by refresh/prefill/the workflow
+    // summary markdown, and — per the task this fixes — the future packet
+    // PDF) is the other affected call site. Exercise it directly for all
+    // five kinds and confirm every pdfFiles/rawFiles url it hands back
+    // really is servable over HTTP.
+    const lightweightDocuments = await serverLogic.findLightweightWorkflowDocuments(rootDir, transactionNo);
+    assert.equal(lightweightDocuments.length, LIGHTWEIGHT_DOCUMENT_KINDS.length);
+
+    for (const documentKind of LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const record = lightweightDocuments.find((doc) => doc.documentKind === documentKind);
+      assert.ok(record, `${documentKind}: findLightweightWorkflowDocuments must return this kind`);
+
+      assert.equal(record.pdfFiles.length, 1, `${documentKind}: expected one PDF from findLightweightWorkflowDocuments`);
+      const pdfFile = record.pdfFiles[0];
+      const expectedPdfUrl = `/workflow-documents/${documentKind}/${record.documentNo}/pdf/${pdfFile.name}`;
+      assert.equal(pdfFile.url, expectedPdfUrl, `${documentKind}: findLightweightWorkflowDocuments pdfFiles[0].url must be the real route`);
+      const pdfResponse = await fetch(`${baseUrl}${pdfFile.url}`);
+      assert.equal(pdfResponse.status, 200, `${documentKind}: PDF url from findLightweightWorkflowDocuments must actually serve the file`);
+
+      assert.equal(record.rawFiles.length, 1, `${documentKind}: expected one raw evidence file`);
+      const rawFile = record.rawFiles[0];
+      const expectedRawUrl = `/workflow-documents/${documentKind}/${record.documentNo}/raw/${rawFile.name}`;
+      assert.equal(rawFile.url, expectedRawUrl, `${documentKind}: rawFiles[0].url must be the real route`);
+      const rawResponse = await fetch(`${baseUrl}${rawFile.url}`);
+      assert.equal(rawResponse.status, 200, `${documentKind}: raw url from findLightweightWorkflowDocuments must actually serve the file`);
+      assert.equal(await rawResponse.text(), `evidence-for-${documentKind}`, `${documentKind}: served raw file must be the one actually uploaded`);
+    }
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

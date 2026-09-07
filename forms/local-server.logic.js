@@ -586,6 +586,35 @@ async function listSubstituteReceiptRawFiles(rootDir, folderPath, receiptNo) {
   }));
 }
 
+// Lightweight workflow documents (purchase_order, payment_voucher,
+// cash_spend_declaration, payee_acknowledgement, goods_receipt) are served by
+// their own route — GET /workflow-documents/<documentKind>/<documentNo>/<section>/<fileName>,
+// handled by getWorkflowDocumentFile in local-server.mjs — which is neither
+// the expense-request nor the substitute-receipt file route. Note this one
+// has no "/api" prefix, unlike the other two. listPdfFiles/listRawFiles only
+// know how to build the expense-request URL, so every caller on the
+// workflow-document path must re-point the url through this builder instead,
+// the same way substitute receipts already do with their own wrapper.
+function buildWorkflowDocumentFileUrl(documentKind, documentNo, section, fileName) {
+  return `/workflow-documents/${encodeURIComponent(documentKind)}/${encodeURIComponent(documentNo)}/${encodeURIComponent(section)}/${encodeURIComponent(fileName)}`;
+}
+
+async function listWorkflowDocumentPdfFiles(rootDir, folderPath, documentKind, documentNo) {
+  const files = await listPdfFiles(rootDir, folderPath);
+  return files.map((file) => ({
+    ...file,
+    url: buildWorkflowDocumentFileUrl(documentKind, documentNo, "pdf", file.name),
+  }));
+}
+
+async function listWorkflowDocumentRawFiles(rootDir, folderPath, documentKind, documentNo) {
+  const files = await listRawFiles(rootDir, folderPath);
+  return files.map((file) => ({
+    ...file,
+    url: buildWorkflowDocumentFileUrl(documentKind, documentNo, "raw", file.name),
+  }));
+}
+
 async function readDriveSyncMetadata(rootDir, folderPath) {
   try {
     return JSON.parse(await readFile(path.join(rootDir, folderPath, "data", "drive-sync.json"), "utf8"));
@@ -1951,7 +1980,7 @@ async function completeWorkflowDocument({
       completedAt: payload.completedAt,
       completedBy: payload.completedBy,
       folderPath: payload.folderPath,
-      pdfFiles: await listPdfFiles(rootDir, payload.folderPath),
+      pdfFiles: await listWorkflowDocumentPdfFiles(rootDir, payload.folderPath, payload.documentKind, payload.documentNo),
     };
   }
 
@@ -2228,8 +2257,8 @@ async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
     status: record.status,
     statusLabel: record.statusLabel,
     folderPath: record.folderPath,
-    pdfFiles: await listPdfFiles(rootDir, record.folderPath),
-    rawFiles: await listRawFiles(rootDir, record.folderPath),
+    pdfFiles: await listWorkflowDocumentPdfFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
+    rawFiles: await listWorkflowDocumentRawFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
     workflowStepId: record.workflowStepId,
     completedAt: record.payload?.completedAt || "",
     completedBy: record.payload?.completedBy || "",
@@ -2428,6 +2457,7 @@ module.exports = {
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,
+  findLightweightWorkflowDocuments,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptFile,
