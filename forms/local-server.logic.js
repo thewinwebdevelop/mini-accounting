@@ -1,4 +1,4 @@
-const { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } = require("node:fs/promises");
+const { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } = require("node:fs/promises");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -1676,6 +1676,7 @@ async function receiveSubstituteReceiptStock({
   receiptNo,
   receivedDate,
   receivedBy = "",
+  now = () => new Date().toISOString(),
 }) {
   const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
   const payload = {
@@ -1691,6 +1692,28 @@ async function receiveSubstituteReceiptStock({
   }
   if (!receivedDate) throw new Error("ระบุวันที่รับสินค้า");
 
+  if (currentStatus === "received") {
+    // A repeat receive call (retry, double-clicked "receive" button) is a
+    // true no-op, the same way completeExpenseRequest/completeSubstituteReceipt
+    // treat a repeat completion: stockReceipt.receivedAt/receivedBy is the
+    // audit record of who received the goods and when, and native "received"
+    // is what the workflow layer treats as completing this step, so a retry
+    // must not rewrite that stamp, append to statusHistory, or throw. It also
+    // must not create a second set of inventory movements — the existing
+    // movements for this receipt (created on the first, real receive) are
+    // returned unchanged rather than re-derived from payload.lines.
+    return {
+      receiptNo: payload.receiptNo,
+      status: payload.status,
+      folderPath: payload.folderPath,
+      pdfFiles: await listSubstituteReceiptPdfFiles(rootDir, payload.folderPath, payload.receiptNo),
+      stockMovements: listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo),
+    };
+  }
+
+  // First (and only legitimate) receive for this receipt. Guard against
+  // creating a duplicate movement set even here, in case movements already
+  // exist for this reference out of band.
   let stockMovements = listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo);
   if (!stockMovements.length) {
     stockMovements = (payload.lines || []).map((line) => createPurchaseInMovement(rootDir, {
@@ -1704,13 +1727,11 @@ async function receiveSubstituteReceiptStock({
     }));
   }
 
-  if (currentStatus !== "received") {
-    appendSubstituteReceiptStatus(payload, "received", "received stock", receivedBy);
-  } else {
-    payload.updatedAt = new Date().toISOString();
-  }
+  appendSubstituteReceiptStatus(payload, "received", "received stock", receivedBy);
+  const receivedAt = now();
+  payload.updatedAt = receivedAt;
   payload.stockReceipt = {
-    receivedAt: payload.updatedAt,
+    receivedAt,
     receivedDate,
     receivedBy,
     movementIds: stockMovements.map((movement) => movement.id),
@@ -2235,6 +2256,20 @@ async function startWorkflowTransaction({
   // concurrent caller can win a given transaction folder. On EEXIST we
   // re-scan (another caller just took that sequence number) and retry with
   // whatever the next number now is.
+  //
+  // The reservation is keyed on the bare transaction number (e.g.
+  // "TXN-2026-09-0001"), not on the full title-suffixed folder name. Two
+  // concurrent starts with *different* titles would otherwise each compute
+  // the same "next" number and mkdir two different folder paths — reserving
+  // the title-independent name closes that hole, since both calls now
+  // contend for the exact same path. Once a call wins the bare reservation
+  // it is renamed (an atomic same-directory move) into the required
+  // TXN-YYYY-MM-0001_<safe-title> shape the rest of the system depends on —
+  // the bare name never survives as the stored folderPath. The bare
+  // reservation directory still matches getNextWorkflowTransactionInfo's
+  // scan pattern, so even the narrow crash window between the mkdir and the
+  // rename below leaves the number correctly marked as consumed rather than
+  // silently reusable.
   const monthDir = getWorkflowTransactionMonthDir(rootDir, accountingMonth);
   await mkdir(monthDir, { recursive: true });
 
@@ -2245,15 +2280,22 @@ async function startWorkflowTransaction({
       { now },
     );
 
-    const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
+    const reservedFolderPath = path.join(monthDir, transaction.transactionNo);
     try {
-      await mkdir(absoluteFolderPath, { recursive: false });
+      await mkdir(reservedFolderPath, { recursive: false });
     } catch (error) {
       if (error.code === "EEXIST") {
         continue;
       }
       throw error;
     }
+
+    // The transaction number is now reserved title-independently. Claim the
+    // required title-suffixed folder shape by renaming the bare reservation
+    // into it — safe without further EEXIST handling, since no other caller
+    // can have won this same transaction number.
+    const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
+    await rename(reservedFolderPath, absoluteFolderPath);
 
     // The folder is now reserved under this exact transaction.folderPath, so
     // persistWorkflowTransaction writes into the same folder we just claimed.

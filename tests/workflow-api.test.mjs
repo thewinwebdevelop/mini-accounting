@@ -152,6 +152,77 @@ test("startWorkflowTransaction allocates distinct numbers when two calls race fo
   }
 });
 
+test("startWorkflowTransaction allocates distinct numbers when two calls race for the same month with DIFFERENT titles, and children are never cross-attributed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const [first, second] = await Promise.all([
+      serverLogic.startWorkflowTransaction({
+        rootDir,
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ซื้อสต๊อกล็อตเอ",
+      }),
+      serverLogic.startWorkflowTransaction({
+        rootDir,
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ซื้อสต๊อกล็อตบี",
+      }),
+    ]);
+
+    // The defect: reserving the full (title-suffixed) folder path lets two
+    // different-titled starts both land on the same "next" transaction
+    // number, because each reserves a different folder path and neither
+    // sees the other's mkdir. The reservation must be keyed on the
+    // transaction number alone, independent of title.
+    assert.notEqual(first.transactionNo, second.transactionNo);
+
+    const [reloadedFirst, reloadedSecond] = await Promise.all([
+      serverLogic.getWorkflowTransaction(rootDir, first.transactionNo),
+      serverLogic.getWorkflowTransaction(rootDir, second.transactionNo),
+    ]);
+    assert.ok(reloadedFirst, "first transaction must be independently retrievable by its own number");
+    assert.ok(reloadedSecond, "second transaction must be independently retrievable by its own number");
+    assert.equal(reloadedFirst.title, "ซื้อสต๊อกล็อตเอ");
+    assert.equal(reloadedSecond.title, "ซื้อสต๊อกล็อตบี");
+
+    // A child document created under the first transaction must never be
+    // attributed to the second, even though both share a month and template.
+    const purchaseOrderStepId = first.steps[0].stepId;
+    const { documentNo } = await serverLogic.getNextWorkflowDocumentInfo(rootDir, "purchase_order", "2026-09");
+    const payload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      documentNo,
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "สั่งซื้อสต๊อกเอ",
+      businessPurpose: "ซื้อสินค้าเข้าคลัง",
+      transactionNo: first.transactionNo,
+      workflowTemplateId: first.workflowTemplateId,
+      workflowStepId: purchaseOrderStepId,
+      lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
+    });
+    await serverLogic.saveWorkflowDocument({ rootDir, payload });
+
+    const firstChildren = await serverLogic.findWorkflowChildDocuments(rootDir, first.transactionNo);
+    const secondChildren = await serverLogic.findWorkflowChildDocuments(rootDir, second.transactionNo);
+    assert.equal(firstChildren.length, 1, "the child document belongs to the first transaction");
+    assert.equal(firstChildren[0].documentNo, documentNo);
+    assert.equal(secondChildren.length, 0, "the second transaction must not inherit the first transaction's child document");
+
+    const monthDir = join(rootDir, "documents", "2026", "09", "workflow-transactions");
+    const folders = await readdir(monthDir);
+    // Only the two real, title-suffixed transaction folders should remain —
+    // no leftover bare reservation directories.
+    assert.equal(folders.length, 2, "two distinct transaction folders must exist on disk, with no leftover reservation markers");
+    for (const folder of folders) {
+      assert.match(folder, /^TXN-2026-09-\d{4}_.+/, "each folder must keep the required TXN-YYYY-MM-NNNN_<title> shape");
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("persistWorkflowTransaction rejects an empty or missing folderPath instead of writing into rootDir", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {

@@ -17,6 +17,7 @@ const {
   createProduct,
   createStockSku,
   getStockCard,
+  listStockMovementsByReference,
 } = inventoryLogic;
 const {
   approveExpenseRequest,
@@ -614,6 +615,81 @@ test("approve and receive substitute receipt stock are separate idempotent trans
     });
     assert.equal(receivedAgain.stockMovements.length, 1);
     assert.equal(getStockCard(rootDir, stockSku.id).movements.length, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("receiveSubstituteReceiptStock repeated call is a true no-op: preserves the audit stamp, appends no history, and never double-counts inventory", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-receive-noop-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "NOP", name: "เสื้อ NOP", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "NOP-BLACK-L",
+      color: "ดำ",
+      size: "L",
+      defaultUnitCost: "80",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ NOP", quantity: "3", unitCost: "80" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const received = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลังสินค้า A",
+      now: () => "2026-09-05T09:00:00.000Z",
+    });
+    assert.equal(received.status, "received");
+    assert.equal(received.stockMovements.length, 1);
+
+    const loadedFirst = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedFirst.payload.stockReceipt.receivedAt, "2026-09-05T09:00:00.000Z");
+    assert.equal(loadedFirst.payload.stockReceipt.receivedBy, "คลังสินค้า A");
+    const historyLengthAfterFirstReceive = loadedFirst.payload.statusHistory.length;
+
+    const movementsAfterFirstReceive = listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo);
+    assert.equal(movementsAfterFirstReceive.length, 1);
+    const balanceAfterFirstReceive = getStockCard(rootDir, stockSku.id).balance.quantityOnHand;
+    assert.equal(balanceAfterFirstReceive, 3);
+
+    // A retry (or double-clicked "receive" button) with a different actor and
+    // a later timestamp must not throw, must not rewrite who received the
+    // goods and when, must not append to statusHistory, and — separately —
+    // must not double-count inventory: no second movement set, no balance
+    // change.
+    const receivedAgain = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-06",
+      receivedBy: "คลังสินค้า B",
+      now: () => "2026-09-06T15:30:00.000Z",
+    });
+    assert.equal(receivedAgain.status, "received");
+
+    const loadedAgain = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedAgain.payload.stockReceipt.receivedAt, "2026-09-05T09:00:00.000Z", "original receivedAt must survive a repeat receive");
+    assert.equal(loadedAgain.payload.stockReceipt.receivedBy, "คลังสินค้า A", "original receivedBy must survive a repeat receive");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstReceive, "repeat receive must append no history entry");
+
+    // Inventory side: movements and balance are unchanged by the second call.
+    assert.equal(receivedAgain.stockMovements.length, 1, "repeat receive must not report a second movement set");
+    assert.deepEqual(
+      receivedAgain.stockMovements.map((movement) => movement.id),
+      movementsAfterFirstReceive.map((movement) => movement.id),
+      "repeat receive must return the same movement ids created by the first receive",
+    );
+    const movementsAfterSecondReceive = listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo);
+    assert.equal(movementsAfterSecondReceive.length, 1, "no second purchase-in movement may be created in the database");
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, balanceAfterFirstReceive, "stock balance must be unchanged by a repeat receive");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
