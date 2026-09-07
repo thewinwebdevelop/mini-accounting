@@ -2169,7 +2169,7 @@ async function getWorkflowTemplate(rootDir, templateId) {
   return templates.find((template) => template.templateId === templateId) || null;
 }
 
-async function persistWorkflowTransaction(rootDir, transaction, childDocuments = []) {
+async function persistWorkflowTransaction(rootDir, transaction, childDocuments = [], { beforeCommit } = {}) {
   if (!transaction.folderPath) {
     throw new Error("ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
   }
@@ -2185,6 +2185,15 @@ async function persistWorkflowTransaction(rootDir, transaction, childDocuments =
   await mkdir(dataDir, { recursive: true });
   await mkdir(workingMdDir, { recursive: true });
   await mkdir(pdfDir, { recursive: true });
+
+  // Last chance to refuse (or redirect the caller) immediately before the
+  // commit write below, mirroring the beforeCommit hook writeWorkflowDocumentFiles
+  // uses for the same reason: the three mkdir calls above are each an awaited
+  // event-loop yield a concurrent call can land in, so a guard that only ran
+  // before this function was called would leave that window open.
+  if (beforeCommit) {
+    await beforeCommit();
+  }
 
   await writeFile(
     path.join(dataDir, "workflow-transaction.json"),
@@ -2467,6 +2476,144 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
   };
 }
 
+const WORKFLOW_TRANSACTION_INCOMPLETE_MESSAGE = "ยังไม่เสร็จสิ้นทุกขั้นตอนของ Workflow";
+
+// Thrown by completeWorkflowTransaction's beforeCommit guard below, caught by
+// that same function (never let to escape it), to recognize *this specific*
+// outcome — a concurrent completion call already won — as opposed to any
+// other rejection persistWorkflowTransaction's write might raise.
+const WORKFLOW_TRANSACTION_ALREADY_COMPLETED_RACE = "__workflow_transaction_already_completed_race__";
+
+function isWorkflowTransactionFullyCompleted(steps = []) {
+  return steps.length > 0 && steps.every((step) => step.workflowStatus === "completed");
+}
+
+// Shared by completeWorkflowTransaction's own idempotent-repeat path and its
+// beforeCommit race-lost path: both mean "someone (possibly this exact call,
+// on a retry) already finished completing this transaction — hand back its
+// real state instead of doing anything more."
+async function buildCompletedWorkflowTransactionSnapshot(rootDir, transaction) {
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transaction.transactionNo);
+  const pdfFiles = await listWorkflowTransactionPdfFiles(rootDir, transaction.folderPath, transaction.transactionNo);
+  return {
+    ...transaction,
+    childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
+    pdfFiles,
+    driveSync: transaction.driveSync || { syncStatus: "not_required" },
+  };
+}
+
+// Closes the workflow: refuses unless every step is completed, stamps the
+// audit trail, regenerates the markdown/packet, and — governed by the
+// syncGoogleDrive toggle snapshotted onto the transaction at start time, not
+// a live template lookup — runs Drive sync automatically. There is no
+// workflow-level Sheets sync here or anywhere in this file (decision D6):
+// child documents (expense request, substitute receipt) already write their
+// own Sheets rows for the real amounts, and one transaction bundles several
+// of those documents covering the *same* money, so a workflow-level row
+// would double- or triple-count it in the monthly sheet.
+async function completeWorkflowTransaction({
+  rootDir,
+  transactionNo,
+  completedBy = "",
+  now = () => new Date().toISOString(),
+  driveUploader = uploadFolderToGoogleDrive,
+}) {
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) throw new Error("ไม่พบธุรกรรม");
+
+  // A repeat completion call (retry, double-click, replayed request) is a
+  // true no-op: completedAt/completedBy are the audit record of who closed
+  // the transaction and when, so they must not be overwritten, and no
+  // duplicate history entry is added. This is checked on completedAt, not on
+  // transaction.status — deriveWorkflowProgress (used by refresh) already
+  // reports status "completed" once every step is done, *before* anyone has
+  // actually called this function, so status alone cannot distinguish "ready
+  // to complete" from "already completed".
+  if (transaction.completedAt) {
+    return buildCompletedWorkflowTransactionSnapshot(rootDir, transaction);
+  }
+
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+  const derived = deriveWorkflowProgress(transaction, childDocuments);
+  if (!isWorkflowTransactionFullyCompleted(derived.steps)) {
+    throw new Error(WORKFLOW_TRANSACTION_INCOMPLETE_MESSAGE);
+  }
+
+  const completedAt = now();
+  const updated = {
+    ...derived,
+    status: "completed",
+    completedAt,
+    completedBy: completedBy || "",
+    statusHistory: [
+      ...(Array.isArray(transaction.statusHistory) ? transaction.statusHistory : []),
+      {
+        fromStatus: transaction.status,
+        toStatus: "completed",
+        changedAt: completedAt,
+        note: "completed",
+        actor: completedBy || "",
+      },
+    ],
+    updatedAt: completedAt,
+    // Set here (rather than left undefined) when the toggle is off, so the
+    // page can tell "not needed" apart from "not yet synced" even before any
+    // Drive call is attempted below.
+    driveSync: derived.templateSnapshot?.syncGoogleDrive ? undefined : { syncStatus: "not_required" },
+  };
+
+  // The steps above (loading the transaction, scanning child documents,
+  // deriving progress) are all awaited I/O a concurrent .../complete request
+  // can land in. Re-verified immediately before the actual commit write
+  // (persistWorkflowTransaction's beforeCommit, called after its own mkdir
+  // calls) rather than only here, so a call that loses this race yields to
+  // the winner instead of overwriting its audit stamp or double-appending
+  // history.
+  let lostRace = false;
+  try {
+    await persistWorkflowTransaction(rootDir, updated, childDocuments, {
+      beforeCommit: async () => {
+        const latest = await getWorkflowTransaction(rootDir, transactionNo);
+        if (latest?.completedAt) {
+          lostRace = true;
+          throw new Error(WORKFLOW_TRANSACTION_ALREADY_COMPLETED_RACE);
+        }
+      },
+    });
+  } catch (error) {
+    if (lostRace) {
+      const latest = await getWorkflowTransaction(rootDir, transactionNo);
+      return buildCompletedWorkflowTransactionSnapshot(rootDir, latest);
+    }
+    throw error;
+  }
+
+  const formattedChildDocuments = childDocuments.map(formatWorkflowChildDocumentForResponse);
+  const absoluteFolderPath = path.join(rootDir, updated.folderPath);
+  await generateWorkflowPacketPdf({
+    transaction: updated,
+    childDocuments: formattedChildDocuments,
+    outputPath: path.join(absoluteFolderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME),
+  });
+
+  if (updated.templateSnapshot?.syncGoogleDrive) {
+    // syncWorkflowTransactionToDrive never throws past itself (a failed
+    // upload becomes a sync_failed status, not a rejected completion) — see
+    // its own definition below — so a missing/expired Drive connection never
+    // turns a legitimate completion into a 400.
+    updated.driveSync = await syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader, now });
+  }
+
+  const pdfFiles = await listWorkflowTransactionPdfFiles(rootDir, updated.folderPath, updated.transactionNo);
+
+  return {
+    ...updated,
+    childDocuments: formattedChildDocuments,
+    pdfFiles,
+  };
+}
+
 // A document never sources prefill data from its own step (the
 // siblingDocuments filter below) — mainly relevant if a step is ever
 // re-opened after already having a child document. The HTTP route for this
@@ -2599,6 +2746,79 @@ async function syncSubstituteReceiptToDrive({
   return metadata;
 }
 
+// The syncExpenseRequestToDrive()/syncSubstituteReceiptToDrive() shape
+// (inject a stubbable driveUploader, write synced/sync_failed metadata)
+// applied to a workflow transaction folder instead of a document folder —
+// with one deliberate difference: those two throw past themselves after
+// recording a failure, but this one does not. A workflow transaction's Drive
+// sync can run automatically as part of completeWorkflowTransaction, and a
+// missing/expired Drive connection there must degrade to a clear
+// sync_failed status the transaction page can show, never an unhandled
+// completion failure. The same function serves both the automatic path
+// (called internally by completeWorkflowTransaction) and the manual "sync
+// Drive" button — there is only one implementation.
+//
+// Metadata is written directly onto transaction.driveSync (persisted via
+// persistWorkflowTransaction into workflow-transaction.json), not into a
+// separate data/drive-sync.json file the way the document-level helpers do,
+// because the transaction page renders driveSync straight off the
+// transaction record it already fetched.
+async function syncWorkflowTransactionToDrive({
+  rootDir,
+  transactionNo,
+  driveUploader = uploadFolderToGoogleDrive,
+  now = () => new Date().toISOString(),
+}) {
+  if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
+
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) throw new Error("ไม่พบธุรกรรม");
+  if (transaction.status !== "completed") {
+    throw new Error("ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Drive ได้");
+  }
+
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+
+  let uploadResult;
+  try {
+    uploadResult = await driveUploader({
+      rootDir,
+      folderPath: transaction.folderPath,
+    });
+  } catch (error) {
+    const failedAt = now();
+    const metadata = {
+      syncStatus: "sync_failed",
+      error: error.message || "Google Drive sync failed",
+      updatedAt: failedAt,
+    };
+    await persistWorkflowTransaction(
+      rootDir,
+      { ...transaction, driveSync: metadata, updatedAt: failedAt },
+      childDocuments,
+    );
+    return metadata;
+  }
+
+  const syncedAt = now();
+  const metadata = {
+    syncStatus: "synced",
+    driveFolderId: uploadResult.driveFolderId,
+    driveFolderUrl: uploadResult.driveFolderUrl,
+    drivePath: uploadResult.drivePath,
+    uploadedFileCount: uploadResult.uploadedFileCount,
+    syncedAt,
+    updatedAt: syncedAt,
+  };
+  await persistWorkflowTransaction(
+    rootDir,
+    { ...transaction, driveSync: metadata, updatedAt: syncedAt },
+    childDocuments,
+  );
+
+  return metadata;
+}
+
 module.exports = {
   approveExpenseRequest,
   approveSubstituteReceipt,
@@ -2606,6 +2826,7 @@ module.exports = {
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,
+  completeWorkflowTransaction,
   findLightweightWorkflowDocuments,
   findWorkflowChildDocuments,
   getExpenseDraft,
@@ -2646,5 +2867,6 @@ module.exports = {
   startWorkflowTransaction,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
+  syncWorkflowTransactionToDrive,
   writeWorkflowDocumentFiles,
 };

@@ -771,6 +771,8 @@ function createTransactionStubFetch({
   transaction,
   refreshedTransaction,
   onStartDocument,
+  onComplete,
+  onSyncDrive,
 }) {
   let current = transaction;
   return async (url, options = {}) => {
@@ -785,6 +787,14 @@ function createTransactionStubFetch({
       const stepId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
       return onStartDocument(stepId);
     }
+    if (url === `/api/workflow-transactions/${transactionNo}/complete` && options.method === "POST") {
+      const result = await onComplete();
+      current = result;
+      return { ok: true, json: async () => result };
+    }
+    if (url === `/api/workflow-transactions/${transactionNo}/sync-drive` && options.method === "POST") {
+      return onSyncDrive();
+    }
     throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
   };
 }
@@ -794,6 +804,8 @@ async function setupTransactionPageSandbox({
   transaction,
   refreshedTransaction,
   onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
+  onComplete = () => { throw new Error("complete should not be called in this test"); },
+  onSyncDrive = () => { throw new Error("sync-drive should not be called in this test"); },
 }) {
   const elementsById = {
     transactionPage: new FakeNode("main"),
@@ -806,9 +818,16 @@ async function setupTransactionPageSandbox({
     documentChecklistItemTemplate: createDocumentChecklistItemTemplate(),
     childDocumentFiles: new FakeNode("ul"),
     refreshTransactionButton: new FakeNode("button"),
+    completeTransactionButton: new FakeNode("button"),
+    driveSyncSection: new FakeNode("section"),
+    driveSyncStatus: new FakeNode("div"),
+    syncDriveButton: new FakeNode("button"),
     transactionStatus: new FakeNode("div"),
   };
   elementsById.workflowPacketLink.hidden = true;
+  elementsById.completeTransactionButton.disabled = true;
+  elementsById.driveSyncSection.hidden = true;
+  elementsById.syncDriveButton.hidden = true;
   elementsById.transactionPage.dataset = {
     transactionsUrl: "/api/workflow-transactions",
   };
@@ -828,6 +847,8 @@ async function setupTransactionPageSandbox({
     transaction,
     refreshedTransaction,
     onStartDocument,
+    onComplete,
+    onSyncDrive,
   });
   const location = { search: `?transactionNo=${transactionNo}`, href: "" };
   const window = { fetch: stubFetch };
@@ -879,9 +900,17 @@ test("workflow transaction page shows progress checklist and standalone document
   assert.match(html, /start-document/);
   assert.match(html, /refresh/);
   assert.match(html, /เปิดเอกสาร/);
-  // Packet link and complete/sync UI do not exist until Task 10/Task 11.
-  assert.doesNotMatch(html, /id="syncDriveButton"/);
-  assert.doesNotMatch(html, /id="driveSyncStatus"/);
+});
+
+test("workflow transaction page shows a manual Drive sync button and auto-sync status, and no Sheets sync UI", async () => {
+  const html = await readFile(transactionHtmlPath, "utf8");
+  assert.match(html, /id="syncDriveButton"/);
+  assert.match(html, /id="driveSyncStatus"/);
+  assert.match(html, /sync-drive/);
+  assert.match(html, /\/complete/);
+  assert.doesNotMatch(html, /id="syncSheetsButton"/);
+  assert.doesNotMatch(html, /id="sheetSyncStatus"/);
+  assert.doesNotMatch(html, /sync-sheets/);
 });
 
 test("workflow-transaction.html loads the shared controller as a classic script", async () => {
@@ -1179,4 +1208,165 @@ test("the packet PDF link is unhidden and points at the packet file's download U
 
   assert.equal(elements.workflowPacketLink.hidden, false, "once pdfFiles carries the packet file, the link must be shown");
   assert.equal(elements.workflowPacketLink.href, refreshedTransaction.pdfFiles[0].url);
+});
+
+// ---------------------------------------------------------------------------
+// Complete button and Drive-sync section (Task 11).
+// ---------------------------------------------------------------------------
+
+test("the complete button stays disabled and hidden Drive section while any step is incomplete", async () => {
+  const transaction = buildFourStepTransaction();
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+  });
+
+  assert.equal(elements.completeTransactionButton.disabled, true, "must not be completable while a step is incomplete");
+  assert.equal(elements.driveSyncSection.hidden, true, "Drive sync section must stay hidden before completion");
+});
+
+function buildCompletedTransaction(overrides = {}) {
+  return buildFourStepTransaction({
+    status: "completed",
+    currentStepId: null,
+    completedAt: "2026-09-07T00:00:00.000Z",
+    completedBy: "บัญชี",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "completed" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "completed" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "completed" },
+    ],
+    ...overrides,
+  });
+}
+
+// This is the exact shape deriveWorkflowProgress (used by GET/refresh) really
+// returns the moment every step is done: status already flips to "completed"
+// server-side well before anyone has pressed the complete button, so
+// completedAt (not status) must be what gates the button and the Drive
+// section — verified live against the real server while building this task.
+test("the complete button is enabled once every step is completed but the transaction itself is not yet", async () => {
+  const allStepsDoneNotYetCompleted = buildFourStepTransaction({
+    status: "completed",
+    currentStepId: null,
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "completed" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "completed" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "completed" },
+    ],
+  });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: allStepsDoneNotYetCompleted,
+    refreshedTransaction: allStepsDoneNotYetCompleted,
+  });
+
+  assert.equal(elements.completeTransactionButton.disabled, false);
+  assert.equal(elements.driveSyncSection.hidden, true, "Drive section must stay hidden until completeWorkflowTransaction has actually run");
+});
+
+test("clicking the complete button posts to .../complete and re-renders with the auto-sync Drive status (toggle on: text, no button)", async () => {
+  const allStepsDoneNotYetCompleted = buildFourStepTransaction({
+    status: "completed",
+    currentStepId: null,
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: true },
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "completed" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "completed" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "completed" },
+    ],
+  });
+  let completeCalls = 0;
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: allStepsDoneNotYetCompleted,
+    refreshedTransaction: allStepsDoneNotYetCompleted,
+    onComplete: () => {
+      completeCalls += 1;
+      return {
+        ...buildCompletedTransaction({ templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: true } }),
+        driveSync: { syncStatus: "synced", driveFolderUrl: "https://drive/f1" },
+      };
+    },
+  });
+
+  elements.completeTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(completeCalls, 1);
+  assert.equal(elements.completeTransactionButton.disabled, true, "must be disabled again once completed");
+  assert.equal(elements.driveSyncSection.hidden, false, "Drive sync section must show once completed");
+  assert.match(elements.driveSyncStatus.textContent, /สำเร็จ/);
+  assert.equal(elements.syncDriveButton.hidden, true, "no manual button when the template toggle is on");
+});
+
+test("when the toggle is off, completion shows the manual sync button, and pressing it posts .../sync-drive and updates the status", async () => {
+  const allStepsDoneNotYetCompleted = buildFourStepTransaction({
+    status: "completed",
+    currentStepId: null,
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false },
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "completed" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "completed" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "completed" },
+    ],
+  });
+  let syncDriveCalls = 0;
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: allStepsDoneNotYetCompleted,
+    refreshedTransaction: allStepsDoneNotYetCompleted,
+    onComplete: () => ({
+      ...buildCompletedTransaction({ templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false } }),
+      driveSync: { syncStatus: "not_required" },
+    }),
+    onSyncDrive: () => {
+      syncDriveCalls += 1;
+      return { ok: true, json: async () => ({ syncStatus: "synced", driveFolderUrl: "https://drive/f1" }) };
+    },
+  });
+
+  elements.completeTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(elements.driveSyncSection.hidden, false);
+  assert.equal(elements.syncDriveButton.hidden, false, "manual sync button must show when the toggle is off");
+  assert.match(elements.driveSyncStatus.textContent, /ไม่ต้องซิงก์|ยังไม่ได้ซิงก์/);
+
+  elements.syncDriveButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(syncDriveCalls, 1);
+  assert.match(elements.driveSyncStatus.textContent, /สำเร็จ/);
+});
+
+test("a manual Drive sync failure (e.g. no Google Drive credentials configured) surfaces the Thai error text instead of throwing silently", async () => {
+  const completedNoAutoSync = buildCompletedTransaction({
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false },
+    driveSync: { syncStatus: "not_required" },
+  });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completedNoAutoSync,
+    refreshedTransaction: completedNoAutoSync,
+    onSyncDrive: () => ({
+      ok: true,
+      json: async () => ({ syncStatus: "sync_failed", error: "Google Drive is not configured" }),
+    }),
+  });
+
+  assert.equal(elements.driveSyncSection.hidden, false);
+  assert.equal(elements.syncDriveButton.hidden, false);
+
+  elements.syncDriveButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.match(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
+  assert.match(elements.driveSyncStatus.textContent, /Google Drive is not configured/);
+  assert.equal(elements.transactionStatus.className, "status-box active error");
 });

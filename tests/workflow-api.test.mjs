@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -588,6 +588,204 @@ test("getWorkflowTransactionPrefill sources payee, purpose, and lines from a com
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Workflow transaction completion and Drive sync (Task 11).
+//
+// There is no workflow-level Sheets sync anywhere in this file (decision D6):
+// child documents (expense request, substitute receipt) already write their
+// own Sheets rows carrying the real amounts, and one transaction bundles
+// several documents covering the *same* money, so a workflow-level row would
+// double- or triple-count it in the monthly sheet.
+// ---------------------------------------------------------------------------
+
+test("completeWorkflowTransaction refuses completion while a step is incomplete", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+    await assert.rejects(
+      () => serverLogic.completeWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo, completedBy: "บัญชี" }),
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+async function completeSingleStepTransaction(rootDir, templateOverrides) {
+  const template = await serverLogic.saveWorkflowTemplate({
+    rootDir,
+    template: {
+      templateId: `single_step_${Date.now()}`,
+      name: "ทดสอบ single step",
+      syncGoogleDrive: false,
+      documentSteps: [{ documentKind: "payment_voucher" }],
+      ...templateOverrides,
+    },
+  });
+  const txn = await serverLogic.startWorkflowTransaction({
+    rootDir,
+    templateId: template.templateId,
+    accountingMonth: "2026-09",
+    title: "ทดสอบ complete",
+  });
+  const { documentNo } = await serverLogic.getNextWorkflowDocumentInfo(rootDir, "payment_voucher", "2026-09");
+  const payload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+    documentKind: "payment_voucher",
+    documentNo,
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    title: "จ่ายเงิน",
+    requesterName: "คุณต้า",
+    payeeName: "ร้านค้า",
+    businessPurpose: "ทดสอบ",
+    lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "100" }],
+    transactionNo: txn.transactionNo,
+    workflowTemplateId: template.templateId,
+    workflowStepId: txn.steps[0].stepId,
+  });
+  await serverLogic.saveWorkflowDocument({ rootDir, payload });
+  await serverLogic.completeWorkflowDocument({
+    rootDir,
+    documentKind: "payment_voucher",
+    documentNo,
+    completedBy: "บัญชี",
+  });
+  await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+  return txn;
+}
+
+test("completeWorkflowTransaction succeeds and auto-syncs Drive when the template toggle is on", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: true });
+    let driveCalls = 0;
+    const completed = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      driveUploader: async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; },
+    });
+
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(driveCalls, 1);
+    assert.equal(completed.driveSync.syncStatus, "synced");
+    assert.equal(completed.sheetSync, undefined);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeWorkflowTransaction does not auto-sync Drive when the toggle is off, and manual sync works afterward", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: false });
+    let driveCalls = 0;
+    const stubDrive = async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; };
+
+    const completed = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      driveUploader: stubDrive,
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(driveCalls, 0);
+    assert.equal(completed.driveSync.syncStatus, "not_required");
+
+    const manualDrive = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: txn.transactionNo, driveUploader: stubDrive });
+    assert.equal(driveCalls, 1);
+    assert.equal(manualDrive.syncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeWorkflowTransaction repeated call is a true no-op: preserves the audit stamp, appends no history, never re-syncs", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: true });
+    let driveCalls = 0;
+    const stubDrive = async () => { driveCalls += 1; return { driveFolderId: "f1", driveFolderUrl: "https://drive/f1", drivePath: "p", uploadedFileCount: 1 }; };
+
+    const first = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      driveUploader: stubDrive,
+    });
+    assert.equal(driveCalls, 1);
+
+    const second = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "someone-else-entirely",
+      driveUploader: stubDrive,
+    });
+
+    assert.equal(driveCalls, 1, "a repeat completion call must not re-trigger Drive sync");
+    assert.equal(second.completedAt, first.completedAt, "the original completedAt must survive a repeat call");
+    assert.equal(second.completedBy, "บัญชี", "the original completedBy must not be overwritten by a repeat call's argument");
+    assert.equal(second.statusHistory.length, first.statusHistory.length, "no duplicate history entry may be appended");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("syncWorkflowTransactionToDrive refuses to sync a transaction that is not completed yet", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "ยังไม่เสร็จ",
+    });
+    await assert.rejects(
+      () => serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: txn.transactionNo }),
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("syncWorkflowTransactionToDrive returns a sync_failed status without throwing when the uploader rejects", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir, { syncGoogleDrive: false });
+    await serverLogic.completeWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo, completedBy: "บัญชี" });
+
+    const failingUploader = async () => { throw new Error("Google Drive is not configured"); };
+    const result = await serverLogic.syncWorkflowTransactionToDrive({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      driveUploader: failingUploader,
+    });
+
+    assert.equal(result.syncStatus, "sync_failed");
+    assert.equal(result.error, "Google Drive is not configured");
+
+    const reloaded = await serverLogic.getWorkflowTransaction(rootDir, txn.transactionNo);
+    assert.equal(reloaded.driveSync.syncStatus, "sync_failed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("local server exposes workflow transaction completion and sync routes", async () => {
+  const source = await readFile(new URL("../local-server.mjs", import.meta.url), "utf8");
+  assert.match(source, /completeWorkflowTransaction/);
+  assert.match(source, /syncWorkflowTransactionToDrive/);
+  assert.match(source, /\/complete/);
+  assert.match(source, /\/sync-drive/);
+  assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
+  assert.doesNotMatch(source, /\/sync-sheets/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +1465,70 @@ test("POST workflow-transaction refresh carries the same childDocuments shape as
     for (const step of refreshed.steps) {
       assert.equal(step.workflowStatus, "completed", `${step.documentKind}: expected completed after every child document was finished`);
     }
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST .../complete refuses until every step is done, then completes and surfaces a sync_failed Drive status without hitting the network", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const template = await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: `single_step_http_${Date.now()}`,
+        name: "ทดสอบ complete ผ่าน HTTP",
+        syncGoogleDrive: true,
+        documentSteps: [{ documentKind: "payment_voucher" }],
+      }),
+    });
+
+    const txn = await startTransactionOverHttp(baseUrl, { templateId: template.templateId });
+
+    const refused = await requestJson(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    assert.equal(refused.ok, false, "must refuse completion while the step is incomplete");
+
+    const submitted = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: workflowDocumentFormData({
+        documentKind: "payment_voucher",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[0].stepId,
+      }),
+    });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "คุณต้า" }),
+    });
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    // syncGoogleDrive is true on this template, so /complete auto-syncs using
+    // the real uploadFolderToGoogleDrive — but this rootDir has no Google
+    // Drive config, so it fails fast (no network call) with a clear
+    // sync_failed status rather than throwing past completion.
+    const completed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.driveSync.syncStatus, "sync_failed");
+    assert.ok(completed.driveSync.error, "a failed sync must carry a Thai-surfaceable error message");
+
+    // The manual sync route must also stay callable post-completion and
+    // fail the same safe way.
+    const manualSync = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/sync-drive`, {
+      method: "POST",
+    });
+    assert.equal(manualSync.syncStatus, "sync_failed");
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

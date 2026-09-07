@@ -10,11 +10,6 @@
 // getQueryParam, escapeHtml, status-box helpers) live at module scope so
 // every page's section can reuse them instead of duplicating fetch/error
 // handling.
-//
-// Functions still to come from later tasks, extending this same file:
-//   - completeTransaction() and syncTransactionDrive() (Task 11), added to
-//     renderTransaction() once transaction completion and Drive sync exist
-//     server-side.
 
 const WORKFLOW_PACKET_PDF_FILE_NAME = "99_ชุดรวมเอกสาร_workflow-transaction.pdf";
 
@@ -661,6 +656,69 @@ function renderChildDocumentFiles(container, transaction, childDocuments) {
   }
 }
 
+// The complete button is enabled only once every step is completed and the
+// transaction itself is not already completed — the same "every step
+// completed" rule completeWorkflowTransaction enforces server-side (this is
+// the UI-side half; the server independently refuses a crafted request that
+// bypasses this button, the same way start-document's own locked-step guard
+// does).
+//
+// "Already completed" is read from transaction.completedAt, never from
+// transaction.status: deriveWorkflowProgress (used by GET/refresh) already
+// reports status "completed" the moment every step is done, *before*
+// completeWorkflowTransaction has ever been called — status alone cannot
+// tell "ready to complete" apart from "already completed". completedAt is
+// only ever stamped by completeWorkflowTransaction itself, so it is the
+// signal that actually means "the complete button was already pressed".
+function renderCompleteButton(button, transaction) {
+  if (!button) return;
+  const steps = transaction.steps || [];
+  const allStepsCompleted = steps.length > 0 && steps.every((step) => step.workflowStatus === "completed");
+  const alreadyCompleted = !!transaction.completedAt;
+  button.disabled = alreadyCompleted || !allStepsCompleted;
+  button.textContent = alreadyCompleted ? "ปิดงานธุรกรรมแล้ว" : "ปิดงานธุรกรรม";
+}
+
+const DRIVE_SYNC_STATUS_LABELS = {
+  not_required: "ไม่ต้องซิงก์ Google Drive สำหรับ Workflow นี้",
+  synced: "ซิงก์ Google Drive สำเร็จแล้ว",
+  sync_failed: "ซิงก์ Google Drive ไม่สำเร็จ",
+};
+
+function driveSyncStatusText(driveSync) {
+  if (!driveSync || !driveSync.syncStatus) return "ยังไม่ได้ซิงก์ Google Drive";
+  const label = DRIVE_SYNC_STATUS_LABELS[driveSync.syncStatus] || driveSync.syncStatus;
+  if (driveSync.syncStatus === "sync_failed" && driveSync.error) {
+    return `${label}: ${driveSync.error}`;
+  }
+  return label;
+}
+
+// Shown only once the transaction is completed (there is nothing to sync
+// before then) — again keyed on completedAt, not status, for the same reason
+// renderCompleteButton above is: status flips to "completed" the moment
+// every step is done, well before completeWorkflowTransaction has actually
+// run. Driven by the template snapshot's syncGoogleDrive toggle — captured
+// on the transaction at start time, not looked up live — and the
+// transaction's own driveSync state: toggle on shows the auto-sync result as
+// text with no button; toggle off shows the manual sync button. There is no
+// Sheets sync UI at all (decision D6): no syncGoogleSheets toggle, no
+// sheetSync field, no syncSheetsButton/sheetSyncStatus element.
+function renderDriveSyncSection(section, statusEl, button, transaction) {
+  if (!section) return;
+  const isCompleted = !!transaction.completedAt;
+  section.hidden = !isCompleted;
+  if (!isCompleted) {
+    if (button) button.hidden = true;
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = driveSyncStatusText(transaction.driveSync);
+
+  const syncGoogleDrive = !!transaction.templateSnapshot?.syncGoogleDrive;
+  if (button) button.hidden = syncGoogleDrive;
+}
+
 function renderTransaction(transaction, childDocuments = []) {
   transactionPageState.transaction = transaction;
   transactionPageState.childDocuments = childDocuments;
@@ -668,6 +726,13 @@ function renderTransaction(transaction, childDocuments = []) {
   renderTransactionHeader(transaction);
   renderWorkflowPacketLink(document.querySelector("#workflowPacketLink"), transaction);
   renderWorkflowProgress(document.querySelector("#workflowProgress"), transaction);
+  renderCompleteButton(document.querySelector("#completeTransactionButton"), transaction);
+  renderDriveSyncSection(
+    document.querySelector("#driveSyncSection"),
+    document.querySelector("#driveSyncStatus"),
+    document.querySelector("#syncDriveButton"),
+    transaction,
+  );
   renderChecklist(
     document.querySelector("#documentChecklist"),
     document.querySelector("#documentChecklistItemTemplate"),
@@ -710,6 +775,47 @@ async function refreshTransaction() {
   return transaction;
 }
 
+// Refuses server-side unless every step is completed (see
+// completeWorkflowTransaction in forms/local-server.logic.js), which auto-
+// syncs Google Drive per the transaction's snapshotted syncGoogleDrive
+// toggle and attaches the result as driveSync on the response used to
+// re-render this page.
+async function completeTransaction() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/complete`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+
+  renderTransaction(transaction, transaction.childDocuments || []);
+  return transaction;
+}
+
+// The manual fallback the drive-sync section shows when the template's
+// syncGoogleDrive toggle is off. Stays callable after completion regardless
+// of the toggle, and calls the exact same server function completion's
+// auto-sync path calls — there is no separate "manual" implementation.
+async function syncTransactionDrive() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const driveSync = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/sync-drive`, {
+    method: "POST",
+  });
+
+  const transaction = { ...(transactionPageState.transaction || {}), driveSync };
+  renderTransaction(transaction, transactionPageState.childDocuments || []);
+  return driveSync;
+}
+
 async function startDocument(stepId) {
   const transactionNo = transactionNoFromQuery();
   if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
@@ -728,12 +834,40 @@ async function startDocument(stepId) {
 
 function initTransactionPage() {
   const refreshButton = document.querySelector("#refreshTransactionButton");
+  const completeButton = document.querySelector("#completeTransactionButton");
+  const syncDriveButton = document.querySelector("#syncDriveButton");
   const statusBox = document.querySelector("#transactionStatus");
 
   if (refreshButton) {
     refreshButton.addEventListener("click", () => {
       clearStatusBox(statusBox);
       refreshTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+    });
+  }
+
+  if (completeButton) {
+    completeButton.addEventListener("click", () => {
+      if (completeButton.disabled) return;
+      clearStatusBox(statusBox);
+      completeTransaction()
+        .then(() => setStatusBox(statusBox, "ปิดงานธุรกรรมเรียบร้อยแล้ว", "success"))
+        .catch((error) => setStatusBox(statusBox, error.message, "error"));
+    });
+  }
+
+  if (syncDriveButton) {
+    syncDriveButton.addEventListener("click", () => {
+      if (syncDriveButton.disabled) return;
+      clearStatusBox(statusBox);
+      syncTransactionDrive()
+        .then((driveSync) => {
+          if (driveSync.syncStatus === "sync_failed") {
+            setStatusBox(statusBox, driveSyncStatusText(driveSync), "error");
+          } else {
+            setStatusBox(statusBox, "ซิงก์ Google Drive เรียบร้อยแล้ว", "success");
+          }
+        })
+        .catch((error) => setStatusBox(statusBox, error.message, "error"));
     });
   }
 

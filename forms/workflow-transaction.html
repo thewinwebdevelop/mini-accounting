@@ -152,6 +152,13 @@
     .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
     .button.small { min-height: 30px; padding: 6px 10px; font-size: 12px; }
     .button:disabled { opacity: 0.45; cursor: not-allowed; }
+    /* An author rule (however low its specificity) always outranks the UA
+       stylesheet's [hidden] { display: none } default, so .button's own
+       `display: inline-flex` above would otherwise keep a hidden .button
+       element (#workflowPacketLink, #syncDriveButton) visibly rendered
+       despite its `hidden` attribute/property being true. This raises the
+       hidden case's specificity above plain .button to win instead. */
+    .button[hidden] { display: none; }
 
     .checklist { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
     .checklist-item {
@@ -237,13 +244,18 @@
 </head>
 <body>
   <!--
-    This page drives the transaction forward through two API calls (see
+    This page drives the transaction forward through these API calls (see
     forms/workflow.logic.browser.js):
       POST /api/workflow-transactions/:transactionNo/refresh
       POST /api/workflow-transactions/:transactionNo/start-document/:stepId
+      POST /api/workflow-transactions/:transactionNo/complete
+      POST /api/workflow-transactions/:transactionNo/sync-drive
     start-document self-refreshes server-side before checking the current
     step, and returns a URL (already carrying transactionNo,
     workflowTemplateId, workflowStepId, returnTo) that this page navigates to.
+    complete is enabled only once every step is completed; sync-drive is the
+    manual fallback shown when the template's syncGoogleDrive toggle is off —
+    there is no Sheets sync route or UI anywhere on this page (decision D6).
   -->
   <header class="topbar">
     <details class="app-menu">
@@ -302,7 +314,18 @@
       </div>
       <div class="section-body">
         <div id="workflowProgress" class="muted">กำลังโหลดข้อมูล...</div>
+        <button class="button primary" type="button" id="completeTransactionButton" disabled>ปิดงานธุรกรรม</button>
         <div class="status-box" id="transactionStatus"></div>
+      </div>
+    </section>
+
+    <section class="section" aria-label="ซิงก์ Google Drive" id="driveSyncSection" hidden>
+      <div class="section-header">
+        <h2 class="section-title">ซิงก์ Google Drive</h2>
+      </div>
+      <div class="section-body">
+        <div id="driveSyncStatus" class="muted">-</div>
+        <button class="button secondary" type="button" id="syncDriveButton" hidden>ซิงก์ Google Drive</button>
       </div>
     </section>
 

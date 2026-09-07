@@ -19,6 +19,7 @@ const {
   approveExpenseRequest,
   approveSubstituteReceipt,
   completeWorkflowDocument,
+  completeWorkflowTransaction,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getNextWorkflowDocumentInfo,
@@ -55,6 +56,7 @@ const {
   getSubmittedExpenseRequest,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
+  syncWorkflowTransactionToDrive,
 } = require("./forms/local-server.logic.js");
 const {
   buildWorkflowDocumentPayload,
@@ -719,6 +721,40 @@ async function handleWorkflowTransactionRefresh(transactionNo, response) {
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถรีเฟรชธุรกรรมได้",
+    });
+  }
+}
+
+// Refuses unless every step is completed (completeWorkflowTransaction's own
+// check), and auto-syncs Google Drive per the transaction's snapshotted
+// syncGoogleDrive toggle. No sheetsRecorder/syncGoogleSheets anywhere here —
+// there is no workflow-level Sheets sync (decision D6).
+async function handleWorkflowTransactionComplete(transactionNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const result = await completeWorkflowTransaction({
+      rootDir,
+      transactionNo,
+      completedBy: body.completedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถปิดงานธุรกรรมได้",
+    });
+  }
+}
+
+// Usable any time after completion regardless of the toggle (the manual
+// "sync Drive" button on the transaction page), and the exact same function
+// completeWorkflowTransaction calls internally for the toggle-on path.
+async function handleWorkflowTransactionDriveSync(transactionNo, response) {
+  try {
+    const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้",
     });
   }
 }
@@ -1477,6 +1513,22 @@ const server = createServer(async (request, response) => {
       .replace("/api/workflow-transactions/", "")
       .replace("/refresh", ""));
     await handleWorkflowTransactionRefresh(transactionNo, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/complete")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/complete", ""));
+    await handleWorkflowTransactionComplete(transactionNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/sync-drive")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/sync-drive", ""));
+    await handleWorkflowTransactionDriveSync(transactionNo, response);
     return;
   }
 
