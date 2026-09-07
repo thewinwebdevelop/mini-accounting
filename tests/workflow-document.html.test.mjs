@@ -8,6 +8,7 @@ const browserLogicPath = new URL("../forms/workflow-document.logic.browser.js", 
 const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", import.meta.url);
 const workflowLogicPath = new URL("../forms/workflow.logic.js", import.meta.url);
 const workflowDocumentLogicPath = new URL("../forms/workflow-document.logic.js", import.meta.url);
+const workflowPrefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const expenseRequestLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 
@@ -200,7 +201,8 @@ function createLineTemplate() {
 // fetch so a prefill banner with checkable groups gets rendered — the exact
 // path applyPrefillPatch is reached through in the real page. Returns the
 // elements a test needs to drive and inspect the per-group prefill checkboxes.
-async function setupWorkflowDocumentPrefillSandbox(prefillResponse) {
+async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}) {
+  const { documentKind = "purchase_order", loadRealPrefillLogic = false } = options;
   const elementsById = {
     workflowDocumentForm: new FakeNode("form"),
     workflowDocumentStatus: new FakeNode("div"),
@@ -235,6 +237,18 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse) {
     businessPurpose: { value: "" },
   };
 
+  // markFieldPrefilled (forms/workflow-document.logic.browser.js) looks up
+  // `[data-badge-for="<field>"]` inside the form — mirroring the real
+  // <span class="field-badge" data-badge-for="..."> markup next to each
+  // prefillable field in forms/workflow-document.html — so a test that wants
+  // to assert on the "prefilled from <documentNo>" badge needs one present.
+  for (const fieldName of ["title", "payeeName", "businessPurpose", "requesterName", "lines"]) {
+    const badge = new FakeNode("span");
+    badge.setAttribute("data-badge-for", fieldName);
+    badge.hidden = true;
+    form.appendChild(badge);
+  }
+
   const fakeDocument = {
     querySelector(selector) {
       if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
@@ -254,7 +268,7 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse) {
   const context = vm.createContext({
     window,
     document: fakeDocument,
-    location: { search: "?documentKind=purchase_order&transactionNo=TXN-2026-09-0001&workflowStepId=step-1" },
+    location: { search: `?documentKind=${documentKind}&transactionNo=TXN-2026-09-0001&workflowStepId=step-1` },
     URLSearchParams,
     // The script calls bare `fetch(...)`, which in a real browser resolves
     // through the global object (== window). In this vm context the sandbox
@@ -266,6 +280,15 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse) {
 
   vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
   vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
+  if (loadRealPrefillLogic) {
+    // Matches real page order: workflow-prefill.logic.js loads before the
+    // page controller (forms/workflow-document.html). Loading the actual
+    // module here — rather than the stubbed window.WorkflowPrefillLogic the
+    // other tests in this file use — is what would have caught the missing
+    // <script> tag: with it absent, window.WorkflowPrefillLogic is undefined
+    // and the controller's optional-chained call silently resolves to {}.
+    vm.runInContext(await readFile(workflowPrefillLogicPath, "utf8"), context);
+  }
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
 
   context.window._handlers.DOMContentLoaded();
@@ -286,6 +309,10 @@ function getPrefillCheckbox(prefillGroupsContainer, group) {
 
 function lineDescriptions(lineItems) {
   return lineItems.querySelectorAll(".line-item").map((row) => row.querySelector('input[name="description"]').value);
+}
+
+function lineQuantities(lineItems) {
+  return lineItems.querySelectorAll(".line-item").map((row) => row.querySelector('input[name="quantity"]').value);
 }
 
 test("workflow document shell provides the generic document form", async () => {
@@ -327,16 +354,24 @@ test("workflow document shell hides the return link until a valid returnTo is re
 
 test("workflow document shell shows a prefill banner with apply/dismiss actions", async () => {
   const html = await readFile(htmlPath, "utf8");
-  // workflow-prefill.logic.js does not exist yet (it ships in a later task) — the
-  // script tag was removed because it 404'd in the console on every page load.
-  // The banner markup itself is still expected to be here waiting for that file.
-  assert.doesNotMatch(html, /workflow-prefill\.logic\.js/);
+  // workflow-prefill.logic.js now exists and must be loaded: without it,
+  // window.WorkflowPrefillLogic is undefined and clicking "ใช้ข้อมูลเดิม" is a
+  // silent no-op (the controller's optional-chained call just resolves to {}).
+  assert.match(html, /src="\.\/workflow-prefill\.logic\.js"/);
   assert.match(html, /id="workflowPrefillBanner"/);
   assert.match(html, /id="workflowPrefillApply"/);
   assert.match(html, /id="workflowPrefillDismiss"/);
   assert.match(html, /ใช้ข้อมูลเดิม/);
   assert.match(html, /กรอกใหม่/);
   assert.match(html, /id="workflowPrefillGroups"/);
+});
+
+test("workflow document shell loads workflow-prefill.logic.js before its own controller", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const prefillLogicIndex = html.indexOf("workflow-prefill.logic.js");
+  const controllerIndex = html.indexOf("workflow-document.logic.browser.js");
+  assert.ok(prefillLogicIndex !== -1 && controllerIndex !== -1);
+  assert.ok(prefillLogicIndex < controllerIndex, "workflow-prefill.logic.js must load before the page controller");
 });
 
 test("workflow document shell loads the return-link helper before its own controller", async () => {
@@ -565,4 +600,103 @@ test("applyPrefillPatch changes nothing when no prefill group is ticked", async 
   assert.equal(form.elements.payeeName.value, "", "untick must mean untick: payee must stay untouched");
   assert.equal(form.elements.businessPurpose.value, "", "untick must mean untick: purpose must stay untouched");
   assert.deepEqual(lineDescriptions(lineItems), [""], "untick must mean untick: lines must stay untouched");
+});
+
+test("real workflow-prefill.logic.js fills a purchase_order end to end through the apply button", async () => {
+  // Unlike the applyPrefillPatch tests above, this loads the actual
+  // forms/workflow-prefill.logic.js module (loadRealPrefillLogic: true)
+  // instead of stubbing window.WorkflowPrefillLogic. This is the exact path
+  // that broke: forms/workflow-document.html never loaded that module, so
+  // window.WorkflowPrefillLogic was undefined and the controller's
+  // optional-chained call to applyWorkflowPrefillGroups silently produced an
+  // empty patch. A test that stubs WorkflowPrefillLogic can't catch that.
+  const canonicalContext = {
+    payee: { name: "ร้านค้าจริง" },
+    purpose: { title: "หัวข้อจริง", businessPurpose: "วัตถุประสงค์จริงจากเอกสารก่อนหน้า" },
+    lines: [
+      { description: "สินค้า A", quantity: "5", unitCost: "100.00", lineTotal: "500.00", stockSkuId: "SKU-1" },
+    ],
+    parties: { requesterName: "คุณสมชาย ผู้จัดทำ" },
+  };
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", parties: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: canonicalContext,
+  };
+  const { elements } = await setupWorkflowDocumentPrefillSandbox(prefillResponse, {
+    documentKind: "purchase_order",
+    loadRealPrefillLogic: true,
+  });
+  const { workflowDocumentForm: form, lineItems, workflowPrefillGroups, workflowPrefillApply } = elements;
+
+  getPrefillCheckbox(workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "purpose").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "lines").checked = true;
+
+  workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.payeeName.value, "ร้านค้าจริง");
+  assert.equal(form.elements.title.value, "หัวข้อจริง", "the purpose group's title field must also be applied, not just businessPurpose");
+  assert.equal(form.elements.businessPurpose.value, "วัตถุประสงค์จริงจากเอกสารก่อนหน้า");
+  assert.deepEqual(lineDescriptions(lineItems), ["สินค้า A"]);
+  assert.deepEqual(lineQuantities(lineItems), ["5"], "purchase_order carries the source quantity over");
+  assert.equal(
+    form.elements.requesterName.value,
+    "คุณสมชาย ผู้จัดทำ",
+    "parties (requesterName) must ride along automatically, independent of the tickable groups",
+  );
+
+  const payeeBadge = form.querySelector('[data-badge-for="payeeName"]');
+  assert.equal(payeeBadge.hidden, false, "a prefilled field must be visibly marked with its source document");
+  assert.match(payeeBadge.textContent, /PO-2026-09-0001/);
+
+  const titleBadge = form.querySelector('[data-badge-for="title"]');
+  assert.equal(titleBadge.hidden, false, "the prefilled title field must also carry a source badge");
+  assert.match(titleBadge.textContent, /PO-2026-09-0001/);
+
+  const requesterBadge = form.querySelector('[data-badge-for="requesterName"]');
+  assert.equal(requesterBadge.hidden, false, "the auto-applied parties field must also carry a source badge");
+  assert.match(requesterBadge.textContent, /PO-2026-09-0001/);
+});
+
+test("real workflow-prefill.logic.js never prefills goods_receipt line quantities", async () => {
+  // Binding rule: a goods_receipt's quantity must reflect what actually
+  // arrived, so it must never be prefilled from an earlier document's
+  // quantity — a short delivery must stay visible instead of being papered
+  // over. Descriptions still carry over.
+  const canonicalContext = {
+    payee: { name: "ร้านค้าจริง" },
+    purpose: { title: "หัวข้อจริง", businessPurpose: "วัตถุประสงค์จริง" },
+    lines: [
+      { description: "สินค้า A", quantity: "5", unitCost: "100.00", lineTotal: "500.00", stockSkuId: "SKU-1" },
+      { description: "สินค้า B", quantity: "2", unitCost: "50.00", lineTotal: "100.00", stockSkuId: "SKU-2" },
+    ],
+  };
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: canonicalContext,
+  };
+  const { elements } = await setupWorkflowDocumentPrefillSandbox(prefillResponse, {
+    documentKind: "goods_receipt",
+    loadRealPrefillLogic: true,
+  });
+  const { lineItems, workflowPrefillGroups, workflowPrefillApply } = elements;
+
+  getPrefillCheckbox(workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "purpose").checked = true;
+  getPrefillCheckbox(workflowPrefillGroups, "lines").checked = true;
+
+  workflowPrefillApply.dispatch("click");
+
+  assert.deepEqual(
+    lineDescriptions(lineItems),
+    ["สินค้า A", "สินค้า B"],
+    "goods_receipt still carries descriptions over from the purchase order",
+  );
+  assert.deepEqual(
+    lineQuantities(lineItems),
+    ["", ""],
+    "goods_receipt quantities must never be prefilled, so a short delivery stays visible",
+  );
 });

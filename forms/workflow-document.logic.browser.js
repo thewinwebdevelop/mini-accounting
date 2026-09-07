@@ -192,14 +192,33 @@ window.addEventListener("DOMContentLoaded", () => {
       form.elements.payeeName.value = patch.payeeName;
       markFieldPrefilled("payeeName", state.prefill?.sources?.payee);
     }
-    if (selectedGroups.has("purpose") && patch.businessPurpose !== undefined) {
-      form.elements.businessPurpose.value = patch.businessPurpose;
-      markFieldPrefilled("businessPurpose", state.prefill?.sources?.purpose);
+    if (selectedGroups.has("purpose")) {
+      // The purpose adapter (applyWorkflowContextToWorkflowDocumentShell)
+      // maps both `title` (ชื่อเอกสาร) and `businessPurpose` from the
+      // `purpose` group — the HTML already carries a badge slot for both
+      // (data-badge-for="title" and "businessPurpose"), so both must be
+      // applied here, not just businessPurpose.
+      if (patch.title !== undefined) {
+        form.elements.title.value = patch.title;
+        markFieldPrefilled("title", state.prefill?.sources?.purpose);
+      }
+      if (patch.businessPurpose !== undefined) {
+        form.elements.businessPurpose.value = patch.businessPurpose;
+        markFieldPrefilled("businessPurpose", state.prefill?.sources?.purpose);
+      }
     }
     if (selectedGroups.has("lines") && Array.isArray(patch.lines) && patch.lines.length) {
       lineItems.replaceChildren();
       for (const line of patch.lines) addLine(line);
       markFieldPrefilled("lines", state.prefill?.sources?.lines);
+    }
+    // `parties` (requesterName) always rides along regardless of which of
+    // the three tickable groups were requested — see
+    // applyWorkflowPrefillGroups in workflow-prefill.logic.js, which folds
+    // context.parties into every adapter call unconditionally.
+    if (patch.requesterName !== undefined) {
+      form.elements.requesterName.value = patch.requesterName;
+      markFieldPrefilled("requesterName", state.prefill?.sources?.parties);
     }
     updatePreview();
   }
