@@ -64,6 +64,13 @@ test("main pages separate substitute receipt links from expense request links", 
   }
 });
 
+test("home page links to the workflow template settings page", async () => {
+  const html = await readFile(new URL("../forms/index.html", import.meta.url), "utf8");
+  const menu = html.match(/<nav class="menu-panel" aria-label="เมนูหลัก">([\s\S]*?)<\/nav>/)?.[1] ?? "";
+  assert.match(menu, /href="\/workflow-templates"/);
+  assert.match(menu, /ตั้งค่า Workflow Template/);
+});
+
 test("hamburger menu popover stays inside short viewports", async () => {
   for (const page of pages) {
     const html = await readFile(new URL(`../forms/${page}`, import.meta.url), "utf8");

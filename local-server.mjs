@@ -140,6 +140,8 @@ function safeStaticPath(urlPath) {
     "/substitute-receipt-vendors/": "/substitute-receipt-vendors.html",
     "/workflow-document": "/workflow-document.html",
     "/workflow-document/": "/workflow-document.html",
+    "/workflow-templates": "/workflow-templates.html",
+    "/workflow-templates/": "/workflow-templates.html",
     "/google-drive": "/google-drive.html",
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
