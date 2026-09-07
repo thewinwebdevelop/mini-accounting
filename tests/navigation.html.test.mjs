@@ -71,6 +71,16 @@ test("home page links to the workflow template settings page", async () => {
   assert.match(menu, /ตั้งค่า Workflow Template/);
 });
 
+// The transaction list/detail pages built in this pass are reachable from the
+// home page now; Task 12's site-wide navigation sweep rolls both workflow
+// links out to the other major pages in the `pages` array above (this is why
+// those pages are not added to that array here).
+test("home page links to workflow group pages", async () => {
+  const html = await readFile(new URL("../forms/index.html", import.meta.url), "utf8");
+  assert.match(html, /href="\/workflow-transactions"/);
+  assert.match(html, /href="\/workflow-templates"/);
+});
+
 test("hamburger menu popover stays inside short viewports", async () => {
   for (const page of pages) {
     const html = await readFile(new URL(`../forms/${page}`, import.meta.url), "utf8");

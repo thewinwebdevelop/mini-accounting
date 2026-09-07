@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workflow ธุรกรรมเอกสาร - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, select { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(330px, calc(100vw - 32px));
+      max-height: calc(100vh - 70px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .section {
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+
+    .section-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .section-body { padding: 14px; }
+
+    .start-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 10px;
+    }
+
+    .field { display: grid; gap: 5px; }
+    .field.grow { flex: 1; min-width: 180px; }
+
+    label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    input, select {
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid #bcccdc;
+      border-radius: 6px;
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 14px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button.small { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid #e4e7eb;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+    th { color: var(--brand); background: var(--soft); font-size: 12px; font-weight: 800; }
+    tr:last-child td { border-bottom: 0; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .empty-row { color: var(--muted); text-align: center; }
+
+    .status {
+      display: inline-flex;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status.in_progress { color: #7c2d12; background: #ffedd5; }
+    .status.completed { color: #166534; background: #dcfce7; }
+
+    .status-box {
+      display: none;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+      white-space: pre-line;
+    }
+    .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+
+    @media (max-width: 720px) {
+      .start-form { flex-direction: column; align-items: stretch; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tr { padding: 10px 12px; border-bottom: 1px solid #e4e7eb; }
+      td { padding: 5px 0; border-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
+          <a class="menu-item" href="/inventory-stock-list">List Stock</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+          <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
+          <a class="menu-item" href="/platform-orders">Platform Orders</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบรับรองแทนใบเสร็จ</div>
+          <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">Workflow</div>
+          <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+          <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">Workflow ธุรกรรมเอกสาร</h1>
+      <p class="brand-subtitle">เริ่มธุรกรรมใหม่จาก Template และติดตามความคืบหน้าของธุรกรรมที่มีอยู่</p>
+    </div>
+  </header>
+
+  <main
+    class="page"
+    id="transactionsPage"
+    data-templates-url="/api/workflow-templates"
+    data-transactions-url="/api/workflow-transactions"
+  >
+    <form class="section" id="startTransactionForm">
+      <div class="section-header">
+        <h2 class="section-title">เริ่ม Workflow ธุรกรรมใหม่</h2>
+      </div>
+      <div class="section-body">
+        <div class="start-form">
+          <div class="field grow">
+            <label for="startTemplateSelect">Template</label>
+            <select id="startTemplateSelect" name="templateId"></select>
+          </div>
+          <div class="field">
+            <label for="startAccountingMonth">เดือนบัญชี *</label>
+            <input id="startAccountingMonth" name="accountingMonth" type="month" required>
+          </div>
+          <div class="field grow">
+            <label for="startTransactionTitle">ชื่อธุรกรรม *</label>
+            <input id="startTransactionTitle" name="title" required>
+          </div>
+          <button class="button primary" type="button" id="startTransactionButton">เริ่ม Workflow</button>
+        </div>
+        <div class="status-box" id="startTransactionStatus"></div>
+      </div>
+    </form>
+
+    <section class="section" aria-label="รายการธุรกรรมทั้งหมด">
+      <div class="section-header">
+        <h2 class="section-title">ธุรกรรมทั้งหมด</h2>
+      </div>
+      <div class="section-body" style="padding: 0;">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 14%;">สถานะ</th>
+              <th style="width: 17%;">เลขที่ธุรกรรม</th>
+              <th>ชื่อธุรกรรม</th>
+              <th style="width: 20%;">Template</th>
+              <th style="width: 18%;">ขั้นตอนปัจจุบัน</th>
+              <th style="width: 12%;">จัดการ</th>
+            </tr>
+          </thead>
+          <tbody id="transactionRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="./workflow.logic.js"></script>
+  <script src="./workflow.logic.browser.js"></script>
+</body>
+</html>

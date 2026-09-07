@@ -6,7 +6,10 @@ import test from "node:test";
 import workflowLogic from "../forms/workflow.logic.js";
 
 const templatesHtmlPath = new URL("../forms/workflow-templates.html", import.meta.url);
+const transactionsHtmlPath = new URL("../forms/workflow-transactions.html", import.meta.url);
+const transactionHtmlPath = new URL("../forms/workflow-transaction.html", import.meta.url);
 const browserLogicPath = new URL("../forms/workflow.logic.browser.js", import.meta.url);
+const workflowLogicPath = new URL("../forms/workflow.logic.js", import.meta.url);
 
 // ---------------------------------------------------------------------------
 // Minimal fake DOM, purpose-built for exactly the selectors and APIs
@@ -134,6 +137,15 @@ class FakeNode {
     clone.type = this.type;
     clone.value = this.value;
     clone.className = this.className;
+    // A real cloneNode also carries over boolean-attribute-reflected
+    // properties like `hidden` (e.g. a template's `<span hidden>` child must
+    // still be hidden after cloning) and static text content. `disabled` and
+    // `checked` are included too since real form controls reflect them from
+    // markup the same way.
+    clone.hidden = this.hidden;
+    clone.disabled = this.disabled;
+    clone.checked = this.checked;
+    clone.textContent = this.textContent;
     if (deep) {
       clone.children = this.children.map((child) => {
         const childClone = child.cloneNode(true);
@@ -519,4 +531,649 @@ test("saving without picking any document raises a Thai validation error and doe
   assert.equal(saveWasCalled, false);
   assert.match(elements.templateStatus.textContent, /ระบุเอกสารอย่างน้อย/);
   assert.match(elements.templateStatus.className, /error/);
+});
+
+// ---------------------------------------------------------------------------
+// Transaction list page (forms/workflow-transactions.html)
+// ---------------------------------------------------------------------------
+
+// Stub server for the transactions list page: GET /api/workflow-templates,
+// GET/POST /api/workflow-transactions.
+function createTransactionsStubFetch({ templates, transactions, onStart }) {
+  return async (url, options = {}) => {
+    if (url.includes("/api/workflow-templates")) {
+      return { ok: true, json: async () => ({ templates }) };
+    }
+    if (url.includes("/api/workflow-transactions") && (!options.method || options.method === "GET")) {
+      return { ok: true, json: async () => ({ transactions }) };
+    }
+    if (url.includes("/api/workflow-transactions") && options.method === "POST") {
+      const body = JSON.parse(options.body);
+      return onStart(body);
+    }
+    throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
+  };
+}
+
+async function setupTransactionsPageSandbox({ templates, transactions, onStart }) {
+  const elementsById = {
+    transactionsPage: new FakeNode("main"),
+    startTransactionForm: new FakeNode("form"),
+    startTemplateSelect: new FakeNode("select"),
+    startAccountingMonth: new FakeNode("input"),
+    startTransactionTitle: new FakeNode("input"),
+    startTransactionButton: new FakeNode("button"),
+    startTransactionStatus: new FakeNode("div"),
+    transactionRows: new FakeNode("tbody"),
+  };
+  elementsById.transactionsPage.dataset = {
+    templatesUrl: "/api/workflow-templates",
+    transactionsUrl: "/api/workflow-transactions",
+  };
+
+  const fakeDocument = {
+    querySelector(selector) {
+      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
+      return null;
+    },
+    createElement(tag) {
+      return new FakeNode(tag);
+    },
+  };
+
+  const stubFetch = createTransactionsStubFetch({ templates, transactions, onStart });
+  const location = { search: "", href: "" };
+  const window = { fetch: stubFetch };
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location,
+    URLSearchParams,
+    fetch: stubFetch,
+  });
+
+  vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
+
+  context.window._handlers.DOMContentLoaded();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  return { elements: elementsById, location };
+}
+
+test("workflow transactions page starts transactions from templates", async () => {
+  const html = await readFile(transactionsHtmlPath, "utf8");
+  assert.match(html, /เริ่ม Workflow/);
+  assert.match(html, /\/api\/workflow-templates/);
+  assert.match(html, /\/api\/workflow-transactions/);
+  assert.match(html, /accountingMonth/);
+  assert.match(html, /templateId/);
+});
+
+test("workflow-transactions.html loads the shared controller as a classic script", async () => {
+  const html = await readFile(transactionsHtmlPath, "utf8");
+  assert.match(html, /<script src="\.\/workflow\.logic\.js"><\/script>/);
+  assert.match(html, /<script src="\.\/workflow\.logic\.browser\.js"><\/script>/);
+});
+
+test("transactions page renders the template picker and the existing transaction list with status/current step", async () => {
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  const target = templates.find((template) => template.templateId === "stock_no_tax_invoice_company_bank");
+  const transactions = [
+    {
+      transactionNo: "TXN-2026-09-0001",
+      title: "ซื้อสินค้า A",
+      workflowTemplateId: target.templateId,
+      templateSnapshot: target,
+      status: "in_progress",
+      currentStepId: "step-002",
+      steps: [
+        { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+        { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "not_started" },
+        { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+        { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+      ],
+    },
+  ];
+
+  const { elements } = await setupTransactionsPageSandbox({ templates, transactions, onStart: () => {
+    throw new Error("start should not be called in this test");
+  } });
+
+  // blank placeholder + one option per template
+  assert.equal(elements.startTemplateSelect.children.length, templates.length + 1);
+
+  const rows = elements.transactionRows.querySelectorAll("tr");
+  assert.equal(rows.length, 1);
+  const rowText = rows[0].children.map((cell) => cell.textContent).join(" | ");
+  assert.match(rowText, /TXN-2026-09-0001/);
+  assert.match(rowText, /ซื้อสินค้า A/);
+  assert.match(rowText, new RegExp(workflowLogic.getDocumentTypeDefinition("substitute_receipt").label));
+});
+
+test("starting a transaction posts templateId/accountingMonth/title and navigates to the new transaction's detail page", async () => {
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  const target = templates[0];
+  let capturedPayload = null;
+
+  const { elements, location } = await setupTransactionsPageSandbox({
+    templates,
+    transactions: [],
+    onStart: (payload) => {
+      capturedPayload = payload;
+      return {
+        ok: true,
+        json: async () => ({
+          transactionNo: "TXN-2026-09-0007",
+          title: payload.title,
+          workflowTemplateId: payload.templateId,
+        }),
+      };
+    },
+  });
+
+  elements.startTemplateSelect.value = target.templateId;
+  elements.startAccountingMonth.value = "2026-09";
+  elements.startTransactionTitle.value = "ทดสอบเริ่ม Workflow";
+
+  elements.startTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.ok(capturedPayload, "starting must POST to the server");
+  assert.equal(capturedPayload.templateId, target.templateId);
+  assert.equal(capturedPayload.accountingMonth, "2026-09");
+  assert.equal(capturedPayload.title, "ทดสอบเริ่ม Workflow");
+  assert.equal(
+    location.href,
+    "/workflow-transaction?transactionNo=TXN-2026-09-0007",
+    "a successful start must navigate straight to the new transaction's detail page",
+  );
+});
+
+test("starting a transaction without picking a template raises a Thai validation error and does not POST", async () => {
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  let startWasCalled = false;
+
+  const { elements, location } = await setupTransactionsPageSandbox({
+    templates,
+    transactions: [],
+    onStart: () => { startWasCalled = true; },
+  });
+
+  elements.startAccountingMonth.value = "2026-09";
+  elements.startTransactionTitle.value = "ไม่มี template";
+  elements.startTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(startWasCalled, false);
+  assert.equal(location.href, "", "a failed validation must never navigate away");
+  assert.match(elements.startTransactionStatus.textContent, /เลือก template/);
+  assert.match(elements.startTransactionStatus.className, /error/);
+});
+
+// ---------------------------------------------------------------------------
+// Transaction detail page (forms/workflow-transaction.html)
+// ---------------------------------------------------------------------------
+
+// Builds the <template id="documentChecklistItemTemplate"> equivalent from
+// forms/workflow-transaction.html: one ".checklist-item" <li> with an order
+// span, label, workflow/native status badges, a document-no span, and the
+// per-step action button that defaults to "เปิดเอกสาร".
+function createDocumentChecklistItemTemplate() {
+  const template = new FakeNode("template");
+  const fragment = new FakeNode("#fragment");
+  const row = new FakeNode("li");
+  row.className = "checklist-item";
+  const order = new FakeNode("span");
+  order.className = "step-order";
+  const body = new FakeNode("div");
+  body.className = "step-body";
+  const label = new FakeNode("div");
+  label.className = "step-label";
+  const meta = new FakeNode("div");
+  meta.className = "step-meta";
+  const workflowStatus = new FakeNode("span");
+  workflowStatus.className = "status workflow-status";
+  const nativeStatus = new FakeNode("span");
+  nativeStatus.className = "status native-status";
+  nativeStatus.hidden = true;
+  const documentNo = new FakeNode("span");
+  documentNo.className = "document-no muted";
+  documentNo.hidden = true;
+  meta.append(workflowStatus, nativeStatus, documentNo);
+  body.append(label, meta);
+  const actions = new FakeNode("div");
+  actions.className = "step-actions";
+  const actionButton = new FakeNode("button");
+  actionButton.setAttribute("data-step-action", "");
+  actionButton.textContent = "เปิดเอกสาร";
+  actions.append(actionButton);
+  row.append(order, body, actions);
+  fragment.append(row);
+  template.content = fragment;
+  return template;
+}
+
+// Stub server for the transaction detail page: GET/refresh the transaction,
+// list lightweight workflow-documents/expense-requests/substitute-receipts
+// (each filtered by transactionNo the same way the real API filters them, or
+// client-side the same way the real page must), and start-document.
+//
+// `substituteReceipts` fixtures are given in the shape GET
+// /api/substitute-receipts/:receiptNo actually returns (transactionNo/
+// workflowStepId/receiptType nested under `.payload`) — verified against the
+// running server. The list route (GET /api/substitute-receipts) genuinely
+// strips those fields out of each row (listSubstituteReceipts re-shapes them,
+// unlike listExpenseRequests which spreads the full record), so this stub
+// mirrors that by stripping `.payload` for the list response and only
+// serving the full fixture from the single-receipt route — the same
+// list-then-detail round trip fetchSubstituteReceiptChildDocuments
+// (forms/workflow.logic.browser.js) has to make against the real server.
+function createTransactionStubFetch({
+  transactionNo,
+  transaction,
+  refreshedTransaction,
+  workflowDocuments = [],
+  expenseRequests = [],
+  substituteReceipts = [],
+  onStartDocument,
+}) {
+  let current = transaction;
+  return async (url, options = {}) => {
+    if (url === `/api/workflow-transactions/${transactionNo}` && (!options.method || options.method === "GET")) {
+      return { ok: true, json: async () => current };
+    }
+    if (url === `/api/workflow-transactions/${transactionNo}/refresh` && options.method === "POST") {
+      current = refreshedTransaction || current;
+      return { ok: true, json: async () => current };
+    }
+    if (url.startsWith(`/api/workflow-transactions/${transactionNo}/start-document/`) && options.method === "POST") {
+      const stepId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+      return onStartDocument(stepId);
+    }
+    if (url.startsWith("/api/workflow-documents?transactionNo=")) {
+      return { ok: true, json: async () => ({ documents: workflowDocuments }) };
+    }
+    if (url === "/api/expense-requests") {
+      return { ok: true, json: async () => ({ requests: expenseRequests }) };
+    }
+    if (url === "/api/substitute-receipts") {
+      const rows = substituteReceipts.map(({ payload, ...row }) => row);
+      return { ok: true, json: async () => ({ receipts: rows }) };
+    }
+    if (url.startsWith("/api/substitute-receipts/")) {
+      const receiptNo = decodeURIComponent(url.slice("/api/substitute-receipts/".length));
+      const match = substituteReceipts.find((record) => record.receiptNo === receiptNo);
+      if (!match) return { ok: false, json: async () => ({ error: "ไม่พบเอกสาร" }) };
+      return { ok: true, json: async () => match };
+    }
+    throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
+  };
+}
+
+async function setupTransactionPageSandbox({
+  transactionNo = "TXN-2026-09-0001",
+  transaction,
+  refreshedTransaction,
+  workflowDocuments = [],
+  expenseRequests = [],
+  substituteReceipts = [],
+  onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
+}) {
+  const elementsById = {
+    transactionPage: new FakeNode("main"),
+    transactionNumber: new FakeNode("span"),
+    transactionTitleDisplay: new FakeNode("span"),
+    transactionTemplateName: new FakeNode("span"),
+    workflowProgress: new FakeNode("div"),
+    documentChecklist: new FakeNode("ul"),
+    documentChecklistItemTemplate: createDocumentChecklistItemTemplate(),
+    childDocumentFiles: new FakeNode("ul"),
+    refreshTransactionButton: new FakeNode("button"),
+    transactionStatus: new FakeNode("div"),
+  };
+  elementsById.transactionPage.dataset = {
+    transactionsUrl: "/api/workflow-transactions",
+  };
+
+  const fakeDocument = {
+    querySelector(selector) {
+      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
+      return null;
+    },
+    createElement(tag) {
+      return new FakeNode(tag);
+    },
+  };
+
+  const stubFetch = createTransactionStubFetch({
+    transactionNo,
+    transaction,
+    refreshedTransaction,
+    workflowDocuments,
+    expenseRequests,
+    substituteReceipts,
+    onStartDocument,
+  });
+  const location = { search: `?transactionNo=${transactionNo}`, href: "" };
+  const window = { fetch: stubFetch };
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location,
+    URLSearchParams,
+    fetch: stubFetch,
+  });
+
+  vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
+
+  context.window._handlers.DOMContentLoaded();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  return { elements: elementsById, location };
+}
+
+function buildFourStepTransaction(overrides = {}) {
+  return {
+    transactionNo: "TXN-2026-09-0001",
+    title: "ซื้อสินค้า A",
+    workflowTemplateId: "stock_no_tax_invoice_company_bank",
+    templateSnapshot: { name: "ซื้อสต๊อก ไม่มีใบกำกับภาษี ชำระเงินโอนจากบัญชีบริษัท" },
+    status: "in_progress",
+    currentStepId: "step-001",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "not_started" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "blocked" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+    ],
+    ...overrides,
+  };
+}
+
+test("workflow transaction page shows progress checklist and standalone document links", async () => {
+  const html = await readFile(transactionHtmlPath, "utf8");
+  assert.match(html, /id="workflowProgress"/);
+  assert.match(html, /id="documentChecklist"/);
+  assert.match(html, /id="childDocumentFiles"/);
+  assert.match(html, /start-document/);
+  assert.match(html, /refresh/);
+  assert.match(html, /เปิดเอกสาร/);
+  // Packet link and complete/sync UI do not exist until Task 10/Task 11.
+  assert.doesNotMatch(html, /id="syncDriveButton"/);
+  assert.doesNotMatch(html, /id="driveSyncStatus"/);
+});
+
+test("workflow-transaction.html loads the shared controller as a classic script", async () => {
+  const html = await readFile(transactionHtmlPath, "utf8");
+  assert.match(html, /<script src="\.\/workflow\.logic\.js"><\/script>/);
+  assert.match(html, /<script src="\.\/workflow\.logic\.browser\.js"><\/script>/);
+});
+
+test("transaction page renders only the current step as actionable; every other step is genuinely disabled", async () => {
+  const transaction = buildFourStepTransaction();
+
+  const { elements } = await setupTransactionPageSandbox({ transaction, refreshedTransaction: transaction });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  assert.equal(rows.length, 4);
+
+  const buttons = rows.map((row) => row.querySelector("[data-step-action]"));
+  assert.equal(buttons[0].disabled, false, "the current (first) step must be actionable");
+  assert.equal(buttons[1].disabled, true, "a not-yet-reached step must be disabled");
+  assert.equal(buttons[2].disabled, true, "a blocked step must be disabled");
+  assert.equal(buttons[3].disabled, true, "a blocked step must be disabled");
+
+  assert.match(elements.transactionNumber.textContent, /TXN-2026-09-0001/);
+  assert.match(elements.transactionTitleDisplay.textContent, /ซื้อสินค้า A/);
+});
+
+test("transaction page shows each step's native document status and document number when a child document exists", async () => {
+  const transaction = buildFourStepTransaction({
+    currentStepId: "step-002",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "not_started" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+    ],
+  });
+  const workflowDocuments = [
+    {
+      documentKind: "purchase_order",
+      documentNo: "PO-2026-09-0001",
+      status: "completed",
+      statusLabel: "เสร็จสิ้น",
+      workflowStepId: "step-001",
+      payload: { evidenceFiles: {} },
+    },
+  ];
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    workflowDocuments,
+  });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  const firstRowDocumentNo = rows[0].querySelector(".document-no");
+  const firstRowNativeStatus = rows[0].querySelector(".native-status");
+
+  assert.equal(firstRowDocumentNo.hidden, false);
+  assert.match(firstRowDocumentNo.textContent, /PO-2026-09-0001/);
+  assert.equal(firstRowNativeStatus.hidden, false);
+  assert.match(firstRowNativeStatus.textContent, /เสร็จสิ้น/);
+
+  const secondRowDocumentNo = rows[1].querySelector(".document-no");
+  assert.equal(secondRowDocumentNo.hidden, true, "a step with no child document yet must not show a document number");
+});
+
+test("clicking the current step's action button calls start-document and navigates to the returned url", async () => {
+  const transaction = buildFourStepTransaction();
+  let requestedStepId = null;
+
+  const { elements, location } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onStartDocument: (stepId) => {
+      requestedStepId = stepId;
+      return {
+        ok: true,
+        json: async () => ({
+          url: "/workflow-document?documentKind=purchase_order&transactionNo=TXN-2026-09-0001&workflowStepId=step-001&returnTo=%2Fworkflow-transaction%3FtransactionNo%3DTXN-2026-09-0001",
+        }),
+      };
+    },
+  });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  rows[0].querySelector("[data-step-action]").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(requestedStepId, "step-001");
+  assert.equal(
+    location.href,
+    "/workflow-document?documentKind=purchase_order&transactionNo=TXN-2026-09-0001&workflowStepId=step-001&returnTo=%2Fworkflow-transaction%3FtransactionNo%3DTXN-2026-09-0001",
+  );
+});
+
+test("clicking a disabled step's button never calls start-document, even if something forces a click event through", async () => {
+  // The server enforces strict ordering independently, but the UI must not
+  // rely on that alone: a disabled button's own click handler must refuse to
+  // call start-document before a request is ever sent.
+  const transaction = buildFourStepTransaction();
+  let startDocumentWasCalled = false;
+
+  const { elements, location } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onStartDocument: () => { startDocumentWasCalled = true; },
+  });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  const lockedButton = rows[2].querySelector("[data-step-action]");
+  assert.equal(lockedButton.disabled, true);
+  lockedButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(startDocumentWasCalled, false);
+  assert.equal(location.href, "", "a refused click must never navigate away");
+});
+
+test("a locked-step refusal from the server surfaces the exact Thai message instead of being swallowed", async () => {
+  const transaction = buildFourStepTransaction({ currentStepId: "step-002" });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onStartDocument: () => ({
+      ok: false,
+      json: async () => ({ error: "ขั้นตอนนี้ยังไม่พร้อมใช้งาน กรุณาทำขั้นตอนก่อนหน้าให้เสร็จสิ้นก่อน" }),
+    }),
+  });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  // step-002 is current in this fixture, so its button is the enabled one —
+  // force the request through it to exercise the server-refusal path.
+  rows[1].querySelector("[data-step-action]").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.match(elements.transactionStatus.textContent, /ขั้นตอนนี้ยังไม่พร้อมใช้งาน กรุณาทำขั้นตอนก่อนหน้าให้เสร็จสิ้นก่อน/);
+  assert.match(elements.transactionStatus.className, /error/);
+});
+
+test("the refresh button re-fetches the transaction and unlocks the next step once the current one completes", async () => {
+  const notYetRefreshed = buildFourStepTransaction();
+  const afterRefresh = buildFourStepTransaction({
+    currentStepId: "step-002",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "not_started" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+    ],
+  });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: notYetRefreshed,
+    refreshedTransaction: notYetRefreshed,
+  });
+
+  let rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  assert.equal(rows[0].querySelector("[data-step-action]").disabled, false, "sanity check: step 1 starts actionable");
+  assert.equal(rows[1].querySelector("[data-step-action]").disabled, true, "sanity check: step 2 starts locked");
+
+  // Simulate the server now reporting step 1 as completed (as it would right
+  // after the user finishes the purchase order and comes back here).
+  elements.transactionPage.dataset.transactionsUrl = "/api/workflow-transactions";
+  // Swap what the stub's refresh call returns by re-driving refreshTransaction
+  // through the button, but first patch the stub's "refreshedTransaction" via
+  // a second sandbox is unnecessary — the button click below re-invokes fetch,
+  // and the stub always returns `refreshedTransaction` on refresh; here we
+  // instead re-run the click against a freshly built sandbox reflecting the
+  // post-completion state to prove the refresh path renders it.
+  const { elements: refreshedElements } = await setupTransactionPageSandbox({
+    transaction: notYetRefreshed,
+    refreshedTransaction: afterRefresh,
+  });
+  refreshedElements.refreshTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  rows = refreshedElements.documentChecklist.querySelectorAll(".checklist-item");
+  assert.equal(rows[0].querySelector("[data-step-action]").disabled, true, "the now-completed step must no longer be actionable");
+  assert.equal(rows[1].querySelector("[data-step-action]").disabled, false, "the newly-current step must unlock");
+});
+
+test("initial page load already reflects the freshest state (self-refreshes on load, matching start-document's own self-refresh)", async () => {
+  // If the page only did a bare GET on load, landing back here right after
+  // completing a document (which never itself touches the transaction
+  // record) would show stale step statuses until the user manually clicked
+  // refresh. The transaction detail page must refresh on load, the same way
+  // POST start-document already refreshes before checking currentStepId.
+  const stale = buildFourStepTransaction();
+  const fresh = buildFourStepTransaction({
+    currentStepId: "step-002",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "not_started" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+    ],
+  });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: stale,
+    refreshedTransaction: fresh,
+  });
+
+  const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
+  assert.equal(rows[0].querySelector("[data-step-action]").disabled, true, "step 1 must already show completed on load, not stale");
+  assert.equal(rows[1].querySelector("[data-step-action]").disabled, false, "step 2 must already show unlocked on load, not stale");
+});
+
+test("child document files are grouped per document and expose real PDF/raw links from the API, not fabricated ones", async () => {
+  const transaction = buildFourStepTransaction({
+    currentStepId: "step-002",
+    steps: [
+      { stepId: "step-001", documentKind: "purchase_order", workflowStatus: "completed" },
+      { stepId: "step-002", documentKind: "substitute_receipt", workflowStatus: "not_started" },
+      { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
+      { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
+    ],
+  });
+  const substituteReceipts = [
+    {
+      receiptNo: "SR-2026-09-0001",
+      status: "pending_approval",
+      pdfFiles: [{ name: "01_substitute_receipt.pdf", url: "/api/substitute-receipts/SR-2026-09-0001/files/pdf/01_substitute_receipt.pdf" }],
+      rawFiles: [{ name: "evidence.jpg", url: "/api/substitute-receipts/SR-2026-09-0001/files/raw/evidence.jpg" }],
+      payload: { transactionNo: "TXN-2026-09-0001", workflowStepId: "step-002", statusLabel: "รอตรวจอนุมัติ", receiptType: "stock_purchase" },
+    },
+  ];
+  const workflowDocuments = [
+    {
+      documentKind: "purchase_order",
+      documentNo: "PO-2026-09-0001",
+      status: "completed",
+      statusLabel: "เสร็จสิ้น",
+      workflowStepId: "step-001",
+      payload: {
+        evidenceFiles: {
+          evidence: [{ originalName: "ใบเสนอราคา.jpg", storedName: "A0_ใบเสนอราคา.jpg" }],
+        },
+      },
+    },
+  ];
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    workflowDocuments,
+    substituteReceipts,
+  });
+
+  const links = elements.childDocumentFiles.querySelectorAll("a");
+  const hrefs = links.map((link) => link.href);
+
+  assert.ok(
+    hrefs.includes("/api/substitute-receipts/SR-2026-09-0001/files/pdf/01_substitute_receipt.pdf"),
+    "the substitute receipt's real PDF url from the API must be linked",
+  );
+  assert.ok(
+    hrefs.includes("/api/substitute-receipts/SR-2026-09-0001/files/raw/evidence.jpg"),
+    "the substitute receipt's real raw file url from the API must be linked",
+  );
+  assert.ok(
+    hrefs.some((href) => href.includes("/workflow-documents/purchase_order/PO-2026-09-0001/raw/A0_")),
+    "the lightweight document's real uploaded evidence file must be linked using its actual stored file name",
+  );
 });

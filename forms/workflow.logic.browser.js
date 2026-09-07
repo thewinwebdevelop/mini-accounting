@@ -1,21 +1,17 @@
 // Shared browser controller for the workflow feature.
 //
 // This one file is loaded by every workflow page: the template settings page
-// (forms/workflow-templates.html) built here, and the transaction list /
-// transaction detail pages (forms/workflow-transactions.html,
-// forms/workflow-transaction.html) that a later pass adds on top of it.
-// `initPage()` at the bottom looks for the page-specific root element that is
-// actually present in the DOM and wires up only that page, so multiple pages
-// can share this one script without stepping on each other. `state` and the
-// shared helpers (fetchJson, getQueryParam, escapeHtml, status-box helpers)
-// live at module scope so the sections added later can reuse them instead of
-// duplicating fetch/error handling.
+// (forms/workflow-templates.html), and the transaction list / transaction
+// detail pages (forms/workflow-transactions.html, forms/workflow-transaction.
+// html) added in this pass. The DOMContentLoaded dispatch at the bottom looks
+// for the page-specific root element that is actually present in the DOM and
+// wires up only that page, so multiple pages can share this one script
+// without stepping on each other. `state` and the shared helpers (fetchJson,
+// getQueryParam, escapeHtml, status-box helpers) live at module scope so
+// every page's section can reuse them instead of duplicating fetch/error
+// handling.
 //
 // Functions still to come from later tasks, extending this same file:
-//   - initTransactionsPage() / startTransaction() (transaction list page)
-//   - initTransactionPage() / loadTransaction() / refreshTransaction() /
-//     startDocument(stepId) / renderTransaction(transaction) (transaction
-//     detail page)
 //   - completeTransaction() and syncTransactionDrive() (Task 11) and
 //     packet-link rendering (Task 10), added to renderTransaction() once
 //     transaction completion, Drive sync, and packet PDFs exist server-side.
@@ -304,11 +300,551 @@ function initTemplatePage() {
 }
 
 // ---------------------------------------------------------------------------
+// Shared workflow/transaction status labels
+// ---------------------------------------------------------------------------
+
+const WORKFLOW_STEP_STATUS_LABELS = {
+  not_started: "ยังไม่เริ่ม",
+  in_progress: "กำลังดำเนินการ",
+  completed: "เสร็จสิ้น",
+  blocked: "รอขั้นตอนก่อนหน้า",
+};
+
+const TRANSACTION_STATUS_LABELS = {
+  in_progress: "กำลังดำเนินการ",
+  completed: "เสร็จสมบูรณ์",
+};
+
+function workflowStepStatusLabel(status) {
+  return WORKFLOW_STEP_STATUS_LABELS[status] || status || "-";
+}
+
+function transactionStatusLabel(status) {
+  return TRANSACTION_STATUS_LABELS[status] || status || "-";
+}
+
+function documentKindLabelFor(documentKind) {
+  return window.WorkflowLogic?.getDocumentTypeDefinition?.(documentKind)?.label || documentKind;
+}
+
+// ---------------------------------------------------------------------------
+// Transaction list page (forms/workflow-transactions.html)
+// ---------------------------------------------------------------------------
+
+const transactionsListState = {
+  templates: [],
+  transactions: [],
+};
+
+function renderStartTemplateOptions(select, templates) {
+  select.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "เลือก Template";
+  select.appendChild(placeholder);
+  for (const template of templates) {
+    const option = document.createElement("option");
+    option.value = template.templateId;
+    option.textContent = template.name || template.templateId;
+    select.appendChild(option);
+  }
+}
+
+// Finds the transaction's current step and reports the document kind it is
+// waiting on, so the list page can show at a glance what still needs doing
+// without the reader having to open every transaction.
+function currentStepLabelForTransaction(transaction) {
+  const steps = transaction.steps || [];
+  const step = steps.find((item) => item.stepId === transaction.currentStepId);
+  if (!step) {
+    return transaction.status === "completed" ? "เสร็จสมบูรณ์ทุกขั้นตอน" : "-";
+  }
+  return documentKindLabelFor(step.documentKind);
+}
+
+function renderTransactionRows(list, transactions) {
+  list.replaceChildren();
+
+  if (!transactions.length) {
+    const emptyRow = document.createElement("tr");
+    const emptyCell = document.createElement("td");
+    emptyCell.className = "empty-row";
+    emptyCell.textContent = "ยังไม่มีธุรกรรม";
+    emptyRow.appendChild(emptyCell);
+    list.appendChild(emptyRow);
+    return;
+  }
+
+  for (const transaction of transactions) {
+    const row = document.createElement("tr");
+
+    const statusCell = document.createElement("td");
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `status ${transaction.status || ""}`.trim();
+    statusBadge.textContent = transactionStatusLabel(transaction.status);
+    statusCell.appendChild(statusBadge);
+
+    const noCell = document.createElement("td");
+    noCell.textContent = transaction.transactionNo || "-";
+
+    const titleCell = document.createElement("td");
+    titleCell.textContent = transaction.title || "-";
+
+    const templateCell = document.createElement("td");
+    templateCell.textContent = transaction.templateSnapshot?.name || transaction.workflowTemplateId || "-";
+
+    const currentStepCell = document.createElement("td");
+    currentStepCell.textContent = currentStepLabelForTransaction(transaction);
+
+    const actionCell = document.createElement("td");
+    const openLink = document.createElement("a");
+    openLink.className = "button secondary small";
+    openLink.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
+    openLink.textContent = "เปิดธุรกรรม";
+    actionCell.appendChild(openLink);
+
+    row.append(statusCell, noCell, titleCell, templateCell, currentStepCell, actionCell);
+    list.appendChild(row);
+  }
+}
+
+function collectStartTransactionPayload() {
+  const templateSelect = document.querySelector("#startTemplateSelect");
+  const accountingMonthInput = document.querySelector("#startAccountingMonth");
+  const titleInput = document.querySelector("#startTransactionTitle");
+  return {
+    templateId: templateSelect ? templateSelect.value : "",
+    accountingMonth: accountingMonthInput ? accountingMonthInput.value : "",
+    title: titleInput ? titleInput.value.trim() : "",
+  };
+}
+
+async function loadTransactionsPageData() {
+  const root = document.querySelector("#transactionsPage");
+  const templatesUrl = (root && root.dataset.templatesUrl) || "/api/workflow-templates";
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const [templatesResult, transactionsResult] = await Promise.all([
+    fetchJson(templatesUrl),
+    fetchJson(transactionsUrl),
+  ]);
+
+  transactionsListState.templates = templatesResult.templates || [];
+  transactionsListState.transactions = transactionsResult.transactions || [];
+
+  renderStartTemplateOptions(document.querySelector("#startTemplateSelect"), transactionsListState.templates);
+  renderTransactionRows(document.querySelector("#transactionRows"), transactionsListState.transactions);
+}
+
+async function startTransaction() {
+  const payload = collectStartTransactionPayload();
+  if (!payload.templateId) throw new Error("เลือก template ที่ต้องการเริ่ม");
+  if (!payload.accountingMonth) throw new Error("ระบุเดือนบัญชี");
+  if (!payload.title) throw new Error("ระบุชื่อธุรกรรม");
+
+  const root = document.querySelector("#transactionsPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const transaction = await fetchJson(transactionsUrl, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  location.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
+  return transaction;
+}
+
+function initTransactionsPage() {
+  const form = document.querySelector("#startTransactionForm");
+  const startButton = document.querySelector("#startTransactionButton");
+  const statusBox = document.querySelector("#startTransactionStatus");
+
+  if (form) form.addEventListener("submit", (event) => event.preventDefault());
+
+  startButton.addEventListener("click", () => {
+    clearStatusBox(statusBox);
+    startTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+  });
+
+  loadTransactionsPageData().catch((error) => setStatusBox(statusBox, error.message, "error"));
+}
+
+// ---------------------------------------------------------------------------
+// Transaction detail page (forms/workflow-transaction.html)
+// ---------------------------------------------------------------------------
+
+const transactionPageState = {
+  transaction: null,
+  childDocuments: [],
+};
+
+function transactionNoFromQuery() {
+  return getQueryParam("transactionNo") || "";
+}
+
+// Every document kind this local server can produce reports its own document
+// number under a different field name (documentNo/requestNo/receiptNo/...).
+// window.WorkflowLogic.normalizeDocumentWorkflowStatus (forms/workflow.logic.js)
+// already knows how to read all of them and derive the same completed/
+// in_progress rule the server uses (including the substitute_receipt
+// receiptType hybrid rule) — reused here so this page never re-implements
+// that business rule client-side and risks drifting from the server.
+function buildLightweightChildDocuments(records) {
+  return records.map((record) => ({
+    documentKind: record.documentKind,
+    documentNo: record.documentNo,
+    status: record.status,
+    statusLabel: record.statusLabel,
+    workflowStepId: record.workflowStepId,
+    // Lightweight workflow-document records never persist the generated
+    // PDF's file name anywhere retrievable after the initial save response,
+    // so this page has no honest way to link it — left null (unknown),
+    // never guessed, so fileGroupElements below renders "no known PDF"
+    // rather than a fabricated link.
+    pdfFiles: null,
+    rawFiles: flattenWorkflowDocumentRawFiles(record),
+  }));
+}
+
+function flattenWorkflowDocumentRawFiles(record) {
+  const evidenceFiles = record.payload?.evidenceFiles || {};
+  const files = [];
+  for (const group of Object.values(evidenceFiles)) {
+    for (const file of group || []) {
+      if (!file?.storedName) continue;
+      files.push({
+        name: file.originalName || file.storedName,
+        url: `/workflow-documents/${encodeURIComponent(record.documentKind)}/${encodeURIComponent(record.documentNo)}/raw/${encodeURIComponent(file.storedName)}`,
+      });
+    }
+  }
+  return files;
+}
+
+function buildExpenseRequestChildDocuments(records, transactionNo) {
+  return records
+    .filter((record) => record.transactionNo === transactionNo)
+    .map((record) => ({
+      documentKind: "expense_request",
+      documentNo: record.requestNo,
+      status: record.status,
+      statusLabel: record.statusLabel,
+      workflowStepId: record.workflowStepId,
+      pdfFiles: record.pdfFiles || [],
+      rawFiles: record.rawFiles || [],
+    }));
+}
+
+// Unlike GET /api/expense-requests (whose list rows already carry
+// transactionNo/workflowStepId at top level, copied straight from
+// findSubmittedExpenseRequests), GET /api/substitute-receipts' list rows are
+// re-shaped by listSubstituteReceipts into a flatter view that drops
+// transactionNo/workflowStepId/receiptType entirely — only the single-receipt
+// route (GET /api/substitute-receipts/:receiptNo) still nests them under
+// `payload`. So the only correct way to find this transaction's substitute
+// receipts is to list every receipt, then fetch each one's own detail to see
+// which transaction it belongs to. This is more requests than the other two
+// child-document kinds need, but the alternative — guessing from the list
+// row's title/date — risks matching the wrong receipt.
+async function fetchSubstituteReceiptChildDocuments(transactionNo, substituteReceiptsUrl) {
+  const listResult = await fetchJson(substituteReceiptsUrl);
+  const submittedReceipts = (listResult.receipts || []).filter((record) => record.receiptNo);
+
+  const details = await Promise.all(
+    submittedReceipts.map((record) => fetchJson(`${substituteReceiptsUrl}/${encodeURIComponent(record.receiptNo)}`).catch(() => null)),
+  );
+
+  return details
+    .filter((detail) => detail && detail.payload?.transactionNo === transactionNo)
+    .map((detail) => ({
+      documentKind: "substitute_receipt",
+      documentNo: detail.receiptNo,
+      status: detail.status,
+      statusLabel: detail.payload?.statusLabel || detail.status,
+      workflowStepId: detail.payload?.workflowStepId,
+      receiptType: detail.payload?.receiptType,
+      pdfFiles: detail.pdfFiles || [],
+      rawFiles: detail.rawFiles || [],
+    }));
+}
+
+// A transaction's child documents are scattered across three unrelated
+// storage areas (lightweight workflow-documents, expense requests, and
+// substitute receipts each have their own JSON files and their own list
+// route), so this fetches and normalizes all three into one flat shape
+// keyed by workflowStepId, mirroring findWorkflowChildDocuments on the
+// server (forms/local-server.logic.js) closely enough to display the same
+// facts — without a dedicated "child documents for this transaction" API
+// route, each of these lists is fetched in full and filtered client-side.
+async function fetchChildDocuments(transactionNo) {
+  const root = document.querySelector("#transactionPage");
+  const workflowDocumentsUrl = (root && root.dataset.workflowDocumentsUrl) || "/api/workflow-documents";
+  const expenseRequestsUrl = (root && root.dataset.expenseRequestsUrl) || "/api/expense-requests";
+  const substituteReceiptsUrl = (root && root.dataset.substituteReceiptsUrl) || "/api/substitute-receipts";
+
+  const [lightweightResult, expenseResult, substituteReceiptDocs] = await Promise.all([
+    fetchJson(`${workflowDocumentsUrl}?transactionNo=${encodeURIComponent(transactionNo)}`),
+    fetchJson(expenseRequestsUrl),
+    fetchSubstituteReceiptChildDocuments(transactionNo, substituteReceiptsUrl),
+  ]);
+
+  return [
+    ...buildLightweightChildDocuments(lightweightResult.documents || []),
+    ...buildExpenseRequestChildDocuments(expenseResult.requests || [], transactionNo),
+    ...substituteReceiptDocs,
+  ];
+}
+
+function findChildDocumentForStep(childDocuments, step) {
+  return childDocuments.find((doc) => doc.workflowStepId === step.stepId)
+    || childDocuments.find((doc) => !doc.workflowStepId && doc.documentKind === step.documentKind);
+}
+
+function renderTransactionHeader(transaction) {
+  const numberEl = document.querySelector("#transactionNumber");
+  const titleEl = document.querySelector("#transactionTitleDisplay");
+  const templateEl = document.querySelector("#transactionTemplateName");
+  if (numberEl) numberEl.textContent = transaction.transactionNo || "-";
+  if (titleEl) titleEl.textContent = transaction.title || "-";
+  if (templateEl) templateEl.textContent = transaction.templateSnapshot?.name || transaction.workflowTemplateId || "-";
+}
+
+function renderWorkflowProgress(container, transaction) {
+  if (!container) return;
+  const steps = transaction.steps || [];
+  if (!steps.length) {
+    container.textContent = "ไม่มีขั้นตอนใน Workflow นี้";
+    return;
+  }
+  const completedCount = steps.filter((step) => step.workflowStatus === "completed").length;
+  container.textContent = `${transactionStatusLabel(transaction.status)} — เสร็จสิ้นแล้ว ${completedCount} จาก ${steps.length} ขั้นตอน`;
+}
+
+function renderChecklist(list, template, transaction, childDocuments) {
+  if (!list || !template) return;
+  list.replaceChildren();
+
+  const steps = transaction.steps || [];
+  steps.forEach((step, index) => {
+    const fragment = template.content.cloneNode(true);
+    const row = fragment.querySelector(".checklist-item");
+    row.querySelector(".step-order").textContent = String(index + 1);
+    row.querySelector(".step-label").textContent = documentKindLabelFor(step.documentKind);
+
+    const workflowStatusEl = row.querySelector(".workflow-status");
+    workflowStatusEl.className = `status workflow-status ${step.workflowStatus || ""}`.trim();
+    workflowStatusEl.textContent = workflowStepStatusLabel(step.workflowStatus);
+
+    const childDoc = findChildDocumentForStep(childDocuments, step);
+    const nativeStatusEl = row.querySelector(".native-status");
+    const documentNoEl = row.querySelector(".document-no");
+    if (childDoc) {
+      const normalized = window.WorkflowLogic?.normalizeDocumentWorkflowStatus?.(childDoc) || {};
+      const nativeLabel = normalized.nativeStatusLabel || childDoc.statusLabel || normalized.nativeStatus || childDoc.status;
+      if (nativeLabel) {
+        nativeStatusEl.hidden = false;
+        nativeStatusEl.textContent = nativeLabel;
+      }
+      const documentNo = normalized.documentNo || childDoc.documentNo;
+      if (documentNo) {
+        documentNoEl.hidden = false;
+        documentNoEl.textContent = documentNo;
+      }
+    }
+
+    const actionButton = row.querySelector("[data-step-action]");
+    const isCurrent = transaction.currentStepId === step.stepId;
+    if (step.workflowStatus === "completed") {
+      actionButton.textContent = "เสร็จสิ้นแล้ว";
+      actionButton.disabled = true;
+    } else if (isCurrent) {
+      actionButton.textContent = step.workflowStatus === "in_progress" ? "ดำเนินการต่อ" : "เปิดเอกสาร";
+      actionButton.disabled = false;
+    } else {
+      actionButton.textContent = "ยังไม่พร้อมใช้งาน";
+      actionButton.disabled = true;
+    }
+
+    // Bound at render time (like the template page's step-row buttons
+    // above), not via delegation, so a disabled button's own listener can
+    // refuse the click before start-document is ever called — the UI-side
+    // half of "not the only guard" (the server independently enforces the
+    // same rule against a crafted request for a locked stepId).
+    actionButton.addEventListener("click", () => {
+      if (actionButton.disabled) return;
+      const statusBox = document.querySelector("#transactionStatus");
+      clearStatusBox(statusBox);
+      startDocument(step.stepId).catch((error) => setStatusBox(statusBox, error.message, "error"));
+    });
+
+    list.appendChild(fragment);
+  });
+}
+
+function fileGroupElements(label, files) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "file-group";
+
+  const heading = document.createElement("span");
+  heading.className = "file-group-label";
+  heading.textContent = `${label}:`;
+  wrapper.appendChild(heading);
+
+  if (!files || !files.length) {
+    const empty = document.createElement("span");
+    empty.className = "muted";
+    empty.textContent = "ไม่มีไฟล์";
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  for (const file of files) {
+    const link = document.createElement("a");
+    link.className = "file-link";
+    link.href = file.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = file.name || file.path || "file";
+    wrapper.appendChild(link);
+  }
+  return wrapper;
+}
+
+function renderChildDocumentFiles(container, transaction, childDocuments) {
+  if (!container) return;
+  container.replaceChildren();
+
+  const steps = transaction.steps || [];
+  const orderedDocs = steps
+    .map((step) => findChildDocumentForStep(childDocuments, step))
+    .filter(Boolean);
+
+  if (!orderedDocs.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-row";
+    empty.textContent = "ยังไม่มีเอกสารในธุรกรรมนี้";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const doc of orderedDocs) {
+    const item = document.createElement("li");
+    item.className = "child-document-files-item";
+
+    const heading = document.createElement("div");
+    heading.className = "title";
+    heading.textContent = `${documentKindLabelFor(doc.documentKind)} (${doc.documentNo || "-"})`;
+    item.appendChild(heading);
+
+    const filesRow = document.createElement("div");
+    filesRow.className = "file-groups";
+    filesRow.appendChild(fileGroupElements("PDF", doc.pdfFiles));
+    filesRow.appendChild(fileGroupElements("ไฟล์ต้นฉบับ", doc.rawFiles));
+    item.appendChild(filesRow);
+
+    container.appendChild(item);
+  }
+}
+
+function renderTransaction(transaction, childDocuments = []) {
+  transactionPageState.transaction = transaction;
+  transactionPageState.childDocuments = childDocuments;
+
+  renderTransactionHeader(transaction);
+  renderWorkflowProgress(document.querySelector("#workflowProgress"), transaction);
+  renderChecklist(
+    document.querySelector("#documentChecklist"),
+    document.querySelector("#documentChecklistItemTemplate"),
+    transaction,
+    childDocuments,
+  );
+  renderChildDocumentFiles(document.querySelector("#childDocumentFiles"), transaction, childDocuments);
+}
+
+async function loadTransaction() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const [transaction, childDocuments] = await Promise.all([
+    fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}`),
+    fetchChildDocuments(transactionNo),
+  ]);
+
+  renderTransaction(transaction, childDocuments);
+  return transaction;
+}
+
+// Refreshes the transaction the same way POST start-document already does
+// server-side before checking currentStepId (see handleWorkflowTransactionStartDocument
+// in local-server.mjs) — recomputing step statuses from the actual child
+// documents on disk and persisting them — rather than a bare GET, which would
+// still show yesterday's stale steps immediately after a document is
+// completed since completing a document never itself touches the transaction
+// record.
+async function refreshTransaction() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const [transaction, childDocuments] = await Promise.all([
+    fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/refresh`, { method: "POST" }),
+    fetchChildDocuments(transactionNo),
+  ]);
+
+  renderTransaction(transaction, childDocuments);
+  return transaction;
+}
+
+async function startDocument(stepId) {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+
+  const result = await fetchJson(
+    `${transactionsUrl}/${encodeURIComponent(transactionNo)}/start-document/${encodeURIComponent(stepId)}`,
+    { method: "POST" },
+  );
+
+  location.href = result.url;
+  return result;
+}
+
+function initTransactionPage() {
+  const refreshButton = document.querySelector("#refreshTransactionButton");
+  const statusBox = document.querySelector("#transactionStatus");
+
+  if (refreshButton) {
+    refreshButton.addEventListener("click", () => {
+      clearStatusBox(statusBox);
+      refreshTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+    });
+  }
+
+  // Self-refresh on load (not a bare GET) so landing here right after
+  // completing a document already shows the unlocked next step, instead of
+  // requiring a manual refresh click first.
+  refreshTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+}
+
+// ---------------------------------------------------------------------------
 // Page dispatch
 // ---------------------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
   if (document.querySelector("#templatePage")) {
     initTemplatePage();
+  }
+  if (document.querySelector("#transactionsPage")) {
+    initTransactionsPage();
+  }
+  if (document.querySelector("#transactionPage")) {
+    initTransactionPage();
   }
 });
