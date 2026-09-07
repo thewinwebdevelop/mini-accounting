@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import test from "node:test";
 
 const htmlPath = new URL("../forms/expense-request.html", import.meta.url);
+const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", import.meta.url);
+const prefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
+const expenseLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 
 test("expense form keeps copy/export controls in the backup tools section", async () => {
   const html = await readFile(htmlPath, "utf8");
@@ -89,4 +93,576 @@ test("expense form submit status reports generated PDF files", async () => {
 
   assert.match(html, /result\.pdfFiles\?\.length/);
   assert.match(html, /สร้าง PDF/);
+});
+
+// --- Task 9: workflow context wiring --------------------------------------
+
+test("expense request form preserves workflow context query params", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /transactionNo/);
+  assert.match(html, /workflowTemplateId/);
+  assert.match(html, /workflowStepId/);
+  assert.match(html, /returnTo/);
+  assert.match(html, /กลับไปที่ Workflow/);
+  assert.match(html, /workflow-return-link\.browser\.js/);
+  assert.match(html, /sanitizeWorkflowReturnTo/);
+});
+
+test("expense request form shows the cross-document prefill banner", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /workflow-prefill\.logic\.js/);
+  assert.match(html, /id="workflowPrefillBanner"/);
+  assert.match(html, /ใช้ข้อมูลเดิม/);
+  assert.match(html, /กรอกใหม่/);
+});
+
+test("expense request form hides the return link markup by default", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const returnLinkMatch = html.match(/<a[^>]*id="workflowReturnLink"[^>]*>/);
+  assert.ok(returnLinkMatch, "expected a #workflowReturnLink anchor");
+  assert.match(returnLinkMatch[0], /hidden/);
+});
+
+test("expense request form loads workflow-return-link.browser.js and workflow-prefill.logic.js before its own controller script", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const returnLinkIndex = html.indexOf("workflow-return-link.browser.js");
+  const prefillLogicIndex = html.indexOf("workflow-prefill.logic.js");
+  const controllerIndex = html.indexOf('window.addEventListener("DOMContentLoaded"');
+  assert.ok(returnLinkIndex !== -1 && prefillLogicIndex !== -1 && controllerIndex !== -1);
+  assert.ok(returnLinkIndex < controllerIndex, "return-link helper must load before the page controller");
+  assert.ok(prefillLogicIndex < controllerIndex, "workflow-prefill.logic.js must load before the page controller");
+  assert.ok(returnLinkIndex < prefillLogicIndex, "return-link helper loads before workflow-prefill.logic.js");
+});
+
+// --- Genuine execution: the inline controller actually runs -------------
+//
+// String-matching the source (above) proves the right tokens exist, but not
+// that they are wired together correctly. This is exactly the trap called
+// out for this task: a banner whose apply button does nothing, or a
+// `groups` argument that is silently ignored, would still pass every
+// string-match test above. The tests below extract the real inline
+// <script> from forms/expense-request.html and execute it for real inside a
+// vm sandbox with a minimal fake DOM, the same technique
+// tests/workflow-document.html.test.mjs uses for the generic shell.
+
+function extractInlineControllerScript(html) {
+  const start = html.indexOf('window.addEventListener("DOMContentLoaded"');
+  assert.ok(start !== -1, "expected an inline DOMContentLoaded controller script");
+  const end = html.indexOf("</script>", start);
+  assert.ok(end !== -1, "expected a closing </script> after the controller");
+  return html.slice(start, end);
+}
+
+class FakeNode {
+  constructor(tagName) {
+    this.tagName = String(tagName).toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.listeners = {};
+    this.attrs = {};
+    this.dataset = {};
+    this.classListSet = new Set();
+    this.id = "";
+    this.name = "";
+    this.type = "";
+    this.value = "";
+    this.checked = false;
+    this.hidden = false;
+    this.disabled = false;
+    this.textContent = "";
+    this._innerHTML = "";
+    this.style = {};
+  }
+
+  get className() {
+    return [...this.classListSet].join(" ");
+  }
+
+  set className(value) {
+    this.classListSet = new Set(String(value).split(/\s+/).filter(Boolean));
+  }
+
+  get classList() {
+    const self = this;
+    return {
+      add: (c) => self.classListSet.add(c),
+      remove: (c) => self.classListSet.delete(c),
+      toggle: (c, force) => {
+        if (force === undefined) {
+          self.classListSet.has(c) ? self.classListSet.delete(c) : self.classListSet.add(c);
+        } else if (force) {
+          self.classListSet.add(c);
+        } else {
+          self.classListSet.delete(c);
+        }
+      },
+      contains: (c) => self.classListSet.has(c),
+    };
+  }
+
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(value) {
+    this._innerHTML = value;
+    if (value === "") {
+      this.children.forEach((child) => { child.parentNode = null; });
+      this.children = [];
+    }
+  }
+
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+
+  addEventListener(type, handler) {
+    (this.listeners[type] ??= []).push(handler);
+  }
+
+  dispatch(type, event = {}) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  }
+
+  setAttribute(name, value) {
+    this.attrs[name] = String(value);
+    if (name === "id") this.id = String(value);
+    if (name === "name") this.name = String(value);
+    if (name === "type") this.type = String(value);
+    if (name.startsWith("data-")) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      this.dataset[key] = String(value);
+    }
+  }
+
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+  }
+
+  matches(selector) {
+    let sel = selector;
+    let requireChecked = false;
+    if (sel.endsWith(":checked")) {
+      requireChecked = true;
+      sel = sel.slice(0, -":checked".length);
+    }
+    if (requireChecked && !this.checked) return false;
+
+    const bracketMatch = sel.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
+    if (bracketMatch) {
+      const [, tag, attr, value] = bracketMatch;
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+      if (attr === "name") {
+        return value === undefined ? Boolean(this.name) : this.name === value;
+      }
+      if (attr === "type") {
+        return value === undefined ? Boolean(this.type) : this.type === value;
+      }
+      const actual = this.attrs[attr];
+      return value === undefined ? actual !== undefined : actual === value;
+    }
+
+    if (sel.startsWith(".")) {
+      return String(this.className).split(/\s+/).filter(Boolean).includes(sel.slice(1));
+    }
+    if (sel.startsWith("#")) return this.id === sel.slice(1);
+    return this.tagName.toLowerCase() === sel.toLowerCase();
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (child.matches(selector)) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  appendChild(node) {
+    if (node.tagName === "#FRAGMENT") {
+      for (const child of node.children) {
+        child.parentNode = this;
+        this.children.push(child);
+      }
+      node.children = [];
+      return node;
+    }
+    if (node.parentNode) {
+      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
+    }
+    node.parentNode = this;
+    this.children.push(node);
+    return node;
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => this.appendChild(node));
+  }
+
+  replaceChildren(...nodes) {
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+    this.append(...nodes);
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+    }
+  }
+
+  cloneNode(deep) {
+    const clone = new FakeNode(this.tagName);
+    clone.attrs = { ...this.attrs };
+    clone.dataset = { ...this.dataset };
+    clone.id = this.id;
+    clone.name = this.name;
+    clone.type = this.type;
+    clone.value = this.value;
+    clone.className = this.className;
+    if (deep) {
+      clone.children = this.children.map((child) => {
+        const childClone = child.cloneNode(true);
+        childClone.parentNode = clone;
+        return childClone;
+      });
+    }
+    return clone;
+  }
+}
+
+// Builds a fake equivalent of #lineTemplate: a <template> whose .content is
+// a fragment containing one ".line-row" details element with the exact
+// name="..." inputs forms/expense-request.html's addLine()/addLineFromData()
+// and collectData() read from (see the real <template id="lineTemplate">).
+function createExpenseLineTemplate() {
+  const template = new FakeNode("template");
+  const fragment = new FakeNode("#fragment");
+  const details = new FakeNode("details");
+  details.className = "line-row";
+
+  const summary = new FakeNode("summary");
+  summary.className = "line-summary";
+  const titleSpan = new FakeNode("span");
+  titleSpan.className = "line-title";
+  titleSpan.setAttribute("data-line-title", "");
+  const totalSpan = new FakeNode("span");
+  totalSpan.className = "line-total";
+  totalSpan.setAttribute("data-line-total", "");
+  summary.append(titleSpan, totalSpan);
+
+  const fieldsWrap = new FakeNode("div");
+  fieldsWrap.className = "line-fields";
+  const makeInput = (name) => {
+    const el = new FakeNode("input");
+    el.setAttribute("name", name);
+    return el;
+  };
+  const lineCategory = new FakeNode("select");
+  lineCategory.setAttribute("name", "lineCategory");
+  const removeButton = new FakeNode("button");
+  removeButton.setAttribute("data-remove-line", "");
+  fieldsWrap.append(
+    makeInput("lineDate"),
+    lineCategory,
+    makeInput("lineDescription"),
+    makeInput("lineVendor"),
+    makeInput("lineBeforeVat"),
+    makeInput("lineVat"),
+    makeInput("lineWht"),
+    removeButton,
+  );
+
+  details.append(summary, fieldsWrap);
+  fragment.append(details);
+  template.content = fragment;
+  return template;
+}
+
+function makeSimpleElement(tag = "div") {
+  return new FakeNode(tag);
+}
+
+// Sets up the real inline controller script from forms/expense-request.html
+// in a require-less vm sandbox with a minimal fake DOM covering exactly the
+// elements the controller touches, runs its DOMContentLoaded handler, and
+// waits for the fire-and-forget loadWorkflowPrefill() fetch chain to settle.
+// Evidence upload cards ([data-evidence-card]) are deliberately left absent
+// (document.querySelectorAll for that selector returns []): the controller
+// already handles zero cards gracefully, and they are unrelated to the
+// workflow wiring under test.
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001" } = {}) {
+  const html = await readFile(htmlPath, "utf8");
+  const script = extractInlineControllerScript(html);
+
+  const elementsById = {
+    expenseForm: new FakeNode("form"),
+    lineItems: new FakeNode("div"),
+    lineTemplate: createExpenseLineTemplate(),
+    output: makeSimpleElement("textarea"),
+    errors: makeSimpleElement("div"),
+    saveStatus: makeSimpleElement("div"),
+    workflowReturnLink: new FakeNode("a"),
+    workflowPrefillBanner: new FakeNode("div"),
+    workflowPrefillGroups: new FakeNode("div"),
+    workflowPrefillApply: new FakeNode("button"),
+    workflowPrefillDismiss: new FakeNode("button"),
+    requestNoPreview: makeSimpleElement("input"),
+    refreshRequestNo: makeSimpleElement("button"),
+    addLine: makeSimpleElement("button"),
+    copyJson: makeSimpleElement("button"),
+    copyMarkdown: makeSimpleElement("button"),
+    saveDraft: makeSimpleElement("button"),
+    submitRequest: makeSimpleElement("button"),
+    resetForm: makeSimpleElement("button"),
+    docNo: makeSimpleElement("div"),
+    sumBeforeVat: makeSimpleElement("strong"),
+    sumVat: makeSimpleElement("strong"),
+    sumGross: makeSimpleElement("strong"),
+    sumWht: makeSimpleElement("strong"),
+    sumNet: makeSimpleElement("span"),
+  };
+
+  // Mirror the real markup: both start with the `hidden` attribute present
+  // (<a ... hidden>, <div ... hidden>), so their `.hidden` property starts
+  // true, exactly like a real browser parsing the HTML.
+  elementsById.workflowReturnLink.hidden = true;
+  elementsById.workflowPrefillBanner.hidden = true;
+
+  const form = elementsById.expenseForm;
+  form._requestType = "reimbursement";
+  const formField = () => ({ value: "", addEventListener() {} });
+  form.elements = {
+    accountingMonth: formField(),
+    requestTitle: formField(),
+    requesterName: formField(),
+    requesterRole: formField(),
+    requesterContact: formField(),
+    expenseDate: formField(),
+    businessPurpose: formField(),
+    paymentTargetName: formField(),
+    paymentBankName: formField(),
+    paymentAccountNo: formField(),
+    transactionNo: formField(),
+    workflowTemplateId: formField(),
+    workflowStepId: formField(),
+  };
+
+  // markWorkflowFieldPrefilled looks up `[data-badge-for="<field>"]` inside
+  // the form, mirroring the real <span class="field-badge" data-badge-for="...">
+  // markup added next to each prefillable field.
+  for (const fieldName of ["requestTitle", "requesterName", "businessPurpose", "paymentTargetName", "paymentBankName", "paymentAccountNo", "lines"]) {
+    const badge = new FakeNode("span");
+    badge.setAttribute("data-badge-for", fieldName);
+    badge.hidden = true;
+    form.appendChild(badge);
+  }
+
+  const fakeDocument = {
+    querySelector(selector) {
+      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "[data-evidence-card]") return [];
+      return [];
+    },
+    createElement(tag) {
+      return new FakeNode(tag);
+    },
+  };
+
+  class FakeFormData {
+    constructor(targetForm) {
+      this._entries = [];
+      this._form = targetForm;
+    }
+
+    append(key, value) {
+      this._entries.push([key, value]);
+    }
+
+    get(key) {
+      const found = this._entries.find(([entryKey]) => entryKey === key);
+      if (found) return found[1];
+      if (this._form && key === "requestType") return this._form._requestType ?? "reimbursement";
+      return null;
+    }
+  }
+
+  const fetchLog = [];
+  const stubFetch = async (url) => {
+    fetchLog.push(url);
+    if (url.includes("/prefill")) {
+      return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
+    }
+    if (url.includes("/api/expense-requests/next")) {
+      return { ok: true, json: async () => ({ sequence: "1", requestNo: nextRequestNo }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  const window = {};
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location: { search, protocol: "http:" },
+    URLSearchParams,
+    FormData: FakeFormData,
+    // Bare `fetch(...)` resolves through the sandbox's global object, which
+    // is this context object itself, not our separate `window` property.
+    fetch: stubFetch,
+    navigator: {},
+  });
+
+  vm.runInContext(await readFile(expenseLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(returnLinkPath, "utf8"), context);
+  // workflow-return-link.browser.js is a plain classic script (no
+  // `window.` assignment, per its own test coverage) — in a real browser,
+  // top-level function declarations attach to the real global object,
+  // which *is* `window`. This vm sandbox uses a separate plain `window`
+  // object, so bridge the one function the controller calls through
+  // `window.sanitizeWorkflowReturnTo`.
+  context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
+  vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
+  vm.runInContext(script, context);
+
+  const bootResult = context.window._handlers.DOMContentLoaded();
+  await bootResult;
+  // loadWorkflowPrefill() is fired-and-forgotten at the end of the boot
+  // sequence; let its fetch -> json -> renderWorkflowPrefillBanner
+  // microtask chain fully settle before the test touches the DOM.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  return { context, elements: elementsById, form, fetchLog };
+}
+
+function getPrefillCheckbox(container, group) {
+  return container.querySelectorAll('input[type="checkbox"]').find((checkbox) => checkbox.value === group);
+}
+
+test("opened with no workflow context: no prefill fetch fires and the return link/banner stay hidden", async () => {
+  const { elements, fetchLog } = await setupExpenseRequestSandbox({ search: "" });
+
+  assert.equal(elements.workflowReturnLink.hidden, true, "return link must stay hidden with no returnTo");
+  assert.equal(elements.workflowPrefillBanner.hidden, true, "prefill banner must stay hidden with no transactionNo/workflowStepId");
+  assert.ok(
+    !fetchLog.some((url) => url.includes("/prefill")),
+    "no prefill request should fire when transactionNo/workflowStepId are absent",
+  );
+});
+
+test("opened with a workflow transactionNo but an unsafe returnTo: the return link stays hidden", async () => {
+  const { elements } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1&returnTo=https://evil.example",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  assert.equal(elements.workflowReturnLink.hidden, true, "an absolute/off-site returnTo must never surface as a clickable link");
+});
+
+test("opened from a workflow step: hidden fields are populated and a safe returnTo shows the return link", async () => {
+  const { elements, form, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1&returnTo=%2Fworkflow-transaction%3FtransactionNo%3DTXN-2026-09-0001",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  assert.equal(form.elements.transactionNo.value, "TXN-2026-09-0001");
+  assert.equal(form.elements.workflowTemplateId.value, "tpl-1");
+  assert.equal(form.elements.workflowStepId.value, "step-1");
+  assert.equal(elements.workflowReturnLink.hidden, false);
+  assert.equal(elements.workflowReturnLink.href, "/workflow-transaction?transactionNo=TXN-2026-09-0001");
+  assert.ok(
+    fetchLog.some((url) => url.includes("/api/workflow-transactions/TXN-2026-09-0001/prefill") && url.includes("documentKind=expense_request") && url.includes("stepId=step-1")),
+    "must fetch the prefill endpoint for the right transaction/documentKind/stepId",
+  );
+});
+
+test("applyWorkflowPrefillPatch fills only ticked groups, leaving unticked fields untouched", async () => {
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: {},
+  };
+  const { context, elements, form } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1",
+    prefillResponse,
+  });
+
+  assert.equal(elements.workflowPrefillBanner.hidden, false, "banner must appear when availableGroups is non-empty");
+
+  const testPatch = {
+    paymentTargetName: "ร้านค้าทดสอบ",
+    businessPurpose: "วัตถุประสงค์ทดสอบ",
+    expenseLines: [{ description: "ค่าทดสอบ" }],
+  };
+  context.window.WorkflowPrefillLogic = { applyWorkflowPrefillGroups: () => testPatch };
+
+  getPrefillCheckbox(elements.workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(elements.workflowPrefillGroups, "purpose").checked = false;
+  getPrefillCheckbox(elements.workflowPrefillGroups, "lines").checked = false;
+
+  elements.workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.paymentTargetName.value, "ร้านค้าทดสอบ", "the ticked payee group must be applied");
+  assert.equal(form.elements.businessPurpose.value, "", "an unticked purpose group must be left untouched");
+  assert.equal(elements.workflowPrefillBanner.hidden, true, "the banner closes after apply");
+
+  const badge = form.querySelector('[data-badge-for="paymentTargetName"]');
+  assert.equal(badge.hidden, false, "a prefilled field must carry a visible source badge");
+  assert.match(badge.textContent, /PO-2026-09-0001/);
+
+  const purposeBadge = form.querySelector('[data-badge-for="businessPurpose"]');
+  assert.equal(purposeBadge.hidden, true, "an untouched field must not gain a source badge");
+});
+
+test("real workflow-prefill.logic.js fills an expense_request end to end through the apply button", async () => {
+  const canonicalContext = {
+    payee: { name: "ร้านค้าจริง", bankName: "ธนาคารจริง", accountNo: "111-1-11111-1" },
+    purpose: { title: "หัวข้อจริง", businessPurpose: "วัตถุประสงค์จริงจากเอกสารก่อนหน้า" },
+    lines: [{ description: "สินค้า A", quantity: "1", unitCost: "500.00", lineTotal: "500.00", stockSkuId: "" }],
+  };
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose", "lines"],
+    sources: { payee: "PO-2026-09-0001", purpose: "PO-2026-09-0001", lines: "PO-2026-09-0001" },
+    context: canonicalContext,
+  };
+  const { elements, form } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1",
+    prefillResponse,
+  });
+
+  getPrefillCheckbox(elements.workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(elements.workflowPrefillGroups, "purpose").checked = true;
+  getPrefillCheckbox(elements.workflowPrefillGroups, "lines").checked = true;
+
+  elements.workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.paymentTargetName.value, "ร้านค้าจริง");
+  assert.equal(form.elements.businessPurpose.value, "วัตถุประสงค์จริงจากเอกสารก่อนหน้า");
+  const lineDescriptions = elements.lineItems
+    .querySelectorAll(".line-row")
+    .map((row) => row.querySelector('[name="lineDescription"]').value);
+  assert.deepEqual(lineDescriptions, ["สินค้า A"], "the expenseLines patch must replace the line rows");
+});
+
+test("collectData includes the workflow context fields in the saved payload shape", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  // The three workflow keys must appear inside collectData()'s returned
+  // object literal so they are carried into buildExpensePayload/POST body.
+  const collectDataBody = html.match(/function collectData\(\)\s*\{([\s\S]*?)\n\s{4}\}/)?.[1] ?? "";
+  assert.match(collectDataBody, /transactionNo: fields\.transactionNo\.value/);
+  assert.match(collectDataBody, /workflowTemplateId: fields\.workflowTemplateId\.value/);
+  assert.match(collectDataBody, /workflowStepId: fields\.workflowStepId\.value/);
 });

@@ -37,6 +37,33 @@ window.addEventListener("DOMContentLoaded", () => {
   const stockReceiptNotice = document.querySelector("#stockReceiptNotice");
   const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
 
+  // --- Workflow context (Task 9) ---------------------------------------
+  // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as query
+  // params only when this page is opened from a workflow transaction step
+  // (see /api/workflow-transactions/:transactionNo/start-document/:stepId).
+  // Opened standalone (no query params), everything below stays inert: the
+  // hidden fields stay blank, the return link stays hidden, and no prefill
+  // fetch fires.
+  const workflowSearchParams = new URLSearchParams(location.search);
+  const workflowContext = {
+    transactionNo: workflowSearchParams.get("transactionNo") || "",
+    workflowTemplateId: workflowSearchParams.get("workflowTemplateId") || "",
+    workflowStepId: workflowSearchParams.get("workflowStepId") || "",
+    returnTo: workflowSearchParams.get("returnTo") || "",
+  };
+  const workflowReturnLink = document.querySelector("#workflowReturnLink");
+  const workflowPrefillBanner = document.querySelector("#workflowPrefillBanner");
+  const workflowPrefillGroupsContainer = document.querySelector("#workflowPrefillGroups");
+  const workflowPrefillApplyButton = document.querySelector("#workflowPrefillApply");
+  const workflowPrefillDismissButton = document.querySelector("#workflowPrefillDismiss");
+  let workflowPrefill = null;
+
+  const WORKFLOW_PREFILL_GROUP_LABELS = {
+    payee: "ผู้รับเงิน/คู่ค้า",
+    purpose: "วัตถุประสงค์",
+    lines: "รายการ",
+  };
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -270,6 +297,9 @@ window.addEventListener("DOMContentLoaded", () => {
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
       businessPurpose: form.elements.businessPurpose.value,
+      transactionNo: form.elements.transactionNo.value,
+      workflowTemplateId: form.elements.workflowTemplateId.value,
+      workflowStepId: form.elements.workflowStepId.value,
       lines: collectLines(),
       evidenceFiles: collectEvidenceFilesForValidation(),
     };
@@ -347,6 +377,99 @@ window.addEventListener("DOMContentLoaded", () => {
     updatePreview();
   }
 
+  function applyWorkflowHiddenFields() {
+    form.elements.transactionNo.value = workflowContext.transactionNo;
+    form.elements.workflowTemplateId.value = workflowContext.workflowTemplateId;
+    form.elements.workflowStepId.value = workflowContext.workflowStepId;
+  }
+
+  function applyWorkflowReturnLink() {
+    const safeReturnTo = window.sanitizeWorkflowReturnTo(workflowContext.returnTo);
+    if (safeReturnTo && workflowReturnLink) {
+      workflowReturnLink.href = safeReturnTo;
+      workflowReturnLink.hidden = false;
+    }
+  }
+
+  function markWorkflowFieldPrefilled(fieldName, sourceDocumentNo) {
+    const badge = form.querySelector(`[data-badge-for="${fieldName}"]`);
+    if (!badge) return;
+    badge.hidden = false;
+    badge.textContent = `นำมาจาก ${sourceDocumentNo}`;
+  }
+
+  function renderWorkflowPrefillBanner(prefill) {
+    if (!prefill || !Array.isArray(prefill.availableGroups) || prefill.availableGroups.length === 0) return;
+    workflowPrefillGroupsContainer.replaceChildren(
+      ...prefill.availableGroups.map((group) => {
+        const wrapper = document.createElement("label");
+        wrapper.className = "prefill-group";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = group;
+        checkbox.checked = true;
+        const sourceDocumentNo = prefill.sources?.[group];
+        const labelText = document.createElement("span");
+        labelText.textContent = sourceDocumentNo
+          ? `${WORKFLOW_PREFILL_GROUP_LABELS[group] || group} (จาก ${sourceDocumentNo})`
+          : (WORKFLOW_PREFILL_GROUP_LABELS[group] || group);
+        wrapper.append(checkbox, labelText);
+        return wrapper;
+      }),
+    );
+    workflowPrefillBanner.hidden = false;
+  }
+
+  function applyWorkflowPrefillPatch(patch = {}, groups = []) {
+    const selectedGroups = new Set(groups);
+    if (selectedGroups.has("payee")) {
+      if (patch.payeeName !== undefined) {
+        form.elements.payeeName.value = patch.payeeName;
+        markWorkflowFieldPrefilled("payeeName", workflowPrefill?.sources?.payee);
+      }
+      if (patch.payeeTaxId !== undefined) {
+        form.elements.payeeTaxId.value = patch.payeeTaxId;
+        markWorkflowFieldPrefilled("payeeTaxId", workflowPrefill?.sources?.payee);
+      }
+    }
+    if (selectedGroups.has("purpose")) {
+      if (patch.receiptTitle !== undefined) {
+        form.elements.receiptTitle.value = patch.receiptTitle;
+        markWorkflowFieldPrefilled("receiptTitle", workflowPrefill?.sources?.purpose);
+      }
+      if (patch.businessPurpose !== undefined) {
+        form.elements.businessPurpose.value = patch.businessPurpose;
+        markWorkflowFieldPrefilled("businessPurpose", workflowPrefill?.sources?.purpose);
+      }
+    }
+    if (selectedGroups.has("lines") && Array.isArray(patch.lines) && patch.lines.length) {
+      lineItems.replaceChildren();
+      for (const line of patch.lines) addStockLine(line);
+      markWorkflowFieldPrefilled("lines", workflowPrefill?.sources?.lines);
+    }
+    // substitute_receipt has no requester field, so `parties` (if present)
+    // is never applied here.
+    updatePreview();
+  }
+
+  async function fetchWorkflowPrefill() {
+    if (!workflowContext.transactionNo || !workflowContext.workflowStepId) return null;
+    try {
+      const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(workflowContext.transactionNo)}/prefill?documentKind=substitute_receipt&stepId=${encodeURIComponent(workflowContext.workflowStepId)}`);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function loadWorkflowPrefill() {
+    const prefill = await fetchWorkflowPrefill();
+    if (!prefill) return;
+    workflowPrefill = prefill;
+    renderWorkflowPrefillBanner(prefill);
+  }
+
   function fillForm(payload = {}) {
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
     form.elements.receiptDate.value = payload.receiptDate || todayInputValue();
@@ -359,6 +482,14 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.paymentReference.value = payload.paymentReference || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
     if (vendorPresetSelect) vendorPresetSelect.value = "";
+    // A draft/receipt saved earlier from within a workflow already carries
+    // its own transactionNo/workflowTemplateId/workflowStepId; preserve
+    // those on reload even if this particular URL no longer carries the
+    // query params (e.g. opened again later from a plain list link).
+    workflowContext.transactionNo = payload.transactionNo || workflowContext.transactionNo;
+    workflowContext.workflowTemplateId = payload.workflowTemplateId || workflowContext.workflowTemplateId;
+    workflowContext.workflowStepId = payload.workflowStepId || workflowContext.workflowStepId;
+    applyWorkflowHiddenFields();
     state.existingEvidenceFiles = payload.evidenceFiles || {};
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
@@ -497,6 +628,21 @@ window.addEventListener("DOMContentLoaded", () => {
     setTimeout(resetFormState);
   });
 
+  workflowPrefillApplyButton?.addEventListener("click", () => {
+    if (!workflowPrefill) return;
+    const checkedGroups = [...workflowPrefillGroupsContainer.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
+    const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(workflowPrefill.context, "substitute_receipt", checkedGroups) || {};
+    applyWorkflowPrefillPatch(patch, checkedGroups);
+    workflowPrefillBanner.hidden = true;
+  });
+
+  workflowPrefillDismissButton?.addEventListener("click", () => {
+    workflowPrefillBanner.hidden = true;
+  });
+
+  applyWorkflowHiddenFields();
+  applyWorkflowReturnLink();
+
   fillForm();
   Promise.all([refreshStockSkus(), refreshVendors(), refreshNextReceipt()])
     .then(async () => {
@@ -504,6 +650,12 @@ window.addEventListener("DOMContentLoaded", () => {
         await loadDraft(queryDraftId);
       } else if (queryReceiptNo) {
         await loadReceipt(queryReceiptNo);
+      } else {
+        // Only fetch cross-document prefill for a brand-new, never-saved
+        // document: an existing draft/receipt already has its own real
+        // data, so offering to overwrite it with an earlier document's data
+        // would be wrong.
+        loadWorkflowPrefill();
       }
       updatePreview();
     })

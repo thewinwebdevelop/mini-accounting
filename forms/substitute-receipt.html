@@ -329,6 +329,59 @@
       display: none;
     }
 
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+    }
+
+    .field-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #14532d;
+      font-size: 11px;
+      font-weight: 800;
+      width: fit-content;
+    }
+
+    .field-badge[hidden] {
+      display: none;
+    }
+
+    .prefill-banner {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #93c5fd;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: #1e3a8a;
+    }
+
+    .prefill-banner[hidden] {
+      display: none;
+    }
+
+    .prefill-banner p {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .prefill-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .icon-button {
       width: 38px;
       height: 38px;
@@ -446,10 +499,24 @@
       <h1 class="brand-title">ใบรับรองแทนใบเสร็จรับเงิน</h1>
       <p class="brand-subtitle">กรอกเอกสาร แนบหลักฐาน อนุมัติ และรับ Stock SKU เข้าคลังเป็นคนละขั้น</p>
     </div>
+    <a class="button secondary" id="workflowReturnLink" href="/workflow-transactions" hidden>กลับไปที่ Workflow</a>
   </header>
 
   <main class="page">
     <form class="stack" id="substituteReceiptForm">
+      <input type="hidden" name="transactionNo" id="transactionNo">
+      <input type="hidden" name="workflowTemplateId" id="workflowTemplateId">
+      <input type="hidden" name="workflowStepId" id="workflowStepId">
+
+      <div class="prefill-banner" id="workflowPrefillBanner" hidden>
+        <p>พบข้อมูลจากเอกสารก่อนหน้าใน Workflow นี้ เลือกกลุ่มข้อมูลที่ต้องการนำมาใช้</p>
+        <div id="workflowPrefillGroups"></div>
+        <div class="actions">
+          <button type="button" id="workflowPrefillApply" class="button primary">ใช้ข้อมูลเดิม</button>
+          <button type="button" id="workflowPrefillDismiss" class="button secondary">กรอกใหม่</button>
+        </div>
+      </div>
+
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">ข้อมูลเอกสาร</h2>
@@ -474,6 +541,7 @@
             <div class="field span-12">
               <label for="receiptTitle">ชื่อรายการ</label>
               <input id="receiptTitle" name="receiptTitle" placeholder="เช่น ซื้อสต๊อกเสื้อผ้า Lot กันยายน">
+              <span class="field-badge" data-badge-for="receiptTitle" hidden></span>
             </div>
           </div>
         </div>
@@ -494,10 +562,12 @@
             <div class="field span-6">
               <label for="payeeName">ผู้ขาย/ผู้รับเงิน *</label>
               <input id="payeeName" name="payeeName" required>
+              <span class="field-badge" data-badge-for="payeeName" hidden></span>
             </div>
             <div class="field span-6">
               <label for="payeeTaxId">เลขประจำตัวผู้เสียภาษีผู้ขาย</label>
               <input id="payeeTaxId" name="payeeTaxId">
+              <span class="field-badge" data-badge-for="payeeTaxId" hidden></span>
             </div>
             <div class="field span-6">
               <label for="paymentChannel">ช่องทางชำระเงิน</label>
@@ -510,6 +580,7 @@
             <div class="field span-12">
               <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
               <textarea id="businessPurpose" name="businessPurpose" required>ซื้อสินค้าเพื่อขาย</textarea>
+              <span class="field-badge" data-badge-for="businessPurpose" hidden></span>
             </div>
           </div>
         </div>
@@ -520,7 +591,10 @@
           <h2 class="section-title">รายการสินค้า/ค่าใช้จ่าย</h2>
           <button class="button secondary" type="button" id="addStockLine">เพิ่มรายการ</button>
         </div>
-        <div class="section-body" id="stockLineItems"></div>
+        <div class="section-body">
+          <span class="field-badge" data-badge-for="lines" hidden></span>
+          <div id="stockLineItems"></div>
+        </div>
       </section>
 
       <section class="section">
@@ -627,6 +701,8 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
+  <script src="./workflow-return-link.browser.js"></script>
+  <script src="./workflow-prefill.logic.js"></script>
   <script src="./substitute-receipt.logic.browser.js"></script>
 </body>
 </html>
