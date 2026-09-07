@@ -1127,6 +1127,13 @@
     function markWorkflowFieldPrefilled(fieldName, sourceDocumentNo) {
       const badge = form.querySelector(`[data-badge-for="${fieldName}"]`);
       if (!badge) return;
+      // No real source document number means there is nothing honest to show
+      // — rendering the badge anyway used to print the literal "นำมาจาก
+      // undefined" (a non-Thai token in a Thai-only UI). Hide it instead.
+      if (!sourceDocumentNo) {
+        badge.hidden = true;
+        return;
+      }
       badge.hidden = false;
       badge.textContent = `นำมาจาก ${sourceDocumentNo}`;
     }

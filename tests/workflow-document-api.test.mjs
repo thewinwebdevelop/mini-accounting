@@ -280,6 +280,126 @@ test("Critical 3: editing an existing document carries its documentNo/folderPath
   }
 });
 
+// Critical 1 repro: collectPayload() on the browser side never sent
+// evidenceFiles/rawFiles, and the route's serverOwnedFields block did not
+// carry them forward from the stored record on an edit either, so
+// saveWorkflowDocument's `existingEvidenceFiles = payload.evidenceFiles ?? {}`
+// saw an empty object on every edit — dropping already-stored evidence from
+// the record on a no-upload edit, and restarting the per-key file counter at
+// 0 on a second upload, silently overwriting the first file on disk. Fixed by
+// making the route carry evidenceFiles/rawFiles forward from the stored
+// record on an edit, the same way it already does for documentNo/folderPath/
+// status/etc — see handleWorkflowDocumentSubmission's serverOwnedFields block.
+test("Critical 1: editing a workflow document with existing evidence must not destroy it, and a second upload must append rather than collide", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const firstFormData = purchaseOrderFormData();
+    firstFormData.append("evidence_evidence", new Blob(["slip-A-content"], { type: "text/plain" }), "slip-A.pdf");
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: firstFormData,
+    });
+    assert.deepEqual(created.rawFiles, ["evidence_001.pdf"]);
+
+    // Edit with no new upload: existing evidence must survive exactly as it was.
+    const editedNoUpload = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขโดยไม่แนบไฟล์ใหม่" }),
+    });
+    assert.deepEqual(
+      editedNoUpload.rawFiles,
+      ["evidence_001.pdf"],
+      "a save carrying no new uploads must leave existing evidence exactly as it was",
+    );
+
+    const originalStillServed = await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_001.pdf`);
+    assert.equal(originalStillServed.status, 200, "the original evidence file must still exist on disk after a no-upload edit");
+    assert.equal(await originalStillServed.text(), "slip-A-content");
+
+    const storedAfterNoUploadEdit = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(
+      Object.values(storedAfterNoUploadEdit.payload.evidenceFiles || {}).flat().length,
+      1,
+      "the stored record's evidenceFiles must still list the original file after a no-upload edit",
+    );
+
+    // Edit adding a second upload: must append, never collide with the first
+    // file's stored name (the per-key counter must not restart at 0).
+    const secondFormData = purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขพร้อมแนบไฟล์ใหม่" });
+    secondFormData.append("evidence_evidence", new Blob(["slip-B-content"], { type: "text/plain" }), "slip-B.pdf");
+    const editedWithUpload = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: secondFormData,
+    });
+    assert.deepEqual(
+      editedWithUpload.rawFiles.slice().sort(),
+      ["evidence_001.pdf", "evidence_002.pdf"],
+      "a second upload must append as evidence_002, not collide with evidence_001",
+    );
+
+    const firstFileAfterSecondUpload = await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_001.pdf`);
+    assert.equal(firstFileAfterSecondUpload.status, 200);
+    assert.equal(await firstFileAfterSecondUpload.text(), "slip-A-content", "the original file's content must not have been overwritten by the second upload");
+
+    const secondFile = await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_002.pdf`);
+    assert.equal(secondFile.status, 200);
+    assert.equal(await secondFile.text(), "slip-B-content");
+
+    const storedAfterSecondUpload = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(
+      Object.values(storedAfterSecondUpload.payload.evidenceFiles || {}).flat().length,
+      2,
+      "the stored record must list both evidence files after the second upload",
+    );
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("editing a workflow document cannot forge transactionNo/workflowTemplateId/workflowStepId to move it to a different workflow step", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: purchaseOrderFormData({
+        transactionNo: "TXN-2026-09-0001",
+        workflowTemplateId: "stock_no_tax_invoice_company_bank",
+        workflowStepId: "step-001",
+      }),
+    });
+
+    const forged = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: purchaseOrderFormData({
+        documentNo: created.documentNo,
+        transactionNo: "TXN-2026-09-9999",
+        workflowTemplateId: "some_other_template",
+        workflowStepId: "step-999",
+      }),
+    });
+    assert.equal(forged.documentNo, created.documentNo);
+
+    const stored = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(stored.payload.transactionNo, "TXN-2026-09-0001", "transactionNo must stay server-owned on edit, carried forward from the stored record");
+    assert.equal(stored.payload.workflowTemplateId, "stock_no_tax_invoice_company_bank", "workflowTemplateId must stay server-owned on edit");
+    assert.equal(stored.payload.workflowStepId, "step-001", "workflowStepId must stay server-owned on edit, not movable to another step by a crafted POST");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // The five lightweight workflow document kinds have their own file route
 // (GET /workflow-documents/<documentKind>/<documentNo>/<section>/<fileName>,
 // handled by getWorkflowDocumentFile) which is neither the expense-request

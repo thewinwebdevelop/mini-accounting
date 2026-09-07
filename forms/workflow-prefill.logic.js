@@ -426,7 +426,14 @@ function applyWorkflowPrefillGroups(context, targetDocumentKind, groups = []) {
   const requested = groups.filter((group) => receivable.includes(group));
   const filteredContext = {
     ...Object.fromEntries(requested.map((group) => [group, context[group]])),
-    parties: context.parties,
+    // buildWorkflowPrefillContext seeds context.parties as {} when no source
+    // document ever supplied one (e.g. every source is a substitute_receipt,
+    // which never emits parties), so a plain `context.parties` here would
+    // fold that empty object in as if it were real data — the applier's own
+    // `if (context.parties)` guard treats {} as truthy, so it happily writes
+    // out an empty requesterName/requesterRole and clears whatever the user
+    // had already typed. Only fold parties in when it actually has fields.
+    ...(isGroupNonEmpty(context.parties) ? { parties: context.parties } : {}),
   };
   return adapter.applyWorkflowContext(filteredContext, requested);
 }

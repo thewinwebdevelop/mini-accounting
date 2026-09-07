@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from generate_workflow_packet_pdf import build_packet_pdf
+from generate_workflow_packet_pdf import build_packet_pdf, step_status_label, transaction_status_label
 
 
 class WorkflowPacketPdfTests(unittest.TestCase):
@@ -80,6 +80,36 @@ class WorkflowPacketPdfContentTests(unittest.TestCase):
                 self.assertIn(pdf_file["name"], text, f"pdf file name missing from packet text: {pdf_file['name']}")
             for raw_file in doc["rawFiles"]:
                 self.assertIn(raw_file["name"], text, f"raw file name missing from packet text: {raw_file['name']}")
+
+    def test_transaction_status_label_differs_from_step_status_label_when_completed(self):
+        # A transaction's own status only ever takes two values (in_progress /
+        # completed) and must be labeled through the transaction-level map
+        # ("เสร็จสมบูรณ์" for completed), not the step-level map ("เสร็จสิ้น" for
+        # completed) — forms/workflow.logic.browser.js's TRANSACTION_STATUS_LABELS
+        # is the source of truth this must mirror.
+        self.assertEqual(transaction_status_label("completed"), "เสร็จสมบูรณ์")
+        self.assertEqual(step_status_label("completed"), "เสร็จสิ้น")
+        self.assertNotEqual(transaction_status_label("completed"), step_status_label("completed"))
+
+    def test_packet_uses_the_transaction_status_label_for_the_transaction_row(self):
+        transaction = {
+            "transactionNo": "TXN-2026-09-0009",
+            "title": "ทดสอบสถานะธุรกรรม",
+            "templateSnapshot": {"name": "ตัวอย่าง Template"},
+            "status": "completed",
+            "steps": [
+                {"stepId": "step-001", "documentKind": "purchase_order", "label": "ใบสั่งซื้อ", "workflowStatus": "completed"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "workflow-packet.pdf"
+            build_packet_pdf(transaction, [], str(output_path))
+            text = self._extract_text(output_path)
+        self.assertIn(
+            "เสร็จสมบูรณ์",
+            text,
+            "a completed transaction's own status row must use the transaction label (เสร็จสมบูรณ์), not the step label (เสร็จสิ้น)",
+        )
 
     def test_packet_handles_a_transaction_with_no_child_documents_yet(self):
         transaction = {

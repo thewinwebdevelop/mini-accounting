@@ -368,6 +368,79 @@ test("refreshWorkflowTransaction writes workflow summary packet", async () => {
   }
 });
 
+// Critical/Important 4 repro: a packet-generation failure (missing Python
+// runtime, a ReportLab import error, a locked output file, ...) used to
+// reject refreshWorkflowTransaction outright — and since both initTransactionPage
+// and handleWorkflowTransactionStartDocument call it unconditionally, one bad
+// packet attempt took down the entire transaction page and every
+// "เปิดเอกสาร" button, even though the packet is only ever a convenience
+// download link. Injects a failing packetGenerator (the same DI seam already
+// used for expenseRecorder/driveUploader) instead of actually breaking the
+// Python subprocess, so this stays fast and hermetic.
+test("refreshWorkflowTransaction survives a failing packet generator: progress still persists and no exception escapes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "เบิกค่าส่ง",
+    });
+
+    const failingPacketGenerator = async () => {
+      throw new Error("ไม่พบ ReportLab (จำลองความล้มเหลว)");
+    };
+
+    const refreshed = await serverLogic.refreshWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      packetGenerator: failingPacketGenerator,
+    });
+
+    // Refresh itself must not throw, must still report real progress, and
+    // must surface the failure honestly rather than swallowing it.
+    assert.equal(refreshed.transactionNo, txn.transactionNo);
+    assert.equal(refreshed.steps[0].workflowStatus, "not_started");
+    assert.ok(refreshed.packetError, "a failed packet generation must be surfaced, not silently swallowed");
+    assert.equal(
+      refreshed.pdfFiles.some((file) => file.name === "99_ชุดรวมเอกสาร_workflow-transaction.pdf"),
+      false,
+      "no packet file must be listed when generation failed",
+    );
+
+    // A later, successful refresh (packetGenerator not overridden) must still
+    // work normally — the earlier failure must not have wedged anything.
+    const recovered = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal("packetError" in recovered, false);
+    assert.ok(recovered.pdfFiles.some((file) => file.name === "99_ชุดรวมเอกสาร_workflow-transaction.pdf"));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeWorkflowTransaction survives a failing packet generator and still completes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await completeSingleStepTransaction(rootDir);
+
+    const failingPacketGenerator = async () => {
+      throw new Error("ไฟล์ผลลัพธ์ถูกล็อกอยู่ (จำลองความล้มเหลว)");
+    };
+
+    const completed = await serverLogic.completeWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      completedBy: "บัญชี",
+      packetGenerator: failingPacketGenerator,
+    });
+
+    assert.equal(completed.status, "completed");
+    assert.ok(completed.packetError, "a failed packet generation must be surfaced, not silently swallowed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("refreshWorkflowTransaction injects documentKind so expense_request and the substitute_receipt hybrid rule dispatch correctly", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
@@ -1370,12 +1443,12 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
     method: "POST",
     body: JSON.stringify({ approvedBy: "เจ้าของ" }),
   });
-  // No HTTP route exists yet to mark an expense_request "completed" (only
-  // /approve is wired), so the completion this test needs to exercise
-  // strict-order completion further down is done directly through the logic
-  // layer — the same way tests/workflow-api.test.mjs's other logic-level
-  // tests already do for this document kind.
-  await serverLogic.completeExpenseRequest({ rootDir, requestNo: expenseSubmitted.requestNo, completedBy: "บัญชี" });
+  // Completed over its real HTTP route (Important 2 fix) — an expense_request
+  // step could never leave in_progress before this route was wired.
+  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ completedBy: "บัญชี" }),
+  });
 
   // substitute_receipt: its own dedicated submission route. A general_expense
   // receipt counts as workflow-completed once approved (the hybrid rule in
@@ -1529,6 +1602,194 @@ test("POST .../complete refuses until every step is done, then completes and sur
       method: "POST",
     });
     assert.equal(manualSync.syncStatus, "sync_failed");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Important 2 repro: completeExpenseRequest/completeSubstituteReceipt were
+// implemented, exported, and unit-tested, but neither had an HTTP route (no
+// import, no route, no UI control for expense_request), so an expense_request
+// step could never leave in_progress and start-document refused every step
+// after it forever. Every completion test elsewhere in this file drives a
+// synthetic single-step payment_voucher template (see completeSingleStepTransaction
+// above) — this is the one test that drives a REAL shipped template
+// (director_expense_transfer: expense_request -> substitute_receipt ->
+// payment_voucher, one of five of the six shipped templates that contain an
+// expense_request step) end to end purely over HTTP, through each document's
+// own real route, the way an actual user would.
+// ---------------------------------------------------------------------------
+test("director_expense_transfer (a real shipped template) completes end to end purely over HTTP", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl, {
+      templateId: "director_expense_transfer",
+      title: "เบิกค่าส่งเจ้าของ ทดสอบผ่าน HTTP ทั้งกระบวนการ",
+    });
+    assert.deepEqual(txn.steps.map((step) => step.documentKind), ["expense_request", "substitute_receipt", "payment_voucher"]);
+
+    // Step 1: expense_request — its own dedicated submission route, then
+    // approve, then the newly-wired complete route. All three over HTTP.
+    const expenseFormData = new FormData();
+    expenseFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      requestTitle: "เบิกค่าส่งเจ้าของ",
+      requestType: "reimbursement",
+      requesterName: "เจ้าของ",
+      businessPurpose: "เบิกค่าส่ง",
+      paymentTargetName: "เจ้าของ",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[0].stepId,
+      expenseLines: [{
+        date: "2026-09-05",
+        category: "ค่าส่ง/ขนส่ง",
+        description: "ค่าส่งสินค้า",
+        vendor: "ขนส่งตัวอย่าง",
+        amountBeforeVat: "100",
+        vatAmount: "7",
+        withholdingTax: "0",
+      }],
+    }));
+    expenseFormData.append("evidence_businessEvidence", new Blob(["evidence"], { type: "text/plain" }), "evidence.txt");
+    const expenseSubmitted = await requestJsonOk(baseUrl, "/api/expense-requests", { method: "POST", body: expenseFormData });
+
+    await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "เจ้าของ" }),
+    });
+    const expenseCompleted = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    assert.equal(expenseCompleted.status, "completed");
+
+    const afterExpense = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(afterExpense.steps[0].workflowStatus, "completed", "expense_request step must be completed after its own /complete route");
+    assert.equal(afterExpense.steps[1].workflowStatus, "not_started", "substitute_receipt step must now be unblocked");
+
+    // Step 2: substitute_receipt — its own dedicated submission route, then
+    // approve, then the newly-wired complete route (not load-bearing here —
+    // the hybrid rule already completes an approved general_expense receipt —
+    // but wired for consistency, so exercised here too).
+    const receiptFormData = new FormData();
+    receiptFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-05",
+      receiptTitle: "ใบรับรองแทนใบเสร็จค่าส่ง",
+      receiptType: "general_expense",
+      payeeName: "ขนส่งตัวอย่าง",
+      businessPurpose: "ค่าส่ง",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[1].stepId,
+      lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "107" }],
+    }));
+    receiptFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+    const receiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", { method: "POST", body: receiptFormData });
+
+    await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+    const receiptCompleted = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    assert.equal(receiptCompleted.status, "completed");
+
+    const afterReceipt = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(afterReceipt.steps[1].workflowStatus, "completed");
+    assert.equal(afterReceipt.steps[2].workflowStatus, "not_started", "payment_voucher step must now be unblocked");
+
+    // Step 3: payment_voucher — the generic workflow-document shell — create
+    // then complete, both over its own real routes.
+    const voucherSubmitted = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: workflowDocumentFormData({
+        documentKind: "payment_voucher",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[2].stepId,
+      }),
+    });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+
+    const afterVoucher = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(afterVoucher.steps[2].workflowStatus, "completed");
+    assert.equal(afterVoucher.status, "completed", "every step done must already report the transaction itself as completed");
+
+    // And the transaction can actually be closed out through its own route.
+    const completedTransaction = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    assert.equal(completedTransaction.status, "completed");
+    assert.ok(completedTransaction.completedAt);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Smaller-item repro: every pdfFiles/rawFiles entry attached to the
+// workflow-transaction GET/refresh/complete responses used to still carry the
+// server's own absolute filesystem path, leaking it to any client. Fixed by
+// omitAbsolutePathsFromWorkflowTransactionResponse in local-server.mjs,
+// applied to all three routes (never to the expense-request or
+// substitute-receipt routes, which are out of scope for this fix).
+test("GET/refresh/complete workflow-transaction routes never leak absolutePath on any pdfFiles/rawFiles entry", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const template = await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: `single_step_leak_${Date.now()}`,
+        name: "ทดสอบไม่ให้รั่วไหล path ของเซิร์ฟเวอร์",
+        syncGoogleDrive: false,
+        documentSteps: [{ documentKind: "payment_voucher" }],
+      }),
+    });
+    const txn = await startTransactionOverHttp(baseUrl, { templateId: template.templateId });
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: workflowDocumentFormData({
+        documentKind: "payment_voucher",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[0].stepId,
+      }),
+    });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "คุณต้า" }),
+    });
+
+    const detail = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+    assert.equal(JSON.stringify(detail).includes("absolutePath"), false, "GET detail must never leak absolutePath");
+    assert.ok(detail.pdfFiles.length > 0 || detail.childDocuments.some((doc) => doc.pdfFiles.length > 0), "sanity: this transaction must actually have files to check");
+
+    const refreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(JSON.stringify(refreshed).includes("absolutePath"), false, "POST refresh must never leak absolutePath");
+
+    const completed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "คุณต้า" }),
+    });
+    assert.equal(JSON.stringify(completed).includes("absolutePath"), false, "POST complete must never leak absolutePath");
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

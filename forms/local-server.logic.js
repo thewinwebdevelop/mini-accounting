@@ -2434,7 +2434,36 @@ async function getWorkflowTransactionDetail(rootDir, transactionNo) {
   };
 }
 
-async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => new Date().toISOString() }) {
+// The packet PDF is only ever a convenience download link over the
+// transaction and its child documents — never the source of truth for
+// anything derived (progress, strict order, completion), which are all
+// already computed and persisted before this runs. A failure to generate it
+// (missing Python runtime, a ReportLab import error, a locked output file,
+// ...) must therefore degrade to "no packet link yet", not take down
+// refresh/complete and, through them, every "เปิดเอกสาร" start-document call
+// across the whole transaction page. Never swallowed silently: logged to
+// stderr so the failure is still visible to whoever runs the server.
+// `packetGenerator` defaults to the real generateWorkflowPacketPdf and is
+// only ever overridden by tests, the same DI pattern already used for
+// expenseRecorder/driveUploader elsewhere in this file.
+async function generatePacketPdfSafely(packetGenerator, { transaction, childDocuments, outputPath }) {
+  try {
+    await packetGenerator({ transaction, childDocuments, outputPath });
+    return { ok: true };
+  } catch (error) {
+    console.error(
+      `ไม่สามารถสร้าง PDF ชุดรวมเอกสารของ workflow transaction ${transaction.transactionNo} ได้: ${error.message}`,
+    );
+    return { ok: false, error: error.message };
+  }
+}
+
+async function refreshWorkflowTransaction({
+  rootDir,
+  transactionNo,
+  now = () => new Date().toISOString(),
+  packetGenerator = generateWorkflowPacketPdf,
+}) {
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (!transaction) {
     throw new Error("ไม่พบธุรกรรม");
@@ -2461,7 +2490,7 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
   // overwrites the same fixed file name, so there is only ever one packet
   // per transaction to serve or link to.
   const absoluteFolderPath = path.join(rootDir, updated.folderPath);
-  await generateWorkflowPacketPdf({
+  const packetResult = await generatePacketPdfSafely(packetGenerator, {
     transaction: updated,
     childDocuments: formattedChildDocuments,
     outputPath: path.join(absoluteFolderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME),
@@ -2473,6 +2502,10 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
     ...updated,
     childDocuments: formattedChildDocuments,
     pdfFiles,
+    // Present only on failure — a successful generation never adds this key —
+    // so the page/caller can tell "no packet yet" from "packet generation just
+    // failed" without inferring it from a missing pdfFiles entry.
+    ...(packetResult.ok ? {} : { packetError: packetResult.error }),
   };
 }
 
@@ -2518,6 +2551,7 @@ async function completeWorkflowTransaction({
   completedBy = "",
   now = () => new Date().toISOString(),
   driveUploader = uploadFolderToGoogleDrive,
+  packetGenerator = generateWorkflowPacketPdf,
 }) {
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (!transaction) throw new Error("ไม่พบธุรกรรม");
@@ -2591,7 +2625,7 @@ async function completeWorkflowTransaction({
 
   const formattedChildDocuments = childDocuments.map(formatWorkflowChildDocumentForResponse);
   const absoluteFolderPath = path.join(rootDir, updated.folderPath);
-  await generateWorkflowPacketPdf({
+  const packetResult = await generatePacketPdfSafely(packetGenerator, {
     transaction: updated,
     childDocuments: formattedChildDocuments,
     outputPath: path.join(absoluteFolderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME),
@@ -2611,6 +2645,7 @@ async function completeWorkflowTransaction({
     ...updated,
     childDocuments: formattedChildDocuments,
     pdfFiles,
+    ...(packetResult.ok ? {} : { packetError: packetResult.error }),
   };
 }
 

@@ -128,7 +128,10 @@ function validateWorkflowTemplate(template) {
     // Check each documentKind is supported
     for (const step of template.documentSteps) {
       if (!DOCUMENT_TYPE_DEFINITIONS[step.documentKind]) {
-        errors.push(`พบประเภทเอกสารที่ยังไม่รองรับ: ${step.documentKind}`);
+        // A step with no documentKind at all must not interpolate to the
+        // literal "undefined" — a non-Thai token in a Thai-only UI.
+        const kindLabel = step.documentKind || "(ไม่ระบุประเภทเอกสาร)";
+        errors.push(`พบประเภทเอกสารที่ยังไม่รองรับ: ${kindLabel}`);
       }
     }
   }

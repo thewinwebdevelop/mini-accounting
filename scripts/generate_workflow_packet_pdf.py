@@ -22,6 +22,18 @@ WORKFLOW_STEP_STATUS_LABELS = {
     "blocked": "รอขั้นตอนก่อนหน้า",
 }
 
+# Distinct from WORKFLOW_STEP_STATUS_LABELS above: a *transaction*'s own status
+# only ever takes two values (in_progress/completed) and must mirror the label
+# a transaction gets in forms/workflow.logic.browser.js's TRANSACTION_STATUS_LABELS
+# ("เสร็จสมบูรณ์" for a completed transaction) — not the step-status label
+# ("เสร็จสิ้น") that a completed *step* gets. The two used to be conflated
+# here, so a completed transaction's own summary row printed a different word
+# than the page showing the same state.
+TRANSACTION_STATUS_LABELS = {
+    "in_progress": "กำลังดำเนินการ",
+    "completed": "เสร็จสมบูรณ์",
+}
+
 # DOCUMENT_KIND_LABELS (imported above) only covers the five lightweight
 # document kinds generate_workflow_document_pdf.py itself renders. A workflow
 # transaction's steps/childDocuments can also reference expense_request and
@@ -41,6 +53,10 @@ def document_kind_label(document_kind):
 
 def step_status_label(status):
     return WORKFLOW_STEP_STATUS_LABELS.get(status, status or "-")
+
+
+def transaction_status_label(status):
+    return TRANSACTION_STATUS_LABELS.get(status, status or "-")
 
 
 def build_step_table(steps):
@@ -98,7 +114,7 @@ def build_packet_story(transaction, child_documents):
             ("ชื่อธุรกรรม", transaction.get("title")),
             ("Template", template_snapshot.get("name")),
             ("เดือนบัญชี", transaction.get("accountingMonth")),
-            ("สถานะธุรกรรม", step_status_label(transaction.get("status"))),
+            ("สถานะธุรกรรม", transaction_status_label(transaction.get("status"))),
         ]),
         Spacer(1, 8),
         paragraph("ขั้นตอนเอกสารตามลำดับ", "DocHeading"),

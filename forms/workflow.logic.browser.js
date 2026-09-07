@@ -742,19 +742,6 @@ function renderTransaction(transaction, childDocuments = []) {
   renderChildDocumentFiles(document.querySelector("#childDocumentFiles"), transaction, childDocuments);
 }
 
-async function loadTransaction() {
-  const transactionNo = transactionNoFromQuery();
-  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
-
-  const root = document.querySelector("#transactionPage");
-  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
-
-  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}`);
-
-  renderTransaction(transaction, transaction.childDocuments || []);
-  return transaction;
-}
-
 // Refreshes the transaction the same way POST start-document already does
 // server-side before checking currentStepId (see handleWorkflowTransactionStartDocument
 // in local-server.mjs) — recomputing step statuses from the actual child

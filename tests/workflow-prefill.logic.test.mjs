@@ -355,6 +355,45 @@ test("buildWorkflowPrefillContext ignores documents that are not workflow-comple
   assert.deepEqual(sources, {});
 });
 
+// Critical/Important 3 repro: buildWorkflowPrefillContext seeds
+// context = { payee: {}, purpose: {}, lines: [], parties: {} } up front, so
+// `parties` is always a truthy *object* even when no completed source ever
+// supplied one — every shipped template contains a substitute_receipt, and
+// substitute_receipt never emits `parties` at all. Before the fix,
+// applyWorkflowPrefillGroups folded that empty `{}` in unconditionally, and
+// the appliers' own `if (context.parties)` guard treated `{}` as truthy —
+// so applying prefill from a substitute_receipt-only source blanked out
+// whatever requesterName/requesterRole the user had already typed, and the
+// UI badge printed the literal "นำมาจาก undefined" (sources.parties was never
+// set, since no source ever supplied it).
+test("buildWorkflowPrefillContext + applyWorkflowPrefillGroups: a substitute_receipt-only source must never blank out requesterName via an empty parties group", () => {
+  const completedReceipt = {
+    documentKind: "substitute_receipt",
+    documentNo: "SR-2026-09-0001",
+    status: "approved",
+    receiptType: "general_expense",
+    payeeName: "ร้านค้า ก",
+    businessPurpose: "ค่าใช้จ่ายทดสอบ",
+    lines: [{ description: "รายการ", quantity: "1", unitCost: "100.00", lineTotal: "100.00" }],
+  };
+
+  const { context, sources } = workflowPrefillLogic.buildWorkflowPrefillContext([completedReceipt], "payment_voucher");
+
+  // substitute_receipt never emits parties, so it must come back empty, not
+  // as a false-truthy {} that the appliers below would treat as real data.
+  assert.deepEqual(context.parties, {});
+  assert.equal(sources.parties, undefined, "no source ever supplied parties, so sources.parties must stay unset");
+
+  const pvPatch = workflowPrefillLogic.applyWorkflowPrefillGroups(context, "payment_voucher", ["payee"]);
+  assert.equal(pvPatch.payeeName, "ร้านค้า ก");
+  assert.equal("requesterName" in pvPatch, false, "an empty parties group must never add a requesterName key to the patch at all");
+
+  const erPatch = workflowPrefillLogic.applyWorkflowPrefillGroups(context, "expense_request", ["payee"]);
+  assert.equal(erPatch.paymentTargetName, "ร้านค้า ก");
+  assert.equal("requesterName" in erPatch, false, "expense_request must not have its requesterName/requesterRole blanked by an empty parties group");
+  assert.equal("requesterRole" in erPatch, false);
+});
+
 test("buildWorkflowPrefillContext groups never carry excluded fields like documentNo, status, or signatures", () => {
   const source = {
     documentKind: "expense_request",

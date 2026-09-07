@@ -18,6 +18,8 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  completeExpenseRequest,
+  completeSubstituteReceipt,
   completeWorkflowDocument,
   completeWorkflowTransaction,
   getNextExpenseRequestInfo,
@@ -378,6 +380,50 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
   }
 }
 
+// Closes out an approved expense request. Without this route, completeExpenseRequest
+// (implemented and unit-tested in local-server.logic.js) was never reachable
+// over HTTP, so an expense_request step inside a workflow transaction could
+// never leave "in_progress" — five of the six shipped templates contain one.
+// The server owns the status transition (approveExpenseRequest -> completed
+// only, enforced by appendExpenseRequestStatus); the client supplies only who
+// completed it, the same way handleWorkflowDocumentComplete already works.
+async function handleExpenseRequestComplete(requestNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await completeExpenseRequest({
+      rootDir,
+      requestNo,
+      completedBy: payload.completedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot complete expense request",
+    });
+  }
+}
+
+// substitute_receipt already reaches workflow-completed through the existing
+// approve/receive-stock routes (deriveChildWorkflowStatus's hybrid rule), so
+// this route is not load-bearing for the workflow the way the expense-request
+// one above is. Wired anyway for consistency: completeSubstituteReceipt is
+// implemented and unit-tested but was otherwise unreachable over HTTP.
+async function handleSubstituteReceiptComplete(receiptNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo,
+      completedBy: payload.completedBy,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error.message || "Cannot complete substitute receipt",
+    });
+  }
+}
+
 async function handleSubstituteReceiptReceiveStock(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -491,12 +537,17 @@ async function handleWorkflowDocumentSubmission(request, response) {
     const errors = validateWorkflowDocumentPayload(data);
     if (errors.length) throw new Error(errors.join(", "));
 
-    // documentNo, folderPath, status, statusHistory, completedAt, completedBy and
-    // createdAt are server-owned. The client may only ever *reference* an existing
-    // document by documentNo to edit it — every one of those fields is then loaded
-    // from the stored record here, never taken from the request body, so a client
-    // cannot forge an audit stamp, redirect the write outside its real folder, or
-    // resurrect an already-completed document by editing it.
+    // documentNo, folderPath, status, statusHistory, completedAt, completedBy,
+    // createdAt, evidenceFiles, rawFiles, transactionNo, workflowTemplateId and
+    // workflowStepId are server-owned. The client may only ever *reference* an
+    // existing document by documentNo to edit it — every one of those fields is
+    // then loaded from the stored record here, never taken from the request
+    // body, so a client cannot forge an audit stamp, redirect the write outside
+    // its real folder, resurrect an already-completed document by editing it,
+    // move it to a different workflow step/transaction with a crafted POST, or
+    // destroy its evidence files by omitting them from the edit payload (a save
+    // that carries no new uploads must leave existing evidence exactly as it
+    // was — see saveWorkflowDocument's merge of these against any new uploads).
     const requestedDocumentNo = String(data.documentNo ?? "").trim();
     const existingDocument = requestedDocumentNo
       ? await getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo)
@@ -516,6 +567,11 @@ async function handleWorkflowDocumentSubmission(request, response) {
         completedAt: existingDocument.payload?.completedAt ?? "",
         completedBy: existingDocument.payload?.completedBy ?? "",
         createdAt: existingDocument.payload?.createdAt ?? "",
+        evidenceFiles: existingDocument.payload?.evidenceFiles ?? {},
+        rawFiles: existingDocument.payload?.rawFiles ?? [],
+        transactionNo: existingDocument.payload?.transactionNo ?? "",
+        workflowTemplateId: existingDocument.payload?.workflowTemplateId ?? "",
+        workflowStepId: existingDocument.payload?.workflowStepId ?? "",
       };
     } else {
       const nextInfo = await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
@@ -562,6 +618,37 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
 function omitAbsoluteFolderPath(record) {
   const { absoluteFolderPath, ...rest } = record;
   return rest;
+}
+
+// Strips the server's own filesystem path off one pdfFiles/rawFiles entry.
+function omitAbsolutePathFromFileEntry(file) {
+  if (!file || typeof file !== "object") return file;
+  const { absolutePath, ...rest } = file;
+  return rest;
+}
+
+// Every pdfFiles/rawFiles entry attached to a workflow-transaction response —
+// both the transaction's own top-level pdfFiles (the packet) and each child
+// document's pdfFiles/rawFiles — still carries the server's absolute
+// filesystem path (listPdfFiles/listRawFiles attach it for on-disk lookups
+// elsewhere). omitAbsoluteFolderPath above already strips the *folder*-level
+// field for the workflow-document routes; this does the equivalent for every
+// file entry on the workflow-transaction GET/refresh/complete routes, without
+// touching the expense-request or substitute-receipt routes, which are out of
+// scope for this fix.
+function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
+  if (!record) return record;
+  return {
+    ...record,
+    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map(omitAbsolutePathFromFileEntry) : record.pdfFiles,
+    childDocuments: Array.isArray(record.childDocuments)
+      ? record.childDocuments.map((doc) => ({
+        ...doc,
+        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map(omitAbsolutePathFromFileEntry) : doc.pdfFiles,
+        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map(omitAbsolutePathFromFileEntry) : doc.rawFiles,
+      }))
+      : record.childDocuments,
+  };
 }
 
 async function handleWorkflowDocumentList(url, response) {
@@ -706,7 +793,7 @@ async function handleWorkflowTransactionGet(transactionNo, response) {
   try {
     const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
-    sendJson(response, 200, record);
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดธุรกรรมได้",
@@ -717,7 +804,7 @@ async function handleWorkflowTransactionGet(transactionNo, response) {
 async function handleWorkflowTransactionRefresh(transactionNo, response) {
   try {
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo });
-    sendJson(response, 200, result);
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถรีเฟรชธุรกรรมได้",
@@ -737,7 +824,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
       transactionNo,
       completedBy: body.completedBy,
     });
-    sendJson(response, 200, result);
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถปิดงานธุรกรรมได้",
@@ -1561,6 +1648,22 @@ const server = createServer(async (request, response) => {
       .replace("/api/expense-requests/", "")
       .replace("/approve", ""));
     await handleExpenseRequestApprove(requestNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/complete")) {
+    const requestNo = decodeURIComponent(url.pathname
+      .replace("/api/expense-requests/", "")
+      .replace("/complete", ""));
+    await handleExpenseRequestComplete(requestNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/complete")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/complete", ""));
+    await handleSubstituteReceiptComplete(receiptNo, request, response);
     return;
   }
 

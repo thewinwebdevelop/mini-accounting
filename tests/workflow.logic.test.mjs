@@ -67,6 +67,16 @@ test("template validation rejects unsupported document kinds", () => {
   }), ["ระบุรหัส template", "พบประเภทเอกสารที่ยังไม่รองรับ: unknown_doc"]);
 });
 
+test("template validation gives a Thai fallback message for a step with no documentKind at all, not the literal 'undefined'", () => {
+  const errors = validateWorkflowTemplate({
+    templateId: "bad_step",
+    name: "bad",
+    documentSteps: [{}],
+  });
+  assert.deepEqual(errors, ["พบประเภทเอกสารที่ยังไม่รองรับ: (ไม่ระบุประเภทเอกสาร)"]);
+  assert.ok(!errors.some((message) => message.includes("undefined")), "must never interpolate the literal 'undefined' into a Thai-only error message");
+});
+
 test("every default workflow template has the document steps specified by the design spec", () => {
   const expectedDocumentKindsByTemplateId = {
     stock_no_tax_invoice_company_bank: [

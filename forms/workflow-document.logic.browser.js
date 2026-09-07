@@ -160,6 +160,16 @@ window.addEventListener("DOMContentLoaded", () => {
   function markFieldPrefilled(fieldName, sourceDocumentNo) {
     const badge = form.querySelector(`[data-badge-for="${fieldName}"]`);
     if (!badge) return;
+    // Without a real source document number there is nothing honest to show
+    // — rendering the badge anyway used to print the literal string "นำมาจาก
+    // undefined" (a non-Thai token in a Thai-only UI) whenever a field got
+    // patched from a group whose `sources` entry was never set (e.g. the
+    // `parties` group folded in from a source that never actually supplied
+    // it). Hide the badge instead of guessing.
+    if (!sourceDocumentNo) {
+      badge.hidden = true;
+      return;
+    }
     badge.hidden = false;
     badge.textContent = `นำมาจาก ${sourceDocumentNo}`;
   }
