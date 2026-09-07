@@ -81,6 +81,21 @@ test("home page links to workflow group pages", async () => {
   assert.match(html, /href="\/workflow-templates"/);
 });
 
+test("main navigation links to workflow group pages", async () => {
+  const pagesWithWorkflow = [
+    "../forms/index.html",
+    "../forms/expense-request.html",
+    "../forms/expense-requests.html",
+    "../forms/substitute-receipt.html",
+    "../forms/substitute-receipts.html",
+  ];
+  for (const page of pagesWithWorkflow) {
+    const html = await readFile(new URL(page, import.meta.url), "utf8");
+    assert.match(html, /href="\/workflow-transactions"/, page);
+    assert.match(html, /href="\/workflow-templates"/, page);
+  }
+});
+
 test("hamburger menu popover stays inside short viewports", async () => {
   for (const page of pages) {
     const html = await readFile(new URL(`../forms/${page}`, import.meta.url), "utf8");
