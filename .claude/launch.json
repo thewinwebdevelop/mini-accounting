@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sweet-house",
+      "runtimeExecutable": "/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node",
+      "runtimeArgs": ["local-server.mjs"],
+      "port": 8787
+    }
+  ]
+}

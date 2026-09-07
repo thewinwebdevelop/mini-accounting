@@ -12,6 +12,7 @@
 
 ## Global Constraints
 
+> **Reorder note (fifth follow-up pass, 2026-09-07):** Tasks 1-6 are implemented and committed. The plan was originally layered strictly bottom-up: every `/api/workflow-*` route lived in one "HTTP Routes" task and every workflow page lived in one "UI" task, both positioned as tasks 10 and 11 of 12 — meaning nothing was reachable by an actual user until task ten of twelve. The product owner asked to reach a usable product much sooner, since the workflow template/transaction pages are the natural entry point to the whole feature and everything they need (`listWorkflowTemplates()`, `saveWorkflowTemplate()`, `getNextWorkflowTransactionInfo()`, `startWorkflowTransaction()`, `listWorkflowTransactions()`, `getWorkflowTransaction()`, `refreshWorkflowTransaction()`, `getWorkflowTransactionFile()`, `getWorkflowTransactionPrefill()`) was already committed by the end of Task 6. This pass splits the user-facing slice out of the former Tasks 10-11 into a new **Task 7 (Workflow Template And Transaction Routes)** and **Task 8 (Workflow Template And Transaction Pages)**, so the templates/transactions/checklist UI is usable by Task 8 of 12 instead of Task 11. Former Task 7 (Pass Workflow Context Into Existing Standalone Forms) is now Task 9, former Task 8 (Workflow Packet PDF) is now Task 10, former Task 9 (Workflow Completion And Sync) is now Task 11, and Task 12 (Navigation And Final Verification) is unchanged in position. The former Task 10 and Task 11 no longer exist as whole tasks — their leftover pieces (the packet-file download path and packet link, the `/complete`/`/sync-drive` routes and the complete/sync UI) are redistributed onto Task 10 and Task 11 respectively, which now register their own remaining routes and extend the page Task 8 already built, instead of deferring to a separate routes/UI task. Total task count stays 12. See the Handoff Notes and Self-Review for the full old-to-new task map.
 - Workflow templates define only ordered document kinds and a Google Drive sync toggle (`syncGoogleDrive`). There is no workflow-level Google Sheets sync and no `syncGoogleSheets` toggle anywhere in the template shape — see the D6 deviation note below.
 - Do not duplicate standalone document forms inside workflow pages.
 - Starting a workflow creates transaction numbers in the format `TXN-YYYY-MM-0001`.
@@ -19,7 +20,7 @@
 - Every child document created from workflow must store `transactionNo`, `workflowTemplateId`, and `workflowStepId`.
 - All standalone document types used in workflow must expose or normalize a `completed` state.
 - Workflow next-step unlocking is based on child document completion, not a separate workflow approval state.
-- Documents must be created in strict template order. A step after the first incomplete step is `blocked`, even when that later step's own child document already exists and independently reports `completed` (e.g. a document created out of band, or a stale/duplicate document number reused from another transaction). This is not only a UI affordance: the server must refuse to let a document be started for any step that is not the transaction's currently unlocked step. `deriveWorkflowProgress()` (Task 2) computes the block; the `POST /api/workflow-transactions/:transactionNo/start-document/:stepId` handler (Task 10) enforces it.
+- Documents must be created in strict template order. A step after the first incomplete step is `blocked`, even when that later step's own child document already exists and independently reports `completed` (e.g. a document created out of band, or a stale/duplicate document number reused from another transaction). This is not only a UI affordance: the server must refuse to let a document be started for any step that is not the transaction's currently unlocked step. `deriveWorkflowProgress()` (Task 2) computes the block; the `POST /api/workflow-transactions/:transactionNo/start-document/:stepId` handler (Task 7) enforces it, by calling `refreshWorkflowTransaction()` first and comparing the requested `stepId` against the freshly derived `currentStepId` (decisions D5 and D7, `.superpowers/sdd/progress.md`) — not the last-persisted value.
 - Existing standalone pages must still work without `transactionNo`.
 - Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`, Task 6) lets the user reuse `payee`, `purpose`, or `lines` from an earlier `completed` child document in the same transaction when opening a later one, per group, never all-or-nothing. It is built from one canonical transaction context (not N-by-N per-kind mappings) via a `toWorkflowContext(payload)` / `applyWorkflowContext(context, groups)` adapter pair per document kind. When two or more `completed` documents supply the same group, the most recently completed one wins that group; an earlier `completed` document only fills a group no later document supplied. Only documents whose workflow status (per `normalizeDocumentWorkflowStatus()`, Task 2) is `completed` are ever used as a source. The following fields are never copied by any group, on any document kind: `documentNo`, `documentDate` (a prefilled document always defaults its own date to today, never the source document's date), `status`, `statusHistory`, `completedAt`, `completedBy`, signature fields, and evidence/raw file lists — the canonical group shapes structurally have no room for these fields, so no adapter ever emits them. `goods_receipt` line **quantities** are additionally never prefilled (they must reflect goods actually received, so a short delivery stays visible) even though `goods_receipt` line descriptions and stock SKUs may be prefilled. Every prefilled value remains a fully editable default, never a lock, and the UI marks prefilled fields with the source document number that supplied them.
 - **Decision D10** (`.superpowers/sdd/progress.md`, user-approved, overrides the original Task 6 design): `expense_request` **does** source and receive the `lines` group, mapped line by line, because the product owner rejected the original single-seeded-placeholder-line design for `totals`. Sourcing: each `expenseLines` entry becomes one canonical line (`quantity` fixed at `"1"`, `unitCost` and `lineTotal` both set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`). Receiving: each canonical line becomes one `expenseLines` entry (`description` carried over verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, `vatAmount`/`withholdingTax` fixed at `"0.00"` — these six templates are all no-tax-invoice cases, so VAT is genuinely zero). The canonical `quantity`/`unitCost` have no target field on an expense line and are dropped. Every document kind can now source and receive all three tickable groups uniformly — there is no longer any kind-specific exclusion. **Consequence: `totals` is no longer a group at all**, tickable or otherwise — every kind (including `expense_request`, now that it derives totals from its own `expenseLines` the same way every other kind derives totals from its `lines`) recomputes its totals from its own lines on save, so an independently-carried `totals` value would only ever go stale. The canonical context and every group list in this plan carry exactly three groups: `payee`, `purpose`, `lines`. See Task 6 for the full per-kind field mapping.
@@ -36,52 +37,57 @@
 
 ## File Structure
 
-- Create `forms/workflow.logic.js`
+> **Reorder note:** the file list below is annotated with the task that now creates/first-modifies each file. `forms/workflow-templates.html`, `forms/workflow-transactions.html`, `forms/workflow-transaction.html`, and `forms/workflow.logic.browser.js` move from the old UI task (formerly 11) to the new **Task 8**; `local-server.mjs`'s workflow-transaction routes are split between **Task 7** (templates, transactions, refresh, start-document, prefill, transaction file download), **Task 10** (packet PDF — extends the file-download path Task 7 already wired by giving it real content), and **Task 11** (`/complete`, `/sync-drive` — new routes registered directly in the completion task instead of a separate routes task).
+
+- Create `forms/workflow.logic.js` (Task 1, extended Task 2)
   - Owns document type registry, default template seeds, template validation, transaction payload normalization, transaction progress derivation, child document adapters, file naming, and markdown formatting. Does not produce a Sheets row — see D6.
-- Create `forms/workflow-templates.html`
+- Create `forms/workflow-templates.html` (Task 8)
   - Lets the user create/edit workflow templates by choosing document kinds in order and toggling Google Drive sync.
-- Create `forms/workflow-transactions.html`
+- Create `forms/workflow-transactions.html` (Task 8)
   - Lets the user choose a template, start a transaction, and list existing transactions.
-- Create `forms/workflow-transaction.html`
+- Create `forms/workflow-transaction.html` (Task 8; extended by Task 10 with the packet PDF link and by Task 11 with the complete-transaction button and Drive sync section)
   - Shows one transaction's checklist/progress and links into standalone document forms.
-- Create `forms/workflow.logic.browser.js`
+- Create `forms/workflow.logic.browser.js` (Task 8; extended by Task 10 and Task 11)
   - Browser controller shared by workflow template/list/detail pages.
-- Create `forms/workflow-document.logic.js`
+- Create `forms/workflow-document.logic.js` (Task 4)
   - Owns lightweight standalone document kinds that do not yet have dedicated pages: purchase order, payment voucher, cash spend declaration, payee acknowledgement, and goods receipt. Never touches `forms/inventory.logic.js` or inventory stock movements.
-- Create `forms/workflow-document.html`
+- Create `forms/workflow-document.html` (Task 4)
   - Generic standalone form for lightweight workflow-compatible documents; it must also work without workflow context.
-- Create `forms/workflow-document.logic.browser.js`
+- Create `forms/workflow-document.logic.browser.js` (Task 4)
   - Browser controller for the generic standalone document shell.
-- Create `forms/workflow-return-link.browser.js`
+- Create `forms/workflow-return-link.browser.js` (Task 4)
   - Tiny, dependency-free helper exposing `sanitizeWorkflowReturnTo(value)` (validates the value is a same-origin relative path). Loaded via its own `<script>` tag by `forms/expense-request.html`, `forms/substitute-receipt.html`, and `forms/workflow-document.html` before their own inline/controller scripts run, so all three pages validate `returnTo` the same way without each hand-rolling the check or creating a dependency on another page's browser-logic file.
-- Create `forms/workflow-prefill.logic.js`
+- Create `forms/workflow-prefill.logic.js` (Task 6)
   - Cross-document prefill (decision D8, `.superpowers/sdd/progress.md`, revised by decision D10): one canonical transaction context plus a `toWorkflowContext(payload)`/`applyWorkflowContext(context, groups)` adapter pair per document kind (14 functions for the 7 kinds), `buildWorkflowPrefillContext()` implementing the most-recently-completed-wins precedence rule, and `RECEIVABLE_PREFILL_GROUPS` stating which of `payee`/`purpose`/`lines` each kind can receive (D10: uniformly all three, for every kind — `totals` is no longer a group). Pure — no filesystem, no network, no bare `new Date()`. Same CommonJS/`window` dual-export tail as the other `forms/*.logic.js` modules, loadable client-side like `forms/workflow-return-link.browser.js`.
-- Create `scripts/generate_workflow_packet_pdf.py`
+- Create `scripts/generate_workflow_packet_pdf.py` (Task 10)
   - Generates a transaction packet/index PDF that links/summarizes child document PDFs and raw files.
-- Create `scripts/generate_workflow_document_pdf.py`
+- Create `scripts/generate_workflow_document_pdf.py` (Task 4)
   - Generates PDFs for lightweight standalone documents.
-- Modify `forms/local-server.logic.js`
+- Modify `forms/local-server.logic.js` (Task 5, extended by Task 6, Task 10, Task 11)
   - Add workflow template storage, workflow transaction storage, sequence generation, child document lookup, progress refresh, packet generation, workflow transaction completion, auto/manual Drive sync functions, cross-document prefill orchestration (`getWorkflowTransactionPrefill()`, Task 6), and exported helpers. No Sheets sync function — see D6.
-- Modify `local-server.mjs`
-  - Add static routes and API handlers for templates, transactions, transaction completion, transaction sync (Drive only), transaction prefill (`GET .../prefill`, Task 10 — see Task 6 for why route wiring is deferred there), and packet files.
-- Modify `forms/expense-request.logic.js`
+- Modify `local-server.mjs` (Task 7, extended by Task 8, Task 10, Task 11)
+  - Task 7 adds static-independent API handlers for templates, transactions, refresh, start-document, transaction prefill (`GET .../prefill`), and the transaction file-download route. Task 8 adds the three static page routes (`/workflow-templates`, `/workflow-transactions`, `/workflow-transaction`) once the pages exist to serve. Task 10 gives the already-wired file-download route something real to serve (the packet PDF) and adds its download-happy-path test. Task 11 adds the `/complete` and `/sync-drive` API handlers.
+- Modify `forms/expense-request.logic.js` (Task 3)
   - Preserve workflow relation fields and add `completed` status support.
-- Modify `forms/substitute-receipt.logic.js`
+- Modify `forms/substitute-receipt.logic.js` (Task 3)
   - Preserve workflow relation fields and add/normalize `completed` status support.
-- Modify `forms/expense-request.html` and `forms/substitute-receipt.html`
-  - Read workflow query params, include them in saved payloads, show a return link back to the workflow transaction validated through the shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, Task 4) before it is ever assigned to `href`, and show the cross-document prefill banner (Task 6, wired in Task 7) when a non-empty prefill context is available.
-- Modify `forms/workflow-document.html` and `forms/workflow-document.logic.browser.js`
-  - Show the same cross-document prefill banner (Task 4, depends on the Task 6/Task 10 endpoint).
+- Modify `forms/expense-request.html` and `forms/substitute-receipt.html` (Task 9)
+  - Read workflow query params, include them in saved payloads, show a return link back to the workflow transaction validated through the shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, Task 4) before it is ever assigned to `href`, and show the cross-document prefill banner (Task 6 logic, wired to HTTP already in Task 7, banner UI added here in Task 9).
+- Modify `forms/workflow-document.html` and `forms/workflow-document.logic.browser.js` (Task 4; verified end to end once Task 7 lands)
+  - Show the same cross-document prefill banner (Task 4 UI; Task 6 provides the logic and Task 7 provides the live HTTP endpoint and end-to-end verification).
 - Modify list pages only where useful to show transaction badges.
-- Create `tests/workflow.logic.test.mjs`
-- Create `tests/workflow-api.test.mjs`
-- Create `tests/workflow-pages.html.test.mjs`
-- Create `tests/workflow-document.logic.test.mjs`
-- Create `tests/workflow-document.html.test.mjs`
-- Create `tests/workflow-prefill.logic.test.mjs`
-- Create `scripts/test_workflow_document_pdf.py`
-- Create `scripts/test_workflow_packet_pdf.py`
-- Modify `scripts/test.sh` to register each new Python PDF test as it is created (Task 4 adds `test_workflow_document_pdf`, Task 8 adds `test_workflow_packet_pdf` to the same command). Task 6 (Cross-Document Prefill) adds no Python test and does not touch `scripts/test.sh`.
+- Modify `forms/index.html` (Task 8; other major pages follow in Task 12)
+  - Add the two workflow menu links (`/workflow-transactions`, `/workflow-templates`) so the feature is reachable from the home page as soon as Task 8 lands.
+- Create `tests/workflow.logic.test.mjs` (Task 1, extended Task 2)
+- Create `tests/workflow-api.test.mjs` (Task 5; extended by Task 6, Task 7, Task 10, Task 11)
+- Create `tests/workflow-pages.html.test.mjs` (Task 8; extended by Task 10, Task 11)
+- Create `tests/workflow-document.logic.test.mjs` (Task 4)
+- Create `tests/workflow-document.html.test.mjs` (Task 4)
+- Create `tests/workflow-prefill.logic.test.mjs` (Task 6)
+- Create `tests/navigation.html.test.mjs` (Task 8, with the `index.html` assertion only; extended by Task 12 with the remaining major pages)
+- Create `scripts/test_workflow_document_pdf.py` (Task 4)
+- Create `scripts/test_workflow_packet_pdf.py` (Task 10)
+- Modify `scripts/test.sh` to register each new Python PDF test as it is created (Task 4 adds `test_workflow_document_pdf`, Task 10 adds `test_workflow_packet_pdf` to the same command). Tasks 6, 7, 8, and 9 add no Python test and do not touch `scripts/test.sh`.
 
 ---
 
@@ -854,7 +860,7 @@ function sanitizeWorkflowReturnTo(value) {
 }
 ```
 
-This is the single implementation used by `forms/workflow-document.html` (this task), `forms/expense-request.html`, and `forms/substitute-receipt.html` (Task 7) — none of those pages re-implement the check. It has no dependency on any other browser-logic file, so loading it from expense-request/substitute-receipt does not pull in `workflow-document.logic.browser.js` or vice versa.
+This is the single implementation used by `forms/workflow-document.html` (this task), `forms/expense-request.html`, and `forms/substitute-receipt.html` (Task 9) — none of those pages re-implement the check. It has no dependency on any other browser-logic file, so loading it from expense-request/substitute-receipt does not pull in `workflow-document.logic.browser.js` or vice versa.
 
 - [ ] **Step 9: Create generic standalone HTML page**
 
@@ -881,7 +887,7 @@ test("workflow document shell validates returnTo before showing the return link"
 
 - [ ] **Step 10: Add the cross-document prefill banner**
 
-Decision D8 (`.superpowers/sdd/progress.md`, Task 6). When the page is opened with both `transactionNo` and `workflowStepId` present, the boot script calls `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=${documentKind}&stepId=${workflowStepId}` (Task 6's `getWorkflowTransactionPrefill()`; the route itself is wired in Task 10, Step 5b). **This is a forward reference**: Task 4 runs before Task 6 and Task 10 in execution order, so until those land, this fetch 404s and the banner simply never shows — the same harmless-until-later-tasks-land pattern this page already uses for `transactionNo`/`workflowStepId` themselves, which do nothing useful until Task 11 builds the transaction page that sets them. Task 4's own tests only assert on static markup/script content, so this forward reference does not block Task 4's tests from passing.
+Decision D8 (`.superpowers/sdd/progress.md`, Task 6). When the page is opened with both `transactionNo` and `workflowStepId` present, the boot script calls `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=${documentKind}&stepId=${workflowStepId}` (Task 6's `getWorkflowTransactionPrefill()`; the route itself is wired in Task 7, Step 5). **This is a forward reference**: Task 4 runs before Task 6 and Task 7 in execution order, so until those land, this fetch 404s and the banner simply never shows — the same harmless-until-later-tasks-land pattern this page already uses for `transactionNo`/`workflowStepId` themselves, which do nothing useful until Task 8 builds the transaction page that sets them. Task 4's own tests only assert on static markup/script content, so this forward reference does not block Task 4's tests from passing. Once Task 7 lands (only three tasks later, not seven), add an end-to-end check confirming this banner actually appears: with a completed prior-step document in the same transaction, load `forms/workflow-document.html` behavior through `fetchWorkflowPrefill()` against a live server and assert the fetched `availableGroups` is non-empty — see Task 7, Step 7.
 
 Load `forms/workflow-prefill.logic.js` via `<script src="./workflow-prefill.logic.js"></script>` — placed after `workflow-return-link.browser.js` and before this page's own controller script — so `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups()` is available client-side without duplicating any field-mapping logic.
 
@@ -898,7 +904,7 @@ Markup:
 
 Behavior in `forms/workflow-document.logic.browser.js`:
 
-- `fetchWorkflowPrefill({ transactionNo, documentKind, stepId })` calls the endpoint above and returns `null` on any error (network failure, 404 before Task 10 lands, or a 400 from a step mismatch) instead of throwing, so a missing/not-yet-built endpoint never blocks the form from loading.
+- `fetchWorkflowPrefill({ transactionNo, documentKind, stepId })` calls the endpoint above and returns `null` on any error (network failure, 404 before Task 7 lands, or a 400 from a step mismatch) instead of throwing, so a missing/not-yet-built endpoint never blocks the form from loading.
 - `renderPrefillBanner(prefill)` is only called when `prefill.availableGroups.length > 0`; it renders one checkbox per group in `availableGroups` (Thai labels: `payee` → "ผู้รับเงิน/คู่ค้า", `purpose` → "วัตถุประสงค์", `lines` → "รายการ" — three groups total, per decision D10; there is no `totals` group), each labeled with its source document number from `prefill.sources[group]` (e.g. "ผู้รับเงิน/คู่ค้า (จาก PO-2026-09-0001)"), and un-hides `#workflowPrefillBanner`.
 - Clicking `#workflowPrefillApply` reads the checked groups, calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(prefill.context, documentKind, checkedGroups)`, merges the returned patch onto the (still-blank) form fields, and visibly marks each populated field with its source document number (a small caption/badge next to the field, not a `readonly`/`disabled` attribute — prefilled values stay fully editable, per the never-a-lock rule in Global Constraints).
 - Clicking `#workflowPrefillDismiss` hides the banner without touching any field.
@@ -919,7 +925,7 @@ test("workflow document shell shows a prefill banner with apply/dismiss actions"
 
 - [ ] **Step 11: Add this task's test to `scripts/test.sh`**
 
-`test_workflow_packet_pdf` is not created until Task 8 — only register the Python test this task actually creates, so `./scripts/test.sh` keeps passing for Tasks 4 through 7 (Task 6, Cross-Document Prefill, and Task 7, Pass Workflow Context Into Existing Standalone Forms, add no Python test of their own):
+`test_workflow_packet_pdf` is not created until Task 10 — only register the Python test this task actually creates, so `./scripts/test.sh` keeps passing for Tasks 4 through 9 (Task 6 Cross-Document Prefill, Task 7 Workflow Template And Transaction Routes, Task 8 Workflow Template And Transaction Pages, and Task 9 Pass Workflow Context Into Existing Standalone Forms all add no Python test of their own):
 
 ```bash
 (cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_document_pdf -v)
@@ -1118,7 +1124,7 @@ Expense-request and substitute-receipt records loaded from `findSubmittedExpense
 
 - [ ] **Step 7: Implement refresh**
 
-`refreshWorkflowTransaction()` loads the transaction, loads child documents, calls `deriveWorkflowProgress()`, rewrites JSON/markdown, regenerates packet PDF after Task 8, and returns the updated transaction.
+`refreshWorkflowTransaction()` loads the transaction, loads child documents, calls `deriveWorkflowProgress()`, rewrites JSON/markdown, regenerates packet PDF after Task 10, and returns the updated transaction.
 
 - [ ] **Step 8: Implement `getWorkflowTransactionFile()`**
 
@@ -1145,7 +1151,9 @@ async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fil
 }
 ```
 
-Only `pdf` is an allowed `section` for a transaction folder. The transaction directory (Global Constraints, `documents/YYYY/MM/workflow-transactions/TXN-.../`) has three subfolders: `data/` (raw `workflow-transaction.json`, read through `getWorkflowTransaction()`/the JSON API), `working-md/` (the human-readable `workflow-summary.md` source, same rationale), and `pdf/` (the packet PDF generated in Task 8 — the only artifact meant to be downloaded by filename through this route). Do not add `data` or `working-md` to the allowed set: unlike `raw/` on expense-request, substitute-receipt, or lightweight-document folders, nothing in `data/`/`working-md/` is an uploaded or generated artifact meant for direct download — it is server-authored JSON/markdown already reachable through its own read path, so serving it by arbitrary filename would only add attack surface with no benefit.
+Only `pdf` is an allowed `section` for a transaction folder. The transaction directory (Global Constraints, `documents/YYYY/MM/workflow-transactions/TXN-.../`) has three subfolders: `data/` (raw `workflow-transaction.json`, read through `getWorkflowTransaction()`/the JSON API), `working-md/` (the human-readable `workflow-summary.md` source, same rationale), and `pdf/` (the packet PDF generated in Task 10 — the only artifact meant to be downloaded by filename through this route). Do not add `data` or `working-md` to the allowed set: unlike `raw/` on expense-request, substitute-receipt, or lightweight-document folders, nothing in `data/`/`working-md/` is an uploaded or generated artifact meant for direct download — it is server-authored JSON/markdown already reachable through its own read path, so serving it by arbitrary filename would only add attack surface with no benefit.
+
+Note for Task 7, which is the task that registers the HTTP route calling this function: at the time Task 7 runs, no task has generated a packet PDF yet (that is Task 10), so `pdf/` is legitimately always empty for a brand-new transaction. Task 7's own HTTP-level test therefore only proves traversal-rejection and a clean 404 for a plausible-but-nonexistent filename — it must not assert a successful download of packet content that does not exist yet. Task 10 adds the happy-path download test once it actually produces a file for this route to serve.
 
 - [ ] **Step 9: Export workflow functions**
 
@@ -1155,7 +1163,7 @@ Add all functions listed in this task's interface to `module.exports`.
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
 
-Expected: PASS, except packet-related assertions should wait until Task 8, and prefill-related assertions should wait until Task 6.
+Expected: PASS, except packet-related assertions should wait until Task 10, and prefill-related assertions should wait until Task 6.
 
 - [ ] **Step 11: Commit**
 
@@ -1172,7 +1180,7 @@ git commit -m "feat: store workflow templates and transactions"
 
 > **Deviation note (D8):** Cross-document prefill does not appear in `docs/superpowers/specs/2026-09-06-fixed-accounting-workflows-design.md` at all — it is a pure product-owner addition on top of the spec's existing standalone-document-reuse architecture. Nothing in the spec conflicts with it, so this is an addition, not a deviation from stated spec text. The spec file is left unedited, consistent with how this plan already treats D6.
 
-> **Revision note (D10):** the first cut of this task made `expense_request` the only kind that could receive a `totals` group (applied as one seeded placeholder expense line) and the only kind that could never source or receive `lines`. The product owner rejected that in favor of `expense_request` participating in `lines` like every other kind, mapped line by line in both directions. This revision applies that ruling: `totals` is gone as a group entirely, and the field table, `RECEIVABLE_PREFILL_GROUPS`, the adapters, and the tests below all reflect the line-by-line mapping. Everything else about this task (the canonical-context design, the precedence rule, the never-auto-copied list, the deferred route wiring in Task 10) is unchanged.
+> **Revision note (D10):** the first cut of this task made `expense_request` the only kind that could receive a `totals` group (applied as one seeded placeholder expense line) and the only kind that could never source or receive `lines`. The product owner rejected that in favor of `expense_request` participating in `lines` like every other kind, mapped line by line in both directions. This revision applies that ruling: `totals` is gone as a group entirely, and the field table, `RECEIVABLE_PREFILL_GROUPS`, the adapters, and the tests below all reflect the line-by-line mapping. Everything else about this task (the canonical-context design, the precedence rule, the never-auto-copied list, the deferred route wiring in Task 7) is unchanged.
 
 **Design:** one canonical transaction context, not N-by-N pairwise mappings. Seven document kinds would mean 42 mappings; instead each kind gets exactly two small adapters — `toWorkflowContext(payload)` and `applyWorkflowContext(context, groups)` — for 14 functions total, growing linearly as new kinds are added.
 
@@ -1190,7 +1198,7 @@ Canonical shape, reconciled against the real payload builders (`buildExpensePayl
 
 There is deliberately no `totals` group (D10). Every kind — `expense_request` included, now that it maps line-for-line like the rest — recomputes its own totals from its own lines when it saves (`calculateExpenseTotals()` for `expense_request`, the equivalent line-sum for every other kind), so an independently-carried total would only ever go stale between prefill and save. A caller that wants to *show* a reference total (e.g. "the source document totalled 1,070.00 บาท") can already do so today by looking up the source document via `sources.lines` and reading its own stored `totals` — nothing in this task needs to duplicate that number into the canonical context to make it displayable.
 
-`payee`, `purpose`, `lines` are the three groups the user ticks independently (checkboxes in the UI, Task 4/Task 7). `parties` and `sources` are **not** user-tickable: `parties` (requester name/role) always rides along automatically whenever a source document supplies it, regardless of which of the three boxes the user checks — it is low-friction metadata about who is asking, not binding document content, so there is no reason to gate it behind a checkbox. `sources` is metadata for the UI (which document number supplied which group) and is always present.
+`payee`, `purpose`, `lines` are the three groups the user ticks independently (checkboxes in the UI, Task 4/Task 9). `parties` and `sources` are **not** user-tickable: `parties` (requester name/role) always rides along automatically whenever a source document supplies it, regardless of which of the three boxes the user checks — it is low-friction metadata about who is asking, not binding document content, so there is no reason to gate it behind a checkbox. `sources` is metadata for the UI (which document number supplied which group) and is always present.
 
 Field-shape reconciliation, per kind — this is the actual field mapping the adapters below implement:
 
@@ -1238,7 +1246,7 @@ const RECEIVABLE_PREFILL_GROUPS = {
 - Produces (in `forms/local-server.logic.js`): `getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId })` -> `{ context, sources, availableGroups }`
 - Consumes: `normalizeDocumentWorkflowStatus` (Task 2, `forms/workflow.logic.js`)
 - Consumes: `findWorkflowChildDocuments`, `getWorkflowTransaction` (Task 5, `forms/local-server.logic.js`)
-- **Does not** register an HTTP route. `GET /api/workflow-transactions/:transactionNo/prefill` is added in Task 10 (Step 5b), alongside every other `/api/workflow-transactions/...` route, for the same reason Task 5's storage functions and Task 8's packet generator also wait for Task 10 to get their routes — Task 10 is the single place the plan wires the whole workflow-transaction HTTP surface. This task's own tests call `getWorkflowTransactionPrefill()` directly, the same way Task 5's tests call its storage functions directly before Task 10 exists.
+- **Does not** register an HTTP route. `GET /api/workflow-transactions/:transactionNo/prefill` is added in Task 7 (Step 5), alongside every other `/api/workflow-transactions/...` route this plan can wire before a page needs it — Task 7 is the single place the plan wires the user-facing workflow-transaction HTTP surface. This lands two tasks after this one, not the five-plus tasks it would have taken in the original bottom-up ordering (see the reorder note at the top of Global Constraints). This task's own tests call `getWorkflowTransactionPrefill()` directly, the same way Task 5's tests call its storage functions directly before Task 7 exists.
 
 - [ ] **Step 1: Write failing adapter and precedence tests**
 
@@ -1651,7 +1659,528 @@ git commit -m "feat: build cross-document prefill context for workflow transacti
 
 ---
 
-### Task 7: Pass Workflow Context Into Existing Standalone Forms
+### Task 7: Workflow Template And Transaction Routes
+
+**Why now (reorder rationale):** Tasks 1-6 already committed every storage/derivation function this task's routes call: `listWorkflowDocumentTypes()`, `listWorkflowTemplates()`, `saveWorkflowTemplate()`, `getNextWorkflowTransactionInfo()`, `startWorkflowTransaction()`, `listWorkflowTransactions()`, `getWorkflowTransaction()`, `refreshWorkflowTransaction()`, `getWorkflowTransactionFile()` (Task 5), and `getWorkflowTransactionPrefill()` (Task 6). Only the HTTP routes and the pages are missing, and until they exist nothing in this feature is reachable by an actual user. This task wires the routes; Task 8 builds the pages in front of them. Routes for functionality that does not exist yet are registered later, by the task that builds that functionality: transaction completion/sync (`/complete`, `/sync-drive`) is new Task 11's job, not this task's. The packet PDF this task's file-download route will eventually serve is not generated until new Task 10 — see Step 6.
+
+**Files:**
+- Modify: `local-server.mjs`
+- Test: `tests/workflow-api.test.mjs`
+
+**Interfaces:**
+- Consumes server logic from Task 5 (storage) and Task 6 (prefill).
+- Produces API routes:
+  - `GET /api/workflow-document-types`
+  - `GET /api/workflow-templates`, `POST /api/workflow-templates`
+  - `GET /api/workflow-transactions/next?accountingMonth=YYYY-MM`
+  - `GET /api/workflow-transactions`, `POST /api/workflow-transactions`
+  - `GET /api/workflow-transactions/:transactionNo`
+  - `POST /api/workflow-transactions/:transactionNo/refresh`
+  - `POST /api/workflow-transactions/:transactionNo/start-document/:stepId`
+  - `GET /api/workflow-transactions/:transactionNo/prefill?documentKind=...&stepId=...`
+  - `GET /api/workflow-transactions/:transactionNo/files/:section/:fileName`
+
+- [ ] **Step 1: Write failing static route tests**
+
+```js
+import { readFile } from "node:fs/promises";
+
+test("local server exposes workflow template and transaction routes", async () => {
+  const source = await readFile(new URL("../local-server.mjs", import.meta.url), "utf8");
+  assert.match(source, /\/api\/workflow-document-types/);
+  assert.match(source, /\/api\/workflow-templates/);
+  assert.match(source, /\/api\/workflow-transactions\/next/);
+  assert.match(source, /\/api\/workflow-transactions/);
+  assert.match(source, /start-document/);
+  assert.match(source, /refreshWorkflowTransaction/);
+  assert.match(source, /getWorkflowTransactionPrefill/);
+  assert.match(source, /\/prefill/);
+  assert.match(source, /getWorkflowTransactionFile/);
+  // Completion/sync routes are new Task 11's job -- they do not exist yet.
+  assert.doesNotMatch(source, /completeWorkflowTransaction/);
+  assert.doesNotMatch(source, /syncWorkflowTransactionToDrive/);
+  assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
+  assert.doesNotMatch(source, /\/sync-sheets/);
+});
+
+test("starting a document for a locked step is refused server-side", async () => {
+  // Decision D5 (.superpowers/sdd/progress.md): the strict document order is
+  // enforced by the server, not only hidden/disabled in the UI. Decision D7
+  // additionally requires the handler to call refreshWorkflowTransaction()
+  // first and compare stepId against the freshly derived currentStepId, not
+  // a stale persisted value -- so a child document completed moments earlier
+  // unlocks the next step without the caller pressing refresh first. Attempting
+  // start-document on any step other than the freshly-derived current step
+  // must be refused with a JSON error in the existing sendJson() style, and
+  // must not return a document start URL. Follows the
+  // spawn/waitForServer/requestJsonResponse pattern already used in
+  // tests/substitute-receipt-api.test.mjs.
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19195;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบล็อกลำดับเอกสาร",
+      }),
+    });
+    // txn.currentStepId is "step-001" (purchase_order); step-002 (substitute_receipt) is locked.
+    assert.equal(txn.currentStepId, "step-001");
+
+    const { response, body } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-002`, {
+      method: "POST",
+    });
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 400);
+    assert.match(body.error, /ยังไม่ถึงลำดับ|ลำดับเอกสาร|ขั้นตอนนี้ยังไม่เปิด/);
+    assert.equal(body.url, undefined);
+
+    // The unlocked step must still be startable.
+    const { response: okResponse } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, {
+      method: "POST",
+    });
+    assert.equal(okResponse.ok, true);
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+This test needs the same `spawn`, `waitForServer`, and `requestJsonResponse` helpers already present at the top of `tests/substitute-receipt-api.test.mjs` — reuse that exact pattern in `tests/workflow-api.test.mjs` (add the helpers if this test file doesn't already have them from an earlier task) rather than inventing a second convention for spawning the server.
+
+- [ ] **Step 2: Run tests to verify failure**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
+
+Expected: FAIL until routes are added.
+
+- [ ] **Step 3: Add imports**
+
+Extend `require("./forms/local-server.logic.js")` destructuring with:
+
+```js
+getWorkflowTransactionFile,
+getNextWorkflowTransactionInfo,
+getWorkflowTransaction,
+listWorkflowDocumentTypes,
+listWorkflowTemplates,
+listWorkflowTransactions,
+refreshWorkflowTransaction,
+saveWorkflowTemplate,
+startWorkflowTransaction,
+getWorkflowTransactionPrefill,
+```
+
+Do not import `completeWorkflowTransaction` or `syncWorkflowTransactionToDrive` here — they do not exist until Task 11. Do not import `syncWorkflowTransactionToSheets` anywhere — it never exists (decision D6).
+
+- [ ] **Step 4: Add API handlers**
+
+Follow existing `sendJson()` error style. Add handlers for: listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, and reading a transaction's cross-document prefill context (`getWorkflowTransactionPrefill`, Task 6).
+
+For `start-document`, enforce the strict-order rule per decisions D5 and D7 (`.superpowers/sdd/progress.md`) before building the start URL:
+
+```js
+function buildWorkflowDocumentStartUrl(transaction, step) {
+  const route = DOCUMENT_TYPE_DEFINITIONS[step.documentKind].route;
+  const params = new URLSearchParams({
+    transactionNo: transaction.transactionNo,
+    workflowTemplateId: transaction.templateSnapshot.templateId,
+    workflowStepId: step.stepId,
+    returnTo: `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`,
+  });
+  return `${route}?${params.toString()}`;
+}
+```
+
+The `start-document` handler must:
+
+1. Call `refreshWorkflowTransaction({ rootDir, transactionNo })` **first** — decision D7: a child document completed moments earlier should unlock the next step without the caller pressing refresh separately, so the handler always re-derives progress from the current child-document states before deciding anything. 404 if the transaction does not exist.
+2. Look up the requested step in the *refreshed* `transaction.steps` by `stepId`; 404 if the step doesn't exist on this transaction/template.
+3. Compare `stepId` against the refreshed transaction's `currentStepId` — the value this same call to `refreshWorkflowTransaction()` just computed, never a previously-persisted value. If they don't match, respond with `sendJson(res, 400, { error: "ยังไม่ถึงลำดับเอกสารนี้ ต้องทำเอกสารก่อนหน้าให้เสร็จก่อน" })` (or an equivalent Thai message) and return — do not build or return a start URL.
+4. Otherwise build and return `{ url: buildWorkflowDocumentStartUrl(transaction, step) }`.
+
+This refusal is the server-side half of decision D5: a client that bypasses the UI's disabled buttons and calls `start-document` directly for a locked step must still be turned away. Decision D7 is why the comparison is against a value derived fresh in this same request, not the transaction's last-persisted `currentStepId`.
+
+- [ ] **Step 5: Add the prefill GET route**
+
+`GET /api/workflow-transactions/:transactionNo/prefill?documentKind=<kind>&stepId=<stepId>` is registered here, as soon as both the storage layer (Task 5) and the prefill logic (Task 6) it calls exist:
+
+```js
+if (req.method === "GET" && pathname.match(/^\/api\/workflow-transactions\/[^/]+\/prefill$/)) {
+  const transactionNo = decodeURIComponent(pathname.split("/")[3]);
+  const documentKind = url.searchParams.get("documentKind") || "";
+  const stepId = url.searchParams.get("stepId") || "";
+  try {
+    const prefill = await getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId });
+    return sendJson(res, 200, prefill);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
+  }
+}
+```
+
+Add a failing-then-passing test to `tests/workflow-api.test.mjs` using the same `spawn`/`waitForServer`/`requestJsonResponse` helpers as the `start-document` test above:
+
+```js
+test("GET .../prefill returns context, sources, and availableGroups for the requested step", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19196;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบ prefill ผ่าน HTTP",
+      }),
+    });
+
+    const { body: startResult } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, {
+      method: "POST",
+    });
+    assert.ok(startResult.url);
+
+    const { response, body: prefill } = await requestJsonResponse(
+      baseUrl,
+      `/api/workflow-transactions/${txn.transactionNo}/prefill?documentKind=substitute_receipt&stepId=step-002`,
+    );
+    assert.equal(response.ok, true);
+    assert.deepEqual(prefill.availableGroups, []);
+    assert.deepEqual(prefill.sources, {});
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+(No completed sibling document exists yet in this test, so `availableGroups`/`sources` are empty — this test only proves the route is wired end-to-end. Step 7 below adds a second test with a real completed sibling document, to prove the prefill banner Task 4 already built has real data to show.)
+
+- [ ] **Step 6: Add the transaction file-download route**
+
+`GET /api/workflow-transactions/:transactionNo/files/:section/:fileName` calls `getWorkflowTransactionFile({ rootDir, transactionNo, section, fileName })` (Task 5) and streams `absolutePath`, returning 404 on any thrown error — same shape as the existing expense-request/substitute-receipt/workflow-document file routes.
+
+**Reality check:** `getWorkflowTransactionFile()` only allows `section: "pdf"`, and no task before Task 10 ever writes anything into a transaction's `pdf/` folder — the packet PDF does not exist yet. So at this point in the plan, this route can only ever legitimately 404 (or reject a traversal attempt); it has no successful-download case to test yet. Write the test accordingly, not against a file no task has produced:
+
+```js
+test("GET .../files/:section/:fileName rejects traversal and 404s for a file that does not exist yet", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19197;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "director_expense_cash",
+        accountingMonth: "2026-09",
+        title: "ทดสอบไฟล์ transaction",
+      }),
+    });
+
+    const traversal = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/..%2Fdata%2Fworkflow-transaction.json`);
+    assert.equal(traversal.status, 404);
+
+    // No packet PDF exists until Task 10 generates one -- this is the
+    // correct, reality-matching outcome for this task, not a bug to work
+    // around.
+    const missing = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/99_${encodeURIComponent("ชุดรวมเอกสาร")}_workflow-transaction.pdf`);
+    assert.equal(missing.status, 404);
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+- [ ] **Step 7: Verify the cross-document prefill banner end to end**
+
+Task 4 already added a prefill banner to `forms/workflow-document.html` (Task 9 later adds the same banner to `forms/expense-request.html`/`forms/substitute-receipt.html`); until now its fetch to `GET /api/workflow-transactions/:transactionNo/prefill` has always 404'd, so the banner has never actually appeared. Now that this task wires the route, prove the whole path works with real data — not just that the route responds, but that it responds with something the banner will render:
+
+```js
+test("GET .../prefill returns real availableGroups once an earlier step has a completed document", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19198;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบ banner ปรากฏจริง",
+      }),
+    });
+
+    await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, { method: "POST" });
+
+    const { body: po } = await requestJsonResponse(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: JSON.stringify({
+        documentKind: "purchase_order",
+        accountingMonth: "2026-09",
+        documentDate: "2026-09-07",
+        title: "สั่งซื้อวัสดุ",
+        requesterName: "คุณต้า",
+        payeeName: "ร้านค้า A",
+        businessPurpose: "ซื้อวัสดุสำนักงาน",
+        lines: [{ description: "กระดาษ A4", quantity: "10", unitCost: "100.00" }],
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.templateSnapshot.templateId,
+        workflowStepId: txn.steps[0].stepId,
+      }),
+    });
+    await requestJsonResponse(baseUrl, `/api/workflow-documents/purchase_order/${po.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+
+    const { response, body: prefill } = await requestJsonResponse(
+      baseUrl,
+      `/api/workflow-transactions/${txn.transactionNo}/prefill?documentKind=substitute_receipt&stepId=${txn.steps[1].stepId}`,
+    );
+    assert.equal(response.ok, true);
+    // This is what forms/workflow-document.html's banner has been fetching
+    // and silently discarding since Task 4 -- it now has real content to show.
+    assert.ok(prefill.availableGroups.length > 0);
+    assert.equal(prefill.sources.payee, po.documentNo);
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+Match the exact `POST /api/workflow-documents` and `.../complete` request/response shapes already established by `tests/workflow-document-api.test.mjs` (Task 4) — this test reuses Task 4's existing lightweight-document HTTP surface, it does not invent a new one.
+
+- [ ] **Step 8: Run tests**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add local-server.mjs tests/workflow-api.test.mjs
+git commit -m "feat: expose workflow template and transaction routes"
+```
+
+---
+
+### Task 8: Workflow Template And Transaction Pages
+
+**Why now (reorder rationale):** Every route this page needs already exists as of Task 7. This task is what actually makes the feature usable: a real user can create a template, start a transaction, and watch the checklist advance after this task lands — instead of waiting until task eleven of twelve, as the original bottom-up plan required. The transaction detail page built here intentionally has no packet-PDF link, no "complete transaction" button, and no Drive-sync section yet: Task 10 adds the packet link once it generates packet PDFs, and Task 11 adds the complete button and sync section once it implements transaction completion and sync. Both of those tasks extend the page this task creates; they do not create a new one.
+
+**Files:**
+- Create: `forms/workflow-templates.html`
+- Create: `forms/workflow-transactions.html`
+- Create: `forms/workflow-transaction.html`
+- Create: `forms/workflow.logic.browser.js`
+- Modify: `local-server.mjs` (static page routes only — the API routes already exist from Task 7)
+- Modify: `forms/index.html`
+- Create: `tests/workflow-pages.html.test.mjs`
+- Create: `tests/navigation.html.test.mjs` (covers `forms/index.html` only here; Task 12 extends it to the other major pages)
+
+**Interfaces:**
+- Consumes API routes from Task 7.
+- Produces usable MVP pages, reachable from `forms/index.html`.
+
+- [ ] **Step 1: Write failing HTML tests**
+
+```js
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+test("workflow template page edits document order and the Drive sync toggle", async () => {
+  const html = await readFile(new URL("../forms/workflow-templates.html", import.meta.url), "utf8");
+  assert.match(html, /ตั้งค่า Workflow Template/);
+  assert.match(html, /\/api\/workflow-document-types/);
+  assert.match(html, /\/api\/workflow-templates/);
+  assert.match(html, /syncGoogleDrive/);
+  assert.match(html, /documentSteps/);
+  assert.doesNotMatch(html, /syncGoogleSheets/);
+});
+
+test("workflow transactions page starts transactions from templates", async () => {
+  const html = await readFile(new URL("../forms/workflow-transactions.html", import.meta.url), "utf8");
+  assert.match(html, /เริ่ม Workflow/);
+  assert.match(html, /\/api\/workflow-templates/);
+  assert.match(html, /\/api\/workflow-transactions/);
+  assert.match(html, /accountingMonth/);
+  assert.match(html, /templateId/);
+});
+
+test("workflow transaction page shows progress checklist and standalone document links", async () => {
+  const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
+  assert.match(html, /id="workflowProgress"/);
+  assert.match(html, /id="documentChecklist"/);
+  assert.match(html, /id="childDocumentFiles"/);
+  assert.match(html, /start-document/);
+  assert.match(html, /refresh/);
+  assert.match(html, /เปิดเอกสาร/);
+  // Packet link and complete/sync UI do not exist until Task 10/Task 11.
+  assert.doesNotMatch(html, /id="syncDriveButton"/);
+  assert.doesNotMatch(html, /id="driveSyncStatus"/);
+});
+```
+
+Add a new `tests/navigation.html.test.mjs`:
+
+```js
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+test("home page links to workflow group pages", async () => {
+  const html = await readFile(new URL("../forms/index.html", import.meta.url), "utf8");
+  assert.match(html, /href="\/workflow-transactions"/);
+  assert.match(html, /href="\/workflow-templates"/);
+});
+```
+
+- [ ] **Step 2: Run HTML tests to verify failure**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-pages.html.test.mjs tests/navigation.html.test.mjs`
+
+Expected: FAIL because the pages do not exist and `forms/index.html` has no workflow links yet.
+
+- [ ] **Step 3: Build template page**
+
+Use existing topbar/menu styles. UI controls:
+
+- template selector
+- template name input
+- description textarea
+- Google Drive sync checkbox (the only workflow-level sync toggle — there is no Google Sheets sync checkbox; decision D6)
+- document kind select
+- add document button
+- ordered document list with up/down/remove buttons
+- save template button
+
+No conditional builder.
+
+- [ ] **Step 4: Build transaction list page**
+
+Controls:
+
+- template select
+- accounting month input
+- transaction title input
+- start button
+- transaction table with status/current step
+
+On start success, navigate to `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`.
+
+- [ ] **Step 5: Build transaction detail page**
+
+Render:
+
+- header with transaction number/title/template
+- progress summary
+- ordered checklist
+- for each step: document label, workflow status, native document status, child document number, action button
+- locked steps disabled until previous document is complete
+- PDF/raw file links grouped by child document (each child document's own PDFs/raw files — not a transaction-level packet, which does not exist until Task 10)
+
+Do not add a packet-PDF link, a "complete transaction" button, or any Drive-sync markup in this task — Task 10 and Task 11 each add their own piece to this same page once their backing logic and routes exist. Adding placeholder markup for them here would just be dead UI a later task has to find and rewrite.
+
+- [ ] **Step 6: Implement browser controller**
+
+`forms/workflow.logic.browser.js` must include:
+
+```js
+async function fetchJson(url, options = {}) { /* throw on !ok with Thai-friendly error */ }
+function getQueryParam(name) { /* URLSearchParams helper */ }
+function renderTemplateEditor(documentTypes, templates) { /* template page */ }
+function collectTemplatePayload() { /* ordered document kinds + sync toggle */ }
+async function saveTemplate() { /* POST /api/workflow-templates */ }
+async function startTransaction() { /* POST /api/workflow-transactions */ }
+async function loadTransaction() { /* GET transaction by transactionNo */ }
+async function refreshTransaction() { /* POST refresh */ }
+async function startDocument(stepId) { /* POST start-document and navigate to returned url */ }
+function renderTransaction(transaction) { /* checklist + child-document files -- no packet link, no complete/sync section yet */ }
+```
+
+`completeTransaction()`, `syncTransactionDrive()`, and packet-link rendering are added by Task 11 and Task 10 respectively, extending this same file — do not stub them here. `collectTemplatePayload()` only collects the ordered document kinds and the single `syncGoogleDrive` toggle (decision D6) — there is no Sheets toggle field anywhere in this plan.
+
+- [ ] **Step 7: Add the static page routes**
+
+In `local-server.mjs`'s `safeStaticPath()` route map:
+
+```js
+"/workflow-templates": "/workflow-templates.html",
+"/workflow-templates/": "/workflow-templates.html",
+"/workflow-transactions": "/workflow-transactions.html",
+"/workflow-transactions/": "/workflow-transactions.html",
+"/workflow-transaction": "/workflow-transaction.html",
+"/workflow-transaction/": "/workflow-transaction.html",
+```
+
+- [ ] **Step 8: Add the nav entry point**
+
+Add to `forms/index.html`'s menu, near the existing accounting/document links:
+
+```html
+<a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+<a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+```
+
+This is the whole point of the reorder: as soon as this task lands, a user browsing from the home page can create a template, start a transaction, and work the checklist — without waiting for the packet PDF (Task 10), completion/sync (Task 11), or the site-wide navigation sweep (Task 12). Task 12 rolls the same two links out to the other major pages (`expense-request.html`, `expense-requests.html`, `substitute-receipt.html`, `substitute-receipts.html`) as part of final verification; it does not need to touch `forms/index.html` again, since this task already covers it and `tests/navigation.html.test.mjs` already proves it.
+
+- [ ] **Step 9: Run tests**
+
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-pages.html.test.mjs tests/navigation.html.test.mjs`
+
+Expected: PASS.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add forms/workflow-templates.html forms/workflow-transactions.html forms/workflow-transaction.html forms/workflow.logic.browser.js forms/index.html local-server.mjs tests/workflow-pages.html.test.mjs tests/navigation.html.test.mjs
+git commit -m "feat: add workflow template and transaction pages"
+```
+
+---
+
+### Task 9: Pass Workflow Context Into Existing Standalone Forms
 
 **Files:**
 - Modify: `forms/expense-request.html`
@@ -1661,11 +2190,12 @@ git commit -m "feat: build cross-document prefill context for workflow transacti
 - Modify: `tests/substitute-receipt.html.test.mjs`
 - Consume (already created in Task 4, not modified here): `forms/workflow-return-link.browser.js`
 - Consume (created in Task 6, not modified here): `forms/workflow-prefill.logic.js`
+- Consume (route already live since Task 7): `GET /api/workflow-transactions/:transactionNo/prefill`
 
 **Interfaces:**
 - Consumes query params: `transactionNo`, `workflowTemplateId`, `workflowStepId`, `returnTo`
 - Consumes: `sanitizeWorkflowReturnTo(value)` from `forms/workflow-return-link.browser.js` (Task 4)
-- Consumes: `applyWorkflowPrefillGroups(context, documentKind, groups)` from `forms/workflow-prefill.logic.js` (Task 6), and `GET .../prefill` (Task 6 logic, routed in Task 10)
+- Consumes: `applyWorkflowPrefillGroups(context, documentKind, groups)` from `forms/workflow-prefill.logic.js` (Task 6), and `GET .../prefill` (Task 6 logic, already routed in Task 7 — live by the time this task runs, unlike in the original bottom-up ordering where it did not land until the old plan's Task 10)
 - Produces saved payload fields with the same names.
 
 - [ ] **Step 1: Write failing HTML tests**
@@ -1751,9 +2281,7 @@ if (safeReturnTo) {
 
 Decision D8 (`.superpowers/sdd/progress.md`, Task 6). Add the same banner Task 4 adds to the generic workflow-document shell (identical markup, ids, and Thai strings — `#workflowPrefillBanner`, `#workflowPrefillApply` "ใช้ข้อมูลเดิม", `#workflowPrefillDismiss` "กรอกใหม่") to `forms/expense-request.html` and `forms/substitute-receipt.html`. Load `<script src="./workflow-prefill.logic.js"></script>` after `workflow-return-link.browser.js` and before each page's own controller script.
 
-When `workflowContext.transactionNo` and `workflowContext.workflowStepId` are both present, fetch `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=<expense_request|substitute_receipt>&stepId=${workflowStepId}` on boot; on any error (including 404 before Task 10's route exists) or an empty `availableGroups`, leave the banner hidden. On success with a non-empty `availableGroups`, render one checkbox per available group labeled with its `sources[group]` document number, same as Task 4. Applying calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(context, documentKind, checkedGroups)` and merges the result onto the still-blank fields, marking each with its source document number — fields stay fully editable, never `readonly`/`disabled`, per Global Constraints. Note for `expense_request` specifically (decision D10, revising the original design in this note): `expense_request` now receives `lines` like every other kind — each canonical line becomes one `expenseLines` entry (see Task 6) — so the banner for this page offers the same three checkboxes as every other page: `payee`, `purpose`, `lines`. There is no `totals` checkbox anywhere; no kind receives a `totals` group any more.
-
-This is also a forward reference to Task 6/Task 10, exactly like Task 4's Step 10 — inert (a failed fetch, banner stays hidden) until both land, and Task 7's own tests only assert on static markup so this does not block them.
+When `workflowContext.transactionNo` and `workflowContext.workflowStepId` are both present, fetch `GET /api/workflow-transactions/${transactionNo}/prefill?documentKind=<expense_request|substitute_receipt>&stepId=${workflowStepId}` on boot. **Unlike Task 4's equivalent banner, this is not a forward reference**: Task 7 wired this route two tasks ago, and Task 7's own end-to-end test (Step 7 there) already proved it returns real, non-empty `availableGroups` for a completed prior-step document — so a real transaction with a completed earlier step makes this banner actually appear the first time a user reaches it. Still handle the edge cases defensively (an unusual step, a network hiccup, or a transaction with no completed prior documents yet): on any fetch error or an empty `availableGroups`, leave the banner hidden. On success with a non-empty `availableGroups`, render one checkbox per available group labeled with its `sources[group]` document number, same as Task 4. Applying calls `window.WorkflowPrefillLogic.applyWorkflowPrefillGroups(context, documentKind, checkedGroups)` and merges the result onto the still-blank fields, marking each with its source document number — fields stay fully editable, never `readonly`/`disabled`, per Global Constraints. Note for `expense_request` specifically (decision D10): `expense_request` receives `lines` like every other kind — each canonical line becomes one `expenseLines` entry (see Task 6) — so the banner for this page offers the same three checkboxes as every other page: `payee`, `purpose`, `lines`. There is no `totals` checkbox anywhere; no kind receives a `totals` group any more.
 
 Add matching assertions:
 
@@ -1790,18 +2318,23 @@ git commit -m "feat: pass workflow context into document forms"
 
 ---
 
-### Task 8: Workflow Packet PDF And Aggregated Files
+### Task 10: Workflow Packet PDF And Aggregated Files
+
+**Why now (reorder rationale):** This task extends work that already exists rather than creating it from scratch: `forms/workflow-transaction.html` and `forms/workflow.logic.browser.js` were created in Task 8, and the `GET /api/workflow-transactions/:transactionNo/files/:section/:fileName` route that will serve the packet PDF this task generates was already registered in Task 7 (calling `getWorkflowTransactionFile()`, Task 5) — at the time, it could only legitimately 404, because nothing had written a file into any transaction's `pdf/` folder yet. This task is what gives that route something real to serve, and adds the UI link that makes the packet discoverable.
 
 **Files:**
 - Create: `scripts/generate_workflow_packet_pdf.py`
 - Create: `scripts/test_workflow_packet_pdf.py`
 - Modify: `scripts/test.sh`
 - Modify: `forms/local-server.logic.js`
+- Modify: `forms/workflow-transaction.html` and `forms/workflow.logic.browser.js` (extending the page and controller Task 8 created — adding the packet-PDF link, not a new page)
 - Test: `tests/workflow-api.test.mjs`
+- Test: `tests/workflow-pages.html.test.mjs`
 
 **Interfaces:**
 - Produces CLI: `scripts/generate_workflow_packet_pdf.py --payload <json> --output <pdf>`
 - Produces: `generateWorkflowPacketPdf({ transaction, childDocuments, outputPath })` server helper
+- Extends `renderTransaction(transaction)` (`forms/workflow.logic.browser.js`, Task 8) to render a packet-PDF link once one exists.
 
 - [ ] **Step 1: Write failing Python tests**
 
@@ -1883,34 +2416,99 @@ test("refreshWorkflowTransaction writes workflow summary packet", async () => {
 });
 ```
 
-- [ ] **Step 7: Run tests**
+- [ ] **Step 7: Add the download happy-path test**
+
+Task 7 already registered `GET /api/workflow-transactions/:transactionNo/files/:section/:fileName`, but could only test traversal-rejection and a 404-for-missing-file, since no packet existed yet. Now that Step 5 above makes `refreshWorkflowTransaction()` actually write a packet PDF, add the test that route was always missing:
+
+```js
+test("GET .../files/pdf/:fileName downloads the generated packet PDF", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const port = 19199;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "director_expense_cash",
+        accountingMonth: "2026-09",
+        title: "ทดสอบดาวน์โหลด packet",
+      }),
+    });
+    await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    const download = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/99_${encodeURIComponent("ชุดรวมเอกสาร")}_workflow-transaction.pdf`);
+    assert.equal(download.status, 200);
+  } finally {
+    child.kill();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+```
+
+Match the exact filename-encoding convention `local-server.mjs` already uses for other Thai filenames served by name (check how the expense-request/substitute-receipt file routes build their download URLs) rather than inventing a new one here.
+
+- [ ] **Step 8: Add the packet-PDF link to the transaction page**
+
+Extend the transaction detail page Task 8 built (`forms/workflow-transaction.html`) with a packet-PDF link, and extend `renderTransaction()` in `forms/workflow.logic.browser.js` (also Task 8) to populate it from the transaction's `pdfFiles` list once it contains the packet file:
+
+```html
+<a id="workflowPacketLink" href="#" hidden>ดาวน์โหลดชุดรวมเอกสาร Workflow</a>
+```
+
+`renderTransaction()` sets `workflowPacketLink.href` to the packet file's download URL and un-hides it only when `transaction.pdfFiles` contains an entry named `99_ชุดรวมเอกสาร_workflow-transaction.pdf`; otherwise it stays hidden, matching how every other conditional element on this page already behaves.
+
+Add a matching assertion to `tests/workflow-pages.html.test.mjs`:
+
+```js
+test("workflow transaction page includes a packet PDF link", async () => {
+  const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
+  assert.match(html, /id="workflowPacketLink"/);
+});
+```
+
+- [ ] **Step 9: Run tests**
 
 Run: `./scripts/test.sh`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add scripts/generate_workflow_packet_pdf.py scripts/test_workflow_packet_pdf.py scripts/test.sh forms/local-server.logic.js tests/workflow-api.test.mjs
+git add scripts/generate_workflow_packet_pdf.py scripts/test_workflow_packet_pdf.py scripts/test.sh forms/local-server.logic.js forms/workflow-transaction.html forms/workflow.logic.browser.js tests/workflow-api.test.mjs tests/workflow-pages.html.test.mjs
 git commit -m "feat: generate workflow transaction packets"
 ```
 
 ---
 
-### Task 9: Workflow Completion And Sync
+### Task 11: Workflow Completion And Sync
+
+**Why now (reorder rationale):** This task now registers its own HTTP routes (`/complete`, `/sync-drive`) directly, rather than deferring to a separate later "HTTP Routes" task the way the original bottom-up plan did — that task no longer exists in this plan. It extends the routing dispatch Task 7 already established for `/api/workflow-transactions/...` paths, and it extends the transaction page Task 8 already built, adding the complete button and Drive-sync section directly to it rather than waiting for a dedicated UI task.
 
 **Files:**
 - Modify: `forms/local-server.logic.js`
+- Modify: `local-server.mjs` (new `/complete` and `/sync-drive` routes)
+- Modify: `forms/workflow-transaction.html` and `forms/workflow.logic.browser.js` (extending the page and controller Task 8 created)
 - Test: `tests/workflow-api.test.mjs`
+- Test: `tests/workflow-pages.html.test.mjs`
 
 **Interfaces:**
 - Produces: `completeWorkflowTransaction({ rootDir, transactionNo, completedBy, now, driveUploader })`
 - Produces: `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader, now })`
+- Produces API routes: `POST /api/workflow-transactions/:transactionNo/complete`, `POST /api/workflow-transactions/:transactionNo/sync-drive`
+- Extends `renderTransaction(transaction)` (Task 8) with the complete button and Drive-sync section; adds `completeTransaction()` and `syncTransactionDrive()` to `forms/workflow.logic.browser.js` (Task 8).
 
-No task before this one wires transaction-level Drive sync, even though the spec requires `POST /.../complete` and `POST /.../sync-drive`. This task closes that gap. Follow the existing standalone-document pattern before writing code: read `approveExpenseRequest()` and `syncExpenseRequestToDrive()` in `forms/local-server.logic.js` (around lines 538 and 1373) — they show the established shape for injecting a stubbable uploader with a default (`driveUploader = uploadFolderToGoogleDrive`), writing `{ syncStatus, ... }` metadata back onto the record, and turning a sync failure into a `sync_failed` status instead of throwing.
+No task before this one wires transaction-level Drive sync, even though the spec requires `POST /.../complete` and `POST /.../sync-drive`. This task closes that gap, at the logic layer, the HTTP layer, and the UI layer together. Follow the existing standalone-document pattern before writing code: read `approveExpenseRequest()` and `syncExpenseRequestToDrive()` in `forms/local-server.logic.js` (around lines 538 and 1373) — they show the established shape for injecting a stubbable uploader with a default (`driveUploader = uploadFolderToGoogleDrive`), writing `{ syncStatus, ... }` metadata back onto the record, and turning a sync failure into a `sync_failed` status instead of throwing.
 
-There is no workflow-level Sheets sync in this task or anywhere in this plan (decision D6, `.superpowers/sdd/progress.md`, and the deviation note in Global Constraints): do not implement `syncWorkflowTransactionToSheets()`, do not call `buildWorkflowSheetEntry()` (removed from Task 2), and do not add a `sheetsRecorder` parameter to `completeWorkflowTransaction()`. Task 9 keeps Drive sync in full — auto when `syncGoogleDrive` is on, manual button when it is off. Child documents (expense request, substitute receipt) keep writing their own Sheets rows unchanged.
+There is no workflow-level Sheets sync in this task or anywhere in this plan (decision D6, `.superpowers/sdd/progress.md`, and the deviation note in Global Constraints): do not implement `syncWorkflowTransactionToSheets()`, do not call `buildWorkflowSheetEntry()` (removed from Task 2), and do not add a `sheetsRecorder` parameter to `completeWorkflowTransaction()`. This task keeps Drive sync in full — auto when `syncGoogleDrive` is on, manual button when it is off. Child documents (expense request, substitute receipt) keep writing their own Sheets rows unchanged.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -2038,7 +2636,7 @@ Load the transaction with `getWorkflowTransaction()`, load its child documents (
 - set `status: "completed"`, `completedAt: now()`, `completedBy`
 - append a status history entry (same shape as `appendExpenseRequestStatus()`/`appendSubstituteReceiptStatus()`)
 - rewrite `data/workflow-transaction.json` and `working-md/workflow-summary.md` (`formatWorkflowSummaryMarkdown()`)
-- regenerate the packet PDF via the Task 8 helper
+- regenerate the packet PDF via the Task 10 helper
 - if `transaction.templateSnapshot.syncGoogleDrive` (the value snapshotted at start time, not a live template lookup) is `true`, call `syncWorkflowTransactionToDrive({ rootDir, transactionNo, driveUploader })` internally and attach the result as `transaction.driveSync`
 - when the toggle is `false`, leave `driveSync` as `{ syncStatus: "not_required" }` so the UI can tell "not needed" apart from "not yet synced"
 - accept `driveUploader` as an injectable parameter (default below) so both the auto-sync-on and auto-sync-off paths are testable without hitting the network
@@ -2059,326 +2657,54 @@ Do not implement `syncWorkflowTransactionToSheets()` in this step or anywhere el
 
 Add `completeWorkflowTransaction` and `syncWorkflowTransactionToDrive` to `module.exports`.
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 6: Run logic-layer tests**
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
 
-Expected: PASS.
+Expected: PASS for the logic-layer tests above; the route/UI tests added below still fail until Steps 7-8 land.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Register the routes**
 
-```bash
-git add forms/local-server.logic.js tests/workflow-api.test.mjs
-git commit -m "feat: complete workflow transactions and sync them to Drive"
-```
+Extend `require("./forms/local-server.logic.js")` destructuring in `local-server.mjs` (already extended once in Task 7) with `completeWorkflowTransaction` and `syncWorkflowTransactionToDrive`. Do not import `syncWorkflowTransactionToSheets` — it does not exist (decision D6). Following the existing `sendJson()` error style and the same `/api/workflow-transactions/:transactionNo/...` path-parsing convention Task 7 established, add:
 
----
+- `POST /api/workflow-transactions/:transactionNo/complete` — calls `completeWorkflowTransaction`, refuses unless every step is `completed`, auto-syncs Drive per the transaction's snapshotted `syncGoogleDrive` toggle.
+- `POST /api/workflow-transactions/:transactionNo/sync-drive` — calls `syncWorkflowTransactionToDrive`, usable any time after completion regardless of the toggle.
 
-### Task 10: HTTP Routes
-
-**Files:**
-- Modify: `local-server.mjs`
-- Test: `tests/workflow-api.test.mjs`
-
-**Interfaces:**
-- Consumes server logic from Task 5, Task 6, Task 8, and Task 9.
-- Produces API routes from the spec.
-
-- [ ] **Step 1: Write failing static route tests**
+There is no `/api/workflow-transactions/:transactionNo/sync-sheets` route (decision D6). Add a route-presence test to `tests/workflow-api.test.mjs`:
 
 ```js
-import { readFile } from "node:fs/promises";
-
-test("local server exposes workflow template and transaction routes", async () => {
+test("local server exposes workflow transaction completion and sync routes", async () => {
   const source = await readFile(new URL("../local-server.mjs", import.meta.url), "utf8");
-  assert.match(source, /\/api\/workflow-document-types/);
-  assert.match(source, /\/api\/workflow-templates/);
-  assert.match(source, /\/api\/workflow-transactions\/next/);
-  assert.match(source, /\/api\/workflow-transactions/);
-  assert.match(source, /start-document/);
-  assert.match(source, /refreshWorkflowTransaction/);
   assert.match(source, /completeWorkflowTransaction/);
   assert.match(source, /syncWorkflowTransactionToDrive/);
   assert.match(source, /\/complete/);
   assert.match(source, /\/sync-drive/);
-  assert.match(source, /getWorkflowTransactionPrefill/);
-  assert.match(source, /\/prefill/);
   assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
   assert.doesNotMatch(source, /\/sync-sheets/);
 });
-
-test("starting a document for a locked step is refused server-side", async () => {
-  // Decision D5 (.superpowers/sdd/progress.md): the strict document order is
-  // enforced by the server, not only hidden/disabled in the UI. Attempting
-  // start-document on any step other than the transaction's current unlocked
-  // step (transaction.currentStepId from deriveWorkflowProgress()) must be
-  // refused with a JSON error in the existing sendJson() style, and must not
-  // return a document start URL. Follows the spawn/waitForServer/requestJsonResponse
-  // pattern already used in tests/substitute-receipt-api.test.mjs.
-  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
-  const port = 19195;
-  const baseUrl = `http://localhost:${port}`;
-  const child = spawn(process.execPath, ["local-server.mjs"], {
-    cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  try {
-    await waitForServer(child);
-
-    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
-      method: "POST",
-      body: JSON.stringify({
-        templateId: "stock_no_tax_invoice_company_bank",
-        accountingMonth: "2026-09",
-        title: "ทดสอบล็อกลำดับเอกสาร",
-      }),
-    });
-    // txn.currentStepId is "step-001" (purchase_order); step-002 (substitute_receipt) is locked.
-    assert.equal(txn.currentStepId, "step-001");
-
-    const { response, body } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-002`, {
-      method: "POST",
-    });
-    assert.equal(response.ok, false);
-    assert.equal(response.status, 400);
-    assert.match(body.error, /ยังไม่ถึงลำดับ|ลำดับเอกสาร|ขั้นตอนนี้ยังไม่เปิด/);
-    assert.equal(body.url, undefined);
-
-    // The unlocked step must still be startable.
-    const { response: okResponse } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, {
-      method: "POST",
-    });
-    assert.equal(okResponse.ok, true);
-  } finally {
-    child.kill();
-    await rm(rootDir, { recursive: true, force: true });
-  }
-});
 ```
 
-This test needs the same `spawn`, `waitForServer`, and `requestJsonResponse` helpers already present at the top of `tests/substitute-receipt-api.test.mjs` — reuse that exact pattern in `tests/workflow-api.test.mjs` (add the helpers if this test file doesn't already have them from an earlier task) rather than inventing a second convention for spawning the server.
+- [ ] **Step 8: Add the complete button and Drive-sync section to the transaction page**
 
-- [ ] **Step 2: Run tests to verify failure**
+Extend `forms/workflow-transaction.html` (Task 8) with:
 
-Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
+- a "complete transaction" button, enabled only when every step is `completed` and the transaction is not already `completed`; calls `POST /api/workflow-transactions/:transactionNo/complete`
+- a sync section driven by the transaction's `driveSync` state and the template snapshot's `syncGoogleDrive` toggle, shown only once the transaction is `completed`. There is no Sheets sync UI at all (decision D6 — no workflow-level Sheets row, no `sheetSync`, no `syncGoogleSheets`):
+  - when the toggle is `true`: show `#driveSyncStatus` text reflecting the auto-sync result (e.g. synced / failed / pending) — no button
+  - when the toggle is `false`: show `#syncDriveButton`, calling `POST .../sync-drive`, and update `#driveSyncStatus` after the call resolves
 
-Expected: FAIL until routes are added.
-
-- [ ] **Step 3: Add imports**
-
-Extend `require("./forms/local-server.logic.js")` destructuring with:
+Extend `forms/workflow.logic.browser.js` (Task 8) with:
 
 ```js
-getWorkflowTransactionFile,
-getNextWorkflowTransactionInfo,
-getWorkflowTransaction,
-listWorkflowDocumentTypes,
-listWorkflowTemplates,
-listWorkflowTransactions,
-refreshWorkflowTransaction,
-saveWorkflowTemplate,
-startWorkflowTransaction,
-completeWorkflowTransaction,
-syncWorkflowTransactionToDrive,
-getWorkflowTransactionPrefill,
+async function completeTransaction() { /* POST .../complete, then re-render */ }
+async function syncTransactionDrive() { /* POST .../sync-drive, then re-render */ }
 ```
 
-Do not import `syncWorkflowTransactionToSheets` — it does not exist (decision D6).
+and extend `renderTransaction(transaction)` (Task 8) to render the button/section above. There is no `syncTransactionSheets()` function anywhere in this file.
 
-- [ ] **Step 4: Add static page routes**
-
-In `safeStaticPath()` route map:
+Add matching assertions to `tests/workflow-pages.html.test.mjs`:
 
 ```js
-"/workflow-templates": "/workflow-templates.html",
-"/workflow-templates/": "/workflow-templates.html",
-"/workflow-transactions": "/workflow-transactions.html",
-"/workflow-transactions/": "/workflow-transactions.html",
-"/workflow-transaction": "/workflow-transaction.html",
-"/workflow-transaction/": "/workflow-transaction.html",
-```
-
-- [ ] **Step 5: Add API handlers**
-
-Follow existing `sendJson()` error style. Add handlers for listing document types, listing/saving templates, next transaction number, listing/starting/getting transactions, refreshing a transaction, starting a child document, completing a transaction (`completeWorkflowTransaction`), manually syncing a transaction to Drive (`syncWorkflowTransactionToDrive`), reading a transaction's cross-document prefill context (`getWorkflowTransactionPrefill`, Task 6), and serving transaction packet files. There is no Sheets sync handler — decision D6 dropped `syncWorkflowTransactionToSheets()` entirely (see Task 9 and the Global Constraints deviation note).
-
-For `start-document`, first re-derive progress and enforce the strict-order rule (decision D5, `.superpowers/sdd/progress.md`) before building the start URL — the requested `stepId` must equal the transaction's current unlocked step, not merely be `not_started` or `in_progress` on its own record:
-
-```js
-function buildWorkflowDocumentStartUrl(transaction, step) {
-  const route = DOCUMENT_TYPE_DEFINITIONS[step.documentKind].route;
-  const params = new URLSearchParams({
-    transactionNo: transaction.transactionNo,
-    workflowTemplateId: transaction.templateSnapshot.templateId,
-    workflowStepId: step.stepId,
-    returnTo: `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`,
-  });
-  return `${route}?${params.toString()}`;
-}
-```
-
-The `start-document` handler must:
-
-1. Load the transaction (`getWorkflowTransaction()`); 404 if missing.
-2. Look up the requested step in `transaction.steps` by `stepId`; 404 if the step doesn't exist on this transaction/template.
-3. Compare `stepId` against `transaction.currentStepId` (the value `deriveWorkflowProgress()`/`refreshWorkflowTransaction()` last computed and persisted — do not recompute progress from a live re-scan here unless the route already refreshes first; either way, the comparison must reflect the strict-order state, not just the step's own `workflowStatus`). If they don't match, respond with `sendJson(res, 400, { error: "ยังไม่ถึงลำดับเอกสารนี้ ต้องทำเอกสารก่อนหน้าให้เสร็จก่อน" })` (or an equivalent Thai message) and return — do not build or return a start URL.
-4. Otherwise build and return `{ url: buildWorkflowDocumentStartUrl(transaction, step) }` as today.
-
-This refusal is the server-side half of decision D5: a client that bypasses the UI's disabled buttons and calls `start-document` directly for a locked step must still be turned away.
-
-- [ ] **Step 5b: Add the prefill GET route**
-
-`GET /api/workflow-transactions/:transactionNo/prefill?documentKind=<kind>&stepId=<stepId>` is registered here, not in Task 6, for the same reason every other `/api/workflow-transactions/...` route is registered here rather than in the task that built its underlying storage/logic function (Task 5's storage functions and Task 8's packet generator get their routes here too): this task is the single place that wires the full workflow-transaction HTTP surface, so a client never has to guess which task added a given `/api/workflow-transactions/...` route. Task 6 (Cross-Document Prefill) only produces `getWorkflowTransactionPrefill()` in `forms/local-server.logic.js` and its own direct-call tests in `tests/workflow-api.test.mjs`; it deliberately leaves this route unregistered until here.
-
-```js
-if (req.method === "GET" && pathname.match(/^\/api\/workflow-transactions\/[^/]+\/prefill$/)) {
-  const transactionNo = decodeURIComponent(pathname.split("/")[3]);
-  const documentKind = url.searchParams.get("documentKind") || "";
-  const stepId = url.searchParams.get("stepId") || "";
-  try {
-    const prefill = await getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId });
-    return sendJson(res, 200, prefill);
-  } catch (error) {
-    return sendJson(res, 400, { error: error.message });
-  }
-}
-```
-
-Add a failing-then-passing test to `tests/workflow-api.test.mjs` using the same `spawn`/`waitForServer`/`requestJsonResponse` helpers as the `start-document` test above:
-
-```js
-test("GET .../prefill returns context, sources, and availableGroups for the requested step", async () => {
-  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
-  const port = 19196;
-  const baseUrl = `http://localhost:${port}`;
-  const child = spawn(process.execPath, ["local-server.mjs"], {
-    cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  try {
-    await waitForServer(child);
-
-    const { body: txn } = await requestJsonResponse(baseUrl, "/api/workflow-transactions", {
-      method: "POST",
-      body: JSON.stringify({
-        templateId: "stock_no_tax_invoice_company_bank",
-        accountingMonth: "2026-09",
-        title: "ทดสอบ prefill ผ่าน HTTP",
-      }),
-    });
-
-    const { body: startResult } = await requestJsonResponse(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/step-001`, {
-      method: "POST",
-    });
-    assert.ok(startResult.url);
-
-    const { response, body: prefill } = await requestJsonResponse(
-      baseUrl,
-      `/api/workflow-transactions/${txn.transactionNo}/prefill?documentKind=substitute_receipt&stepId=step-002`,
-    );
-    assert.equal(response.ok, true);
-    assert.deepEqual(prefill.availableGroups, []);
-    assert.deepEqual(prefill.sources, {});
-  } finally {
-    child.kill();
-    await rm(rootDir, { recursive: true, force: true });
-  }
-});
-```
-
-(No completed sibling document exists yet in this test, so `availableGroups`/`sources` are empty — Task 6's own tests cover the populated case against `getWorkflowTransactionPrefill()` directly; this test only proves the route is wired end-to-end.)
-
-- [ ] **Step 6: Register routes**
-
-POST routes:
-
-- `/api/workflow-templates`
-- `/api/workflow-transactions`
-- `/api/workflow-transactions/:transactionNo/start-document/:stepId` (enforces the Step 5 strict-order check)
-- `/api/workflow-transactions/:transactionNo/refresh`
-- `/api/workflow-transactions/:transactionNo/complete` (calls `completeWorkflowTransaction`, refuses unless every step is `completed`, auto-syncs Drive per the transaction's snapshotted `syncGoogleDrive` toggle)
-- `/api/workflow-transactions/:transactionNo/sync-drive` (calls `syncWorkflowTransactionToDrive`, manual fallback usable any time after completion)
-
-There is no `/api/workflow-transactions/:transactionNo/sync-sheets` route (decision D6).
-
-GET routes:
-
-- `/api/workflow-document-types`
-- `/api/workflow-templates`
-- `/api/workflow-transactions/next`
-- `/api/workflow-transactions`
-- `/api/workflow-transactions/:transactionNo`
-- `/api/workflow-transactions/:transactionNo/prefill` (calls `getWorkflowTransactionPrefill`, Task 6)
-- file route
-
-- [ ] **Step 7: Run route tests**
-
-Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs`
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add local-server.mjs tests/workflow-api.test.mjs
-git commit -m "feat: expose workflow template routes"
-```
-
----
-
-### Task 11: Workflow Template, Transaction List, And Progress UI
-
-**Files:**
-- Create: `forms/workflow-templates.html`
-- Create: `forms/workflow-transactions.html`
-- Create: `forms/workflow-transaction.html`
-- Create: `forms/workflow.logic.browser.js`
-- Test: `tests/workflow-pages.html.test.mjs`
-
-**Interfaces:**
-- Consumes API routes from Task 10.
-- Produces usable MVP pages.
-
-- [ ] **Step 1: Write failing HTML tests**
-
-```js
-import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test from "node:test";
-
-test("workflow template page edits document order and the Drive sync toggle", async () => {
-  const html = await readFile(new URL("../forms/workflow-templates.html", import.meta.url), "utf8");
-  assert.match(html, /ตั้งค่า Workflow Template/);
-  assert.match(html, /\/api\/workflow-document-types/);
-  assert.match(html, /\/api\/workflow-templates/);
-  assert.match(html, /syncGoogleDrive/);
-  assert.match(html, /documentSteps/);
-  assert.doesNotMatch(html, /syncGoogleSheets/);
-});
-
-test("workflow transactions page starts transactions from templates", async () => {
-  const html = await readFile(new URL("../forms/workflow-transactions.html", import.meta.url), "utf8");
-  assert.match(html, /เริ่ม Workflow/);
-  assert.match(html, /\/api\/workflow-templates/);
-  assert.match(html, /\/api\/workflow-transactions/);
-  assert.match(html, /accountingMonth/);
-  assert.match(html, /templateId/);
-});
-
-test("workflow transaction page shows progress checklist and standalone document links", async () => {
-  const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
-  assert.match(html, /id="workflowProgress"/);
-  assert.match(html, /id="documentChecklist"/);
-  assert.match(html, /id="childDocumentFiles"/);
-  assert.match(html, /start-document/);
-  assert.match(html, /refresh/);
-  assert.match(html, /เปิดเอกสาร/);
-});
-
 test("workflow transaction page shows a manual Drive sync button and auto-sync status, and no Sheets sync UI", async () => {
   const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
   assert.match(html, /id="syncDriveButton"/);
@@ -2391,87 +2717,17 @@ test("workflow transaction page shows a manual Drive sync button and auto-sync s
 });
 ```
 
-- [ ] **Step 2: Run HTML tests to verify failure**
+- [ ] **Step 9: Run tests**
 
-Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-pages.html.test.mjs`
-
-Expected: FAIL because pages do not exist.
-
-- [ ] **Step 3: Build template page**
-
-Use existing topbar/menu styles. UI controls:
-
-- template selector
-- template name input
-- description textarea
-- Google Drive sync checkbox (the only workflow-level sync toggle — there is no Google Sheets sync checkbox; decision D6)
-- document kind select
-- add document button
-- ordered document list with up/down/remove buttons
-- save template button
-
-No conditional builder.
-
-- [ ] **Step 4: Build transaction list page**
-
-Controls:
-
-- template select
-- accounting month input
-- transaction title input
-- start button
-- transaction table with status/current step
-
-On start success, navigate to `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`.
-
-- [ ] **Step 5: Build transaction detail page**
-
-Render:
-
-- header with transaction number/title/template
-- progress summary
-- ordered checklist
-- for each step: document label, workflow status, native document status, child document number, action button
-- locked steps disabled until previous document is complete
-- PDF/raw file links grouped by child document
-- packet PDF link
-- a "complete transaction" button, enabled only when every step is `completed` and the transaction is not already `completed`; calls `POST /api/workflow-transactions/:transactionNo/complete`
-- sync section driven by the transaction's `driveSync` state and the template snapshot's `syncGoogleDrive` toggle, shown only once the transaction is `completed`. There is no Sheets sync UI at all (decision D6 — no workflow-level Sheets row, no `sheetSync`, no `syncGoogleSheets`):
-  - when the toggle is `true`: show `#driveSyncStatus` text reflecting the auto-sync result (e.g. synced / failed / pending) — no button
-  - when the toggle is `false`: show `#syncDriveButton`, calling `POST .../sync-drive`, and update `#driveSyncStatus` after the call resolves
-
-- [ ] **Step 6: Implement browser controller**
-
-`forms/workflow.logic.browser.js` must include:
-
-```js
-async function fetchJson(url, options = {}) { /* throw on !ok with Thai-friendly error */ }
-function getQueryParam(name) { /* URLSearchParams helper */ }
-function renderTemplateEditor(documentTypes, templates) { /* template page */ }
-function collectTemplatePayload() { /* ordered document kinds + sync toggles */ }
-async function saveTemplate() { /* POST /api/workflow-templates */ }
-async function startTransaction() { /* POST /api/workflow-transactions */ }
-async function loadTransaction() { /* GET transaction by transactionNo */ }
-async function refreshTransaction() { /* POST refresh */ }
-async function startDocument(stepId) { /* POST start-document and navigate to returned url */ }
-function renderTransaction(transaction) { /* checklist + files + sync section */ }
-async function completeTransaction() { /* POST .../complete, then re-render */ }
-async function syncTransactionDrive() { /* POST .../sync-drive, then re-render */ }
-```
-
-There is no `syncTransactionSheets()` function and no `collectTemplatePayload()` output field for a Sheets toggle — `collectTemplatePayload()` only collects the ordered document kinds and the single `syncGoogleDrive` toggle (decision D6).
-
-- [ ] **Step 7: Run tests**
-
-Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-pages.html.test.mjs`
+Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/workflow-api.test.mjs tests/workflow-pages.html.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add forms/workflow-templates.html forms/workflow-transactions.html forms/workflow-transaction.html forms/workflow.logic.browser.js tests/workflow-pages.html.test.mjs
-git commit -m "feat: add workflow group pages"
+git add forms/local-server.logic.js local-server.mjs forms/workflow-transaction.html forms/workflow.logic.browser.js tests/workflow-api.test.mjs tests/workflow-pages.html.test.mjs
+git commit -m "feat: complete workflow transactions and sync them to Drive"
 ```
 
 ---
@@ -2479,14 +2735,15 @@ git commit -m "feat: add workflow group pages"
 ### Task 12: Navigation And Final Verification
 
 **Files:**
-- Modify: `forms/index.html`
-- Modify: major existing HTML pages that include the hamburger menu
-- Modify: `tests/navigation.html.test.mjs`
+- Modify: major existing HTML pages that include the hamburger menu (`forms/expense-request.html`, `forms/expense-requests.html`, `forms/substitute-receipt.html`, `forms/substitute-receipts.html`) — `forms/index.html` already got its links in Task 8 and needs no further change here.
+- Modify: `tests/navigation.html.test.mjs` (created in Task 8 with only the `index.html` assertion; extended here to the remaining pages)
 
 **Interfaces:**
-- Produces discoverable links to workflow pages.
+- Produces discoverable links to workflow pages from every major page, not just the home page.
 
-- [ ] **Step 1: Write failing nav test**
+- [ ] **Step 1: Extend the nav test**
+
+`tests/navigation.html.test.mjs` already exists (Task 8) and already passes for `forms/index.html`. Extend it to cover the rest of the major pages:
 
 ```js
 test("main navigation links to workflow group pages", async () => {
@@ -2505,15 +2762,17 @@ test("main navigation links to workflow group pages", async () => {
 });
 ```
 
+This test may replace or sit alongside the narrower `index.html`-only test Task 8 added — either is fine as long as `index.html` keeps being checked somewhere in this file.
+
 - [ ] **Step 2: Run nav test to verify failure**
 
 Run: `/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/navigation.html.test.mjs`
 
-Expected: FAIL until menu links are added.
+Expected: FAIL for the four pages that don't have the links yet (`index.html` already passes, from Task 8).
 
-- [ ] **Step 3: Add menu links**
+- [ ] **Step 3: Add menu links to the remaining pages**
 
-Add near existing accounting/document links:
+Add the same two links Task 8 already added to `forms/index.html`, to `forms/expense-request.html`, `forms/expense-requests.html`, `forms/substitute-receipt.html`, and `forms/substitute-receipts.html`, near their existing accounting/document links:
 
 ```html
 <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
@@ -2544,9 +2803,11 @@ Manual smoke checklist:
 - Only the first document can be opened initially.
 - Opening a document passes `transactionNo`, `workflowTemplateId`, and `workflowStepId` in the URL.
 - Completing the child document and refreshing the transaction unlocks the next document.
-- Packet PDF link appears in the transaction page.
-- After the last document is completed, the "complete transaction" button becomes enabled; clicking it marks the transaction `completed`.
-- For a template with a sync toggle on, completion shows an auto-sync status instead of a button; for a toggle off, completion shows a manual sync button that succeeds when clicked.
+- Opening the next document shows the cross-document prefill banner with real data from the completed prior document (Task 7/Task 9).
+- Packet PDF link appears in the transaction page (Task 10).
+- After the last document is completed, the "complete transaction" button becomes enabled; clicking it marks the transaction `completed` (Task 11).
+- For a template with a sync toggle on, completion shows an auto-sync status instead of a button; for a toggle off, completion shows a manual sync button that succeeds when clicked (Task 11).
+- The workflow links are visible and working from the home page and from the expense-request/substitute-receipt pages.
 
 - [ ] **Step 6: Commit verification fixes**
 
@@ -2578,26 +2839,37 @@ Workflow is not a duplicate workflow engine with its own document forms. It is a
 
 Decision ledger: `.superpowers/sdd/progress.md` records the four PM decisions this revision applies (goods_receipt as a 5th lightweight kind, hybrid substitute_receipt completion, toggle-driven completion/sync with manual fallback, and the reporting cadence for the executing agent) plus two plan-defect fixes (`findLightweightWorkflowDocuments` must be real, and `scripts/test.sh` must only register each task's own Python test). Read it before starting Task 1.
 
-A follow-up architecture/security pass closed three gaps the first revision flagged but left open: `getWorkflowTransactionFile()` now has a real implementation step (Task 5, Step 8) and `getWorkflowDocumentFile()` was added to Task 4 (Step 7) with the same path-traversal guard as `getExpenseRequestFile()`; `returnTo` is now validated through a shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, created in Task 4 Step 8, consumed in Task 4's own shell and in Task 7) instead of being assigned to `href` unchecked; and (at the time of that pass) the workflow-completion task's Sheets-sync step cited the verified upsert behavior of `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`). Details: `.superpowers/sdd/architecture-gap-closure-report.md`. That Sheets-sync step no longer exists — see the D5/D6 pass below.
+A follow-up architecture/security pass closed three gaps the first revision flagged but left open: `getWorkflowTransactionFile()` now has a real implementation step (Task 5, Step 8) and `getWorkflowDocumentFile()` was added to Task 4 (Step 7) with the same path-traversal guard as `getExpenseRequestFile()`; `returnTo` is now validated through a shared `sanitizeWorkflowReturnTo()` helper (`forms/workflow-return-link.browser.js`, created in Task 4 Step 8, consumed in Task 4's own shell and in the standalone-forms task) instead of being assigned to `href` unchecked; and (at the time of that pass) the workflow-completion task's Sheets-sync step cited the verified upsert behavior of `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`). Details: `.superpowers/sdd/architecture-gap-closure-report.md`. That Sheets-sync step no longer exists — see the D5/D6 pass below.
 
 A second follow-up pass applied two more product-owner decisions, D5 and D6 (`.superpowers/sdd/progress.md`), across the whole plan, including the already-implemented Task 1 and Task 2 (a separate agent is fixing that landed code to match this revision concurrently):
 
-- **D5 (strict document order):** `deriveWorkflowProgress()` (Task 2, Step 5) now states explicitly that every step after the first incomplete step is `blocked` even when its own child document independently reports `completed` — Task 2's test block gained a dedicated out-of-order regression test. This is enforced server-side, not only in the UI: the `start-document` handler (Task 10, Step 5) now refuses with a Thai `sendJson()` error when the requested `stepId` is not the transaction's current unlocked step, with a new integration test. A Global Constraints bullet states the rule once.
-- **D6 (no workflow-level Sheets row):** `buildWorkflowSheetEntry()` is gone from Task 2; `syncWorkflowTransactionToSheets()` and its auto/manual behavior are gone from Task 9; the `POST .../sync-sheets` route is gone from Task 10; the Sheets button/status and `syncGoogleSheets` toggle are gone from Task 11's UI and tests; `syncGoogleSheets` is gone from Task 1's template seed/tests, Task 2's transaction snapshot, and `normalizeWorkflowTemplate()`. `syncGoogleDrive` is the only remaining workflow sync toggle. A Global Constraints bullet and a dedicated deviation note record that this knowingly diverges from the spec's `## Sync Rules` section (which still describes a Sheets summary row) — the plan governs, the spec file was left unedited. `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) upserts on `sourceKey`, so child documents' own Sheets rows are unaffected.
+- **D5 (strict document order):** `deriveWorkflowProgress()` (Task 2, Step 5) now states explicitly that every step after the first incomplete step is `blocked` even when its own child document independently reports `completed` — Task 2's test block gained a dedicated out-of-order regression test. This is enforced server-side, not only in the UI: the `start-document` handler (now Task 7, Step 4, after the fifth pass below moved route registration earlier) refuses with a Thai `sendJson()` error when the requested `stepId` is not the transaction's current unlocked step, with a new integration test. A Global Constraints bullet states the rule once.
+- **D6 (no workflow-level Sheets row):** `buildWorkflowSheetEntry()` is gone from Task 2; `syncWorkflowTransactionToSheets()` and its auto/manual behavior are gone from the completion task (now Task 11); the `POST .../sync-sheets` route is gone from every routes task; the Sheets button/status and `syncGoogleSheets` toggle are gone from the pages/UI (now Task 8 for the page shell, Task 11 for the sync UI specifically) and their tests; `syncGoogleSheets` is gone from Task 1's template seed/tests, Task 2's transaction snapshot, and `normalizeWorkflowTemplate()`. `syncGoogleDrive` is the only remaining workflow sync toggle. A Global Constraints bullet and a dedicated deviation note record that this knowingly diverges from the spec's `## Sync Rules` section (which still describes a Sheets summary row) — the plan governs, the spec file was left unedited. `recordMonthlyExpense()` (`forms/google-sheets.logic.js:235`) upserts on `sourceKey`, so child documents' own Sheets rows are unaffected.
 
-(At the time of the D5/D6 pass, the task now called "Workflow Completion And Sync" and "HTTP Routes" were Task 8 and Task 9; the paragraph above already uses their current numbers, Task 9 and Task 10, after the third pass below renumbered them again.)
+(At the time of the D5/D6 pass, "Workflow Completion And Sync" and "HTTP Routes" were Task 8 and Task 9. The third pass below renumbered them to Task 9 and Task 10; the fifth pass (bottom of this section) then eliminated "HTTP Routes" as a standalone task entirely and moved "Workflow Completion And Sync" to Task 11. If you are trying to find where a piece of D5/D6 behavior actually lives today, trust the Task numbers used in the bullets above, not the historical task titles.)
 
-A third follow-up pass added decision D8 (`.superpowers/sdd/progress.md`): cross-document prefill. A new **Task 6, Cross-Document Prefill**, is inserted immediately after Task 5; every task from the former Task 6 onward shifted up by one (former Task 6 → 7, 7 → 8, 8 → 9, 9 → 10, 10 → 11, 11 → 12), and every cross-reference to those tasks anywhere in the plan — including inside the D5/D6 paragraphs above and the gap-closure paragraph before them — was rewritten to the new numbers. Task 6 defines one canonical transaction context (at the time, `payee`/`purpose`/`lines`/`totals`/`parties` — see the D10 paragraph below, which removed `totals`) and a `toWorkflowContext()`/`applyWorkflowContext()` adapter pair per document kind (14 functions for 7 kinds, not 42 pairwise mappings), the most-recently-`completed`-wins precedence rule, and the never-copied field list (`documentNo`, `documentDate`, `status`, `statusHistory`, `completedAt`/`completedBy`, signatures, evidence/raw files, plus `goods_receipt` line quantities specifically). `getWorkflowTransactionPrefill()` (the orchestration function, added to `forms/local-server.logic.js` in Task 6) is deliberately left unwired to HTTP until Task 10 (Step 5b), matching how every other `/api/workflow-transactions/...` route is centralized there regardless of which earlier task built its underlying storage/logic function. The prefill banner UI is added to Task 4 (the lightweight document shell) and to Task 7 (Pass Workflow Context Into Existing Standalone Forms) rather than waiting for Task 11's dedicated UI task, since those are the tasks that already own the standalone document forms the banner appears on; both tasks note explicitly that the banner's fetch call is inert (harmlessly 404s) until Task 6's logic and Task 10's route wiring both land, since Task 4 runs before either.
+A third follow-up pass added decision D8 (`.superpowers/sdd/progress.md`): cross-document prefill. A new **Task 6, Cross-Document Prefill**, is inserted immediately after Task 5; every task from the former Task 6 onward shifted up by one (former Task 6 → 7, 7 → 8, 8 → 9, 9 → 10, 10 → 11, 11 → 12), and every cross-reference to those tasks anywhere in the plan was rewritten to the new numbers. Task 6 defines one canonical transaction context (at the time, `payee`/`purpose`/`lines`/`totals`/`parties` — see the D10 paragraph below, which removed `totals`) and a `toWorkflowContext()`/`applyWorkflowContext()` adapter pair per document kind (14 functions for 7 kinds, not 42 pairwise mappings), the most-recently-`completed`-wins precedence rule, and the never-copied field list (`documentNo`, `documentDate`, `status`, `statusHistory`, `completedAt`/`completedBy`, signatures, evidence/raw files, plus `goods_receipt` line quantities specifically). `getWorkflowTransactionPrefill()` (the orchestration function, added to `forms/local-server.logic.js` in Task 6) was, at the time of this third pass, deliberately left unwired to HTTP until the plan's single "HTTP Routes" task — the fifth pass below eliminated that task and moved this route wiring to Task 7 instead, much earlier, as part of pulling the whole user-facing slice forward (see that pass for why). The prefill banner UI is added to Task 4 (the lightweight document shell) and to the standalone-forms task (now Task 9, then still numbered Task 7) rather than waiting for a dedicated UI task, since those are the tasks that already own the standalone document forms the banner appears on.
 
-A fourth follow-up pass applied decision D10 (`.superpowers/sdd/progress.md`, user-approved), which rejected part of the D8/Task 6 design above: the product owner rejected `expense_request` receiving a `totals` group as one seeded placeholder line, and instead ruled that `expense_request` participates in the `lines` group like every other kind, mapped line by line in both directions (sourcing: each `expenseLines` entry becomes one canonical line with `quantity` fixed at `"1"` and `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`; receiving: each canonical line becomes one `expenseLines` entry with `amountBeforeVat` set to the canonical line's `lineTotal` and `vatAmount`/`withholdingTax` fixed at `"0.00"`). Consequence: `totals` is gone from the canonical context and from every group list in the plan — the tickable groups are now exactly `payee`, `purpose`, `lines` everywhere (Task 6's design/table/`RECEIVABLE_PREFILL_GROUPS`/tests, the Global Constraints bullet, the Task 4 and Task 7 banner sections, and this Self-Review's D8 bullet below were all updated). No task numbering changed for this pass — task headings and their `Task N` extraction markers are untouched.
+A fourth follow-up pass applied decision D10 (`.superpowers/sdd/progress.md`, user-approved), which rejected part of the D8/Task 6 design above: the product owner rejected `expense_request` receiving a `totals` group as one seeded placeholder line, and instead ruled that `expense_request` participates in the `lines` group like every other kind, mapped line by line in both directions (sourcing: each `expenseLines` entry becomes one canonical line with `quantity` fixed at `"1"` and `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`; receiving: each canonical line becomes one `expenseLines` entry with `amountBeforeVat` set to the canonical line's `lineTotal` and `vatAmount`/`withholdingTax` fixed at `"0.00"`). Consequence: `totals` is gone from the canonical context and from every group list in the plan — the tickable groups are now exactly `payee`, `purpose`, `lines` everywhere. No task numbering changed for this pass.
+
+A fifth follow-up pass (2026-09-07) reordered the plan so the feature becomes usable much earlier, at the product owner's request, once Tasks 1-6 had already landed and made clear that only routes and pages stood between the committed logic and a real user. Full detail is in `.superpowers/sdd/architecture-reorder-report.md`; the summary:
+
+- **What moved:** the old plan wired every `/api/workflow-*` route in one "HTTP Routes" task and built every workflow page in one "UI" task, both positioned as tasks 10 and 11 of 12 — so nothing was reachable by a user until task ten of twelve, even though the template/transaction pages are the natural entry point to the whole feature. This pass carves the user-facing slice (template CRUD, transaction start/list/detail, prefill, start-document, the three pages, and a home-page nav link) out of those two tasks and moves it to **new Task 7 (Workflow Template And Transaction Routes)** and **new Task 8 (Workflow Template And Transaction Pages)** — immediately after Task 6, which is exactly where the plan already had every piece of backing logic those routes call. The old bottom-up "HTTP Routes" and "UI" tasks no longer exist as whole tasks.
+- **Old → new task map:** Tasks 1–6 unchanged. Old Task 7 (Pass Workflow Context Into Existing Standalone Forms) → **Task 9**. Old Task 8 (Workflow Packet PDF And Aggregated Files) → **Task 10**. Old Task 9 (Workflow Completion And Sync) → **Task 11**. Old Task 12 (Navigation And Final Verification) stays **Task 12**. Old Task 10 (HTTP Routes) and old Task 11 (Workflow Template, Transaction List, And Progress UI) are gone as whole tasks; their content is redistributed as described below. Total task count is unchanged at 12.
+- **Where old Task 10's routes went:** templates, transactions, refresh, start-document (with its D5/D7 strict-order enforcement), prefill, and the transaction file-download route → **Task 7**. `/complete` and `/sync-drive` → **Task 11**, which now registers its own routes directly instead of deferring to a separate routes task.
+- **Where old Task 11's UI went:** the template editor, transaction list, and transaction-detail checklist/file-links shell (everything except the packet link and the complete/sync UI) → **Task 8**. The packet-PDF link → **Task 10**, extending the page Task 8 built. The complete-transaction button and the Drive-sync section/button → **Task 11**, likewise extending Task 8's page.
+- **Binding clarification (D5/D7):** the reorder was also the occasion to resolve an ambiguity the old Task 10 left open about whether `start-document` should recompute progress live or trust the last-persisted `currentStepId`. New Task 7, Step 4 states plainly, per decisions D5 and D7: the handler calls `refreshWorkflowTransaction()` first, then compares the requested `stepId` against the freshly derived `currentStepId` — never a stale persisted value — so a child document completed moments earlier unlocks the next step without a separate refresh call.
+- **Reality-matching test scope:** because `getWorkflowTransactionFile()` only serves `pdf`, and no packet PDF exists until Task 10, new Task 7's own test for the transaction file-download route only proves traversal-rejection and a legitimate 404 — it does not assert a successful download, since nothing produces that file yet. Task 10 adds the happy-path download test once it actually generates the packet.
+- **Prefill banner goes live sooner:** the `forms/workflow-document.html` prefill banner (Task 4) and the `forms/expense-request.html`/`forms/substitute-receipt.html` banners (Task 9) depend on `GET /api/workflow-transactions/:transactionNo/prefill`, which now lands in Task 7 — two tasks after Task 6 instead of five-plus. New Task 7, Step 7 adds an explicit end-to-end test proving the banner's fetch returns real, non-empty `availableGroups` once a prior step has a completed document, and Task 9 no longer describes its own banner fetch as a "forward reference" — the route is already live by the time Task 9 runs.
+- **Nothing had no clean home.** Every route, every UI element, and every test from the old Task 10 and Task 11 has an explicit new owner above; nothing was dropped.
 
 ## Self-Review
 
-- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive-only sync (auto + manual fallback; no workflow-level Sheets sync, decision D6), strict document ordering enforced server-side (decision D5), cross-document prefill with per-group opt-in (decision D8), APIs, UI, and tests. Cross-document prefill is not in the original spec document — it is a pure PM-approved addition layered onto the existing standalone-document-reuse architecture; no spec text conflicts with it (see the D8 deviation note at the end of Task 6).
-- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (Task 9 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive`; Task 10 exposes the Drive-only HTTP routes; Task 11 adds the manual-button/auto-status UI) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 8's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward) — D5 (strict document order is unambiguous in Task 2's `deriveWorkflowProgress()` spec and test, and enforced server-side in Task 10's `start-document` handler) — D6 (no workflow-level Sheets row anywhere in the plan; `syncGoogleDrive` is the sole workflow sync toggle; deviation from the spec's `## Sync Rules` section recorded in a dedicated note) — D8 (new Task 6 implements the canonical prefill context, per-kind adapters, and precedence rule; Task 10 Step 5b wires the `GET .../prefill` route; Task 4 and Task 7 add the prefill banner UI; the never-copied field list, including `goods_receipt` quantities, is stated once in Global Constraints and enforced structurally by the adapters in Task 6) — D10 (Task 6's field table, `RECEIVABLE_PREFILL_GROUPS`, adapter implementation notes, and adapter tests all implement `expense_request`'s line-by-line `lines` mapping in both directions; `totals` is removed as a group everywhere — the canonical context, Global Constraints, and the Task 4/Task 7 banner sections all state the three-group list `payee`/`purpose`/`lines`).
+- Spec coverage: Covers template builder, ordered document kinds, transaction ID relation, standalone document reuse, completed state requirement, child document adapters, progress derivation, packet aggregation, sync settings, workflow completion, Drive-only sync (auto + manual fallback; no workflow-level Sheets sync, decision D6), strict document ordering enforced server-side (decisions D5/D7), cross-document prefill with per-group opt-in (decision D8), APIs, UI, and tests. Cross-document prefill is not in the original spec document — it is a pure PM-approved addition layered onto the existing standalone-document-reuse architecture; no spec text conflicts with it (see the D8 deviation note at the end of Task 6).
+- Decision coverage: D1 (`goods_receipt` is now a 5th lightweight document kind routed through `/workflow-document`, with an explicit no-touch note on `forms/inventory.logic.js` in Global Constraints, Task 1, and Task 4) — D2 (Task 2's mapping and new failing test cover both `substitute_receipt` hybrid branches; `completeSubstituteReceipt()` from Task 3 is unchanged and still available in all cases) — D3 (Task 11 implements `completeWorkflowTransaction`/`syncWorkflowTransactionToDrive` and now also registers the Drive-only HTTP routes and the manual-button/auto-status UI directly, rather than splitting those across a separate routes task and a separate UI task) — D4 (Task 5 Step 6 now specifies a real `findLightweightWorkflowDocuments()` with the `documentKind`-injection caveat for expense/substitute records; Task 4/Task 10's `scripts/test.sh` edits are additive so `./scripts/test.sh` stays green from Task 4 onward) — D5 (strict document order is unambiguous in Task 2's `deriveWorkflowProgress()` spec and test, and enforced server-side in Task 7's `start-document` handler) — D6 (no workflow-level Sheets row anywhere in the plan; `syncGoogleDrive` is the sole workflow sync toggle; deviation from the spec's `## Sync Rules` section recorded in a dedicated note) — D7 (Task 7's `start-document` handler calls `refreshWorkflowTransaction()` first and compares against the freshly derived `currentStepId`, not a stale persisted value) — D8 (Task 6 implements the canonical prefill context, per-kind adapters, and precedence rule; Task 7 wires the `GET .../prefill` route right after Task 6, instead of after every other task in the plan; Task 4 and Task 9 add the prefill banner UI; the never-copied field list, including `goods_receipt` quantities, is stated once in Global Constraints and enforced structurally by the adapters in Task 6) — D10 (Task 6's field table, `RECEIVABLE_PREFILL_GROUPS`, adapter implementation notes, and adapter tests all implement `expense_request`'s line-by-line `lines` mapping in both directions; `totals` is removed as a group everywhere — the canonical context, Global Constraints, and the Task 4/Task 9 banner sections all state the three-group list `payee`/`purpose`/`lines`).
 - Placeholder scan: No TBD/TODO placeholders, including the former `findLightweightWorkflowDocuments() { return []; }` stub. Each task includes concrete files, interfaces, tests, commands, and commit messages.
-- Type consistency: Public helper names introduced in earlier tasks are reused with the same names later. `LIGHTWEIGHT_DOCUMENT_KINDS` and `DOCUMENT_PREFIXES` both carry `goods_receipt` as a fifth entry; `DOCUMENT_TYPE_DEFINITIONS`' key order is unchanged from the original plan (only `goods_receipt.route` changed). `PREFILL_GROUPS`, `RECEIVABLE_PREFILL_GROUPS`, and the 14 adapter function names introduced in Task 6 are reused unchanged in Task 4, Task 7, and Task 10.
-- Task numbering: Tasks 1–5 are unchanged. **Task 6 (Cross-Document Prefill) is new** (decision D8). The former Task 6 (Pass Workflow Context Into Existing Standalone Forms) is now Task 7, former Task 7 (Workflow Packet PDF And Aggregated Files) is now Task 8, former Task 8 (Workflow Completion And Sync) is now Task 9, former Task 9 (HTTP Routes) is now Task 10, former Task 10 (UI) is now Task 11, and former Task 11 (Navigation And Final Verification) is now Task 12. Every cross-reference to a renumbered task anywhere in the plan — including inside the historical D5/D6 gap-closure paragraphs in Handoff Notes — was checked and updated to the new number. Total task count is now 12.
-- Gap-closure follow-up (earlier pass): (1) Task 5 gained Step 8, `getWorkflowTransactionFile()` implementation with its containment guard and allowed-`section` rationale (`pdf` only), plus a traversal/legitimate-file test appended to Step 1; Task 4 gained the equivalent Step 7 (`getWorkflowDocumentFile()`, sections `pdf`/`raw`) with its own test. (2) Every page that consumes `returnTo` (`workflow-document.html`, `expense-request.html`, `substitute-receipt.html`) now validates it through one shared `sanitizeWorkflowReturnTo()` helper (new Task 4 Step 8, file `forms/workflow-return-link.browser.js`) before ever assigning it to `href`; Task 7's Steps 1, 3, and 5 were updated to load and use it, with new HTML-test assertions in both tasks; a Global Constraints bullet states the rule once. (3) The workflow-completion task's Sheets-sync step now cites the verified `recordMonthlyExpense()` upsert-by-`sourceKey` behavior (`forms/google-sheets.logic.js:235`) as fact, closing the open question without changing that task's behavior.
-- Prefill follow-up (earlier pass, design since revised by D10 below): (1) New Task 6 defines `forms/workflow-prefill.logic.js` (pure, dual-export) with 14 per-kind adapter functions, `buildWorkflowPrefillContext()` (most-recently-`completed`-wins precedence, using `normalizeDocumentWorkflowStatus()` from Task 2 to decide what counts as a source), `applyWorkflowPrefillGroups()`, and `getWorkflowTransactionPrefill()` in `forms/local-server.logic.js` (consumes Task 5's `findWorkflowChildDocuments()` and `getWorkflowTransaction()`). (2) `goods_receipt`'s `applyWorkflowContext()` always clears line `quantity` while still copying `description`/`stockSkuId`, with a dedicated test. (3) Route wiring for `GET /api/workflow-transactions/:transactionNo/prefill` was deliberately placed in Task 10 (Step 5b), not Task 6, for consistency with how Task 5's and Task 8's storage/generation functions also wait for Task 10 to get an HTTP route. (4) The prefill banner UI was added to Task 4 and Task 7 (not deferred to Task 11) since those tasks already own the forms it appears on; both note the resulting forward reference to Task 6/Task 10 is inert (a 404) until those tasks land, same as how Task 4 already references workflow query-string context before Task 11 builds the transaction page that sets it.
-- D10 follow-up (this pass): the field-shape mismatch between `expense_request` and every other kind is resolved by mapping line-for-line instead of excluding `expense_request` from `lines`: sourcing (`expenseRequestToWorkflowContext()`) turns each `expenseLines` entry into one canonical line (`quantity` fixed at `"1"`, `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`); receiving (`applyWorkflowContextToExpenseRequest()`) turns each canonical line into one `expenseLines` entry (`description` verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, `vatAmount`/`withholdingTax` fixed at `"0.00"`, since these six templates are all no-tax-invoice cases). `RECEIVABLE_PREFILL_GROUPS` is now identical for all seven kinds (`payee`/`purpose`/`lines`). `totals` is removed as a group entirely — the canonical context, `PREFILL_GROUPS`, every group list, and the Task 4/Task 7 banner sections now name exactly three groups — because every kind, `expense_request` included, already recomputes its own totals from its own lines on save. Task 6's Step 1 test block gained a dedicated round-trip test proving a source line's `description` survives verbatim and `vatAmount`/`withholdingTax` land at `"0.00"` on the receiving side even when the original expense line had nonzero VAT/withholding.
+- Type consistency: Public helper names introduced in earlier tasks are reused with the same names later. `LIGHTWEIGHT_DOCUMENT_KINDS` and `DOCUMENT_PREFIXES` both carry `goods_receipt` as a fifth entry; `DOCUMENT_TYPE_DEFINITIONS`' key order is unchanged from the original plan (only `goods_receipt.route` changed). `PREFILL_GROUPS`, `RECEIVABLE_PREFILL_GROUPS`, and the 14 adapter function names introduced in Task 6 are reused unchanged in Task 4, Task 7, and Task 9.
+- Task numbering: Tasks 1–6 are unchanged (Task 6, Cross-Document Prefill, was inserted by the third pass). The fifth pass (2026-09-07) is the current numbering: **Task 7 (Workflow Template And Transaction Routes)** and **Task 8 (Workflow Template And Transaction Pages)** are new, carved out of the routes/UI tasks that used to sit at positions 10-11. Former Task 7 (Pass Workflow Context Into Existing Standalone Forms) is now Task 9. Former Task 8 (Workflow Packet PDF And Aggregated Files) is now Task 10, extended with its own route/UI wiring. Former Task 9 (Workflow Completion And Sync) is now Task 11, likewise extended with its own route/UI wiring. Former Task 10 (HTTP Routes) and former Task 11 (Workflow Template, Transaction List, And Progress UI) no longer exist as whole tasks — every route and UI element they used to own has an explicit new home in Task 7, 8, 10, or 11 (see the fifth-pass paragraph above for the full breakdown). Former Task 12 (Navigation And Final Verification) is unchanged at Task 12. Every cross-reference to a renumbered task anywhere in the plan — including inside the historical D5/D6/D8 paragraphs in Handoff Notes — was checked and updated. Total task count is still 12.
+- Gap-closure follow-up (earlier pass): (1) Task 5 gained Step 8, `getWorkflowTransactionFile()` implementation with its containment guard and allowed-`section` rationale (`pdf` only), plus a traversal/legitimate-file test appended to Step 1; Task 4 gained the equivalent Step 7 (`getWorkflowDocumentFile()`, sections `pdf`/`raw`) with its own test. (2) Every page that consumes `returnTo` (`workflow-document.html`, `expense-request.html`, `substitute-receipt.html`) now validates it through one shared `sanitizeWorkflowReturnTo()` helper (new Task 4 Step 8, file `forms/workflow-return-link.browser.js`) before ever assigning it to `href`; the standalone-forms task (now Task 9) loads and uses it, with new HTML-test assertions in both tasks; a Global Constraints bullet states the rule once. (3) The workflow-completion task's (now Task 11) Sheets-sync step cited the verified `recordMonthlyExpense()` upsert-by-`sourceKey` behavior (`forms/google-sheets.logic.js:235`) as fact — this step no longer exists in the current plan at all (decision D6 removed workflow-level Sheets sync outright), but the cited fact remains true and is still referenced where relevant.
+- Prefill follow-up (earlier pass, design since revised by D10, route timing since revised by the fifth pass): (1) Task 6 defines `forms/workflow-prefill.logic.js` (pure, dual-export) with 14 per-kind adapter functions, `buildWorkflowPrefillContext()` (most-recently-`completed`-wins precedence, using `normalizeDocumentWorkflowStatus()` from Task 2 to decide what counts as a source), `applyWorkflowPrefillGroups()`, and `getWorkflowTransactionPrefill()` in `forms/local-server.logic.js` (consumes Task 5's `findWorkflowChildDocuments()` and `getWorkflowTransaction()`). (2) `goods_receipt`'s `applyWorkflowContext()` always clears line `quantity` while still copying `description`/`stockSkuId`, with a dedicated test. (3) Route wiring for `GET /api/workflow-transactions/:transactionNo/prefill` now lands in **Task 7** (moved there by the fifth pass, from the single "HTTP Routes" task that no longer exists), immediately after Task 6 rather than after most of the rest of the plan. (4) The prefill banner UI is in Task 4 and Task 9 (not deferred to a dedicated UI task); Task 4's banner is still a genuine forward reference until Task 7 lands (three tasks later), but Task 9's is not — Task 7 already made the route live two tasks earlier, and Task 9 states this explicitly rather than describing it as a forward reference.
+- D10 follow-up (earlier pass): the field-shape mismatch between `expense_request` and every other kind is resolved by mapping line-for-line instead of excluding `expense_request` from `lines`: sourcing (`expenseRequestToWorkflowContext()`) turns each `expenseLines` entry into one canonical line (`quantity` fixed at `"1"`, `unitCost`/`lineTotal` set to the expense line's `amountBeforeVat`, `stockSkuId` fixed at `""`); receiving (`applyWorkflowContextToExpenseRequest()`) turns each canonical line into one `expenseLines` entry (`description` verbatim, `amountBeforeVat` = the canonical line's `lineTotal`, `vatAmount`/`withholdingTax` fixed at `"0.00"`, since these six templates are all no-tax-invoice cases). `RECEIVABLE_PREFILL_GROUPS` is now identical for all seven kinds (`payee`/`purpose`/`lines`). `totals` is removed as a group entirely — the canonical context, `PREFILL_GROUPS`, every group list, and the Task 4/Task 9 banner sections now name exactly three groups — because every kind, `expense_request` included, already recomputes its own totals from its own lines on save. Task 6's Step 1 test block gained a dedicated round-trip test proving a source line's `description` survives verbatim and `vatAmount`/`withholdingTax` land at `"0.00"` on the receiving side even when the original expense line had nonzero VAT/withholding.
