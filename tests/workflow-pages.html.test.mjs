@@ -758,28 +758,18 @@ function createDocumentChecklistItemTemplate() {
   return template;
 }
 
-// Stub server for the transaction detail page: GET/refresh the transaction,
-// list lightweight workflow-documents/expense-requests/substitute-receipts
-// (each filtered by transactionNo the same way the real API filters them, or
-// client-side the same way the real page must), and start-document.
-//
-// `substituteReceipts` fixtures are given in the shape GET
-// /api/substitute-receipts/:receiptNo actually returns (transactionNo/
-// workflowStepId/receiptType nested under `.payload`) — verified against the
-// running server. The list route (GET /api/substitute-receipts) genuinely
-// strips those fields out of each row (listSubstituteReceipts re-shapes them,
-// unlike listExpenseRequests which spreads the full record), so this stub
-// mirrors that by stripping `.payload` for the list response and only
-// serving the full fixture from the single-receipt route — the same
-// list-then-detail round trip fetchSubstituteReceiptChildDocuments
-// (forms/workflow.logic.browser.js) has to make against the real server.
+// Stub server for the transaction detail page: GET/refresh the transaction
+// and start-document. The real GET/refresh routes now attach a
+// `childDocuments` array directly onto the transaction response (see
+// getWorkflowTransactionDetail/refreshWorkflowTransaction in
+// forms/local-server.logic.js), so the fixtures passed in as `transaction`/
+// `refreshedTransaction` already carry their own `childDocuments` — there is
+// no more separate workflow-documents/expense-requests/substitute-receipts
+// fetching for this page to stub out.
 function createTransactionStubFetch({
   transactionNo,
   transaction,
   refreshedTransaction,
-  workflowDocuments = [],
-  expenseRequests = [],
-  substituteReceipts = [],
   onStartDocument,
 }) {
   let current = transaction;
@@ -795,22 +785,6 @@ function createTransactionStubFetch({
       const stepId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
       return onStartDocument(stepId);
     }
-    if (url.startsWith("/api/workflow-documents?transactionNo=")) {
-      return { ok: true, json: async () => ({ documents: workflowDocuments }) };
-    }
-    if (url === "/api/expense-requests") {
-      return { ok: true, json: async () => ({ requests: expenseRequests }) };
-    }
-    if (url === "/api/substitute-receipts") {
-      const rows = substituteReceipts.map(({ payload, ...row }) => row);
-      return { ok: true, json: async () => ({ receipts: rows }) };
-    }
-    if (url.startsWith("/api/substitute-receipts/")) {
-      const receiptNo = decodeURIComponent(url.slice("/api/substitute-receipts/".length));
-      const match = substituteReceipts.find((record) => record.receiptNo === receiptNo);
-      if (!match) return { ok: false, json: async () => ({ error: "ไม่พบเอกสาร" }) };
-      return { ok: true, json: async () => match };
-    }
     throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
   };
 }
@@ -819,9 +793,6 @@ async function setupTransactionPageSandbox({
   transactionNo = "TXN-2026-09-0001",
   transaction,
   refreshedTransaction,
-  workflowDocuments = [],
-  expenseRequests = [],
-  substituteReceipts = [],
   onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
 }) {
   const elementsById = {
@@ -854,9 +825,6 @@ async function setupTransactionPageSandbox({
     transactionNo,
     transaction,
     refreshedTransaction,
-    workflowDocuments,
-    expenseRequests,
-    substituteReceipts,
     onStartDocument,
   });
   const location = { search: `?transactionNo=${transactionNo}`, href: "" };
@@ -896,6 +864,7 @@ function buildFourStepTransaction(overrides = {}) {
       { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
       { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
     ],
+    childDocuments: [],
     ...overrides,
   };
 }
@@ -946,22 +915,22 @@ test("transaction page shows each step's native document status and document num
       { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
       { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
     ],
+    childDocuments: [
+      {
+        documentKind: "purchase_order",
+        documentNo: "PO-2026-09-0001",
+        status: "completed",
+        statusLabel: "เสร็จสิ้น",
+        workflowStepId: "step-001",
+        pdfFiles: [],
+        rawFiles: [],
+      },
+    ],
   });
-  const workflowDocuments = [
-    {
-      documentKind: "purchase_order",
-      documentNo: "PO-2026-09-0001",
-      status: "completed",
-      statusLabel: "เสร็จสิ้น",
-      workflowStepId: "step-001",
-      payload: { evidenceFiles: {} },
-    },
-  ];
 
   const { elements } = await setupTransactionPageSandbox({
     transaction,
     refreshedTransaction: transaction,
-    workflowDocuments,
   });
 
   const rows = elements.documentChecklist.querySelectorAll(".checklist-item");
@@ -1129,36 +1098,31 @@ test("child document files are grouped per document and expose real PDF/raw link
       { stepId: "step-003", documentKind: "payment_voucher", workflowStatus: "blocked" },
       { stepId: "step-004", documentKind: "goods_receipt", workflowStatus: "blocked" },
     ],
-  });
-  const substituteReceipts = [
-    {
-      receiptNo: "SR-2026-09-0001",
-      status: "pending_approval",
-      pdfFiles: [{ name: "01_substitute_receipt.pdf", url: "/api/substitute-receipts/SR-2026-09-0001/files/pdf/01_substitute_receipt.pdf" }],
-      rawFiles: [{ name: "evidence.jpg", url: "/api/substitute-receipts/SR-2026-09-0001/files/raw/evidence.jpg" }],
-      payload: { transactionNo: "TXN-2026-09-0001", workflowStepId: "step-002", statusLabel: "รอตรวจอนุมัติ", receiptType: "stock_purchase" },
-    },
-  ];
-  const workflowDocuments = [
-    {
-      documentKind: "purchase_order",
-      documentNo: "PO-2026-09-0001",
-      status: "completed",
-      statusLabel: "เสร็จสิ้น",
-      workflowStepId: "step-001",
-      payload: {
-        evidenceFiles: {
-          evidence: [{ originalName: "ใบเสนอราคา.jpg", storedName: "A0_ใบเสนอราคา.jpg" }],
-        },
+    childDocuments: [
+      {
+        documentKind: "purchase_order",
+        documentNo: "PO-2026-09-0001",
+        status: "completed",
+        statusLabel: "เสร็จสิ้น",
+        workflowStepId: "step-001",
+        pdfFiles: [{ name: "01_purchase_order.pdf", url: "/workflow-documents/purchase_order/PO-2026-09-0001/pdf/01_purchase_order.pdf" }],
+        rawFiles: [{ name: "ใบเสนอราคา.jpg", url: "/workflow-documents/purchase_order/PO-2026-09-0001/raw/A0_ใบเสนอราคา.jpg" }],
       },
-    },
-  ];
+      {
+        documentKind: "substitute_receipt",
+        documentNo: "SR-2026-09-0001",
+        status: "pending_approval",
+        statusLabel: "รอตรวจอนุมัติ",
+        workflowStepId: "step-002",
+        pdfFiles: [{ name: "01_substitute_receipt.pdf", url: "/api/substitute-receipts/SR-2026-09-0001/files/pdf/01_substitute_receipt.pdf" }],
+        rawFiles: [{ name: "evidence.jpg", url: "/api/substitute-receipts/SR-2026-09-0001/files/raw/evidence.jpg" }],
+      },
+    ],
+  });
 
   const { elements } = await setupTransactionPageSandbox({
     transaction,
     refreshedTransaction: transaction,
-    workflowDocuments,
-    substituteReceipts,
   });
 
   const links = elements.childDocumentFiles.querySelectorAll("a");

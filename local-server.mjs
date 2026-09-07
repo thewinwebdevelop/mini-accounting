@@ -32,6 +32,7 @@ const {
   getWorkflowDocumentFile,
   getWorkflowTemplate,
   getWorkflowTransaction,
+  getWorkflowTransactionDetail,
   getWorkflowTransactionFile,
   getWorkflowTransactionPrefill,
   listExpenseDrafts,
@@ -701,7 +702,7 @@ async function handleWorkflowTransactionStart(request, response) {
 
 async function handleWorkflowTransactionGet(transactionNo, response) {
   try {
-    const record = await getWorkflowTransaction(rootDir, transactionNo);
+    const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
     sendJson(response, 200, record);
   } catch (error) {

@@ -482,119 +482,14 @@ function transactionNoFromQuery() {
   return getQueryParam("transactionNo") || "";
 }
 
-// Every document kind this local server can produce reports its own document
-// number under a different field name (documentNo/requestNo/receiptNo/...).
-// window.WorkflowLogic.normalizeDocumentWorkflowStatus (forms/workflow.logic.js)
-// already knows how to read all of them and derive the same completed/
-// in_progress rule the server uses (including the substitute_receipt
-// receiptType hybrid rule) — reused here so this page never re-implements
-// that business rule client-side and risks drifting from the server.
-function buildLightweightChildDocuments(records) {
-  return records.map((record) => ({
-    documentKind: record.documentKind,
-    documentNo: record.documentNo,
-    status: record.status,
-    statusLabel: record.statusLabel,
-    workflowStepId: record.workflowStepId,
-    // Lightweight workflow-document records never persist the generated
-    // PDF's file name anywhere retrievable after the initial save response,
-    // so this page has no honest way to link it — left null (unknown),
-    // never guessed, so fileGroupElements below renders "no known PDF"
-    // rather than a fabricated link.
-    pdfFiles: null,
-    rawFiles: flattenWorkflowDocumentRawFiles(record),
-  }));
-}
-
-function flattenWorkflowDocumentRawFiles(record) {
-  const evidenceFiles = record.payload?.evidenceFiles || {};
-  const files = [];
-  for (const group of Object.values(evidenceFiles)) {
-    for (const file of group || []) {
-      if (!file?.storedName) continue;
-      files.push({
-        name: file.originalName || file.storedName,
-        url: `/workflow-documents/${encodeURIComponent(record.documentKind)}/${encodeURIComponent(record.documentNo)}/raw/${encodeURIComponent(file.storedName)}`,
-      });
-    }
-  }
-  return files;
-}
-
-function buildExpenseRequestChildDocuments(records, transactionNo) {
-  return records
-    .filter((record) => record.transactionNo === transactionNo)
-    .map((record) => ({
-      documentKind: "expense_request",
-      documentNo: record.requestNo,
-      status: record.status,
-      statusLabel: record.statusLabel,
-      workflowStepId: record.workflowStepId,
-      pdfFiles: record.pdfFiles || [],
-      rawFiles: record.rawFiles || [],
-    }));
-}
-
-// Unlike GET /api/expense-requests (whose list rows already carry
-// transactionNo/workflowStepId at top level, copied straight from
-// findSubmittedExpenseRequests), GET /api/substitute-receipts' list rows are
-// re-shaped by listSubstituteReceipts into a flatter view that drops
-// transactionNo/workflowStepId/receiptType entirely — only the single-receipt
-// route (GET /api/substitute-receipts/:receiptNo) still nests them under
-// `payload`. So the only correct way to find this transaction's substitute
-// receipts is to list every receipt, then fetch each one's own detail to see
-// which transaction it belongs to. This is more requests than the other two
-// child-document kinds need, but the alternative — guessing from the list
-// row's title/date — risks matching the wrong receipt.
-async function fetchSubstituteReceiptChildDocuments(transactionNo, substituteReceiptsUrl) {
-  const listResult = await fetchJson(substituteReceiptsUrl);
-  const submittedReceipts = (listResult.receipts || []).filter((record) => record.receiptNo);
-
-  const details = await Promise.all(
-    submittedReceipts.map((record) => fetchJson(`${substituteReceiptsUrl}/${encodeURIComponent(record.receiptNo)}`).catch(() => null)),
-  );
-
-  return details
-    .filter((detail) => detail && detail.payload?.transactionNo === transactionNo)
-    .map((detail) => ({
-      documentKind: "substitute_receipt",
-      documentNo: detail.receiptNo,
-      status: detail.status,
-      statusLabel: detail.payload?.statusLabel || detail.status,
-      workflowStepId: detail.payload?.workflowStepId,
-      receiptType: detail.payload?.receiptType,
-      pdfFiles: detail.pdfFiles || [],
-      rawFiles: detail.rawFiles || [],
-    }));
-}
-
-// A transaction's child documents are scattered across three unrelated
-// storage areas (lightweight workflow-documents, expense requests, and
-// substitute receipts each have their own JSON files and their own list
-// route), so this fetches and normalizes all three into one flat shape
-// keyed by workflowStepId, mirroring findWorkflowChildDocuments on the
-// server (forms/local-server.logic.js) closely enough to display the same
-// facts — without a dedicated "child documents for this transaction" API
-// route, each of these lists is fetched in full and filtered client-side.
-async function fetchChildDocuments(transactionNo) {
-  const root = document.querySelector("#transactionPage");
-  const workflowDocumentsUrl = (root && root.dataset.workflowDocumentsUrl) || "/api/workflow-documents";
-  const expenseRequestsUrl = (root && root.dataset.expenseRequestsUrl) || "/api/expense-requests";
-  const substituteReceiptsUrl = (root && root.dataset.substituteReceiptsUrl) || "/api/substitute-receipts";
-
-  const [lightweightResult, expenseResult, substituteReceiptDocs] = await Promise.all([
-    fetchJson(`${workflowDocumentsUrl}?transactionNo=${encodeURIComponent(transactionNo)}`),
-    fetchJson(expenseRequestsUrl),
-    fetchSubstituteReceiptChildDocuments(transactionNo, substituteReceiptsUrl),
-  ]);
-
-  return [
-    ...buildLightweightChildDocuments(lightweightResult.documents || []),
-    ...buildExpenseRequestChildDocuments(expenseResult.requests || [], transactionNo),
-    ...substituteReceiptDocs,
-  ];
-}
-
+// The transaction detail/refresh responses (GET /api/workflow-transactions/:id
+// and POST .../refresh — see getWorkflowTransactionDetail/refreshWorkflowTransaction
+// in forms/local-server.logic.js) now carry a `childDocuments` array directly,
+// already normalized (documentKind, documentNo, native status/label,
+// workflowStepId, pdfFiles, rawFiles with working URLs) across all three
+// storage families (lightweight workflow-documents, expense requests,
+// substitute receipts). This page renders straight from that array instead of
+// re-fetching and re-normalizing each family itself.
 function findChildDocumentForStep(childDocuments, step) {
   return childDocuments.find((doc) => doc.workflowStepId === step.stepId)
     || childDocuments.find((doc) => !doc.workflowStepId && doc.documentKind === step.documentKind);
@@ -768,12 +663,9 @@ async function loadTransaction() {
   const root = document.querySelector("#transactionPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
 
-  const [transaction, childDocuments] = await Promise.all([
-    fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}`),
-    fetchChildDocuments(transactionNo),
-  ]);
+  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}`);
 
-  renderTransaction(transaction, childDocuments);
+  renderTransaction(transaction, transaction.childDocuments || []);
   return transaction;
 }
 
@@ -791,12 +683,9 @@ async function refreshTransaction() {
   const root = document.querySelector("#transactionPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
 
-  const [transaction, childDocuments] = await Promise.all([
-    fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/refresh`, { method: "POST" }),
-    fetchChildDocuments(transactionNo),
-  ]);
+  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/refresh`, { method: "POST" });
 
-  renderTransaction(transaction, childDocuments);
+  renderTransaction(transaction, transaction.childDocuments || []);
   return transaction;
 }
 

@@ -35,6 +35,7 @@ const {
   deriveWorkflowProgress,
   formatWorkflowSummaryMarkdown,
   getDefaultWorkflowTemplates,
+  normalizeDocumentWorkflowStatus,
   normalizeWorkflowTemplate,
   validateWorkflowTemplate,
 } = require("./workflow.logic.js");
@@ -2284,7 +2285,19 @@ async function findWorkflowChildDocuments(rootDir, transactionNo) {
   const matchingExpenseRequests = expenseRequests.filter((record) => record.transactionNo === transactionNo);
   const expenseRequestDocs = await Promise.all(matchingExpenseRequests.map(async (record) => {
     const full = await getSubmittedExpenseRequest(rootDir, record.requestNo);
-    return { ...full.payload, documentKind: "expense_request" };
+    // full.payload never carries pdfFiles/rawFiles (submission.json has no
+    // such fields, and the raw upload-time payload.rawFiles list — if any —
+    // is not the freshly disk-scanned list with correct download URLs), so
+    // they are taken from `record` (findSubmittedExpenseRequests already
+    // resolved both via listPdfFiles/listRawFiles), the same way
+    // substituteReceiptDocs does below.
+    return {
+      ...full.payload,
+      folderPath: record.folderPath,
+      pdfFiles: record.pdfFiles,
+      rawFiles: record.rawFiles,
+      documentKind: "expense_request",
+    };
   }));
 
   const substituteReceiptDocs = substituteReceipts
@@ -2298,6 +2311,45 @@ async function findWorkflowChildDocuments(rootDir, transactionNo) {
     }));
 
   return [...expenseRequestDocs, ...substituteReceiptDocs, ...lightweightDocuments];
+}
+
+// Shapes one raw child document (whichever of the three storage families it
+// came from — see findWorkflowChildDocuments) into the flat view the
+// workflow-transaction detail/refresh responses hand to the progress page:
+// its own document number (documentNo/requestNo/receiptNo/... normalized via
+// normalizeDocumentWorkflowStatus), its native status/label (distinct from
+// the workflow step's own workflowStatus), which step it belongs to, and its
+// pdfFiles/rawFiles with working download URLs (already resolved by
+// findWorkflowChildDocuments/findLightweightWorkflowDocuments).
+function formatWorkflowChildDocumentForResponse(doc) {
+  const normalized = normalizeDocumentWorkflowStatus(doc);
+  return {
+    documentKind: doc.documentKind,
+    documentNo: normalized.documentNo,
+    status: doc.status,
+    statusLabel: doc.statusLabel || normalized.nativeStatusLabel || doc.status,
+    workflowStepId: doc.workflowStepId,
+    pdfFiles: doc.pdfFiles || [],
+    rawFiles: doc.rawFiles || [],
+  };
+}
+
+// The single source of truth for "this transaction plus every document
+// produced under it" — used by the GET detail route. Resolves child
+// documents live on every call (rather than reading back whatever was last
+// persisted by refresh) because documents change outside this page's
+// knowledge whenever the user completes one elsewhere, and a plain GET must
+// not hand back stale files. It does not persist anything, unlike refresh:
+// deriving and persisting progress is refreshWorkflowTransaction's job alone.
+async function getWorkflowTransactionDetail(rootDir, transactionNo) {
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) return null;
+
+  const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+  return {
+    ...transaction,
+    childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
+  };
 }
 
 async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => new Date().toISOString() }) {
@@ -2315,7 +2367,14 @@ async function refreshWorkflowTransaction({ rootDir, transactionNo, now = () => 
 
   await persistWorkflowTransaction(rootDir, updated, childDocuments);
 
-  return updated;
+  // childDocuments is derived, not persisted state (see persistWorkflowTransaction
+  // above, which only ever writes `updated`) — attached here, after persisting,
+  // so the caller gets the same shape getWorkflowTransactionDetail returns
+  // without a second, redundant findWorkflowChildDocuments scan.
+  return {
+    ...updated,
+    childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
+  };
 }
 
 // A document never sources prefill data from its own step (the
@@ -2458,6 +2517,7 @@ module.exports = {
   completeSubstituteReceipt,
   completeWorkflowDocument,
   findLightweightWorkflowDocuments,
+  findWorkflowChildDocuments,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptFile,
@@ -2472,6 +2532,7 @@ module.exports = {
   getWorkflowDocumentFile,
   getWorkflowTemplate,
   getWorkflowTransaction,
+  getWorkflowTransactionDetail,
   getWorkflowTransactionFile,
   getWorkflowTransactionPrefill,
   groupUploadsByEvidence,

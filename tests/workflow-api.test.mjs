@@ -978,3 +978,199 @@ test("GET workflow-transaction file route enforces the section/traversal guard a
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// The workflow progress page (forms/workflow-transaction.html) has one job:
+// show every child document's PDF and raw evidence links in one place. That
+// requires the transaction detail response itself to carry those documents —
+// GET /api/workflow-transactions/:transactionNo and POST .../refresh must
+// both attach a `childDocuments` array with working pdfFiles/rawFiles URLs,
+// for every document kind a template can reference. An earlier task on this
+// branch shipped a six-entry table with only one entry actually asserted, so
+// every one of the seven kinds gets its own real HTTP fetch below, not just a
+// shared assertion helper trusted to cover all of them.
+// ---------------------------------------------------------------------------
+
+const ALL_DOCUMENT_KINDS = [
+  "purchase_order",
+  "payment_voucher",
+  "cash_spend_declaration",
+  "payee_acknowledgement",
+  "goods_receipt",
+  "expense_request",
+  "substitute_receipt",
+];
+
+async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
+  await requestJsonOk(baseUrl, "/api/workflow-templates", {
+    method: "POST",
+    body: JSON.stringify({
+      templateId: "all_kinds_test_template",
+      name: "ทดสอบทุกประเภทเอกสาร",
+      documentSteps: ALL_DOCUMENT_KINDS.map((documentKind) => ({ documentKind })),
+    }),
+  });
+
+  const txn = await startTransactionOverHttp(baseUrl, {
+    templateId: "all_kinds_test_template",
+    title: "ทดสอบเอกสารครบทุกประเภท",
+  });
+  assert.equal(txn.steps.length, ALL_DOCUMENT_KINDS.length);
+
+  // The five lightweight kinds all go through the generic workflow-document
+  // shell: submit, then complete.
+  const lightweightKinds = ALL_DOCUMENT_KINDS.slice(0, 5);
+  for (let i = 0; i < lightweightKinds.length; i += 1) {
+    const documentKind = lightweightKinds[i];
+    const formData = new FormData();
+    formData.append("payload", JSON.stringify({
+      documentKind,
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[i].stepId,
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: `เอกสารทดสอบ ${documentKind}`,
+      requesterName: "คุณต้า",
+      payeeName: "ร้านค้าตัวอย่าง",
+      businessPurpose: "ทดสอบ transaction detail รวมเอกสาร",
+      lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "10" }],
+    }));
+    formData.append("evidence_evidence", new Blob([`evidence-for-${documentKind}`], { type: "text/plain" }), "evidence.txt");
+
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: formData });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "คุณต้า" }),
+    });
+  }
+
+  // expense_request: its own dedicated submission route. A PDF is generated
+  // at submission time, before any approval.
+  const expenseFormData = new FormData();
+  expenseFormData.append("payload", JSON.stringify({
+    accountingMonth: "2026-09",
+    requestTitle: "เบิกค่าใช้จ่ายทดสอบ",
+    requestType: "reimbursement",
+    requesterName: "คุณต้า",
+    businessPurpose: "ทดสอบ transaction detail",
+    paymentTargetName: "คุณต้า",
+    transactionNo: txn.transactionNo,
+    workflowTemplateId: txn.workflowTemplateId,
+    workflowStepId: txn.steps[5].stepId,
+    expenseLines: [{
+      date: "2026-09-05",
+      category: "ค่าส่ง/ขนส่ง",
+      description: "ค่าใช้จ่ายทดสอบ",
+      vendor: "ผู้ขายทดสอบ",
+      amountBeforeVat: "100",
+      vatAmount: "7",
+      withholdingTax: "0",
+    }],
+  }));
+  expenseFormData.append("evidence_businessEvidence", new Blob(["evidence-for-expense_request"], { type: "text/plain" }), "evidence.txt");
+  const expenseSubmitted = await requestJsonOk(baseUrl, "/api/expense-requests", { method: "POST", body: expenseFormData });
+  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ approvedBy: "เจ้าของ" }),
+  });
+  // No HTTP route exists yet to mark an expense_request "completed" (only
+  // /approve is wired), so the completion this test needs to exercise
+  // strict-order completion further down is done directly through the logic
+  // layer — the same way tests/workflow-api.test.mjs's other logic-level
+  // tests already do for this document kind.
+  await serverLogic.completeExpenseRequest({ rootDir, requestNo: expenseSubmitted.requestNo, completedBy: "บัญชี" });
+
+  // substitute_receipt: its own dedicated submission route. A general_expense
+  // receipt counts as workflow-completed once approved (the hybrid rule in
+  // deriveChildWorkflowStatus), which is reachable over HTTP.
+  const receiptFormData = new FormData();
+  receiptFormData.append("payload", JSON.stringify({
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-05",
+    receiptTitle: "ใบรับรองแทนใบเสร็จทดสอบ",
+    receiptType: "general_expense",
+    payeeName: "ผู้ขายทดสอบ",
+    businessPurpose: "ทดสอบ transaction detail",
+    transactionNo: txn.transactionNo,
+    workflowTemplateId: txn.workflowTemplateId,
+    workflowStepId: txn.steps[6].stepId,
+    lines: [{ description: "ค่าใช้จ่ายทดสอบ", quantity: "1", unitCost: "107" }],
+  }));
+  receiptFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+  const receiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", { method: "POST", body: receiptFormData });
+  await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ approvedBy: "บัญชี" }),
+  });
+
+  return txn;
+}
+
+async function assertDetailCarriesEveryChildDocument(baseUrl, detail, txn) {
+  assert.ok(Array.isArray(detail.childDocuments), "response must carry a childDocuments array");
+  assert.equal(detail.childDocuments.length, ALL_DOCUMENT_KINDS.length, "every started document kind must appear");
+
+  for (let i = 0; i < ALL_DOCUMENT_KINDS.length; i += 1) {
+    const documentKind = ALL_DOCUMENT_KINDS[i];
+    const doc = detail.childDocuments.find((entry) => entry.documentKind === documentKind);
+    assert.ok(doc, `${documentKind}: must appear in childDocuments`);
+    assert.equal(doc.workflowStepId, txn.steps[i].stepId, `${documentKind}: workflowStepId must match its step`);
+    assert.ok(doc.documentNo, `${documentKind}: must carry its own document number`);
+    assert.ok(doc.status, `${documentKind}: must carry its native status`);
+
+    assert.ok(Array.isArray(doc.pdfFiles) && doc.pdfFiles.length >= 1, `${documentKind}: must carry at least one pdfFiles entry, not null`);
+    const pdfFile = doc.pdfFiles[0];
+    assert.ok(pdfFile.url, `${documentKind}: pdfFiles[0] must carry a url`);
+    const pdfResponse = await fetch(`${baseUrl}${pdfFile.url}`);
+    assert.equal(pdfResponse.status, 200, `${documentKind}: pdfFiles[0].url must actually serve the PDF`);
+
+    assert.ok(Array.isArray(doc.rawFiles) && doc.rawFiles.length >= 1, `${documentKind}: must carry at least one rawFiles entry`);
+    const rawFile = doc.rawFiles[0];
+    assert.ok(rawFile.url, `${documentKind}: rawFiles[0] must carry a url`);
+    const rawResponse = await fetch(`${baseUrl}${rawFile.url}`);
+    assert.equal(rawResponse.status, 200, `${documentKind}: rawFiles[0].url must actually serve the raw file`);
+  }
+}
+
+test("GET workflow-transaction detail carries every child document's pdfFiles/rawFiles with working URLs, for all seven document kinds", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await buildTransactionWithEveryDocumentKind(rootDir, baseUrl);
+
+    const detail = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+    await assertDetailCarriesEveryChildDocument(baseUrl, detail, txn);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("POST workflow-transaction refresh carries the same childDocuments shape as the detail route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await buildTransactionWithEveryDocumentKind(rootDir, baseUrl);
+
+    const refreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, {
+      method: "POST",
+    });
+    await assertDetailCarriesEveryChildDocument(baseUrl, refreshed, txn);
+
+    // All lightweight steps plus expense_request/substitute_receipt were
+    // completed, so strict template order must show every step completed.
+    for (const step of refreshed.steps) {
+      assert.equal(step.workflowStatus, "completed", `${step.documentKind}: expected completed after every child document was finished`);
+    }
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
