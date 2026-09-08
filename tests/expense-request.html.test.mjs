@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { buildFakeDomFromHtml } from "./support/fake-dom.mjs";
 
 const htmlPath = new URL("../forms/expense-request.html", import.meta.url);
 const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", import.meta.url);
 const prefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
+const prefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const expenseLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 
 test("expense form keeps copy/export controls in the backup tools section", async () => {
@@ -153,331 +155,28 @@ function extractInlineControllerScript(html) {
   return html.slice(start, end);
 }
 
-class FakeNode {
-  constructor(tagName) {
-    this.tagName = String(tagName).toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.listeners = {};
-    this.attrs = {};
-    this.dataset = {};
-    this.classListSet = new Set();
-    this.id = "";
-    this.name = "";
-    this.type = "";
-    this.value = "";
-    this.checked = false;
-    this.hidden = false;
-    this.disabled = false;
-    this.textContent = "";
-    this._innerHTML = "";
-    this.style = {};
-  }
-
-  get className() {
-    return [...this.classListSet].join(" ");
-  }
-
-  set className(value) {
-    this.classListSet = new Set(String(value).split(/\s+/).filter(Boolean));
-  }
-
-  get classList() {
-    const self = this;
-    return {
-      add: (c) => self.classListSet.add(c),
-      remove: (c) => self.classListSet.delete(c),
-      toggle: (c, force) => {
-        if (force === undefined) {
-          self.classListSet.has(c) ? self.classListSet.delete(c) : self.classListSet.add(c);
-        } else if (force) {
-          self.classListSet.add(c);
-        } else {
-          self.classListSet.delete(c);
-        }
-      },
-      contains: (c) => self.classListSet.has(c),
-    };
-  }
-
-  get innerHTML() {
-    return this._innerHTML;
-  }
-
-  set innerHTML(value) {
-    this._innerHTML = value;
-    if (value === "") {
-      this.children.forEach((child) => { child.parentNode = null; });
-      this.children = [];
-    }
-  }
-
-  get firstElementChild() {
-    return this.children[0] || null;
-  }
-
-  addEventListener(type, handler) {
-    (this.listeners[type] ??= []).push(handler);
-  }
-
-  dispatch(type, event = {}) {
-    for (const handler of this.listeners[type] || []) handler(event);
-  }
-
-  setAttribute(name, value) {
-    this.attrs[name] = String(value);
-    if (name === "id") this.id = String(value);
-    if (name === "name") this.name = String(value);
-    if (name === "type") this.type = String(value);
-    if (name.startsWith("data-")) {
-      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      this.dataset[key] = String(value);
-    }
-  }
-
-  getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
-  }
-
-  matches(selector) {
-    let sel = selector;
-    let requireChecked = false;
-    if (sel.endsWith(":checked")) {
-      requireChecked = true;
-      sel = sel.slice(0, -":checked".length);
-    }
-    if (requireChecked && !this.checked) return false;
-
-    const bracketMatch = sel.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
-    if (bracketMatch) {
-      const [, tag, attr, value] = bracketMatch;
-      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
-      if (attr === "name") {
-        return value === undefined ? Boolean(this.name) : this.name === value;
-      }
-      if (attr === "type") {
-        return value === undefined ? Boolean(this.type) : this.type === value;
-      }
-      const actual = this.attrs[attr];
-      return value === undefined ? actual !== undefined : actual === value;
-    }
-
-    if (sel.startsWith(".")) {
-      return String(this.className).split(/\s+/).filter(Boolean).includes(sel.slice(1));
-    }
-    if (sel.startsWith("#")) return this.id === sel.slice(1);
-    return this.tagName.toLowerCase() === sel.toLowerCase();
-  }
-
-  querySelectorAll(selector) {
-    const matches = [];
-    const visit = (node) => {
-      for (const child of node.children) {
-        if (child.matches(selector)) matches.push(child);
-        visit(child);
-      }
-    };
-    visit(this);
-    return matches;
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-
-  appendChild(node) {
-    if (node.tagName === "#FRAGMENT") {
-      for (const child of node.children) {
-        child.parentNode = this;
-        this.children.push(child);
-      }
-      node.children = [];
-      return node;
-    }
-    if (node.parentNode) {
-      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
-    }
-    node.parentNode = this;
-    this.children.push(node);
-    return node;
-  }
-
-  append(...nodes) {
-    nodes.forEach((node) => this.appendChild(node));
-  }
-
-  replaceChildren(...nodes) {
-    this.children.forEach((child) => { child.parentNode = null; });
-    this.children = [];
-    this.append(...nodes);
-  }
-
-  remove() {
-    if (this.parentNode) {
-      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
-    }
-  }
-
-  cloneNode(deep) {
-    const clone = new FakeNode(this.tagName);
-    clone.attrs = { ...this.attrs };
-    clone.dataset = { ...this.dataset };
-    clone.id = this.id;
-    clone.name = this.name;
-    clone.type = this.type;
-    clone.value = this.value;
-    clone.className = this.className;
-    if (deep) {
-      clone.children = this.children.map((child) => {
-        const childClone = child.cloneNode(true);
-        childClone.parentNode = clone;
-        return childClone;
-      });
-    }
-    return clone;
-  }
-}
-
-// Builds a fake equivalent of #lineTemplate: a <template> whose .content is
-// a fragment containing one ".line-row" details element with the exact
-// name="..." inputs forms/expense-request.html's addLine()/addLineFromData()
-// and collectData() read from (see the real <template id="lineTemplate">).
-function createExpenseLineTemplate() {
-  const template = new FakeNode("template");
-  const fragment = new FakeNode("#fragment");
-  const details = new FakeNode("details");
-  details.className = "line-row";
-
-  const summary = new FakeNode("summary");
-  summary.className = "line-summary";
-  const titleSpan = new FakeNode("span");
-  titleSpan.className = "line-title";
-  titleSpan.setAttribute("data-line-title", "");
-  const totalSpan = new FakeNode("span");
-  totalSpan.className = "line-total";
-  totalSpan.setAttribute("data-line-total", "");
-  summary.append(titleSpan, totalSpan);
-
-  const fieldsWrap = new FakeNode("div");
-  fieldsWrap.className = "line-fields";
-  const makeInput = (name) => {
-    const el = new FakeNode("input");
-    el.setAttribute("name", name);
-    return el;
-  };
-  const lineCategory = new FakeNode("select");
-  lineCategory.setAttribute("name", "lineCategory");
-  const removeButton = new FakeNode("button");
-  removeButton.setAttribute("data-remove-line", "");
-  fieldsWrap.append(
-    makeInput("lineDate"),
-    lineCategory,
-    makeInput("lineDescription"),
-    makeInput("lineVendor"),
-    makeInput("lineBeforeVat"),
-    makeInput("lineVat"),
-    makeInput("lineWht"),
-    removeButton,
-  );
-
-  details.append(summary, fieldsWrap);
-  fragment.append(details);
-  template.content = fragment;
-  return template;
-}
-
-function makeSimpleElement(tag = "div") {
-  return new FakeNode(tag);
-}
+// FakeNode and the HTML-to-fake-DOM derivation live in
+// tests/support/fake-dom.mjs (Item 7 followup): elements, form.elements, and
+// the #lineTemplate content below now all come from actually parsing
+// forms/expense-request.html, not from a hand-typed literal that could
+// silently drift from the real markup.
 
 // Sets up the real inline controller script from forms/expense-request.html
-// in a require-less vm sandbox with a minimal fake DOM covering exactly the
-// elements the controller touches, runs its DOMContentLoaded handler, and
-// waits for the fire-and-forget loadWorkflowPrefill() fetch chain to settle.
-// Evidence upload cards ([data-evidence-card]) are deliberately left absent
-// (document.querySelectorAll for that selector returns []): the controller
-// already handles zero cards gracefully, and they are unrelated to the
-// workflow wiring under test.
+// in a require-less vm sandbox against a fake DOM derived from the same real
+// HTML text, runs its DOMContentLoaded handler, and waits for the
+// fire-and-forget loadWorkflowPrefill() fetch chain to settle. Evidence
+// upload cards ([data-evidence-card]) are real elements from the parsed
+// HTML now (previously stubbed out entirely) -- the controller wires drag/
+// drop and file-input listeners onto them during boot exactly like a real
+// page load, which is unrelated to the workflow wiring under test but no
+// longer needs to be faked away.
 async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001" } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
-
-  const elementsById = {
-    expenseForm: new FakeNode("form"),
-    lineItems: new FakeNode("div"),
-    lineTemplate: createExpenseLineTemplate(),
-    output: makeSimpleElement("textarea"),
-    errors: makeSimpleElement("div"),
-    saveStatus: makeSimpleElement("div"),
-    workflowReturnLink: new FakeNode("a"),
-    workflowPrefillBanner: new FakeNode("div"),
-    workflowPrefillGroups: new FakeNode("div"),
-    workflowPrefillApply: new FakeNode("button"),
-    workflowPrefillDismiss: new FakeNode("button"),
-    requestNoPreview: makeSimpleElement("input"),
-    refreshRequestNo: makeSimpleElement("button"),
-    addLine: makeSimpleElement("button"),
-    copyJson: makeSimpleElement("button"),
-    copyMarkdown: makeSimpleElement("button"),
-    saveDraft: makeSimpleElement("button"),
-    submitRequest: makeSimpleElement("button"),
-    resetForm: makeSimpleElement("button"),
-    docNo: makeSimpleElement("div"),
-    sumBeforeVat: makeSimpleElement("strong"),
-    sumVat: makeSimpleElement("strong"),
-    sumGross: makeSimpleElement("strong"),
-    sumWht: makeSimpleElement("strong"),
-    sumNet: makeSimpleElement("span"),
-  };
-
-  // Mirror the real markup: both start with the `hidden` attribute present
-  // (<a ... hidden>, <div ... hidden>), so their `.hidden` property starts
-  // true, exactly like a real browser parsing the HTML.
-  elementsById.workflowReturnLink.hidden = true;
-  elementsById.workflowPrefillBanner.hidden = true;
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
 
   const form = elementsById.expenseForm;
   form._requestType = "reimbursement";
-  const formField = () => ({ value: "", addEventListener() {} });
-  form.elements = {
-    accountingMonth: formField(),
-    requestTitle: formField(),
-    requesterName: formField(),
-    requesterRole: formField(),
-    requesterContact: formField(),
-    expenseDate: formField(),
-    businessPurpose: formField(),
-    paymentTargetName: formField(),
-    paymentBankName: formField(),
-    paymentAccountNo: formField(),
-    transactionNo: formField(),
-    workflowTemplateId: formField(),
-    workflowStepId: formField(),
-  };
-
-  // markWorkflowFieldPrefilled looks up `[data-badge-for="<field>"]` inside
-  // the form, mirroring the real <span class="field-badge" data-badge-for="...">
-  // markup added next to each prefillable field.
-  for (const fieldName of ["requestTitle", "requesterName", "businessPurpose", "paymentTargetName", "paymentBankName", "paymentAccountNo", "lines"]) {
-    const badge = new FakeNode("span");
-    badge.setAttribute("data-badge-for", fieldName);
-    badge.hidden = true;
-    form.appendChild(badge);
-  }
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    querySelectorAll(selector) {
-      if (selector === "[data-evidence-card]") return [];
-      return [];
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
 
   class FakeFormData {
     constructor(targetForm) {
@@ -536,6 +235,7 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   // `window.sanitizeWorkflowReturnTo`.
   context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
   vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(prefillBannerPath, "utf8"), context);
   vm.runInContext(script, context);
 
   const bootResult = context.window._handlers.DOMContentLoaded();

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { buildFakeDomFromHtml } from "./support/fake-dom.mjs";
 
 const htmlPath = new URL("../forms/substitute-receipt.html", import.meta.url);
 const browserLogicPath = new URL("../forms/substitute-receipt.logic.browser.js", import.meta.url);
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", import.meta.url);
 const prefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
+const prefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 
 test("substitute receipt page provides stock purchase form, evidence uploads, and summary", async () => {
   const html = await readFile(htmlPath, "utf8");
@@ -142,336 +144,24 @@ test("substitute receipt browser controller includes workflow fields in the save
 // technique tests/workflow-document.html.test.mjs uses for the generic
 // shell.
 
-class FakeNode {
-  constructor(tagName) {
-    this.tagName = String(tagName).toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.listeners = {};
-    this.attrs = {};
-    this.dataset = {};
-    this.classListSet = new Set();
-    this.id = "";
-    this.name = "";
-    this.type = "";
-    this.value = "";
-    this.checked = false;
-    this.hidden = false;
-    this.disabled = false;
-    this.required = false;
-    this.textContent = "";
-    this._innerHTML = "";
-    this.style = {};
-    // Only meaningful on <select>, but harmless everywhere else — avoids a
-    // real DOM's automatic "currently selected option" computation, which
-    // this fake DOM does not attempt to replicate.
-    this.selectedOptions = [];
-  }
-
-  get className() {
-    return [...this.classListSet].join(" ");
-  }
-
-  set className(value) {
-    this.classListSet = new Set(String(value).split(/\s+/).filter(Boolean));
-  }
-
-  get classList() {
-    const self = this;
-    return {
-      add: (c) => self.classListSet.add(c),
-      remove: (c) => self.classListSet.delete(c),
-      toggle: (c, force) => {
-        if (force === undefined) {
-          self.classListSet.has(c) ? self.classListSet.delete(c) : self.classListSet.add(c);
-        } else if (force) {
-          self.classListSet.add(c);
-        } else {
-          self.classListSet.delete(c);
-        }
-      },
-      contains: (c) => self.classListSet.has(c),
-    };
-  }
-
-  get innerHTML() {
-    return this._innerHTML;
-  }
-
-  set innerHTML(value) {
-    this._innerHTML = value;
-    if (value === "") {
-      this.children.forEach((child) => { child.parentNode = null; });
-      this.children = [];
-    }
-  }
-
-  addEventListener(type, handler) {
-    (this.listeners[type] ??= []).push(handler);
-  }
-
-  dispatch(type, event = {}) {
-    for (const handler of this.listeners[type] || []) handler(event);
-  }
-
-  setAttribute(name, value) {
-    this.attrs[name] = String(value);
-    if (name === "id") this.id = String(value);
-    if (name === "name") this.name = String(value);
-    if (name === "type") this.type = String(value);
-    if (name.startsWith("data-")) {
-      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      this.dataset[key] = String(value);
-    }
-  }
-
-  getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
-  }
-
-  matches(selector) {
-    let sel = selector;
-    let requireChecked = false;
-    if (sel.endsWith(":checked")) {
-      requireChecked = true;
-      sel = sel.slice(0, -":checked".length);
-    }
-    if (requireChecked && !this.checked) return false;
-
-    const bracketMatch = sel.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
-    if (bracketMatch) {
-      const [, tag, attr, value] = bracketMatch;
-      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
-      if (attr === "name") {
-        return value === undefined ? Boolean(this.name) : this.name === value;
-      }
-      if (attr === "type") {
-        return value === undefined ? Boolean(this.type) : this.type === value;
-      }
-      const actual = this.attrs[attr];
-      return value === undefined ? actual !== undefined : actual === value;
-    }
-
-    if (sel.startsWith(".")) {
-      return String(this.className).split(/\s+/).filter(Boolean).includes(sel.slice(1));
-    }
-    if (sel.startsWith("#")) return this.id === sel.slice(1);
-    return this.tagName.toLowerCase() === sel.toLowerCase();
-  }
-
-  querySelectorAll(selector) {
-    const matches = [];
-    const visit = (node) => {
-      for (const child of node.children) {
-        if (child.matches(selector)) matches.push(child);
-        visit(child);
-      }
-    };
-    visit(this);
-    return matches;
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-
-  appendChild(node) {
-    if (node.tagName === "#FRAGMENT") {
-      for (const child of node.children) {
-        child.parentNode = this;
-        this.children.push(child);
-      }
-      node.children = [];
-      return node;
-    }
-    if (node.parentNode) {
-      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
-    }
-    node.parentNode = this;
-    this.children.push(node);
-    return node;
-  }
-
-  append(...nodes) {
-    nodes.forEach((node) => this.appendChild(node));
-  }
-
-  replaceChildren(...nodes) {
-    this.children.forEach((child) => { child.parentNode = null; });
-    this.children = [];
-    this.append(...nodes);
-  }
-
-  remove() {
-    if (this.parentNode) {
-      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
-    }
-  }
-
-  cloneNode(deep) {
-    const clone = new FakeNode(this.tagName);
-    clone.attrs = { ...this.attrs };
-    clone.dataset = { ...this.dataset };
-    clone.id = this.id;
-    clone.name = this.name;
-    clone.type = this.type;
-    clone.value = this.value;
-    clone.className = this.className;
-    if (deep) {
-      clone.children = this.children.map((child) => {
-        const childClone = child.cloneNode(true);
-        childClone.parentNode = clone;
-        return childClone;
-      });
-    }
-    return clone;
-  }
-}
-
-// Builds a fake equivalent of #stockLineTemplate: a <template> whose
-// .content is a fragment containing one ".stock-line" details element with
-// the exact name="..." fields and data-* hooks
-// forms/substitute-receipt.logic.browser.js's addStockLine()/
-// applyReceiptTypeState()/collectLineRows() read from (see the real
-// <template id="stockLineTemplate"> in forms/substitute-receipt.html).
-function createStockLineTemplate() {
-  const template = new FakeNode("template");
-  const fragment = new FakeNode("#fragment");
-  const details = new FakeNode("details");
-  details.className = "stock-line";
-
-  const summary = new FakeNode("summary");
-  summary.className = "stock-line-summary";
-  const titleSpan = new FakeNode("span");
-  titleSpan.setAttribute("data-stock-line-title", "");
-  const totalSpan = new FakeNode("span");
-  totalSpan.setAttribute("data-stock-line-total", "");
-  summary.append(titleSpan, totalSpan);
-
-  const fieldsWrap = new FakeNode("div");
-  fieldsWrap.className = "stock-line-fields";
-
-  const stockField = new FakeNode("div");
-  stockField.setAttribute("data-stock-only-field", "");
-  const select = new FakeNode("select");
-  select.setAttribute("name", "stockSkuId");
-  stockField.append(select);
-
-  const descriptionField = new FakeNode("div");
-  const descriptionLabel = new FakeNode("label");
-  descriptionLabel.setAttribute("data-description-label", "");
-  const description = new FakeNode("input");
-  description.setAttribute("name", "description");
-  const sku = new FakeNode("input");
-  sku.setAttribute("name", "sku");
-  descriptionField.append(descriptionLabel, description, sku);
-
-  const quantityField = new FakeNode("div");
-  const quantity = new FakeNode("input");
-  quantity.setAttribute("name", "quantity");
-  quantityField.append(quantity);
-
-  const amountField = new FakeNode("div");
-  const amountLabel = new FakeNode("label");
-  amountLabel.setAttribute("data-amount-label", "");
-  const unitCost = new FakeNode("input");
-  unitCost.setAttribute("name", "unitCost");
-  amountField.append(amountLabel, unitCost);
-
-  const removeButton = new FakeNode("button");
-  removeButton.setAttribute("data-remove-line", "");
-
-  fieldsWrap.append(stockField, descriptionField, quantityField, amountField, removeButton);
-  details.append(summary, fieldsWrap);
-  fragment.append(details);
-  template.content = fragment;
-  return template;
-}
-
-function makeSimpleElement(tag = "div") {
-  return new FakeNode(tag);
-}
+// FakeNode and the HTML-to-fake-DOM derivation live in
+// tests/support/fake-dom.mjs (Item 7 followup): elements, form.elements, and
+// the #stockLineTemplate content below now all come from actually parsing
+// forms/substitute-receipt.html, not from a hand-typed literal that could
+// silently drift from the real markup.
 
 // Sets up the real forms/substitute-receipt.logic.browser.js in a
-// require-less vm sandbox with a minimal fake DOM covering exactly the
-// elements the controller touches, runs its DOMContentLoaded handler, and
-// waits for both the boot Promise.all chain and the fire-and-forget
-// loadWorkflowPrefill() fetch chain to settle. Evidence file inputs are
-// deliberately left absent — the controller already handles a missing
-// evidence_* input gracefully via optional chaining, and they are unrelated
-// to the workflow wiring under test.
+// require-less vm sandbox against a fake DOM derived from the real
+// forms/substitute-receipt.html (see tests/support/fake-dom.mjs), runs its
+// DOMContentLoaded handler, and waits for both the boot Promise.all chain and
+// the fire-and-forget loadWorkflowPrefill() fetch chain to settle. Evidence
+// file inputs are real elements from the parsed HTML but never get a `.files`
+// list set — the controller already handles that (via optional chaining and
+// `?? []`), and file uploads are unrelated to the workflow wiring under test.
 async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = null, nextReceiptNo = "RCT-2026-09-0001" } = {}) {
-  const elementsById = {
-    substituteReceiptForm: new FakeNode("form"),
-    substituteReceiptStatus: makeSimpleElement("div"),
-    stockLineItems: new FakeNode("div"),
-    stockLineTemplate: createStockLineTemplate(),
-    addStockLine: makeSimpleElement("button"),
-    saveDraft: makeSimpleElement("button"),
-    submitForApproval: makeSimpleElement("button"),
-    approveReceipt: makeSimpleElement("button"),
-    receiveStock: makeSimpleElement("button"),
-    receiptStatus: makeSimpleElement("div"),
-    receiptNoPreview: makeSimpleElement("div"),
-    lineCountPreview: makeSimpleElement("div"),
-    totalAmountPreview: makeSimpleElement("div"),
-    evidenceCountPreview: makeSimpleElement("div"),
-    stockReceiptNotice: makeSimpleElement("div"),
-    vendorPresetSelect: new FakeNode("select"),
-    receiptTypeWorkflowNote: makeSimpleElement("span"),
-    workflowReturnLink: new FakeNode("a"),
-    workflowPrefillBanner: new FakeNode("div"),
-    workflowPrefillGroups: new FakeNode("div"),
-    workflowPrefillApply: new FakeNode("button"),
-    workflowPrefillDismiss: new FakeNode("button"),
-  };
-
-  // Mirror the real markup: both start with the `hidden` attribute present
-  // (<a ... hidden>, <div ... hidden>), so their `.hidden` property starts
-  // true, exactly like a real browser parsing the HTML.
-  elementsById.workflowReturnLink.hidden = true;
-  elementsById.workflowPrefillBanner.hidden = true;
-  elementsById.receiptTypeWorkflowNote.hidden = true;
-
+  const realHtml = await readFile(htmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
   const form = elementsById.substituteReceiptForm;
-  const formField = (value = "") => ({ value, disabled: false, addEventListener() {} });
-  form.elements = {
-    accountingMonth: formField(),
-    receiptDate: formField(),
-    receiptTitle: formField(),
-    receiptType: formField("stock_purchase"),
-    payeeName: formField(),
-    payeeTaxId: formField(),
-    paymentChannel: formField(),
-    paymentReference: formField(),
-    businessPurpose: formField(),
-    transactionNo: formField(),
-    workflowTemplateId: formField(),
-    workflowStepId: formField(),
-  };
-
-  // markWorkflowFieldPrefilled looks up `[data-badge-for="<field>"]` inside
-  // the form, mirroring the real <span class="field-badge" data-badge-for="...">
-  // markup added next to each prefillable field.
-  for (const fieldName of ["receiptTitle", "payeeName", "payeeTaxId", "businessPurpose", "lines"]) {
-    const badge = new FakeNode("span");
-    badge.setAttribute("data-badge-for", fieldName);
-    badge.hidden = true;
-    form.appendChild(badge);
-  }
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    querySelectorAll() {
-      return [];
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
 
   const fetchLog = [];
   // Captures whatever the controller last posted as a multipart "payload"
@@ -534,6 +224,7 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
   // `window.sanitizeWorkflowReturnTo`.
   context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
   vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(prefillBannerPath, "utf8"), context);
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
 
   context.window._handlers.DOMContentLoaded();

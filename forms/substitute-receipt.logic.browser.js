@@ -64,17 +64,6 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const receiptTypeWorkflowNote = document.querySelector("#receiptTypeWorkflowNote");
   const workflowReturnLink = document.querySelector("#workflowReturnLink");
-  const workflowPrefillBanner = document.querySelector("#workflowPrefillBanner");
-  const workflowPrefillGroupsContainer = document.querySelector("#workflowPrefillGroups");
-  const workflowPrefillApplyButton = document.querySelector("#workflowPrefillApply");
-  const workflowPrefillDismissButton = document.querySelector("#workflowPrefillDismiss");
-  let workflowPrefill = null;
-
-  const WORKFLOW_PREFILL_GROUP_LABELS = {
-    payee: "ผู้รับเงิน/คู่ค้า",
-    purpose: "วัตถุประสงค์",
-    lines: "รายการ",
-  };
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -407,91 +396,28 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function markWorkflowFieldPrefilled(fieldName, sourceDocumentNo) {
-    const badge = form.querySelector(`[data-badge-for="${fieldName}"]`);
-    if (!badge) return;
-    // No real source document number means there is nothing honest to show —
-    // rendering the badge anyway used to print the literal "นำมาจาก
-    // undefined" (a non-Thai token in a Thai-only UI). Hide it instead.
-    if (!sourceDocumentNo) {
-      badge.hidden = true;
-      return;
-    }
-    badge.hidden = false;
-    badge.textContent = `นำมาจาก ${sourceDocumentNo}`;
-  }
-
-  function renderWorkflowPrefillBanner(prefill) {
-    if (!prefill || !Array.isArray(prefill.availableGroups) || prefill.availableGroups.length === 0) return;
-    workflowPrefillGroupsContainer.replaceChildren(
-      ...prefill.availableGroups.map((group) => {
-        const wrapper = document.createElement("label");
-        wrapper.className = "prefill-group";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.value = group;
-        checkbox.checked = true;
-        const sourceDocumentNo = prefill.sources?.[group];
-        const labelText = document.createElement("span");
-        labelText.textContent = sourceDocumentNo
-          ? `${WORKFLOW_PREFILL_GROUP_LABELS[group] || group} (จาก ${sourceDocumentNo})`
-          : (WORKFLOW_PREFILL_GROUP_LABELS[group] || group);
-        wrapper.append(checkbox, labelText);
-        return wrapper;
-      }),
-    );
-    workflowPrefillBanner.hidden = false;
-  }
-
-  function applyWorkflowPrefillPatch(patch = {}, groups = []) {
-    const selectedGroups = new Set(groups);
-    if (selectedGroups.has("payee")) {
-      if (patch.payeeName !== undefined) {
-        form.elements.payeeName.value = patch.payeeName;
-        markWorkflowFieldPrefilled("payeeName", workflowPrefill?.sources?.payee);
-      }
-      if (patch.payeeTaxId !== undefined) {
-        form.elements.payeeTaxId.value = patch.payeeTaxId;
-        markWorkflowFieldPrefilled("payeeTaxId", workflowPrefill?.sources?.payee);
-      }
-    }
-    if (selectedGroups.has("purpose")) {
-      if (patch.receiptTitle !== undefined) {
-        form.elements.receiptTitle.value = patch.receiptTitle;
-        markWorkflowFieldPrefilled("receiptTitle", workflowPrefill?.sources?.purpose);
-      }
-      if (patch.businessPurpose !== undefined) {
-        form.elements.businessPurpose.value = patch.businessPurpose;
-        markWorkflowFieldPrefilled("businessPurpose", workflowPrefill?.sources?.purpose);
-      }
-    }
-    if (selectedGroups.has("lines") && Array.isArray(patch.lines) && patch.lines.length) {
+  // Cross-document prefill (Task 4/Task 6/Task 7, Item 4 followup): the
+  // fetch/render/apply/badge mechanics are shared with
+  // forms/workflow-document.logic.browser.js and forms/expense-request.html
+  // via forms/workflow-prefill-banner.browser.js. Only this form's own field
+  // names differ per group. substitute_receipt has no requester field at
+  // all, so `fields.parties` is omitted -- the shared controller then never
+  // has a parties field to apply here.
+  const workflowPrefillBanner = window.WorkflowPrefillBanner.create({
+    documentKind: "substitute_receipt",
+    transactionNo: workflowContext.transactionNo,
+    workflowStepId: workflowContext.workflowStepId,
+    form,
+    fields: {
+      payee: ["payeeName", "payeeTaxId"],
+      purpose: ["receiptTitle", "businessPurpose"],
+    },
+    applyLines(lines) {
       lineItems.replaceChildren();
-      for (const line of patch.lines) addStockLine(line);
-      markWorkflowFieldPrefilled("lines", workflowPrefill?.sources?.lines);
-    }
-    // substitute_receipt has no requester field, so `parties` (if present)
-    // is never applied here.
-    updatePreview();
-  }
-
-  async function fetchWorkflowPrefill() {
-    if (!workflowContext.transactionNo || !workflowContext.workflowStepId) return null;
-    try {
-      const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(workflowContext.transactionNo)}/prefill?documentKind=substitute_receipt&stepId=${encodeURIComponent(workflowContext.workflowStepId)}`);
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async function loadWorkflowPrefill() {
-    const prefill = await fetchWorkflowPrefill();
-    if (!prefill) return;
-    workflowPrefill = prefill;
-    renderWorkflowPrefillBanner(prefill);
-  }
+      for (const line of lines) addStockLine(line);
+    },
+    onApplied: () => updatePreview(),
+  });
 
   function applyWorkflowReceiptTypeLock() {
     if (!workflowContext.receiptType) return;
@@ -664,18 +590,6 @@ window.addEventListener("DOMContentLoaded", () => {
     setTimeout(resetFormState);
   });
 
-  workflowPrefillApplyButton?.addEventListener("click", () => {
-    if (!workflowPrefill) return;
-    const checkedGroups = [...workflowPrefillGroupsContainer.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
-    const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(workflowPrefill.context, "substitute_receipt", checkedGroups) || {};
-    applyWorkflowPrefillPatch(patch, checkedGroups);
-    workflowPrefillBanner.hidden = true;
-  });
-
-  workflowPrefillDismissButton?.addEventListener("click", () => {
-    workflowPrefillBanner.hidden = true;
-  });
-
   applyWorkflowHiddenFields();
   applyWorkflowReturnLink();
 
@@ -691,7 +605,7 @@ window.addEventListener("DOMContentLoaded", () => {
         // document: an existing draft/receipt already has its own real
         // data, so offering to overwrite it with an earlier document's data
         // would be wrong.
-        loadWorkflowPrefill();
+        workflowPrefillBanner.load();
       }
       updatePreview();
     })

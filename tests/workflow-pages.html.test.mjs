@@ -4,6 +4,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 import workflowLogic from "../forms/workflow.logic.js";
+import { buildFakeDomFromHtml } from "./support/fake-dom.mjs";
 
 const templatesHtmlPath = new URL("../forms/workflow-templates.html", import.meta.url);
 const transactionsHtmlPath = new URL("../forms/workflow-transactions.html", import.meta.url);
@@ -12,190 +13,18 @@ const browserLogicPath = new URL("../forms/workflow.logic.browser.js", import.me
 const workflowLogicPath = new URL("../forms/workflow.logic.js", import.meta.url);
 
 // ---------------------------------------------------------------------------
-// Minimal fake DOM, purpose-built for exactly the selectors and APIs
-// forms/workflow.logic.browser.js exercises: querySelector(All) on tag/class/
-// id/attribute selectors (including a fixed-value attribute selector like
-// [data-move-step="up"]), append/appendChild/replaceChildren, cloneNode, and
-// setAttribute/dataset. This mirrors the technique already proven in
-// tests/workflow-document.html.test.mjs for the same kind of *.logic.
-// browser.js file, rather than only string-matching source text (which is
-// exactly what let a top-level `require()` and a missing <script> tag slip
-// through untested on this branch before).
+// FakeNode and the HTML-to-fake-DOM derivation used to live here as this
+// file's own hand-typed copy (a fourth one, alongside
+// tests/workflow-document.html.test.mjs, tests/substitute-receipt.html.test.mjs,
+// and tests/expense-request.html.test.mjs). They now live once in
+// tests/support/fake-dom.mjs (Item 7 followup): elements, `.dataset` (the
+// data-templates-url/data-transactions-url/data-document-types-url the
+// controller reads its API endpoints from), and the two <template> bodies
+// below all come from actually parsing the real
+// forms/workflow-templates.html / workflow-transactions.html /
+// workflow-transaction.html, not from a hand-typed literal that could
+// silently drift from the real markup.
 // ---------------------------------------------------------------------------
-class FakeNode {
-  constructor(tagName) {
-    this.tagName = String(tagName).toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.listeners = {};
-    this.attrs = {};
-    this.dataset = {};
-    this.id = "";
-    this.name = "";
-    this.type = "";
-    this.value = "";
-    this.checked = false;
-    this.disabled = false;
-    this.hidden = false;
-    this.textContent = "";
-    this.className = "";
-  }
-
-  addEventListener(type, handler) {
-    (this.listeners[type] ??= []).push(handler);
-  }
-
-  dispatch(type, event = {}) {
-    for (const handler of this.listeners[type] || []) handler(event);
-  }
-
-  setAttribute(name, value) {
-    this.attrs[name] = String(value);
-    if (name === "id") this.id = String(value);
-    if (name === "name") this.name = String(value);
-    if (name === "type") this.type = String(value);
-    if (name.startsWith("data-")) {
-      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      this.dataset[key] = String(value);
-    }
-  }
-
-  getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
-  }
-
-  matches(selector) {
-    const bracketMatch = selector.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
-    if (bracketMatch) {
-      const [, tag, attr, value] = bracketMatch;
-      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
-      const actual = this.attrs[attr];
-      return value === undefined ? actual !== undefined : actual === value;
-    }
-    if (selector.startsWith(".")) {
-      return String(this.className).split(/\s+/).filter(Boolean).includes(selector.slice(1));
-    }
-    if (selector.startsWith("#")) return this.id === selector.slice(1);
-    return this.tagName.toLowerCase() === selector.toLowerCase();
-  }
-
-  querySelectorAll(selector) {
-    const matches = [];
-    const visit = (node) => {
-      for (const child of node.children) {
-        if (child.matches(selector)) matches.push(child);
-        visit(child);
-      }
-    };
-    visit(this);
-    return matches;
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-
-  appendChild(node) {
-    if (node.tagName === "#FRAGMENT") {
-      for (const child of node.children) {
-        child.parentNode = this;
-        this.children.push(child);
-      }
-      node.children = [];
-      return node;
-    }
-    if (node.parentNode) {
-      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
-    }
-    node.parentNode = this;
-    this.children.push(node);
-    return node;
-  }
-
-  append(...nodes) {
-    nodes.forEach((node) => this.appendChild(node));
-  }
-
-  replaceChildren(...nodes) {
-    this.children.forEach((child) => { child.parentNode = null; });
-    this.children = [];
-    this.append(...nodes);
-  }
-
-  remove() {
-    if (this.parentNode) {
-      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
-    }
-  }
-
-  cloneNode(deep) {
-    const clone = new FakeNode(this.tagName);
-    clone.attrs = { ...this.attrs };
-    clone.dataset = { ...this.dataset };
-    clone.id = this.id;
-    clone.name = this.name;
-    clone.type = this.type;
-    clone.value = this.value;
-    clone.className = this.className;
-    // A real cloneNode also carries over boolean-attribute-reflected
-    // properties like `hidden` (e.g. a template's `<span hidden>` child must
-    // still be hidden after cloning) and static text content. `disabled` and
-    // `checked` are included too since real form controls reflect them from
-    // markup the same way.
-    clone.hidden = this.hidden;
-    clone.disabled = this.disabled;
-    clone.checked = this.checked;
-    clone.textContent = this.textContent;
-    if (deep) {
-      clone.children = this.children.map((child) => {
-        const childClone = child.cloneNode(true);
-        childClone.parentNode = clone;
-        return childClone;
-      });
-    }
-    return clone;
-  }
-}
-
-// Builds the <template id="documentStepTemplate"> equivalent from
-// forms/workflow-templates.html: one ".step-row" <li> with an order span, a
-// label span, and the up/down/remove buttons the real markup provides.
-function createDocumentStepTemplate() {
-  const template = new FakeNode("template");
-  const fragment = new FakeNode("#fragment");
-  const row = new FakeNode("li");
-  row.className = "step-row";
-  const order = new FakeNode("span");
-  order.className = "step-order";
-  const label = new FakeNode("span");
-  label.className = "step-label";
-  // Mirrors the real <select class="step-receipt-type" hidden> in
-  // forms/workflow-templates.html's #documentStepTemplate: only meaningful
-  // (and only shown) for a substitute_receipt step, since that is the only
-  // document kind whose workflow-completion rule keys on receiptType.
-  const receiptTypeSelect = new FakeNode("select");
-  receiptTypeSelect.className = "step-receipt-type";
-  receiptTypeSelect.hidden = true;
-  const stockOption = new FakeNode("option");
-  stockOption.value = "stock_purchase";
-  const expenseOption = new FakeNode("option");
-  expenseOption.value = "general_expense";
-  receiptTypeSelect.append(stockOption, expenseOption);
-  const actions = new FakeNode("div");
-  actions.className = "step-actions";
-  const upButton = new FakeNode("button");
-  upButton.setAttribute("data-move-step", "up");
-  const downButton = new FakeNode("button");
-  downButton.setAttribute("data-move-step", "down");
-  const removeButton = new FakeNode("button");
-  removeButton.setAttribute("data-remove-step", "");
-  actions.append(upButton, downButton, removeButton);
-  row.append(order, label, receiptTypeSelect, actions);
-  fragment.append(row);
-  template.content = fragment;
-  return template;
-}
-
 // Stub server: mirrors handleWorkflowTemplateList/handleWorkflowTemplateSave
 // closely enough to exercise the real save-then-reload round trip (GET
 // /api/workflow-document-types, GET/POST /api/workflow-templates) without
@@ -235,38 +64,15 @@ function createStubFetch({ documentTypes, templates, onSave }) {
   };
 }
 
-// Sets up forms/workflow.logic.browser.js in a require-less sandbox with just
-// enough of a fake DOM to run its DOMContentLoaded handler for real against
-// forms/workflow-templates.html's actual element ids.
+// Sets up forms/workflow.logic.browser.js in a require-less sandbox against a
+// fake DOM derived from the real forms/workflow-templates.html (see
+// tests/support/fake-dom.mjs), and runs its DOMContentLoaded handler for
+// real. The `data-document-types-url`/`data-templates-url` endpoints on
+// #templatePage, and the #documentStepTemplate content, all come straight
+// from the real markup now.
 async function setupTemplatePageSandbox({ documentTypes, templates, onSave }) {
-  const elementsById = {
-    templatePage: new FakeNode("main"),
-    templateEditorForm: new FakeNode("form"),
-    templateSelect: new FakeNode("select"),
-    templateName: new FakeNode("input"),
-    templateDescription: new FakeNode("textarea"),
-    templateSyncGoogleDrive: new FakeNode("input"),
-    documentKindSelect: new FakeNode("select"),
-    addDocumentStep: new FakeNode("button"),
-    documentStepsList: new FakeNode("ul"),
-    documentStepTemplate: createDocumentStepTemplate(),
-    saveTemplate: new FakeNode("button"),
-    templateStatus: new FakeNode("div"),
-  };
-  elementsById.templatePage.dataset = {
-    documentTypesUrl: "/api/workflow-document-types",
-    templatesUrl: "/api/workflow-templates",
-  };
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
+  const realHtml = await readFile(templatesHtmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
 
   const stubFetch = createStubFetch({ documentTypes, templates, onSave });
   const window = { fetch: stubFetch };
@@ -645,31 +451,11 @@ function createTransactionsStubFetch({ templates, transactions, onStart }) {
   };
 }
 
+// Sets up forms/workflow.logic.browser.js against a fake DOM derived from
+// the real forms/workflow-transactions.html (see tests/support/fake-dom.mjs).
 async function setupTransactionsPageSandbox({ templates, transactions, onStart }) {
-  const elementsById = {
-    transactionsPage: new FakeNode("main"),
-    startTransactionForm: new FakeNode("form"),
-    startTemplateSelect: new FakeNode("select"),
-    startAccountingMonth: new FakeNode("input"),
-    startTransactionTitle: new FakeNode("input"),
-    startTransactionButton: new FakeNode("button"),
-    startTransactionStatus: new FakeNode("div"),
-    transactionRows: new FakeNode("tbody"),
-  };
-  elementsById.transactionsPage.dataset = {
-    templatesUrl: "/api/workflow-templates",
-    transactionsUrl: "/api/workflow-transactions",
-  };
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
+  const realHtml = await readFile(transactionsHtmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
 
   const stubFetch = createTransactionsStubFetch({ templates, transactions, onStart });
   const location = { search: "", href: "" };
@@ -809,45 +595,6 @@ test("starting a transaction without picking a template raises a Thai validation
 // Transaction detail page (forms/workflow-transaction.html)
 // ---------------------------------------------------------------------------
 
-// Builds the <template id="documentChecklistItemTemplate"> equivalent from
-// forms/workflow-transaction.html: one ".checklist-item" <li> with an order
-// span, label, workflow/native status badges, a document-no span, and the
-// per-step action button that defaults to "เปิดเอกสาร".
-function createDocumentChecklistItemTemplate() {
-  const template = new FakeNode("template");
-  const fragment = new FakeNode("#fragment");
-  const row = new FakeNode("li");
-  row.className = "checklist-item";
-  const order = new FakeNode("span");
-  order.className = "step-order";
-  const body = new FakeNode("div");
-  body.className = "step-body";
-  const label = new FakeNode("div");
-  label.className = "step-label";
-  const meta = new FakeNode("div");
-  meta.className = "step-meta";
-  const workflowStatus = new FakeNode("span");
-  workflowStatus.className = "status workflow-status";
-  const nativeStatus = new FakeNode("span");
-  nativeStatus.className = "status native-status";
-  nativeStatus.hidden = true;
-  const documentNo = new FakeNode("span");
-  documentNo.className = "document-no muted";
-  documentNo.hidden = true;
-  meta.append(workflowStatus, nativeStatus, documentNo);
-  body.append(label, meta);
-  const actions = new FakeNode("div");
-  actions.className = "step-actions";
-  const actionButton = new FakeNode("button");
-  actionButton.setAttribute("data-step-action", "");
-  actionButton.textContent = "เปิดเอกสาร";
-  actions.append(actionButton);
-  row.append(order, body, actions);
-  fragment.append(row);
-  template.content = fragment;
-  return template;
-}
-
 // Stub server for the transaction detail page: GET/refresh the transaction
 // and start-document. The real GET/refresh routes now attach a
 // `childDocuments` array directly onto the transaction response (see
@@ -889,6 +636,10 @@ function createTransactionStubFetch({
   };
 }
 
+// Sets up forms/workflow.logic.browser.js against a fake DOM derived from
+// the real forms/workflow-transaction.html (see tests/support/fake-dom.mjs):
+// initial hidden/disabled states and the #documentChecklistItemTemplate
+// content all come from that real markup now.
 async function setupTransactionPageSandbox({
   transactionNo = "TXN-2026-09-0001",
   transaction,
@@ -897,40 +648,8 @@ async function setupTransactionPageSandbox({
   onComplete = () => { throw new Error("complete should not be called in this test"); },
   onSyncDrive = () => { throw new Error("sync-drive should not be called in this test"); },
 }) {
-  const elementsById = {
-    transactionPage: new FakeNode("main"),
-    transactionNumber: new FakeNode("span"),
-    transactionTitleDisplay: new FakeNode("span"),
-    transactionTemplateName: new FakeNode("span"),
-    workflowProgress: new FakeNode("div"),
-    workflowPacketLink: new FakeNode("a"),
-    documentChecklist: new FakeNode("ul"),
-    documentChecklistItemTemplate: createDocumentChecklistItemTemplate(),
-    childDocumentFiles: new FakeNode("ul"),
-    refreshTransactionButton: new FakeNode("button"),
-    completeTransactionButton: new FakeNode("button"),
-    driveSyncSection: new FakeNode("section"),
-    driveSyncStatus: new FakeNode("div"),
-    syncDriveButton: new FakeNode("button"),
-    transactionStatus: new FakeNode("div"),
-  };
-  elementsById.workflowPacketLink.hidden = true;
-  elementsById.completeTransactionButton.disabled = true;
-  elementsById.driveSyncSection.hidden = true;
-  elementsById.syncDriveButton.hidden = true;
-  elementsById.transactionPage.dataset = {
-    transactionsUrl: "/api/workflow-transactions",
-  };
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
+  const realHtml = await readFile(transactionHtmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
 
   const stubFetch = createTransactionStubFetch({
     transactionNo,

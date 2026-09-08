@@ -10,7 +10,6 @@ window.addEventListener("DOMContentLoaded", () => {
     workflowTemplateId: query.get("workflowTemplateId") || "",
     workflowStepId: query.get("workflowStepId") || "",
     status: "draft",
-    prefill: null,
   };
 
   const form = document.querySelector("#workflowDocumentForm");
@@ -25,16 +24,6 @@ window.addEventListener("DOMContentLoaded", () => {
   const lineCountPreview = document.querySelector("#lineCountPreview");
   const totalAmountPreview = document.querySelector("#totalAmountPreview");
   const pageTitle = document.querySelector("#pageTitle");
-  const prefillBanner = document.querySelector("#workflowPrefillBanner");
-  const prefillGroupsContainer = document.querySelector("#workflowPrefillGroups");
-  const prefillApplyButton = document.querySelector("#workflowPrefillApply");
-  const prefillDismissButton = document.querySelector("#workflowPrefillDismiss");
-
-  const PREFILL_GROUP_LABELS = {
-    payee: "ผู้รับเงิน/คู่ค้า",
-    purpose: "วัตถุประสงค์",
-    lines: "รายการ",
-  };
 
   function todayInputValue() {
     const now = new Date();
@@ -157,104 +146,32 @@ window.addEventListener("DOMContentLoaded", () => {
     setDocumentState(state.status);
   }
 
-  function markFieldPrefilled(fieldName, sourceDocumentNo) {
-    const badge = form.querySelector(`[data-badge-for="${fieldName}"]`);
-    if (!badge) return;
-    // Without a real source document number there is nothing honest to show
-    // — rendering the badge anyway used to print the literal string "นำมาจาก
-    // undefined" (a non-Thai token in a Thai-only UI) whenever a field got
-    // patched from a group whose `sources` entry was never set (e.g. the
-    // `parties` group folded in from a source that never actually supplied
-    // it). Hide the badge instead of guessing.
-    if (!sourceDocumentNo) {
-      badge.hidden = true;
-      return;
-    }
-    badge.hidden = false;
-    badge.textContent = `นำมาจาก ${sourceDocumentNo}`;
-  }
-
-  function renderPrefillBanner(prefill) {
-    if (!prefill || !Array.isArray(prefill.availableGroups) || prefill.availableGroups.length === 0) return;
-    prefillGroupsContainer.replaceChildren(
-      ...prefill.availableGroups.map((group) => {
-        const wrapper = document.createElement("label");
-        wrapper.className = "prefill-group";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.value = group;
-        checkbox.checked = true;
-        const sourceDocumentNo = prefill.sources?.[group];
-        const labelText = document.createElement("span");
-        labelText.textContent = sourceDocumentNo
-          ? `${PREFILL_GROUP_LABELS[group] || group} (จาก ${sourceDocumentNo})`
-          : (PREFILL_GROUP_LABELS[group] || group);
-        wrapper.append(checkbox, labelText);
-        return wrapper;
-      }),
-    );
-    prefillBanner.hidden = false;
-  }
-
-  function applyPrefillPatch(patch = {}, groups = []) {
-    const selectedGroups = new Set(groups);
-    if (selectedGroups.has("payee") && patch.payeeName !== undefined) {
-      form.elements.payeeName.value = patch.payeeName;
-      markFieldPrefilled("payeeName", state.prefill?.sources?.payee);
-    }
-    if (selectedGroups.has("purpose")) {
+  // Cross-document prefill (Task 4/Task 6/Task 7, Item 4 followup): the
+  // fetch/render/apply/badge mechanics are shared with
+  // forms/substitute-receipt.logic.browser.js and forms/expense-request.html
+  // via forms/workflow-prefill-banner.browser.js. Only this shell's own field
+  // names differ per group.
+  const prefillBanner = window.WorkflowPrefillBanner.create({
+    documentKind: state.documentKind,
+    transactionNo: state.transactionNo,
+    workflowStepId: state.workflowStepId,
+    form,
+    fields: {
+      payee: ["payeeName"],
       // The purpose adapter (applyWorkflowContextToWorkflowDocumentShell)
       // maps both `title` (ชื่อเอกสาร) and `businessPurpose` from the
       // `purpose` group — the HTML already carries a badge slot for both
       // (data-badge-for="title" and "businessPurpose"), so both must be
-      // applied here, not just businessPurpose.
-      if (patch.title !== undefined) {
-        form.elements.title.value = patch.title;
-        markFieldPrefilled("title", state.prefill?.sources?.purpose);
-      }
-      if (patch.businessPurpose !== undefined) {
-        form.elements.businessPurpose.value = patch.businessPurpose;
-        markFieldPrefilled("businessPurpose", state.prefill?.sources?.purpose);
-      }
-    }
-    if (selectedGroups.has("lines") && Array.isArray(patch.lines) && patch.lines.length) {
+      // applied, not just businessPurpose.
+      purpose: ["title", "businessPurpose"],
+      parties: ["requesterName"],
+    },
+    applyLines(lines) {
       lineItems.replaceChildren();
-      for (const line of patch.lines) addLine(line);
-      markFieldPrefilled("lines", state.prefill?.sources?.lines);
-    }
-    // `parties` (requesterName) always rides along regardless of which of
-    // the three tickable groups were requested — see
-    // applyWorkflowPrefillGroups in workflow-prefill.logic.js, which folds
-    // context.parties into every adapter call unconditionally.
-    if (patch.requesterName !== undefined) {
-      form.elements.requesterName.value = patch.requesterName;
-      markFieldPrefilled("requesterName", state.prefill?.sources?.parties);
-    }
-    updatePreview();
-  }
-
-  async function fetchWorkflowPrefill({ transactionNo, documentKind, stepId }) {
-    if (!transactionNo || !stepId) return null;
-    try {
-      const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(transactionNo)}/prefill?documentKind=${encodeURIComponent(documentKind)}&stepId=${encodeURIComponent(stepId)}`);
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async function loadWorkflowPrefill() {
-    if (!state.transactionNo || !state.workflowStepId) return;
-    const prefill = await fetchWorkflowPrefill({
-      transactionNo: state.transactionNo,
-      documentKind: state.documentKind,
-      stepId: state.workflowStepId,
-    });
-    if (!prefill) return;
-    state.prefill = prefill;
-    renderPrefillBanner(prefill);
-  }
+      for (const line of lines) addLine(line);
+    },
+    onApplied: () => updatePreview(),
+  });
 
   function fillForm(payload = {}) {
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
@@ -326,24 +243,12 @@ window.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("change", updatePreview);
   form.addEventListener("submit", (event) => event.preventDefault());
 
-  prefillApplyButton.addEventListener("click", () => {
-    if (!state.prefill) return;
-    const checkedGroups = [...prefillGroupsContainer.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
-    const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(state.prefill.context, state.documentKind, checkedGroups) || {};
-    applyPrefillPatch(patch, checkedGroups);
-    prefillBanner.hidden = true;
-  });
-
-  prefillDismissButton.addEventListener("click", () => {
-    prefillBanner.hidden = true;
-  });
-
   applyDocumentKindLabel();
   fillForm();
 
   if (state.documentNo) {
     loadExistingDocument().catch((error) => setStatus(error.message, "error"));
   } else {
-    loadWorkflowPrefill();
+    prefillBanner.load();
   }
 });

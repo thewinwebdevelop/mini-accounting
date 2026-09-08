@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { buildFakeDomFromHtml } from "./support/fake-dom.mjs";
 
 const htmlPath = new URL("../forms/workflow-document.html", import.meta.url);
 const browserLogicPath = new URL("../forms/workflow-document.logic.browser.js", import.meta.url);
@@ -9,6 +10,7 @@ const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", impor
 const workflowLogicPath = new URL("../forms/workflow.logic.js", import.meta.url);
 const workflowDocumentLogicPath = new URL("../forms/workflow-document.logic.js", import.meta.url);
 const workflowPrefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
+const workflowPrefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const expenseRequestLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 
@@ -25,239 +27,21 @@ function runAsClassicScriptInBrowserSandbox(source) {
   return context.window;
 }
 
-// Minimal fake DOM node, purpose-built for exactly the selectors and APIs
-// forms/workflow-document.logic.browser.js exercises (querySelector(All) on
-// tag/class/id/attribute selectors plus a ":checked" pseudo-class,
-// append/appendChild/replaceChildren, cloneNode, setAttribute/getAttribute).
-// This is not a general DOM shim — it only supports what this script actually
-// calls, mirroring the technique already used for the *.logic.js sandbox
-// above and for searchable-select.logic.browser.js's own fake DOM.
-class FakeNode {
-  constructor(tagName) {
-    this.tagName = String(tagName).toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.listeners = {};
-    this.attrs = {};
-    this.dataset = {};
-    this.id = "";
-    this.name = "";
-    this.type = "";
-    this.value = "";
-    this.checked = false;
-    this.hidden = false;
-    this.textContent = "";
-    this.className = "";
-  }
-
-  addEventListener(type, handler) {
-    (this.listeners[type] ??= []).push(handler);
-  }
-
-  dispatch(type, event = {}) {
-    for (const handler of this.listeners[type] || []) handler(event);
-  }
-
-  setAttribute(name, value) {
-    this.attrs[name] = String(value);
-    if (name === "id") this.id = String(value);
-    if (name === "name") this.name = String(value);
-    if (name === "type") this.type = String(value);
-    if (name.startsWith("data-")) {
-      const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      this.dataset[key] = String(value);
-    }
-  }
-
-  getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
-  }
-
-  matches(selector) {
-    let sel = selector;
-    let requireChecked = false;
-    if (sel.endsWith(":checked")) {
-      requireChecked = true;
-      sel = sel.slice(0, -":checked".length);
-    }
-    if (requireChecked && !this.checked) return false;
-
-    const bracketMatch = sel.match(/^([a-zA-Z0-9]*)\[([\w-]+)(?:="([^"]*)")?\]$/);
-    if (bracketMatch) {
-      const [, tag, attr, value] = bracketMatch;
-      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
-      if (attr === "name") {
-        return value === undefined ? Boolean(this.name) : this.name === value;
-      }
-      if (attr === "type") {
-        return value === undefined ? Boolean(this.type) : this.type === value;
-      }
-      const actual = this.attrs[attr];
-      return value === undefined ? actual !== undefined : actual === value;
-    }
-
-    if (sel.startsWith(".")) {
-      return String(this.className).split(/\s+/).filter(Boolean).includes(sel.slice(1));
-    }
-    if (sel.startsWith("#")) return this.id === sel.slice(1);
-    return this.tagName.toLowerCase() === sel.toLowerCase();
-  }
-
-  querySelectorAll(selector) {
-    const matches = [];
-    const visit = (node) => {
-      for (const child of node.children) {
-        if (child.matches(selector)) matches.push(child);
-        visit(child);
-      }
-    };
-    visit(this);
-    return matches;
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-
-  appendChild(node) {
-    if (node.tagName === "#FRAGMENT") {
-      for (const child of node.children) {
-        child.parentNode = this;
-        this.children.push(child);
-      }
-      node.children = [];
-      return node;
-    }
-    if (node.parentNode) {
-      node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
-    }
-    node.parentNode = this;
-    this.children.push(node);
-    return node;
-  }
-
-  append(...nodes) {
-    nodes.forEach((node) => this.appendChild(node));
-  }
-
-  replaceChildren(...nodes) {
-    this.children.forEach((child) => { child.parentNode = null; });
-    this.children = [];
-    this.append(...nodes);
-  }
-
-  remove() {
-    if (this.parentNode) {
-      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
-    }
-  }
-
-  cloneNode(deep) {
-    const clone = new FakeNode(this.tagName);
-    clone.attrs = { ...this.attrs };
-    clone.dataset = { ...this.dataset };
-    clone.id = this.id;
-    clone.name = this.name;
-    clone.type = this.type;
-    clone.value = this.value;
-    clone.className = this.className;
-    if (deep) {
-      clone.children = this.children.map((child) => {
-        const childClone = child.cloneNode(true);
-        childClone.parentNode = clone;
-        return childClone;
-      });
-    }
-    return clone;
-  }
-}
-
-// Builds one <template id="lineTemplate"> equivalent: a fragment holding one
-// ".line-item" row with the three inputs and the remove button the real
-// template markup provides (see forms/workflow-document.html).
-function createLineTemplate() {
-  const template = new FakeNode("template");
-  const fragment = new FakeNode("#fragment");
-  const row = new FakeNode("div");
-  row.className = "line-item";
-  const description = new FakeNode("input");
-  description.setAttribute("name", "description");
-  const quantity = new FakeNode("input");
-  quantity.setAttribute("name", "quantity");
-  const unitCost = new FakeNode("input");
-  unitCost.setAttribute("name", "unitCost");
-  const removeButton = new FakeNode("button");
-  removeButton.setAttribute("data-remove-line", "");
-  row.append(description, quantity, unitCost, removeButton);
-  fragment.append(row);
-  template.content = fragment;
-  return template;
-}
-
 // Sets up forms/workflow-document.logic.browser.js in a require-less sandbox
-// with just enough of a fake DOM to run its DOMContentLoaded handler for
-// real, then (since the transactionNo/workflowStepId query params are set and
-// documentNo is not) drives it through loadWorkflowPrefill with a stubbed
-// fetch so a prefill banner with checkable groups gets rendered — the exact
-// path applyPrefillPatch is reached through in the real page. Returns the
-// elements a test needs to drive and inspect the per-group prefill checkboxes.
+// against a fake DOM derived from the real forms/workflow-document.html (see
+// tests/support/fake-dom.mjs) — not a hand-typed elementsById list — then
+// runs its DOMContentLoaded handler for real, then (since the
+// transactionNo/workflowStepId query params are set and documentNo is not)
+// drives it through loadWorkflowPrefill with a stubbed fetch so a prefill
+// banner with checkable groups gets rendered — the exact path
+// applyPrefillPatch is reached through in the real page. Returns the elements
+// a test needs to drive and inspect the per-group prefill checkboxes.
 async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}) {
   const { documentKind = "purchase_order", loadRealPrefillLogic = false } = options;
-  const elementsById = {
-    workflowDocumentForm: new FakeNode("form"),
-    workflowDocumentStatus: new FakeNode("div"),
-    lineItems: new FakeNode("div"),
-    lineTemplate: createLineTemplate(),
-    addLine: new FakeNode("button"),
-    saveWorkflowDocument: new FakeNode("button"),
-    completeWorkflowDocument: new FakeNode("button"),
-    documentStatusPreview: new FakeNode("span"),
-    documentNoPreview: new FakeNode("span"),
-    lineCountPreview: new FakeNode("span"),
-    totalAmountPreview: new FakeNode("span"),
-    pageTitle: new FakeNode("h1"),
-    workflowPrefillBanner: new FakeNode("div"),
-    workflowPrefillGroups: new FakeNode("div"),
-    workflowPrefillApply: new FakeNode("button"),
-    workflowPrefillDismiss: new FakeNode("button"),
-  };
 
+  const realHtml = await readFile(htmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
   const form = elementsById.workflowDocumentForm;
-  form.elements = {
-    documentKind: { value: "" },
-    documentNo: { value: "" },
-    transactionNo: { value: "" },
-    workflowTemplateId: { value: "" },
-    workflowStepId: { value: "" },
-    accountingMonth: { value: "" },
-    documentDate: { value: "" },
-    title: { value: "" },
-    requesterName: { value: "" },
-    payeeName: { value: "" },
-    businessPurpose: { value: "" },
-  };
-
-  // markFieldPrefilled (forms/workflow-document.logic.browser.js) looks up
-  // `[data-badge-for="<field>"]` inside the form — mirroring the real
-  // <span class="field-badge" data-badge-for="..."> markup next to each
-  // prefillable field in forms/workflow-document.html — so a test that wants
-  // to assert on the "prefilled from <documentNo>" badge needs one present.
-  for (const fieldName of ["title", "payeeName", "businessPurpose", "requesterName", "lines"]) {
-    const badge = new FakeNode("span");
-    badge.setAttribute("data-badge-for", fieldName);
-    badge.hidden = true;
-    form.appendChild(badge);
-  }
-
-  const fakeDocument = {
-    querySelector(selector) {
-      if (selector.startsWith("#")) return elementsById[selector.slice(1)] || null;
-      return null;
-    },
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-  };
 
   const stubFetch = async () => ({ ok: true, json: async () => prefillResponse });
   const window = { fetch: stubFetch };
@@ -289,6 +73,12 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}
     // and the controller's optional-chained call silently resolves to {}.
     vm.runInContext(await readFile(workflowPrefillLogicPath, "utf8"), context);
   }
+  // The shared prefill banner controller (Item 4 followup) is required
+  // regardless of loadRealPrefillLogic: it is what defines
+  // window.WorkflowPrefillBanner and wires up the apply/dismiss buttons,
+  // independent of whether window.WorkflowPrefillLogic is the real module or
+  // a per-test stub.
+  vm.runInContext(await readFile(workflowPrefillBannerPath, "utf8"), context);
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
 
   context.window._handlers.DOMContentLoaded();
@@ -374,6 +164,18 @@ test("workflow document shell loads workflow-prefill.logic.js before its own con
   assert.ok(prefillLogicIndex < controllerIndex, "workflow-prefill.logic.js must load before the page controller");
 });
 
+test("workflow document shell loads the shared prefill banner module before its own controller", async () => {
+  // Item 4 followup: without this <script> tag, window.WorkflowPrefillBanner
+  // is undefined and the controller's `.create(...)` call throws during
+  // DOMContentLoaded, exactly the dead-page bug a missing/misordered
+  // dependency script tag has already caused on this branch once.
+  const html = await readFile(htmlPath, "utf8");
+  const prefillBannerIndex = html.indexOf("workflow-prefill-banner.browser.js");
+  const controllerIndex = html.indexOf("workflow-document.logic.browser.js");
+  assert.ok(prefillBannerIndex !== -1 && controllerIndex !== -1);
+  assert.ok(prefillBannerIndex < controllerIndex, "workflow-prefill-banner.browser.js must load before the page controller");
+});
+
 test("workflow document shell loads the return-link helper before its own controller", async () => {
   const html = await readFile(htmlPath, "utf8");
   const returnLinkIndex = html.indexOf("workflow-return-link.browser.js");
@@ -416,21 +218,34 @@ test("sanitizeWorkflowReturnTo rejects every unsafe branch and round-trips a rea
   );
 });
 
-test("workflow document browser controller fetches prefill data and fails silently", async () => {
-  const browserLogic = await readFile(browserLogicPath, "utf8");
-  assert.match(browserLogic, /function fetchWorkflowPrefill/);
-  assert.match(browserLogic, /\/api\/workflow-transactions\/.*\/prefill/);
-  assert.match(browserLogic, /catch/);
+// The fetch/render prefill mechanics used to live inline in this file's own
+// browserLogic; Item 4's dedup moved them into the one shared
+// forms/workflow-prefill-banner.browser.js all three prefillable pages now
+// load (see the script-order test below), so that is what these two checks
+// read from. The page still wires it up: `window.WorkflowPrefillBanner.create`
+// is invoked once during boot (verified end to end by the "applyPrefillPatch"
+// and "real workflow-prefill.logic.js" tests further down, which actually
+// execute the click path rather than string-matching source).
+test("shared workflow-prefill-banner.browser.js fetches prefill data and fails silently", async () => {
+  const prefillBannerSource = await readFile(workflowPrefillBannerPath, "utf8");
+  assert.match(prefillBannerSource, /function fetchWorkflowPrefill/);
+  assert.match(prefillBannerSource, /\/api\/workflow-transactions\/.*\/prefill/);
+  assert.match(prefillBannerSource, /catch/);
 });
 
-test("workflow document browser controller renders prefill groups with source document badges", async () => {
+test("shared workflow-prefill-banner.browser.js renders prefill groups with source document badges", async () => {
+  const prefillBannerSource = await readFile(workflowPrefillBannerPath, "utf8");
+  assert.match(prefillBannerSource, /function renderPrefillBanner/);
+  assert.match(prefillBannerSource, /availableGroups/);
+  assert.match(prefillBannerSource, /ผู้รับเงิน\/คู่ค้า/);
+  assert.match(prefillBannerSource, /วัตถุประสงค์/);
+  assert.match(prefillBannerSource, /รายการ/);
+  assert.match(prefillBannerSource, /applyWorkflowPrefillGroups/);
+});
+
+test("workflow document controller loads the shared prefill banner module and wires it up during boot", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
-  assert.match(browserLogic, /function renderPrefillBanner/);
-  assert.match(browserLogic, /availableGroups/);
-  assert.match(browserLogic, /ผู้รับเงิน\/คู่ค้า/);
-  assert.match(browserLogic, /วัตถุประสงค์/);
-  assert.match(browserLogic, /รายการ/);
-  assert.match(browserLogic, /applyWorkflowPrefillGroups/);
+  assert.match(browserLogic, /window\.WorkflowPrefillBanner\.create/);
 });
 
 test("workflow document browser controller posts saves and completions to the workflow document API", async () => {
