@@ -111,6 +111,14 @@ const appDir = __dirname;
 const rootDir = process.env.SWEET_HOUSE_ROOT_DIR || appDir;
 const formsDir = path.join(appDir, "forms");
 const port = Number(process.env.PORT || 8787);
+// Security: bind loopback-only by default. There is no authentication
+// anywhere in this app, so binding every interface (the previous behaviour)
+// let anyone on the same network -- office wifi, cafe wifi -- open the
+// accounting app and read, edit, or delete documents. Set
+// SWEET_HOUSE_ALLOW_NETWORK=1 to opt in when the owner deliberately wants to
+// reach the app from another device (phone, tablet) on their own network.
+const allowNetwork = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
+const listenHost = allowNetwork ? "0.0.0.0" : "127.0.0.1";
 const maxBodyBytes = 80 * 1024 * 1024;
 
 const mimeTypes = {
@@ -1980,7 +1988,14 @@ const server = createServer(async (request, response) => {
   response.end("Method not allowed");
 });
 
-server.listen(port, () => {
+server.listen(port, listenHost, () => {
   const boundPort = server.address().port;
   console.log(`Expense request local web app: http://localhost:${boundPort}/`);
+  if (allowNetwork) {
+    console.log(
+      `[คำเตือน] SWEET_HOUSE_ALLOW_NETWORK เปิดใช้งานอยู่ เซิร์ฟเวอร์กำลังรับฟังทุกอินเทอร์เฟซเครือข่าย (${listenHost}:${boundPort}) สามารถเข้าถึงจากเครือข่ายได้จากอุปกรณ์อื่น เช่น วงแลนสำนักงานหรือไวไฟร้านกาแฟ และระบบนี้ไม่มีระบบยืนยันตัวตนใด ๆ ทั้งสิ้น ผู้ใดก็ตามที่อยู่ในเครือข่ายเดียวกันจะสามารถเปิดดู แก้ไข หรือลบเอกสารบัญชีได้ โปรดใช้เฉพาะในเครือข่ายที่เชื่อถือได้เท่านั้น`,
+    );
+  } else {
+    console.log(`เซิร์ฟเวอร์รับฟังเฉพาะเครื่องนี้เท่านั้น (${listenHost}:${boundPort}) หากต้องการเปิดให้เข้าถึงจากอุปกรณ์อื่นในเครือข่าย ให้ตั้งค่า SWEET_HOUSE_ALLOW_NETWORK=1`);
+  }
 });
