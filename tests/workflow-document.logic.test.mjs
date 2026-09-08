@@ -298,6 +298,20 @@ test("completeWorkflowDocument stamps completedAt/completedBy once and is idempo
     assert.equal(second.status, "completed");
     assert.equal(second.completedAt, "2026-09-06T13:00:00.000Z", "repeat completion must not overwrite the original completedAt");
     assert.equal(second.completedBy, "คุณต้า", "repeat completion must not overwrite the original completedBy");
+
+    // Item 8b: the same {name, path, absolutePath, url} shape must come back
+    // whether this was the fresh completion (`first`, above) or the
+    // idempotent repeat (`second`) — the fresh path used to hand back the
+    // raw PDF-generator shape (size/pageCount, no url) instead.
+    assert.ok(first.pdfFiles.length > 0);
+    for (const file of first.pdfFiles) {
+      assert.ok(file.url, "a fresh completion's pdfFiles entries must carry a working url, not just size/pageCount");
+    }
+    assert.deepEqual(
+      first.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      second.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      "a fresh completion and an idempotent repeat must hand back the same pdfFiles shape",
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

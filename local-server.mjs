@@ -801,9 +801,19 @@ async function handleWorkflowTransactionGet(transactionNo, response) {
   }
 }
 
-async function handleWorkflowTransactionRefresh(transactionNo, response) {
+// regeneratePacket defaults to true — the same default refreshWorkflowTransaction
+// itself uses — so every existing caller of this route (the explicit
+// "รีเฟรชสถานะ" button, and every test that just POSTs .../refresh with no
+// body) keeps regenerating the packet exactly as before. The transaction
+// page's self-refresh on load is the one caller that opts out, by sending
+// { regeneratePacket: false } (see refreshTransaction in
+// forms/workflow.logic.browser.js) — a page load has no reason to spawn the
+// packet's Python subprocess before anyone has asked to download it.
+async function handleWorkflowTransactionRefresh(transactionNo, request, response) {
   try {
-    const result = await refreshWorkflowTransaction({ rootDir, transactionNo });
+    const body = await readJsonBody(request);
+    const regeneratePacket = body.regeneratePacket !== false;
+    const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
     sendJson(response, 404, {
@@ -879,8 +889,11 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
 
     // Refresh first, deliberately: a child document completed moments ago
     // must unlock the next step immediately, without forcing the user to
-    // press refresh before they can open it.
-    const transaction = await refreshWorkflowTransaction({ rootDir, transactionNo });
+    // press refresh before they can open it. regeneratePacket:false — this
+    // route only needs the freshly-derived step order below, never the
+    // packet PDF, so every "เปิดเอกสาร" click must not spawn Python for a
+    // download link nobody asked for on this request.
+    const transaction = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket: false });
 
     const step = (transaction.steps || []).find((item) => item.stepId === stepId);
     if (!step) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
@@ -1615,7 +1628,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/refresh", ""));
-    await handleWorkflowTransactionRefresh(transactionNo, response);
+    await handleWorkflowTransactionRefresh(transactionNo, request, response);
     return;
   }
 

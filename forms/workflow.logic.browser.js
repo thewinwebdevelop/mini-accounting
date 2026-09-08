@@ -782,14 +782,24 @@ function renderTransaction(transaction, childDocuments = []) {
 // still show yesterday's stale steps immediately after a document is
 // completed since completing a document never itself touches the transaction
 // record.
-async function refreshTransaction() {
+//
+// regeneratePacket defaults to true, matching the server route's own
+// default, so the manual "รีเฟรชสถานะ" button (which calls this with no
+// options) keeps regenerating the packet PDF exactly as before. The one
+// caller that opts out is the self-refresh on page load, below — a page load
+// has no reason to spawn the packet's Python subprocess before anyone has
+// actually asked to download it, so it passes regeneratePacket:false.
+async function refreshTransaction({ regeneratePacket = true } = {}) {
   const transactionNo = transactionNoFromQuery();
   if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
 
   const root = document.querySelector("#transactionPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
 
-  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/refresh`, { method: "POST" });
+  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ regeneratePacket }),
+  });
 
   renderTransaction(transaction, transaction.childDocuments || []);
   return transaction;
@@ -893,8 +903,11 @@ function initTransactionPage() {
 
   // Self-refresh on load (not a bare GET) so landing here right after
   // completing a document already shows the unlocked next step, instead of
-  // requiring a manual refresh click first.
-  refreshTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+  // requiring a manual refresh click first. regeneratePacket:false — a page
+  // load must not spawn Python to regenerate a packet PDF the user may never
+  // download; the packet stays fresh as of the last explicit "รีเฟรชสถานะ"
+  // click or completion instead (see refreshTransaction above).
+  refreshTransaction({ regeneratePacket: false }).catch((error) => setStatusBox(statusBox, error.message, "error"));
 }
 
 // ---------------------------------------------------------------------------

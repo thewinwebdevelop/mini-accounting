@@ -788,6 +788,137 @@ test("completeSubstituteReceipt marks an approved general expense receipt comple
   }
 });
 
+// Item 8a: appendSubstituteReceiptStatus used to stamp changedAt from the
+// real wall clock while its callers (approveSubstituteReceipt,
+// receiveSubstituteReceiptStock, completeSubstituteReceipt) stamped their own
+// audit field (approvedAt/receivedAt/completedAt) from the injectable `now`
+// — one event, two clocks, so statusHistory.at(-1).changedAt could disagree
+// with the audit field describing the exact same event. now() is injected
+// here specifically so a real clock split would show up as a mismatch
+// (real wall-clock time never equals a fixed injected string).
+test("appendSubstituteReceiptStatus stamps one timestamp per event: statusHistory.changedAt matches the caller's own audit field", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+
+    await approveSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      approvedBy: "บัญชี",
+      now: () => "2026-09-06T10:00:00.000Z",
+    });
+    const afterApprove = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(afterApprove.payload.approvedAt, "2026-09-06T10:00:00.000Z");
+    assert.equal(
+      afterApprove.payload.statusHistory.at(-1).changedAt,
+      afterApprove.payload.approvedAt,
+      "the approval event's statusHistory entry must carry the exact same timestamp as approvedAt",
+    );
+
+    await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    const afterComplete = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(afterComplete.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(
+      afterComplete.payload.statusHistory.at(-1).changedAt,
+      afterComplete.payload.completedAt,
+      "the completion event's statusHistory entry must carry the exact same timestamp as completedAt",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("appendSubstituteReceiptStatus stamps one timestamp for the receive-stock event too", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "TS8", name: "เสื้อ TS8", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "TS8-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ TS8", quantity: "1", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+      now: () => "2026-09-06T12:00:00.000Z",
+    });
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.stockReceipt.receivedAt, "2026-09-06T12:00:00.000Z");
+    assert.equal(
+      loaded.payload.statusHistory.at(-1).changedAt,
+      loaded.payload.stockReceipt.receivedAt,
+      "the receive-stock event's statusHistory entry must carry the exact same timestamp as stockReceipt.receivedAt",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 8b: a fresh completion used to hand back pdfFiles entries shaped like
+// {name, path, absolutePath, size, pageCount, annexedRawFiles} (straight from
+// the PDF generator script), while the idempotent no-op (repeat completion)
+// branch handed back {name, path, absolutePath, url} (from listPdfFiles) —
+// same field, two shapes, depending on whether the caller happened to be
+// first. Settled on the listPdfFiles shape (carries a working download url,
+// which is what a caller of approve/receive/complete actually wants; nothing
+// in this codebase reads size/pageCount off these responses — the browser
+// only ever reads pdfFiles.length).
+test("completeSubstituteReceipt's pdfFiles carry the same {name, url} shape on a fresh completion and on the idempotent repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const firstComplete = await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
+    const repeatComplete = await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "someone-else" });
+
+    assert.ok(firstComplete.pdfFiles.length > 0);
+    for (const file of firstComplete.pdfFiles) {
+      assert.ok(file.url, "a fresh completion's pdfFiles entries must carry a working url, not just size/pageCount");
+    }
+    assert.deepEqual(
+      firstComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      repeatComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      "a fresh completion and an idempotent repeat must hand back the same pdfFiles shape",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("completeSubstituteReceipt is idempotent when a completed receipt is completed again", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
   try {
@@ -1033,6 +1164,38 @@ test("completeExpenseRequest transitions approved request to completed", async (
     const requests = await listExpenseRequests(rootDir);
     const listedRequest = requests.find((request) => request.requestNo === saved.requestNo);
     assert.equal(listedRequest.nextAction, "เสร็จสิ้น");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 8b, expense-request side of the same fix: completeExpenseRequest's
+// fresh-completion branch used to hand back the raw PDF-generator shape
+// (size/pageCount, no url) while its own idempotent repeat branch used
+// listPdfFiles's shape (url, no size/pageCount). Both must now agree.
+test("completeExpenseRequest's pdfFiles carry the same {name, url} shape on a fresh completion and on the idempotent repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+
+    const firstComplete = await completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" });
+    const repeatComplete = await completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "someone-else" });
+
+    assert.ok(firstComplete.pdfFiles.length > 0);
+    for (const file of firstComplete.pdfFiles) {
+      assert.ok(file.url, "a fresh completion's pdfFiles entries must carry a working url, not just size/pageCount");
+    }
+    assert.deepEqual(
+      firstComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      repeatComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      "a fresh completion and an idempotent repeat must hand back the same pdfFiles shape",
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

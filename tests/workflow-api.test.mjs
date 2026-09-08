@@ -1,13 +1,49 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import serverLogic from "../forms/local-server.logic.js";
 import workflowLogic from "../forms/workflow.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+
+const execFileAsync = promisify(execFile);
+
+function getPythonExecutable() {
+  const bundledPython = join(
+    homedir(),
+    ".cache",
+    "codex-runtimes",
+    "codex-primary-runtime",
+    "dependencies",
+    "python",
+    "bin",
+    "python3",
+  );
+  return existsSync(bundledPython) ? bundledPython : "python3";
+}
+
+async function extractPdfText(pdfPath) {
+  const { stdout } = await execFileAsync(getPythonExecutable(), [
+    "-c",
+    [
+      "from pypdf import PdfReader",
+      "import sys",
+      "reader = PdfReader(sys.argv[1])",
+      "print('\\n'.join((page.extract_text() or '') for page in reader.pages))",
+    ].join("; "),
+    pdfPath,
+  ], {
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout;
+}
+
+const WORKFLOW_PACKET_PDF_FILE_NAME = "99_ชุดรวมเอกสาร_workflow-transaction.pdf";
 
 test("workflow templates seed defaults and can be updated with sync toggles", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
@@ -507,6 +543,157 @@ test("completeWorkflowTransaction survives a failing packet generator and still 
 
     assert.equal(completed.status, "completed");
     assert.ok(completed.packetError, "a failed packet generation must be surfaced, not silently swallowed");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 5: refreshWorkflowTransaction used to always spawn a Python subprocess
+// to regenerate the packet PDF, even though the caller (page load,
+// start-document) frequently never asked to download it. regeneratePacket:false
+// must still derive and persist progress (the cheap, always-needed job) while
+// never invoking packetGenerator at all (the expensive, only-sometimes-needed
+// job) — proven here via a spy rather than by asserting on Python not having
+// run, so this stays fast and hermetic.
+test("refreshWorkflowTransaction with regeneratePacket:false derives and persists progress without ever invoking the packet generator", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ทดสอบข้าม packet",
+    });
+    const { documentNo } = await serverLogic.getNextWorkflowDocumentInfo(rootDir, "purchase_order", "2026-09");
+    const payload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      documentNo,
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-06",
+      title: "สั่งซื้อสต๊อก",
+      businessPurpose: "ซื้อสินค้าเข้าคลัง",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[0].stepId,
+      lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
+    });
+    await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo, completedBy: "คุณต้า" });
+
+    let packetGeneratorCalls = 0;
+    const spyPacketGenerator = async () => { packetGeneratorCalls += 1; };
+
+    const refreshed = await serverLogic.refreshWorkflowTransaction({
+      rootDir,
+      transactionNo: txn.transactionNo,
+      regeneratePacket: false,
+      packetGenerator: spyPacketGenerator,
+    });
+
+    assert.equal(packetGeneratorCalls, 0, "regeneratePacket:false must never invoke the packet generator");
+    // Progress must still be derived and persisted — the whole point is
+    // separating that cheap job from the expensive one, not skipping it.
+    assert.equal(refreshed.steps[0].workflowStatus, "completed");
+    assert.equal(refreshed.steps[1].workflowStatus, "not_started");
+    const reloaded = await serverLogic.getWorkflowTransaction(rootDir, txn.transactionNo);
+    assert.equal(reloaded.steps[0].workflowStatus, "completed", "progress must be persisted even when the packet is skipped");
+    assert.equal("packetError" in refreshed, false, "skipping the packet is not a failure, so no packetError must be reported");
+    assert.equal(
+      refreshed.pdfFiles.some((file) => file.name === WORKFLOW_PACKET_PDF_FILE_NAME),
+      false,
+      "no packet was ever generated for this transaction, so none must be listed",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 6: findWorkflowChildDocuments used to resolve each matching expense
+// request via getSubmittedExpenseRequest, which re-walks the *entire*
+// documents/ tree internally just to look up a folderPath the outer scan
+// already had — O(matching requests x tree size) on a path hit on every
+// transaction page load. readExpenseRequestChildDocument replaces that with
+// a direct re-read of the known folderPath. Two things must still hold:
+// the resolved record's shape must be byte-identical (full payload fields,
+// not just the listing summary), and a record that genuinely cannot be
+// re-read (deleted/corrupted between the listing scan and this per-record
+// re-read — a real race, since nothing serializes "list workflow child
+// documents" against "delete/edit an expense request") must degrade to
+// being dropped, not reject the whole call.
+test("findWorkflowChildDocuments resolves the full expense-request payload per matching request, not just the listing summary", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "director_expense_transfer",
+      accountingMonth: "2026-09",
+      title: "ทดสอบอ่าน expense request แบบเต็ม",
+    });
+    const expenseStepId = txn.steps[0].stepId;
+
+    const saved = await serverLogic.saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "เบิกทดสอบ",
+        requestType: "reimbursement",
+        requesterName: "คุณทดสอบ",
+        businessPurpose: "ทดสอบการอ่านข้อมูลเต็ม",
+        paymentTargetName: "คุณทดสอบ",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: expenseStepId,
+        expenseLines: [{
+          date: "2026-09-05",
+          category: "อื่นๆ",
+          description: "รายการทดสอบ",
+          vendor: "ผู้ขายทดสอบ",
+          amountBeforeVat: "50",
+          vatAmount: "0",
+          withholdingTax: "0",
+        }],
+      },
+    });
+
+    const childDocuments = await serverLogic.findWorkflowChildDocuments(rootDir, txn.transactionNo);
+    const expenseDocs = childDocuments.filter((doc) => doc.documentKind === "expense_request");
+    assert.equal(expenseDocs.length, 1);
+    assert.equal(expenseDocs[0].requestNo, saved.requestNo);
+    // findSubmittedExpenseRequests' own listing summary has no
+    // businessPurpose/paymentTargetName/expenseLines at all (see the comment
+    // above findWorkflowChildDocuments) — these can only be present if the
+    // full submission.json was actually re-read.
+    assert.equal(expenseDocs[0].businessPurpose, "ทดสอบการอ่านข้อมูลเต็ม");
+    assert.equal(expenseDocs[0].paymentTargetName, "คุณทดสอบ");
+    assert.deepEqual(expenseDocs[0].expenseLines.map((line) => line.description), ["รายการทดสอบ"]);
+    // pdfFiles/rawFiles must come from the listing scan's already-resolved
+    // {name, path, absolutePath, url} entries, not be silently dropped or
+    // re-derived from the raw payload (which never carries them at all).
+    assert.equal(expenseDocs[0].pdfFiles.length, saved.pdfFiles.length);
+    assert.equal(expenseDocs[0].rawFiles.length, saved.rawFiles.length);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("readExpenseRequestChildDocument degrades to null instead of throwing when the expense request cannot be re-read", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    // Simulates the race the doc comment above readExpenseRequestChildDocument
+    // describes: the listing scan (findSubmittedExpenseRequests) already
+    // resolved this record's folderPath, but by the time the per-record
+    // re-read runs, the request is gone (deleted, or the folder never
+    // existed at all) — the re-read must fail gracefully, not throw.
+    const vanishedRecord = {
+      requestNo: "REQ-2026-09-9999",
+      folderPath: "documents/2026/09/เบิกจ่าย/REQ-2026-09-9999_หายไประหว่างทาง",
+      requestTitle: "หายไประหว่างทาง",
+      pdfFiles: [],
+      rawFiles: [],
+    };
+
+    const result = await serverLogic.readExpenseRequestChildDocument(rootDir, vanishedRecord);
+    assert.equal(result, null, "a child document that cannot be re-read must degrade to null, not throw");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -1643,6 +1830,111 @@ test("GET workflow-transaction detail carries the packet in its own pdfFiles, di
     assert.equal(download.headers.get("content-type"), "application/pdf");
     const bytes = Buffer.from(await download.arrayBuffer());
     assert.equal(bytes.subarray(0, 5).toString("latin1"), "%PDF-", "the served body must be a real PDF, not JSON/HTML");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+function packetFilePath(rootDir, txn) {
+  return join(rootDir, txn.folderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME);
+}
+
+// Item 5 (HTTP layer): a page load (POST .../refresh with
+// { regeneratePacket: false }, exactly what forms/workflow.logic.browser.js
+// sends on load) and POST .../start-document must never spawn the packet's
+// Python subprocess — proven here by asserting no packet file ever lands on
+// disk from either call, on a transaction that has never had one generated.
+// A plain POST .../refresh (no body — what the "รีเฟรชสถานะ" button sends)
+// must still regenerate it, same as before this change.
+test("POST refresh with regeneratePacket:false and POST start-document never create the packet PDF on disk; a plain POST refresh still does", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl, { title: "ทดสอบไม่สร้าง packet ตอนโหลดหน้า" });
+    const packetPath = packetFilePath(rootDir, txn);
+
+    assert.equal(existsSync(packetPath), false, "sanity check: no packet exists yet right after starting the transaction");
+
+    // Simulates the transaction page's self-refresh on load.
+    const lightRefreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, {
+      method: "POST",
+      body: JSON.stringify({ regeneratePacket: false }),
+    });
+    assert.equal(existsSync(packetPath), false, "a page-load-style refresh (regeneratePacket:false) must not spawn the packet generator");
+    assert.equal(
+      lightRefreshed.pdfFiles.some((file) => file.name === WORKFLOW_PACKET_PDF_FILE_NAME),
+      false,
+    );
+
+    // Simulates clicking "เปิดเอกสาร" on the first (current) step.
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${txn.steps[0].stepId}`, {
+      method: "POST",
+    });
+    assert.equal(existsSync(packetPath), false, "start-document's self-refresh must not spawn the packet generator either");
+
+    // The explicit refresh button (plain POST, no body) must still regenerate it.
+    const fullRefreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, {
+      method: "POST",
+    });
+    assert.equal(existsSync(packetPath), true, "an explicit refresh (no regeneratePacket override) must still generate the packet");
+    assert.ok(fullRefreshed.pdfFiles.some((file) => file.name === WORKFLOW_PACKET_PDF_FILE_NAME));
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 5 (freshness guarantee): the packet is only ever regenerated on an
+// explicit refresh or on completion, never on page load/start-document (see
+// the test above) — so the guarantee that a downloaded packet reflects the
+// transaction's *current* state rests entirely on those two call sites
+// actually regenerating it every time, with real content that changes.
+// Proven end-to-end here: download the packet before completing a step,
+// download it again after completing the step and explicitly refreshing,
+// and assert the extracted text actually differs and reflects the new state
+// (not just that a byte changed somewhere, e.g. a timestamp).
+test("the packet PDF is regenerated on explicit refresh and reflects the transaction's current state when downloaded", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl, { title: "ทดสอบความสดของ packet" });
+    const packetUrl = `/api/workflow-transactions/${txn.transactionNo}/files/pdf/${encodeURIComponent(WORKFLOW_PACKET_PDF_FILE_NAME)}`;
+
+    // Explicit refresh while the first step (purchase_order) is still not
+    // started — generates the packet reflecting that state.
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    const beforeResponse = await fetch(`${baseUrl}${packetUrl}`);
+    assert.equal(beforeResponse.status, 200);
+    const beforeBuffer = Buffer.from(await beforeResponse.arrayBuffer());
+    const beforePath = join(rootDir, "packet-before.pdf");
+    await writeFile(beforePath, beforeBuffer);
+    const beforeText = await extractPdfText(beforePath);
+    assert.match(beforeText, /ยังไม่เริ่ม/, "packet must show the first step as not started before it is completed");
+    assert.doesNotMatch(beforeText, /เสร็จสิ้น/, "packet must not already claim any step is completed");
+
+    // Change the transaction: complete the first step's document.
+    await submitAndCompletePurchaseOrder(baseUrl, txn);
+
+    // Explicit refresh again — must regenerate the packet with the new state.
+    await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+
+    const afterResponse = await fetch(`${baseUrl}${packetUrl}`);
+    assert.equal(afterResponse.status, 200);
+    const afterBuffer = Buffer.from(await afterResponse.arrayBuffer());
+    const afterPath = join(rootDir, "packet-after.pdf");
+    await writeFile(afterPath, afterBuffer);
+    const afterText = await extractPdfText(afterPath);
+    assert.match(afterText, /เสร็จสิ้น/, "packet must reflect the now-completed step");
+
+    assert.notEqual(afterBuffer.equals(beforeBuffer), true, "the downloaded packet bytes must actually change after the transaction changes");
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

@@ -1160,11 +1160,22 @@ async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   await mkdir(pdfDir, { recursive: true });
   await writeFile(submissionJsonPath, `${JSON.stringify(expensePayload, null, 2)}\n`, "utf8");
   await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(expensePayload), "utf8");
-  const pdfFiles = await generateExpensePdfs({
+  await generateExpensePdfs({
     payloadPath: submissionJsonPath,
     outputDir: pdfDir,
     rawDir,
   });
+  // Re-listed via listPdfFiles (the same disk scan every other "no-op/repeat"
+  // branch already uses — see approveExpenseRequest/completeExpenseRequest's
+  // idempotent paths) rather than returned straight from generateExpensePdfs,
+  // so a caller of this helper always gets the same {name, path,
+  // absolutePath, url} shape regardless of whether it just regenerated the
+  // PDFs or short-circuited on a repeat call. generateExpensePdfs's own
+  // {name, path, absolutePath, size, pageCount, annexedRawFiles} shape is
+  // still exactly what saveExpenseSubmission (the original, non-repeatable
+  // submission) returns — untouched, since it calls generateExpensePdfs
+  // directly rather than through this helper.
+  const pdfFiles = await listPdfFiles(rootDir, expensePayload.folderPath);
 
   return {
     absoluteFolderPath,
@@ -1404,11 +1415,17 @@ async function writeSubmittedSubstituteReceiptFiles(rootDir, receiptPayload) {
   await mkdir(pdfDir, { recursive: true });
   await writeFile(submissionJsonPath, `${JSON.stringify(receiptPayload, null, 2)}\n`, "utf8");
   await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(receiptPayload), "utf8");
-  const pdfFiles = await generateSubstituteReceiptPdfs({
+  await generateSubstituteReceiptPdfs({
     payloadPath: submissionJsonPath,
     outputDir: pdfDir,
     rawDir,
   });
+  // Same shape unification as writeSubmittedExpenseRequestFiles above: every
+  // caller of this helper (approveSubstituteReceipt, receiveSubstituteReceiptStock,
+  // completeSubstituteReceipt) gets the {name, path, absolutePath, url} shape,
+  // matching each of those functions' own idempotent/repeat branch, which
+  // already lists via listSubstituteReceiptPdfFiles.
+  const pdfFiles = await listSubstituteReceiptPdfFiles(rootDir, receiptPayload.folderPath, receiptPayload.receiptNo);
 
   return {
     absoluteFolderPath,
@@ -1596,10 +1613,17 @@ async function getSubstituteReceiptFile({ rootDir, receiptNo, section, fileName 
   };
 }
 
-function appendSubstituteReceiptStatus(payload, toStatus, note, actor) {
+// `now` is injectable (defaulting to the real wall clock) and must be the
+// exact same clock/value the caller uses to stamp its own audit field
+// (approvedAt/receivedAt/completedAt) for this same event — otherwise
+// statusHistory.at(-1).changedAt and that audit field can disagree even
+// though they describe one status change. See the three call sites below,
+// each of which computes its timestamp once and passes it in here rather
+// than letting this function reach for the clock a second time.
+function appendSubstituteReceiptStatus(payload, toStatus, note, actor, now = () => new Date().toISOString()) {
   const fromStatus = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
   assertSubstituteReceiptTransition(fromStatus, toStatus);
-  const changedAt = new Date().toISOString();
+  const changedAt = now();
   payload.status = toStatus;
   payload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS[toStatus];
   payload.updatedAt = changedAt;
@@ -1689,7 +1713,7 @@ async function approveSubstituteReceipt({
     folderPath: receipt.folderPath,
   };
   const approvedAt = now();
-  appendSubstituteReceiptStatus(payload, "approved", "approved", approvedBy);
+  appendSubstituteReceiptStatus(payload, "approved", "approved", approvedBy, () => approvedAt);
   payload.approvedAt = approvedAt;
   payload.approvedBy = approvedBy || "";
   const driveMetadata = await readDriveSyncMetadata(rootDir, receipt.folderPath);
@@ -1768,9 +1792,8 @@ async function receiveSubstituteReceiptStock({
     }));
   }
 
-  appendSubstituteReceiptStatus(payload, "received", "received stock", receivedBy);
   const receivedAt = now();
-  payload.updatedAt = receivedAt;
+  appendSubstituteReceiptStatus(payload, "received", "received stock", receivedBy, () => receivedAt);
   payload.stockReceipt = {
     receivedAt,
     receivedDate,
@@ -1858,9 +1881,8 @@ async function completeSubstituteReceipt({
     };
   }
 
-  appendSubstituteReceiptStatus(payload, "completed", "completed", completedBy);
   const completedAt = now();
-  payload.updatedAt = completedAt;
+  appendSubstituteReceiptStatus(payload, "completed", "completed", completedBy, () => completedAt);
   payload.completedAt = completedAt;
   payload.completedBy = completedBy || "";
   const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
@@ -1900,10 +1922,18 @@ async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {
   await writeFile(dataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   await writeFile(path.join(workingMdDir, "workflow-document.md"), formatWorkflowDocumentMarkdown(payload), "utf8");
 
-  const pdfFiles = await generateWorkflowDocumentPdf({
+  await generateWorkflowDocumentPdf({
     payloadPath: dataPath,
     outputDir: pdfDir,
   });
+  // Same shape unification as writeSubmittedExpenseRequestFiles/
+  // writeSubmittedSubstituteReceiptFiles above: completeWorkflowDocument's
+  // idempotent repeat-completion branch already hands back the
+  // {name, path, absolutePath, url} shape via listWorkflowDocumentPdfFiles,
+  // so the first-time completion (and the initial save, via saveWorkflowDocument)
+  // must match it rather than handing back generateWorkflowDocumentPdf's raw
+  // {size, pageCount, ...} shape with no url at all.
+  const pdfFiles = await listWorkflowDocumentPdfFiles(rootDir, payload.folderPath, payload.documentKind, payload.documentNo);
 
   return { absoluteFolderPath, pdfFiles };
 }
@@ -2420,6 +2450,56 @@ async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
   })));
 }
 
+// Re-reads one already-listed expense request's full submission.json using
+// the folderPath findSubmittedExpenseRequests (called once, at the top of
+// findWorkflowChildDocuments) already resolved. This used to go through
+// getSubmittedExpenseRequest, which re-walks the *entire* documents/ tree via
+// its own internal findSubmittedExpenseRequests call just to look up the one
+// folderPath this caller already has — making findWorkflowChildDocuments
+// O(matching requests x tree size) on a path hit on every transaction page
+// load. Reading the known path directly drops that back to one walk total.
+//
+// Never lets a single unreadable record take the whole scan down with it: a
+// request can be deleted (or its submission.json corrupted) between the
+// listing scan above and this per-record re-read — a real race, not a
+// hypothetical one, since nothing serializes "list workflow child documents"
+// against "delete/edit an expense request" — so a failure here is logged to
+// stderr and degrades to dropping that one document, the same "degrade,
+// don't crash" contract generatePacketPdfSafely already uses for the packet
+// PDF below. The caller (the Promise.all in findWorkflowChildDocuments) must
+// never see this rejection, or one bad record would take out refresh,
+// prefill, and the page itself along with it.
+async function readExpenseRequestChildDocument(rootDir, record) {
+  try {
+    const payload = JSON.parse(
+      await readFile(path.join(rootDir, record.folderPath, "data", "submission.json"), "utf8"),
+    );
+    // Mirrors getSubmittedExpenseRequest's own payload-override set exactly
+    // (requestNo/folderPath/accountingMonth/requestType/requestTitle), so the
+    // shape handed to callers (progress derivation, prefill adapters, the
+    // page, the packet PDF) is byte-identical to before this change.
+    return {
+      ...payload,
+      requestNo: payload.requestNo || record.requestNo,
+      folderPath: record.folderPath,
+      accountingMonth: getAccountingMonthFromRequestNo(payload.requestNo || record.requestNo),
+      requestType: payload.requestType || "reimbursement",
+      requestTitle: payload.requestTitle || record.requestTitle,
+      // pdfFiles/rawFiles come from `record` (already resolved by the
+      // listing scan via listPdfFiles/listRawFiles), never from the raw
+      // payload, the same way substituteReceiptDocs does below.
+      pdfFiles: record.pdfFiles,
+      rawFiles: record.rawFiles,
+      documentKind: "expense_request",
+    };
+  } catch (error) {
+    console.error(
+      `ไม่สามารถอ่านใบเบิกจ่าย ${record.requestNo} สำหรับธุรกรรม workflow ได้: ${error.message}`,
+    );
+    return null;
+  }
+}
+
 async function findWorkflowChildDocuments(rootDir, transactionNo) {
   if (!transactionNo) return [];
 
@@ -2437,22 +2517,9 @@ async function findWorkflowChildDocuments(rootDir, transactionNo) {
   // re-read per matching request here, the same way substitute receipts
   // already carry their full payload via `record.payload` below.
   const matchingExpenseRequests = expenseRequests.filter((record) => record.transactionNo === transactionNo);
-  const expenseRequestDocs = await Promise.all(matchingExpenseRequests.map(async (record) => {
-    const full = await getSubmittedExpenseRequest(rootDir, record.requestNo);
-    // full.payload never carries pdfFiles/rawFiles (submission.json has no
-    // such fields, and the raw upload-time payload.rawFiles list — if any —
-    // is not the freshly disk-scanned list with correct download URLs), so
-    // they are taken from `record` (findSubmittedExpenseRequests already
-    // resolved both via listPdfFiles/listRawFiles), the same way
-    // substituteReceiptDocs does below.
-    return {
-      ...full.payload,
-      folderPath: record.folderPath,
-      pdfFiles: record.pdfFiles,
-      rawFiles: record.rawFiles,
-      documentKind: "expense_request",
-    };
-  }));
+  const expenseRequestDocs = (
+    await Promise.all(matchingExpenseRequests.map((record) => readExpenseRequestChildDocument(rootDir, record)))
+  ).filter(Boolean);
 
   const substituteReceiptDocs = substituteReceipts
     .filter((record) => record.payload?.transactionNo === transactionNo)
@@ -2541,11 +2608,29 @@ async function generatePacketPdfSafely(packetGenerator, { transaction, childDocu
   }
 }
 
+// regeneratePacket defaults to true so every existing direct caller (tests,
+// and any future caller that doesn't pass it) keeps today's behavior
+// unchanged: refresh derives+persists progress *and* regenerates the packet.
+// It exists so the two cheap, universally-needed jobs (resolve child
+// documents, derive+persist progress) can be pulled apart from the one
+// expensive, only-sometimes-needed job (spawn Python to regenerate the
+// packet PDF) at the call sites that don't want it — the transaction page's
+// self-refresh on load, and start-document's self-refresh before its order
+// check (local-server.mjs) both now pass regeneratePacket:false, so neither
+// a page load nor a "เปิดเอกสาร" click spawns a subprocess the user may never
+// download. Freshness is guaranteed at the two moments the packet is
+// actually meaningful to hand someone: the explicit "รีเฟรชสถานะ" button
+// (still calls this with the default) and completeWorkflowTransaction (which
+// always regenerates, below) — the trade-off is that a packet downloaded
+// without ever pressing refresh or completing can be stale relative to
+// changes made elsewhere, exactly as it always could be even before this
+// split (a plain GET never regenerated it either).
 async function refreshWorkflowTransaction({
   rootDir,
   transactionNo,
   now = () => new Date().toISOString(),
   packetGenerator = generateWorkflowPacketPdf,
+  regeneratePacket = true,
 }) {
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (!transaction) {
@@ -2567,17 +2652,23 @@ async function refreshWorkflowTransaction({
   const formattedChildDocuments = childDocuments.map(formatWorkflowChildDocumentForResponse);
 
   // The packet PDF is a summary/index over the transaction and its child
-  // documents as they stand right now — it is regenerated on every refresh
-  // (after the transaction record above has already been persisted, so a
-  // packet failure never leaves derived progress half-written) and always
-  // overwrites the same fixed file name, so there is only ever one packet
-  // per transaction to serve or link to.
-  const absoluteFolderPath = path.join(rootDir, updated.folderPath);
-  const packetResult = await generatePacketPdfSafely(packetGenerator, {
-    transaction: updated,
-    childDocuments: formattedChildDocuments,
-    outputPath: path.join(absoluteFolderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME),
-  });
+  // documents as they stand right now — when regenerated (after the
+  // transaction record above has already been persisted, so a packet
+  // failure never leaves derived progress half-written) it always overwrites
+  // the same fixed file name, so there is only ever one packet per
+  // transaction to serve or link to. When regeneratePacket is false, the
+  // Python subprocess is never spawned at all — whatever packet (if any) was
+  // last generated stays on disk untouched and is still reported below via
+  // pdfFiles.
+  let packetResult = { ok: true };
+  if (regeneratePacket) {
+    const absoluteFolderPath = path.join(rootDir, updated.folderPath);
+    packetResult = await generatePacketPdfSafely(packetGenerator, {
+      transaction: updated,
+      childDocuments: formattedChildDocuments,
+      outputPath: path.join(absoluteFolderPath, "pdf", WORKFLOW_PACKET_PDF_FILE_NAME),
+    });
+  }
 
   const pdfFiles = await listWorkflowTransactionPdfFiles(rootDir, updated.folderPath, updated.transactionNo);
 
@@ -2585,9 +2676,10 @@ async function refreshWorkflowTransaction({
     ...updated,
     childDocuments: formattedChildDocuments,
     pdfFiles,
-    // Present only on failure — a successful generation never adds this key —
-    // so the page/caller can tell "no packet yet" from "packet generation just
-    // failed" without inferring it from a missing pdfFiles entry.
+    // Present only on failure — a successful (or skipped) generation never
+    // adds this key — so the page/caller can tell "no packet yet" from
+    // "packet generation just failed" without inferring it from a missing
+    // pdfFiles entry.
     ...(packetResult.ok ? {} : { packetError: packetResult.error }),
   };
 }
@@ -2947,6 +3039,7 @@ module.exports = {
   completeWorkflowTransaction,
   findLightweightWorkflowDocuments,
   findWorkflowChildDocuments,
+  readExpenseRequestChildDocument,
   getExpenseDraft,
   getExpenseRequestFile,
   getSubstituteReceiptFile,
