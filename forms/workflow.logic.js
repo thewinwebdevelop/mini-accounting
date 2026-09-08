@@ -1,3 +1,12 @@
+// The only two values a substitute_receipt template step's receiptType may
+// declare. Meaningful only when that step's documentKind is
+// "substitute_receipt" -- deriveChildWorkflowStatus's hybrid completion rule
+// keys on the *document's own* receiptType (stock_purchase completes at
+// native "received", general_expense completes at "approved"), so a template
+// that declares the wrong one for its use case strands the workflow or, worse,
+// reports done while skipping stock receiving entirely.
+const SUBSTITUTE_RECEIPT_TEMPLATE_TYPES = ["stock_purchase", "general_expense"];
+
 const DOCUMENT_TYPE_DEFINITIONS = {
   purchase_order: { documentKind: "purchase_order", label: "ใบสั่งซื้อ", route: "/workflow-document?documentKind=purchase_order", standalone: true },
   substitute_receipt: { documentKind: "substitute_receipt", label: "ใบรับรองแทนใบเสร็จรับเงิน", route: "/substitute-receipt", standalone: true },
@@ -17,7 +26,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "purchase_order" },
-      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-002", documentKind: "substitute_receipt", receiptType: "stock_purchase" },
       { stepId: "step-003", documentKind: "payment_voucher" },
       { stepId: "step-004", documentKind: "goods_receipt" },
     ],
@@ -32,7 +41,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "purchase_order" },
-      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-002", documentKind: "substitute_receipt", receiptType: "stock_purchase" },
       { stepId: "step-003", documentKind: "expense_request" },
       { stepId: "step-004", documentKind: "payment_voucher" },
       { stepId: "step-005", documentKind: "goods_receipt" },
@@ -48,7 +57,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
-      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-002", documentKind: "substitute_receipt", receiptType: "general_expense" },
       { stepId: "step-003", documentKind: "payment_voucher" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
@@ -63,7 +72,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
       { stepId: "step-002", documentKind: "cash_spend_declaration" },
-      { stepId: "step-003", documentKind: "substitute_receipt" },
+      { stepId: "step-003", documentKind: "substitute_receipt", receiptType: "general_expense" },
       { stepId: "step-004", documentKind: "payment_voucher" },
     ],
     createdAt: "2026-09-06T00:00:00.000Z",
@@ -78,7 +87,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
       { stepId: "step-002", documentKind: "cash_spend_declaration" },
-      { stepId: "step-003", documentKind: "substitute_receipt" },
+      { stepId: "step-003", documentKind: "substitute_receipt", receiptType: "general_expense" },
       { stepId: "step-004", documentKind: "payment_voucher" },
       { stepId: "step-005", documentKind: "payee_acknowledgement" },
     ],
@@ -93,7 +102,7 @@ const DEFAULT_WORKFLOW_TEMPLATES = [
     active: true,
     documentSteps: [
       { stepId: "step-001", documentKind: "expense_request" },
-      { stepId: "step-002", documentKind: "substitute_receipt" },
+      { stepId: "step-002", documentKind: "substitute_receipt", receiptType: "general_expense" },
       { stepId: "step-003", documentKind: "payment_voucher" },
       { stepId: "step-004", documentKind: "payee_acknowledgement" },
     ],
@@ -132,6 +141,23 @@ function validateWorkflowTemplate(template) {
         // literal "undefined" — a non-Thai token in a Thai-only UI.
         const kindLabel = step.documentKind || "(ไม่ระบุประเภทเอกสาร)";
         errors.push(`พบประเภทเอกสารที่ยังไม่รองรับ: ${kindLabel}`);
+        continue;
+      }
+
+      // receiptType is only meaningful on a substitute_receipt step (see
+      // SUBSTITUTE_RECEIPT_TEMPLATE_TYPES above). Omitting it entirely is
+      // allowed -- that is exactly the shape of every template persisted to
+      // disk before this feature shipped, and a running install must not
+      // break because of it. A *present but wrong* value is rejected outright
+      // rather than silently coerced, since silently picking a default here
+      // is exactly the kind of guess that stranded workflows or skipped
+      // stock receiving in the first place.
+      if (
+        step.documentKind === "substitute_receipt"
+        && step.receiptType
+        && !SUBSTITUTE_RECEIPT_TEMPLATE_TYPES.includes(step.receiptType)
+      ) {
+        errors.push(`ประเภทใบรับรองแทนใบเสร็จไม่ถูกต้อง: ${step.receiptType}`);
       }
     }
   }
@@ -148,10 +174,22 @@ function normalizeWorkflowTemplate(template, options) {
     description: typeof template.description === "string" ? template.description.trim() : template.description,
     syncGoogleDrive: !!template.syncGoogleDrive,
     active: template.active !== false,
-    documentSteps: (template.documentSteps || []).map((step, index) => ({
-      stepId: `step-${String(index + 1).padStart(3, "0")}`,
-      documentKind: step.documentKind,
-    })),
+    documentSteps: (template.documentSteps || []).map((step, index) => {
+      const normalizedStep = {
+        stepId: `step-${String(index + 1).padStart(3, "0")}`,
+        documentKind: step.documentKind,
+      };
+      // receiptType is only meaningful on a substitute_receipt step -- drop
+      // it for every other kind rather than carrying a stray value forward.
+      // An omitted (falsy) value on a substitute_receipt step is left unset
+      // rather than defaulted, so a template persisted before this feature
+      // shipped normalizes to exactly the same shape it already has on disk.
+      if (step.documentKind === "substitute_receipt") {
+        const receiptType = typeof step.receiptType === "string" ? step.receiptType.trim() : step.receiptType;
+        if (receiptType) normalizedStep.receiptType = receiptType;
+      }
+      return normalizedStep;
+    }),
     createdAt: template.createdAt || now,
     updatedAt: now,
   };
@@ -357,6 +395,7 @@ ${rawRows}
 const WorkflowLogic = {
   DOCUMENT_TYPE_DEFINITIONS,
   DEFAULT_WORKFLOW_TEMPLATES,
+  SUBSTITUTE_RECEIPT_TEMPLATE_TYPES,
   getDocumentTypeDefinition,
   getDefaultWorkflowTemplates,
   validateWorkflowTemplate,

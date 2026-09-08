@@ -1269,6 +1269,11 @@ test("POST refresh and start-document enforce strict template order, and self-re
     assert.equal(receiptParsed.searchParams.get("transactionNo"), txn.transactionNo);
     assert.equal(receiptParsed.searchParams.get("workflowStepId"), receiptStep.stepId);
     assert.equal(receiptParsed.searchParams.get("returnTo"), `/workflow-transaction?transactionNo=${txn.transactionNo}`);
+    assert.equal(
+      receiptParsed.searchParams.get("receiptType"),
+      "stock_purchase",
+      "start-document must carry the template's declared receiptType so the form can lock the field",
+    );
 
     // Explicit /refresh must also reflect the same, now-persisted, progress.
     const refreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, {
@@ -1279,6 +1284,231 @@ test("POST refresh and start-document enforce strict template order, and self-re
     assert.equal(refreshed.steps[2].workflowStatus, "blocked");
   } finally {
     await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("start-document carries the general_expense receiptType declared by an expense template's substitute_receipt step", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    const txn = await startTransactionOverHttp(baseUrl, { templateId: "director_expense_transfer", title: "เบิกค่าใช้จ่ายทดสอบ receiptType" });
+    const receiptStep = txn.steps[1];
+    assert.equal(receiptStep.documentKind, "substitute_receipt");
+
+    // Step 0 (expense_request) is the current step, so it must be started
+    // and completed first before substitute_receipt (step 1) unlocks.
+    const expenseFormData = new FormData();
+    expenseFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      requestTitle: "เบิกค่าใช้จ่ายทดสอบ",
+      requestType: "reimbursement",
+      requesterName: "เจ้าของ",
+      businessPurpose: "ทดสอบ receiptType",
+      paymentTargetName: "เจ้าของ",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: txn.steps[0].stepId,
+      expenseLines: [{
+        date: "2026-09-05",
+        category: "ค่าส่ง/ขนส่ง",
+        description: "ค่าใช้จ่ายทดสอบ",
+        vendor: "ผู้ขายทดสอบ",
+        amountBeforeVat: "100",
+        vatAmount: "7",
+        withholdingTax: "0",
+      }],
+    }));
+    expenseFormData.append("evidence_businessEvidence", new Blob(["evidence"], { type: "text/plain" }), "evidence.txt");
+    const expenseSubmitted = await requestJsonOk(baseUrl, "/api/expense-requests", { method: "POST", body: expenseFormData });
+    await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "เจ้าของ" }),
+    });
+    await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+
+    const receiptOpen = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${receiptStep.stepId}`, {
+      method: "POST",
+    });
+    const receiptParsed = new URL(receiptOpen.url, baseUrl);
+    assert.equal(
+      receiptParsed.searchParams.get("receiptType"),
+      "general_expense",
+      "director_expense_transfer's substitute_receipt step declares general_expense",
+    );
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("start-document does not carry a receiptType param for a substitute_receipt step whose template never declared one, and a later template edit never touches a running transaction's snapshot", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    // A custom template whose substitute_receipt step never declares a
+    // receiptType -- exactly the shape a template persisted to disk before
+    // this feature shipped will have.
+    await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "custom_no_receipt_type",
+        name: "Custom no receiptType",
+        documentSteps: [
+          { documentKind: "purchase_order" },
+          { documentKind: "substitute_receipt" },
+        ],
+      }),
+    });
+
+    const txn = await startTransactionOverHttp(baseUrl, { templateId: "custom_no_receipt_type", title: "ทดสอบ template ไม่มี receiptType" });
+
+    // Editing the live template *after* the transaction started must never
+    // change what a running transaction's start-document URL carries -- the
+    // snapshot on the transaction record is authoritative, not the live
+    // template.
+    await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "custom_no_receipt_type",
+        name: "Custom no receiptType",
+        documentSteps: [
+          { documentKind: "purchase_order" },
+          { documentKind: "substitute_receipt", receiptType: "general_expense" },
+        ],
+      }),
+    });
+
+    await submitAndCompletePurchaseOrder(baseUrl, txn);
+    const receiptStep = txn.steps[1];
+    const receiptOpen = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${receiptStep.stepId}`, {
+      method: "POST",
+    });
+    const receiptParsed = new URL(receiptOpen.url, baseUrl);
+    assert.equal(
+      receiptParsed.searchParams.has("receiptType"),
+      false,
+      "no receiptType param must be sent when the snapshotted template step never declared one, even though the live template was edited afterward to declare one",
+    );
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission rejects a receiptType that disagrees with the workflow step's snapshotted template", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    // stock_no_tax_invoice_company_bank's substitute_receipt step (step-002)
+    // declares "stock_purchase". Submitting "general_expense" against that
+    // step must be refused server-side -- locking the UI select is not
+    // enforcement, a crafted request can still submit any value.
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ทดสอบปฏิเสธ receiptType ที่ไม่ตรงกับ workflow",
+    });
+    const receiptStepId = txn.steps[1].stepId;
+
+    await assert.rejects(
+      serverLogic.saveSubstituteReceiptSubmission({
+        rootDir,
+        payload: {
+          accountingMonth: "2026-09",
+          receiptDate: "2026-09-05",
+          receiptTitle: "ทดสอบ receiptType ผิด",
+          receiptType: "general_expense",
+          payeeName: "ผู้ขายทดสอบ",
+          businessPurpose: "ทดสอบ",
+          transactionNo: txn.transactionNo,
+          workflowTemplateId: txn.workflowTemplateId,
+          workflowStepId: receiptStepId,
+          lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+        },
+        uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+      }),
+      (error) => {
+        assert.match(error.message, /[ก-๙]/, "refusal must be a Thai error message");
+        return true;
+      },
+    );
+
+    // The matching receiptType must still be accepted -- this is not simply
+    // refusing every substitute_receipt submission inside a workflow.
+    const accepted = await serverLogic.saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-05",
+        receiptTitle: "ทดสอบ receiptType ถูกต้อง",
+        receiptType: "stock_purchase",
+        payeeName: "ผู้ขายทดสอบ",
+        businessPurpose: "ทดสอบ",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: receiptStepId,
+        lines: [{ stockSkuId: "1", sku: "TEST-SKU", description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+      },
+      uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+    });
+    assert.ok(accepted.receiptNo, "a matching receiptType must be accepted normally");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission does not enforce receiptType when the snapshotted template step never declared one", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const template = await serverLogic.saveWorkflowTemplate({
+      rootDir,
+      template: {
+        templateId: "custom_unenforced_receipt",
+        name: "Custom unenforced",
+        documentSteps: [
+          { documentKind: "purchase_order" },
+          { documentKind: "substitute_receipt" },
+        ],
+      },
+    });
+    assert.equal(template.documentSteps[1].receiptType, undefined, "sanity check: this template really has no declared receiptType");
+
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "custom_unenforced_receipt",
+      accountingMonth: "2026-09",
+      title: "ทดสอบไม่มีการบังคับ receiptType",
+    });
+    const receiptStepId = txn.steps[1].stepId;
+
+    const submitted = await serverLogic.saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-05",
+        receiptTitle: "ทดสอบ",
+        receiptType: "general_expense",
+        payeeName: "ผู้ขายทดสอบ",
+        businessPurpose: "ทดสอบ",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: receiptStepId,
+        lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+      },
+      uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+    });
+    assert.ok(submitted.receiptNo, "with no declared receiptType on the template step, any receiptType value must be accepted");
+  } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });

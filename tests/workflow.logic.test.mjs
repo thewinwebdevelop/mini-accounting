@@ -77,6 +77,93 @@ test("template validation gives a Thai fallback message for a step with no docum
   assert.ok(!errors.some((message) => message.includes("undefined")), "must never interpolate the literal 'undefined' into a Thai-only error message");
 });
 
+// A free-form receiptType dropdown on the substitute_receipt form decides,
+// all by itself, whether a workflow step can ever complete (stock_purchase
+// only completes at native "received"; general_expense completes at
+// "approved" -- see deriveChildWorkflowStatus). So every template step whose
+// documentKind is substitute_receipt must be able to declare which receipt
+// type that step means, and every one of the six shipped templates must
+// declare it correctly -- not just a sample: an earlier task on this branch
+// shipped a six-entry seed table with only one entry asserted and five
+// silently wrong, so this test checks all six by name.
+test("every default workflow template's substitute_receipt step declares the correct receiptType", () => {
+  const expectedReceiptTypeByTemplateId = {
+    stock_no_tax_invoice_company_bank: "stock_purchase",
+    stock_no_tax_invoice_director_transfer: "stock_purchase",
+    director_expense_transfer: "general_expense",
+    director_expense_cash: "general_expense",
+    outsource_expense_cash: "general_expense",
+    outsource_expense_transfer: "general_expense",
+  };
+
+  for (const [templateId, expectedReceiptType] of Object.entries(expectedReceiptTypeByTemplateId)) {
+    const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === templateId);
+    assert.ok(template, `expected a seeded template named ${templateId}`);
+    const receiptStep = template.documentSteps.find((step) => step.documentKind === "substitute_receipt");
+    assert.ok(receiptStep, `${templateId}: expected a substitute_receipt step`);
+    assert.equal(receiptStep.receiptType, expectedReceiptType, `${templateId}: substitute_receipt step must declare receiptType "${expectedReceiptType}"`);
+  }
+});
+
+test("template normalization preserves a valid receiptType on a substitute_receipt step", () => {
+  const normalized = normalizeWorkflowTemplate({
+    templateId: "custom_receipt",
+    name: "custom",
+    documentSteps: [
+      { documentKind: "expense_request" },
+      { documentKind: "substitute_receipt", receiptType: "general_expense" },
+    ],
+  }, { now: () => "2026-09-06T10:00:00.000Z" });
+
+  assert.equal(normalized.documentSteps[1].receiptType, "general_expense");
+});
+
+test("template normalization drops a stray receiptType on a step that is not substitute_receipt", () => {
+  const normalized = normalizeWorkflowTemplate({
+    templateId: "custom_receipt",
+    name: "custom",
+    documentSteps: [
+      { documentKind: "expense_request", receiptType: "general_expense" },
+    ],
+  }, { now: () => "2026-09-06T10:00:00.000Z" });
+
+  assert.equal(normalized.documentSteps[0].receiptType, undefined, "receiptType is only meaningful for a substitute_receipt step");
+});
+
+test("template normalization leaves receiptType unset when a substitute_receipt step omits it, rather than inventing a default", () => {
+  const normalized = normalizeWorkflowTemplate({
+    templateId: "custom_receipt",
+    name: "custom",
+    documentSteps: [
+      { documentKind: "substitute_receipt" },
+    ],
+  }, { now: () => "2026-09-06T10:00:00.000Z" });
+
+  assert.equal(normalized.documentSteps[0].receiptType, undefined, "an omitted receiptType must stay unset -- this is exactly the shape a template persisted before this feature shipped will have, and it must load without error");
+});
+
+test("template validation rejects a receiptType that is neither stock_purchase nor general_expense", () => {
+  const errors = validateWorkflowTemplate({
+    templateId: "bad_receipt_type",
+    name: "bad",
+    documentSteps: [
+      { documentKind: "substitute_receipt", receiptType: "not_a_real_type" },
+    ],
+  });
+  assert.deepEqual(errors, ["ประเภทใบรับรองแทนใบเสร็จไม่ถูกต้อง: not_a_real_type"]);
+});
+
+test("template validation allows a substitute_receipt step that omits receiptType entirely", () => {
+  const errors = validateWorkflowTemplate({
+    templateId: "legacy_receipt",
+    name: "legacy",
+    documentSteps: [
+      { documentKind: "substitute_receipt" },
+    ],
+  });
+  assert.deepEqual(errors, [], "a step with no declared receiptType must not be rejected -- this is the shape of every template persisted before this feature shipped");
+});
+
 test("every default workflow template has the document steps specified by the design spec", () => {
   const expectedDocumentKindsByTemplateId = {
     stock_no_tax_invoice_company_bank: [

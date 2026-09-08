@@ -169,6 +169,18 @@ function createDocumentStepTemplate() {
   order.className = "step-order";
   const label = new FakeNode("span");
   label.className = "step-label";
+  // Mirrors the real <select class="step-receipt-type" hidden> in
+  // forms/workflow-templates.html's #documentStepTemplate: only meaningful
+  // (and only shown) for a substitute_receipt step, since that is the only
+  // document kind whose workflow-completion rule keys on receiptType.
+  const receiptTypeSelect = new FakeNode("select");
+  receiptTypeSelect.className = "step-receipt-type";
+  receiptTypeSelect.hidden = true;
+  const stockOption = new FakeNode("option");
+  stockOption.value = "stock_purchase";
+  const expenseOption = new FakeNode("option");
+  expenseOption.value = "general_expense";
+  receiptTypeSelect.append(stockOption, expenseOption);
   const actions = new FakeNode("div");
   actions.className = "step-actions";
   const upButton = new FakeNode("button");
@@ -178,7 +190,7 @@ function createDocumentStepTemplate() {
   const removeButton = new FakeNode("button");
   removeButton.setAttribute("data-remove-step", "");
   actions.append(upButton, downButton, removeButton);
-  row.append(order, label, actions);
+  row.append(order, label, receiptTypeSelect, actions);
   fragment.append(row);
   template.content = fragment;
   return template;
@@ -207,6 +219,7 @@ function createStubFetch({ documentTypes, templates, onSave }) {
         documentSteps: body.documentSteps.map((step, index) => ({
           stepId: `step-${String(index + 1).padStart(3, "0")}`,
           documentKind: step.documentKind,
+          ...(step.documentKind === "substitute_receipt" && step.receiptType ? { receiptType: step.receiptType } : {}),
         })),
         active: true,
         createdAt: "2026-09-06T00:00:00.000Z",
@@ -357,6 +370,83 @@ test("selecting a seeded template renders its name, description, sync toggle, an
     true,
     "last row cannot move further down",
   );
+});
+
+// A free-form receiptType dropdown on the substitute_receipt form is exactly
+// what breaks the workflow (see forms/workflow.logic.js's
+// deriveChildWorkflowStatus): a template must declare, per step, which
+// receipt type that step means, so the template editor needs a way to set
+// it. The selector only makes sense on a substitute_receipt step -- every
+// other document kind has no such distinction.
+test("only the substitute_receipt step row shows the receipt-type selector, preset to the template's declared value", async () => {
+  const documentTypes = Object.values(workflowLogic.DOCUMENT_TYPE_DEFINITIONS);
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  const target = templates.find((template) => template.templateId === "director_expense_transfer");
+  assert.deepEqual(target.documentSteps.map((step) => step.documentKind), ["expense_request", "substitute_receipt", "payment_voucher"]);
+
+  const { elements } = await setupTemplatePageSandbox({ documentTypes, templates });
+  selectTemplateByChange(elements.templateSelect, target.templateId);
+
+  const rows = elements.documentStepsList.querySelectorAll(".step-row");
+  assert.equal(rows[0].querySelector(".step-receipt-type").hidden, true, "expense_request step must not show the receipt-type selector");
+  assert.equal(rows[1].querySelector(".step-receipt-type").hidden, false, "substitute_receipt step must show the receipt-type selector");
+  assert.equal(rows[1].querySelector(".step-receipt-type").value, "general_expense", "must preset to the template's declared receiptType");
+  assert.equal(rows[2].querySelector(".step-receipt-type").hidden, true, "payment_voucher step must not show the receipt-type selector");
+});
+
+test("changing the receipt-type selector on a substitute_receipt step is included in the saved payload", async () => {
+  const documentTypes = Object.values(workflowLogic.DOCUMENT_TYPE_DEFINITIONS);
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  const target = templates.find((template) => template.templateId === "stock_no_tax_invoice_company_bank");
+  assert.deepEqual(target.documentSteps.map((step) => step.documentKind), ["purchase_order", "substitute_receipt", "payment_voucher", "goods_receipt"]);
+
+  let capturedPayload = null;
+  const { elements } = await setupTemplatePageSandbox({
+    documentTypes,
+    templates,
+    onSave: (payload) => { capturedPayload = payload; },
+  });
+  selectTemplateByChange(elements.templateSelect, target.templateId);
+
+  const receiptRow = elements.documentStepsList.querySelectorAll(".step-row")[1];
+  const receiptTypeSelect = receiptRow.querySelector(".step-receipt-type");
+  assert.equal(receiptTypeSelect.value, "stock_purchase", "sanity check on the seeded default");
+  receiptTypeSelect.value = "general_expense";
+  receiptTypeSelect.dispatch("change");
+
+  elements.saveTemplate.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.ok(capturedPayload, "save must POST to the server");
+  const savedReceiptStep = capturedPayload.documentSteps.find((step) => step.documentKind === "substitute_receipt");
+  assert.equal(savedReceiptStep.receiptType, "general_expense", "the edited receiptType must be part of the saved payload, not silently dropped");
+});
+
+test("a newly added substitute_receipt step defaults its receipt-type to stock_purchase and saves it", async () => {
+  const documentTypes = Object.values(workflowLogic.DOCUMENT_TYPE_DEFINITIONS);
+  const templates = [];
+
+  let capturedPayload = null;
+  const { elements } = await setupTemplatePageSandbox({
+    documentTypes,
+    templates,
+    onSave: (payload) => { capturedPayload = payload; },
+  });
+
+  elements.templateName.value = "ทดสอบ Template ใหม่ที่มีใบรับรองแทนใบเสร็จ";
+  elements.documentKindSelect.value = "substitute_receipt";
+  elements.addDocumentStep.dispatch("click");
+
+  const receiptRow = elements.documentStepsList.querySelectorAll(".step-row")[0];
+  const receiptTypeSelect = receiptRow.querySelector(".step-receipt-type");
+  assert.equal(receiptTypeSelect.hidden, false);
+  assert.equal(receiptTypeSelect.value, "stock_purchase", "a newly added substitute_receipt step must default to a real value, not stay unset");
+
+  elements.saveTemplate.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.ok(capturedPayload, "save must POST to the server");
+  assert.equal(capturedPayload.documentSteps[0].receiptType, "stock_purchase");
 });
 
 test("reordering with the down/up buttons actually changes the document order, not just the button's presence", async () => {

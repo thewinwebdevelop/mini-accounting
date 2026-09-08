@@ -216,3 +216,89 @@ test("expense request API approves submitted requests and reports sheet sync sta
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+// A free-form receiptType dropdown decides, all by itself, whether a
+// workflow step can ever complete (see deriveChildWorkflowStatus's hybrid
+// rule in forms/workflow.logic.js). forms/substitute-receipt.html locks the
+// field in the browser when opened from a workflow step, but that is a UI
+// affordance only -- this test exercises the real HTTP submission route
+// (multipart form, real local-server.mjs process) with a receiptType that
+// disagrees with what the workflow step's snapshotted template declared, to
+// prove the server itself refuses it end to end, not just at the unit level.
+test("POST /api/substitute-receipts rejects a receiptType that disagrees with the workflow step's declared type, over the real HTTP route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-api-"));
+  const port = 19192;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    // stock_no_tax_invoice_company_bank's substitute_receipt step (the
+    // second step) declares "stock_purchase".
+    const txn = await requestJson(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบปฏิเสธ receiptType ผ่าน HTTP จริง",
+      }),
+    });
+    const receiptStepId = txn.steps[1].stepId;
+
+    const mismatchedFormData = new FormData();
+    mismatchedFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-04",
+      receiptTitle: "ทดสอบ receiptType ผิด",
+      receiptType: "general_expense",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: receiptStepId,
+      lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+    }));
+    mismatchedFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+
+    const { response, body } = await requestJsonResponse(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: mismatchedFormData,
+    });
+    assert.equal(response.status, 400);
+    assert.match(body.error, /[ก-๙]/, "refusal must be a Thai error message");
+
+    // Standalone submission (no transactionNo/workflowStepId at all) must
+    // stay completely unaffected -- this is the same request this file's
+    // first test already sends successfully, repeated here in the same
+    // process to prove the new guard does not touch that path.
+    const standaloneFormData = new FormData();
+    standaloneFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-04",
+      receiptTitle: "ทดสอบแบบเดี่ยว ไม่มี workflow",
+      receiptType: "general_expense",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+    }));
+    standaloneFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+    const standaloneSubmitted = await requestJson(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: standaloneFormData,
+    });
+    assert.equal(standaloneSubmitted.status, "pending_approval", "standalone submission must be entirely unaffected by the workflow guard");
+  } finally {
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

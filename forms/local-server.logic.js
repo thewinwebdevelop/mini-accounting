@@ -997,6 +997,45 @@ async function getSubstituteReceiptDraft(rootDir, draftId, options = {}) {
   return draft;
 }
 
+const SUBSTITUTE_RECEIPT_TEMPLATE_TYPE_LABELS = {
+  stock_purchase: "ซื้อสต๊อกสินค้า",
+  general_expense: "รายจ่ายทั่วไป",
+};
+
+// Locking the <select> in forms/substitute-receipt.html when opened from a
+// workflow step (see workflowContext.receiptType in
+// substitute-receipt.logic.browser.js) is a UI affordance only, not
+// enforcement -- a crafted request can still POST any receiptType. This is
+// the actual guard: given a transactionNo + workflowStepId, look up the
+// *snapshotted* template on that transaction (never the live one in
+// data/workflow-templates.json, which may have been edited since the
+// transaction started -- see getWorkflowTransaction below) and refuse a
+// receiptType that disagrees with what that step declared.
+//
+// A step that declares no receiptType at all -- every workflow-templates.json
+// persisted before this feature shipped, or a template step whose kind is
+// not substitute_receipt -- has nothing to enforce, so this is a no-op for
+// those (a running install must not break because of this change).
+async function assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload = {}) {
+  const transactionNo = payload.transactionNo;
+  const workflowStepId = payload.workflowStepId;
+  if (!transactionNo || !workflowStepId) return;
+
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!transaction) return;
+
+  const templateStep = (transaction.templateSnapshot?.documentSteps || [])
+    .find((step) => step.stepId === workflowStepId);
+  if (!templateStep || templateStep.documentKind !== "substitute_receipt" || !templateStep.receiptType) return;
+
+  const expectedReceiptType = templateStep.receiptType;
+  const actualReceiptType = payload.receiptType || "stock_purchase";
+  if (actualReceiptType !== expectedReceiptType) {
+    const expectedLabel = SUBSTITUTE_RECEIPT_TEMPLATE_TYPE_LABELS[expectedReceiptType] || expectedReceiptType;
+    throw new Error(`ขั้นตอนนี้ใน Workflow กำหนดประเภทใบรับรองแทนใบเสร็จไว้เป็น "${expectedLabel}" เท่านั้น ไม่สามารถบันทึกเป็นประเภทอื่นได้`);
+  }
+}
+
 async function writeSubstituteReceiptDraftRecord(rootDir, record) {
   const absoluteFolderPath = path.join(rootDir, record.folderPath);
   await mkdir(path.join(absoluteFolderPath, "data"), { recursive: true });
@@ -1010,6 +1049,7 @@ async function writeSubstituteReceiptDraftRecord(rootDir, record) {
 async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
   const accountingMonth = payload.accountingMonth;
   getMonthParts(accountingMonth);
+  await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload);
 
   let existingDraft = null;
   if (payload.draftId) {
@@ -1261,6 +1301,7 @@ async function saveSubstituteReceiptSubmission({
     ...payload,
     draftId: payload.draftId || draft?.draftId,
   };
+  await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, submissionPayload);
   const nextReceipt = await getNextSubstituteReceiptInfo(rootDir, submissionPayload.accountingMonth);
   const existingEvidenceFiles = draft?.evidenceFiles ?? submissionPayload.evidenceFiles ?? {};
   const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);

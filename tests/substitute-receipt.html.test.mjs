@@ -418,6 +418,7 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
     evidenceCountPreview: makeSimpleElement("div"),
     stockReceiptNotice: makeSimpleElement("div"),
     vendorPresetSelect: new FakeNode("select"),
+    receiptTypeWorkflowNote: makeSimpleElement("span"),
     workflowReturnLink: new FakeNode("a"),
     workflowPrefillBanner: new FakeNode("div"),
     workflowPrefillGroups: new FakeNode("div"),
@@ -430,6 +431,7 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
   // true, exactly like a real browser parsing the HTML.
   elementsById.workflowReturnLink.hidden = true;
   elementsById.workflowPrefillBanner.hidden = true;
+  elementsById.receiptTypeWorkflowNote.hidden = true;
 
   const form = elementsById.substituteReceiptForm;
   const formField = (value = "") => ({ value, disabled: false, addEventListener() {} });
@@ -472,7 +474,16 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
   };
 
   const fetchLog = [];
-  const stubFetch = async (url) => {
+  // Captures whatever the controller last posted as a multipart "payload"
+  // field (draft save / submit-for-approval), so a test can assert on the
+  // actual JSON that would have reached the server -- specifically, that a
+  // workflow-locked (and therefore `disabled`) receiptType select still
+  // contributes its value to that payload, since collectPayload() reads
+  // form.elements.receiptType.value directly rather than relying on native
+  // form/FormData serialization (which *would* silently drop a disabled
+  // field).
+  const capturedPost = { payload: null };
+  const stubFetch = async (url, options = {}) => {
     fetchLog.push(url);
     if (url.includes("/prefill")) {
       return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
@@ -485,6 +496,14 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
     }
     if (url.includes("/api/substitute-receipts/next")) {
       return { ok: true, json: async () => ({ sequence: "1", receiptNo: nextReceiptNo }) };
+    }
+    if (
+      options.method === "POST"
+      && (url.includes("/api/substitute-receipt-drafts") || url.includes("/api/substitute-receipts"))
+      && options.body instanceof FormData
+    ) {
+      capturedPost.payload = JSON.parse(options.body.get("payload"));
+      return { ok: true, json: async () => ({ draftId: "DRAFT-TEST", receiptNo: nextReceiptNo, status: "pending_approval", pdfFiles: [], rawFiles: [] }) };
     }
     return { ok: true, json: async () => ({}) };
   };
@@ -499,6 +518,7 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
     document: fakeDocument,
     location: { search, protocol: "http:" },
     URLSearchParams,
+    FormData,
     // Bare `fetch(...)` resolves through the sandbox's global object, which
     // is this context object itself, not our separate `window` property.
     fetch: stubFetch,
@@ -522,7 +542,7 @@ async function setupSubstituteReceiptSandbox({ search = "", prefillResponse = nu
   // microtask chain need to fully settle before a test touches the DOM.
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  return { context, elements: elementsById, form, fetchLog };
+  return { context, elements: elementsById, form, fetchLog, capturedPost };
 }
 
 function getPrefillCheckbox(container, group) {
@@ -564,6 +584,92 @@ test("opened from a workflow step: hidden fields are populated and a safe return
     fetchLog.some((url) => url.includes("/api/workflow-transactions/TXN-2026-09-0001/prefill") && url.includes("documentKind=substitute_receipt") && url.includes("stepId=step-2")),
     "must fetch the prefill endpoint for the right transaction/documentKind/stepId",
   );
+});
+
+// --- receiptType lock: a workflow-declared step locks the field ----------
+//
+// A free-form receiptType dropdown decides, all by itself, whether a
+// workflow step can ever complete (see deriveChildWorkflowStatus's hybrid
+// rule in forms/workflow.logic.js). start-document now carries the
+// snapshotted template's declared receiptType as a `receiptType` query
+// param (see handleWorkflowTransactionStartDocument in local-server.mjs);
+// this page must preselect and lock the field when that param is present,
+// and leave it completely free otherwise (standalone use, or a workflow
+// step whose template never declared one).
+
+test("opened from a workflow step that declares receiptType=stock_purchase: the field is preselected and locked, with the Thai note shown", async () => {
+  const { elements, form } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2&receiptType=stock_purchase",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  assert.equal(form.elements.receiptType.value, "stock_purchase");
+  assert.equal(form.elements.receiptType.disabled, true, "the select must be locked so the user cannot change it");
+  assert.equal(elements.receiptTypeWorkflowNote.hidden, false, "the Thai note explaining the lock must be shown");
+});
+
+test("opened from a workflow step that declares receiptType=general_expense: the field is preselected and locked", async () => {
+  const { elements, form } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2&receiptType=general_expense",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  assert.equal(form.elements.receiptType.value, "general_expense");
+  assert.equal(form.elements.receiptType.disabled, true);
+  assert.equal(elements.receiptTypeWorkflowNote.hidden, false);
+});
+
+test("opened from a workflow step whose template never declared a receiptType: the field stays free, exactly like standalone use", async () => {
+  const { elements, form } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  assert.equal(form.elements.receiptType.disabled, false, "no receiptType param means nothing to lock");
+  assert.equal(elements.receiptTypeWorkflowNote.hidden, true);
+});
+
+test("opened standalone with no query string at all: the field is fully free and the note stays hidden", async () => {
+  const { elements, form } = await setupSubstituteReceiptSandbox({ search: "" });
+
+  assert.equal(form.elements.receiptType.disabled, false);
+  assert.equal(form.elements.receiptType.value, "stock_purchase", "standalone default is unchanged: the first option");
+  assert.equal(elements.receiptTypeWorkflowNote.hidden, true);
+});
+
+test("the workflow lock survives status-based lock/unlock cycling: a locked receiptType stays disabled even while stock lines would otherwise be editable", async () => {
+  const { form } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2&receiptType=general_expense",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  // Triggering the normal input/change preview pipeline (applyReceiptTypeState
+  // -> applyStockLineLock) must not accidentally re-enable a workflow-locked
+  // field just because the receipt is still a fresh draft (draft/pending_
+  // approval statuses are not stock-line-locked on their own).
+  form.dispatch("input");
+  form.dispatch("change");
+  assert.equal(form.elements.receiptType.disabled, true);
+  assert.equal(form.elements.receiptType.value, "general_expense");
+});
+
+test("saved draft payload still carries the workflow-locked receiptType even though the select is disabled", async () => {
+  const { elements, capturedPost } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2&receiptType=general_expense",
+    prefillResponse: { availableGroups: [] },
+  });
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.ok(capturedPost.payload, "saveDraft must have posted a payload");
+  assert.equal(
+    capturedPost.payload.receiptType,
+    "general_expense",
+    "a disabled <select> submits no value via native form serialization, but this controller reads .value directly (see collectPayload) -- the locked value must still reach the server",
+  );
+  assert.equal(capturedPost.payload.transactionNo, "TXN-2026-09-0001");
+  assert.equal(capturedPost.payload.workflowStepId, "step-2");
 });
 
 test("applyWorkflowPrefillPatch fills only ticked groups, leaving unticked fields untouched", async () => {

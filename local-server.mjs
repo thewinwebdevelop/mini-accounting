@@ -860,9 +860,15 @@ async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   }
 }
 
-function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, workflowStepId, returnTo }) {
+function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
   const separator = route.includes("?") ? "&" : "?";
   const params = new URLSearchParams({ transactionNo, workflowTemplateId, workflowStepId, returnTo });
+  // Only present for a substitute_receipt step whose *snapshotted* template
+  // step declared a receiptType (see getDocumentTypeDefinition call site
+  // below) -- a template persisted before this feature shipped, or a step
+  // that simply never declared one, must open exactly as before: no extra
+  // param, no lock on the form.
+  if (receiptType) params.set("receiptType", receiptType);
   return `${route}${separator}${params.toString()}`;
 }
 
@@ -889,6 +895,15 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
     const definition = getDocumentTypeDefinition(step.documentKind);
     if (!definition) throw new Error("ไม่พบประเภทเอกสารสำหรับขั้นตอนนี้");
 
+    // Sourced from the transaction's snapshotted template (templateSnapshot),
+    // never the live one in data/workflow-templates.json -- a template
+    // edited after the transaction started must not change a running
+    // transaction (see the snapshot-immutability test in
+    // tests/workflow-api.test.mjs).
+    const templateStep = (transaction.templateSnapshot?.documentSteps || [])
+      .find((item) => item.stepId === step.stepId);
+    const receiptType = step.documentKind === "substitute_receipt" ? templateStep?.receiptType : undefined;
+
     const returnTo = `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`;
     const url = buildWorkflowStepOpenUrl({
       route: definition.route,
@@ -896,6 +911,7 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
       workflowTemplateId: transaction.workflowTemplateId,
       workflowStepId: step.stepId,
       returnTo,
+      receiptType,
     });
 
     sendJson(response, 200, {

@@ -50,7 +50,19 @@ window.addEventListener("DOMContentLoaded", () => {
     workflowTemplateId: workflowSearchParams.get("workflowTemplateId") || "",
     workflowStepId: workflowSearchParams.get("workflowStepId") || "",
     returnTo: workflowSearchParams.get("returnTo") || "",
+    // Present only when this page was opened via start-document for a
+    // substitute_receipt step whose *snapshotted* workflow template declared
+    // a receiptType (see handleWorkflowTransactionStartDocument in
+    // local-server.mjs and buildWorkflowStepOpenUrl). A free-form dropdown
+    // here decides, all by itself, whether the workflow step can ever
+    // complete (deriveChildWorkflowStatus's hybrid rule in
+    // forms/workflow.logic.js), so once the workflow has declared the type
+    // for this step it must not be changeable from this form. Absent (both
+    // for standalone use and for a workflow step whose template never
+    // declared one), the field stays exactly as free as it always was.
+    receiptType: workflowSearchParams.get("receiptType") || "",
   };
+  const receiptTypeWorkflowNote = document.querySelector("#receiptTypeWorkflowNote");
   const workflowReturnLink = document.querySelector("#workflowReturnLink");
   const workflowPrefillBanner = document.querySelector("#workflowPrefillBanner");
   const workflowPrefillGroupsContainer = document.querySelector("#workflowPrefillGroups");
@@ -166,7 +178,11 @@ window.addEventListener("DOMContentLoaded", () => {
   function applyStockLineLock() {
     const locked = stockLinesLocked();
     addLineButton.disabled = locked;
-    form.elements.receiptType.disabled = locked;
+    // A workflow-declared receiptType (see workflowContext.receiptType
+    // above) stays locked regardless of the receipt's own approved/received
+    // status -- it must never be re-enabled just because the document is
+    // still a fresh draft.
+    form.elements.receiptType.disabled = locked || !!workflowContext.receiptType;
     lineItems.querySelectorAll(".stock-line").forEach((row) => {
       row.querySelector('select[name="stockSkuId"]').disabled = locked;
       row.querySelector('input[name="quantity"]').disabled = locked;
@@ -477,11 +493,24 @@ window.addEventListener("DOMContentLoaded", () => {
     renderWorkflowPrefillBanner(prefill);
   }
 
+  function applyWorkflowReceiptTypeLock() {
+    if (!workflowContext.receiptType) return;
+    form.elements.receiptType.value = workflowContext.receiptType;
+    form.elements.receiptType.disabled = true;
+    if (receiptTypeWorkflowNote) receiptTypeWorkflowNote.hidden = false;
+  }
+
   function fillForm(payload = {}) {
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
     form.elements.receiptDate.value = payload.receiptDate || todayInputValue();
     form.elements.receiptType.disabled = false;
     form.elements.receiptType.value = payload.receiptType || "stock_purchase";
+    // Overrides the value/disabled state above when this page was opened
+    // from a workflow step that declared a receiptType -- the workflow's
+    // decision always wins over whatever a reloaded draft/receipt payload
+    // carries. A no-op for standalone use and for a workflow step whose
+    // template never declared one (workflowContext.receiptType is "").
+    applyWorkflowReceiptTypeLock();
     form.elements.receiptTitle.value = payload.receiptTitle || "";
     form.elements.payeeName.value = payload.payeeName || "";
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";

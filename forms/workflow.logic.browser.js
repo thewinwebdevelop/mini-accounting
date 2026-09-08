@@ -142,6 +142,28 @@ function renderDocumentStepsList() {
     row.querySelector(".step-order").textContent = String(index + 1);
     row.querySelector(".step-label").textContent = documentKindLabel(step.documentKind);
 
+    // receiptType only means anything on a substitute_receipt step (see
+    // deriveChildWorkflowStatus's hybrid completion rule in
+    // forms/workflow.logic.js) -- the selector stays hidden for every other
+    // document kind. A step's receiptType is defaulted right here, at render
+    // time, to whatever the select is showing (its first option,
+    // "stock_purchase", when the step never declared one) so the visible
+    // value and the value collectTemplatePayload/saveTemplate actually save
+    // always agree -- a template step never silently displays one thing and
+    // saves another.
+    const receiptTypeSelect = row.querySelector(".step-receipt-type");
+    if (receiptTypeSelect) {
+      const isSubstituteReceipt = step.documentKind === "substitute_receipt";
+      receiptTypeSelect.hidden = !isSubstituteReceipt;
+      if (isSubstituteReceipt) {
+        if (!step.receiptType) step.receiptType = receiptTypeSelect.value || "stock_purchase";
+        receiptTypeSelect.value = step.receiptType;
+        receiptTypeSelect.addEventListener("change", () => {
+          step.receiptType = receiptTypeSelect.value;
+        });
+      }
+    }
+
     const upButton = row.querySelector('[data-move-step="up"]');
     const downButton = row.querySelector('[data-move-step="down"]');
     const removeButton = row.querySelector("[data-remove-step]");
@@ -196,7 +218,13 @@ function collectTemplatePayload() {
     name: nameInput ? nameInput.value.trim() : "",
     description: descriptionInput ? descriptionInput.value.trim() : "",
     syncGoogleDrive: syncInput ? !!syncInput.checked : false,
-    documentSteps: steps.map((step) => ({ documentKind: step.documentKind })),
+    documentSteps: steps.map((step) => {
+      const item = { documentKind: step.documentKind };
+      if (step.documentKind === "substitute_receipt" && step.receiptType) {
+        item.receiptType = step.receiptType;
+      }
+      return item;
+    }),
   };
 }
 
@@ -210,9 +238,14 @@ function selectTemplate(templateId) {
 function addDocumentStep(documentKind) {
   if (!documentKind) return;
   if (!state.currentTemplate) state.currentTemplate = blankTemplate();
+  const newStep = { documentKind };
+  // Defaulted here (not left for renderDocumentStepsList to default lazily)
+  // so a freshly added step already has a real value the instant it exists,
+  // matching what the visible select shows.
+  if (documentKind === "substitute_receipt") newStep.receiptType = "stock_purchase";
   state.currentTemplate.documentSteps = [
     ...(state.currentTemplate.documentSteps || []),
-    { documentKind },
+    newStep,
   ];
   renderDocumentStepsList();
 }
