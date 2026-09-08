@@ -1,4 +1,4 @@
-const { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } = require("node:fs/promises");
+const { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } = require("node:fs/promises");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -50,6 +50,11 @@ const {
   createPurchaseInMovement,
   listStockMovementsByReference,
 } = require("./inventory.logic.js");
+const {
+  allocateDocumentNumber,
+  indexDocument,
+  withDocumentIndexDatabase,
+} = require("./document-index.logic.js");
 
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
@@ -162,38 +167,30 @@ async function getNextSubstituteReceiptInfo(rootDir, accountingMonth) {
   };
 }
 
-function getWorkflowDocumentKindDir(rootDir, documentKind, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  return path.join(rootDir, "documents", year, month, documentKind);
-}
-
+// Unlike getNextExpenseRequestInfo/getNextSubstituteReceiptInfo/
+// getNextWorkflowTransactionInfo, this function has exactly one caller
+// (handleWorkflowDocumentSubmission in local-server.mjs, right before a
+// lightweight document is actually created) and no separate read-only
+// "preview the next number" route, so it is safe — and necessary, to close
+// the scan-then-write race described in the module-level comment above — to
+// make this the real atomic allocation rather than a scan.
 async function getNextWorkflowDocumentInfo(rootDir, documentKind, accountingMonth) {
   const prefix = WORKFLOW_DOCUMENT_PREFIXES[documentKind];
   if (!prefix) throw new Error(`Invalid workflow document kind: ${documentKind}`);
 
-  const { year, month } = getMonthParts(accountingMonth);
-  const kindDir = getWorkflowDocumentKindDir(rootDir, documentKind, accountingMonth);
-  let folderNames = [];
+  // Validates the accountingMonth format exactly as before (throws the same
+  // "Invalid accounting month" error), even though only its side effect
+  // (validation) is used here — the actual number now comes from the DB
+  // ledger, keyed on documentKind directly rather than a rebuilt prefix.
+  getMonthParts(accountingMonth);
 
-  try {
-    folderNames = await readdir(kindDir);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-
-  const documentPrefix = `${prefix}-${year}-${month}-`;
-  const latestSequence = folderNames.reduce((latest, name) => {
-    if (!name.startsWith(documentPrefix)) return latest;
-    const match = name.slice(documentPrefix.length).match(/^(\d{4})/);
-    if (!match) return latest;
-    return Math.max(latest, Number.parseInt(match[1], 10));
-  }, 0);
-  const sequence = String(latestSequence + 1);
-
-  return {
-    sequence,
-    documentNo: `${documentPrefix}${padSequence(sequence)}`,
-  };
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = allocateDocumentNumber(db, {
+      documentKind,
+      accountingMonth,
+    });
+    return { sequence, documentNo };
+  });
 }
 
 function getWorkflowTransactionMonthDir(rootDir, accountingMonth) {
@@ -225,6 +222,53 @@ async function getNextWorkflowTransactionInfo(rootDir, accountingMonth) {
     sequence,
     transactionNo: `${prefix}${padSequence(sequence)}`,
   };
+}
+
+// Atomic replacements for the scan-then-write allocators above. Each of
+// getNextExpenseRequestInfo/getNextSubstituteReceiptInfo/
+// getNextWorkflowTransactionInfo is kept exactly as-is (still a plain
+// directory scan) because each also backs a read-only "/next" preview route
+// hit from a form before the user has submitted anything (see
+// forms/expense-request.html and the substitute-receipt/workflow-transaction
+// equivalents) — turning those into real allocations would burn a live
+// document number every time someone opens a form or changes its month,
+// which is exactly the kind of user-visible behavior change this task rules
+// out. The functions below are called only from the real write path (the
+// moment a document is actually about to be created), and they hand out a
+// number via forms/document-index.logic.js's allocateDocumentNumber: a
+// UNIQUE constraint on (document_kind, accounting_month, sequence) in SQLite
+// makes a second caller landing on the same sequence fail its INSERT rather
+// than silently succeed, so the allocator retries with the next number
+// instead of ever handing out a duplicate. See document-index.logic.js for
+// why the ledger is a separate table from the documents index itself.
+function allocateExpenseRequestNumber(rootDir, accountingMonth) {
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = allocateDocumentNumber(db, {
+      documentKind: "expense_request",
+      accountingMonth,
+    });
+    return { sequence, requestNo: documentNo };
+  });
+}
+
+function allocateSubstituteReceiptNumber(rootDir, accountingMonth) {
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = allocateDocumentNumber(db, {
+      documentKind: "substitute_receipt",
+      accountingMonth,
+    });
+    return { sequence, receiptNo: documentNo };
+  });
+}
+
+function allocateWorkflowTransactionNumber(rootDir, accountingMonth) {
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = allocateDocumentNumber(db, {
+      documentKind: "workflow_transaction",
+      accountingMonth,
+    });
+    return { sequence, transactionNo: documentNo };
+  });
 }
 
 function splitBuffer(buffer, delimiter) {
@@ -1147,6 +1191,27 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
   };
 }
 
+// Keeps the `documents` index row for one expense request in step with
+// whatever was just written to submission.json — called immediately after
+// that write succeeds (never before), so an index row can never claim a
+// request that doesn't exist on disk. See document-index.logic.js for why
+// this write-through happens per document write rather than via some
+// separate background sync.
+function indexExpenseRequest(rootDir, expensePayload) {
+  indexDocument(rootDir, {
+    documentKind: "expense_request",
+    documentNo: expensePayload.requestNo,
+    accountingMonth: expensePayload.accountingMonth,
+    status: expensePayload.status,
+    folderPath: expensePayload.folderPath,
+    transactionNo: expensePayload.transactionNo,
+    workflowTemplateId: expensePayload.workflowTemplateId,
+    workflowStepId: expensePayload.workflowStepId,
+    createdAt: expensePayload.createdAt,
+    updatedAt: expensePayload.updatedAt,
+  });
+}
+
 async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   const absoluteFolderPath = path.join(rootDir, expensePayload.folderPath);
   const rawDir = path.join(absoluteFolderPath, "raw");
@@ -1159,6 +1224,7 @@ async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   await mkdir(workingMdDir, { recursive: true });
   await mkdir(pdfDir, { recursive: true });
   await writeFile(submissionJsonPath, `${JSON.stringify(expensePayload, null, 2)}\n`, "utf8");
+  indexExpenseRequest(rootDir, expensePayload);
   await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(expensePayload), "utf8");
   await generateExpensePdfs({
     payloadPath: submissionJsonPath,
@@ -1198,7 +1264,7 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
         sequence: existingRequest.requestNo.split("-").at(-1),
         requestNo: existingRequest.requestNo,
       }
-    : await getNextExpenseRequestInfo(rootDir, payload.accountingMonth);
+    : await allocateExpenseRequestNumber(rootDir, payload.accountingMonth);
   const company = await getCompanySettings(rootDir);
   const expensePayload = buildExpensePayload({
     ...existingRequest?.payload,
@@ -1254,6 +1320,7 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
 
   const submissionJsonPath = path.join(dataDir, "submission.json");
   await writeFile(submissionJsonPath, `${JSON.stringify(expensePayload, null, 2)}\n`, "utf8");
+  indexExpenseRequest(rootDir, expensePayload);
   await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(expensePayload), "utf8");
   const pdfFiles = await generateExpensePdfs({
     payloadPath: submissionJsonPath,
@@ -1313,7 +1380,7 @@ async function saveSubstituteReceiptSubmission({
     draftId: payload.draftId || draft?.draftId,
   };
   await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, submissionPayload);
-  const nextReceipt = await getNextSubstituteReceiptInfo(rootDir, submissionPayload.accountingMonth);
+  const nextReceipt = await allocateSubstituteReceiptNumber(rootDir, submissionPayload.accountingMonth);
   const existingEvidenceFiles = draft?.evidenceFiles ?? submissionPayload.evidenceFiles ?? {};
   const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
   const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
@@ -1372,6 +1439,7 @@ async function saveSubstituteReceiptSubmission({
 
   const submissionJsonPath = path.join(dataDir, "substitute-receipt.json");
   await writeFile(submissionJsonPath, `${JSON.stringify(receiptPayload, null, 2)}\n`, "utf8");
+  indexSubstituteReceipt(rootDir, receiptPayload);
   await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(receiptPayload), "utf8");
   const pdfFiles = await generateSubstituteReceiptPdfs({
     payloadPath: submissionJsonPath,
@@ -1402,6 +1470,23 @@ async function saveSubstituteReceiptSubmission({
   };
 }
 
+// Same write-through contract as indexExpenseRequest above: called only
+// after substitute-receipt.json has actually been written.
+function indexSubstituteReceipt(rootDir, receiptPayload) {
+  indexDocument(rootDir, {
+    documentKind: "substitute_receipt",
+    documentNo: receiptPayload.receiptNo,
+    accountingMonth: receiptPayload.accountingMonth,
+    status: receiptPayload.status,
+    folderPath: receiptPayload.folderPath,
+    transactionNo: receiptPayload.transactionNo,
+    workflowTemplateId: receiptPayload.workflowTemplateId,
+    workflowStepId: receiptPayload.workflowStepId,
+    createdAt: receiptPayload.createdAt,
+    updatedAt: receiptPayload.updatedAt,
+  });
+}
+
 async function writeSubmittedSubstituteReceiptFiles(rootDir, receiptPayload) {
   const absoluteFolderPath = path.join(rootDir, receiptPayload.folderPath);
   const rawDir = path.join(absoluteFolderPath, "raw");
@@ -1414,6 +1499,7 @@ async function writeSubmittedSubstituteReceiptFiles(rootDir, receiptPayload) {
   await mkdir(workingMdDir, { recursive: true });
   await mkdir(pdfDir, { recursive: true });
   await writeFile(submissionJsonPath, `${JSON.stringify(receiptPayload, null, 2)}\n`, "utf8");
+  indexSubstituteReceipt(rootDir, receiptPayload);
   await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(receiptPayload), "utf8");
   await generateSubstituteReceiptPdfs({
     payloadPath: submissionJsonPath,
@@ -1920,6 +2006,23 @@ async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {
 
   const dataPath = path.join(dataDir, "workflow-document.json");
   await writeFile(dataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  // Single write-through choke point for all five lightweight document
+  // kinds: saveWorkflowDocument (create/edit) and completeWorkflowDocument
+  // both funnel their commit through this function, so indexing here once
+  // keeps the `documents` index current for all of them without duplicating
+  // this call at each caller.
+  indexDocument(rootDir, {
+    documentKind: payload.documentKind,
+    documentNo: payload.documentNo,
+    accountingMonth: payload.accountingMonth,
+    status: payload.status,
+    folderPath: payload.folderPath,
+    transactionNo: payload.transactionNo,
+    workflowTemplateId: payload.workflowTemplateId,
+    workflowStepId: payload.workflowStepId,
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt,
+  });
   await writeFile(path.join(workingMdDir, "workflow-document.md"), formatWorkflowDocumentMarkdown(payload), "utf8");
 
   await generateWorkflowDocumentPdf({
@@ -2292,6 +2395,21 @@ async function persistWorkflowTransaction(rootDir, transaction, childDocuments =
     `${JSON.stringify(transaction, null, 2)}\n`,
     "utf8",
   );
+  // Single write-through choke point for transactions: startWorkflowTransaction,
+  // refreshWorkflowTransaction and completeWorkflowTransaction all funnel their
+  // commit through this function.
+  indexDocument(rootDir, {
+    documentKind: "workflow_transaction",
+    documentNo: transaction.transactionNo,
+    accountingMonth: transaction.accountingMonth,
+    status: transaction.status,
+    folderPath: transaction.folderPath,
+    transactionNo: "",
+    workflowTemplateId: transaction.workflowTemplateId,
+    workflowStepId: "",
+    createdAt: transaction.createdAt,
+    updatedAt: transaction.updatedAt,
+  });
   await writeFile(
     path.join(workingMdDir, "workflow-summary.md"),
     formatWorkflowSummaryMarkdown(transaction, childDocuments),
@@ -2300,11 +2418,6 @@ async function persistWorkflowTransaction(rootDir, transaction, childDocuments =
 
   return absoluteFolderPath;
 }
-
-// Bounds the retry loop in startWorkflowTransaction below so a pathological
-// case (e.g. something external repeatedly pre-creating the next candidate
-// folder) fails loudly instead of spinning forever.
-const WORKFLOW_TRANSACTION_ALLOCATION_MAX_ATTEMPTS = 20;
 
 async function startWorkflowTransaction({
   rootDir,
@@ -2318,64 +2431,36 @@ async function startWorkflowTransaction({
     throw new Error("ไม่พบ template ที่ระบุ");
   }
 
-  // Transaction numbers are allocated by scanning existing folder names for
-  // the highest sequence used so far (getNextWorkflowTransactionInfo), which
-  // is not by itself a reservation: two concurrent calls can both scan before
-  // either has written anything and both land on the same "next" number.
-  // mkdir with recursive:false turns folder creation into the reservation
-  // itself — it fails with EEXIST if the folder already exists, so only one
-  // concurrent caller can win a given transaction folder. On EEXIST we
-  // re-scan (another caller just took that sequence number) and retry with
-  // whatever the next number now is.
+  // Transaction numbers used to be allocated by scanning existing folder
+  // names for the highest sequence used so far
+  // (getNextWorkflowTransactionInfo, still used verbatim by the read-only
+  // "/next" preview route — see the comment above
+  // allocateExpenseRequestNumber), which is not itself a reservation: two
+  // concurrent calls could both scan before either had written anything and
+  // both land on the same "next" number. That was patched with a mkdir-EEXIST
+  // reservation dance (bare-number folder, then rename into the title-suffixed
+  // shape) — a hand-rolled substitute for the uniqueness guarantee a database
+  // gives for free.
   //
-  // The reservation is keyed on the bare transaction number (e.g.
-  // "TXN-2026-09-0001"), not on the full title-suffixed folder name. Two
-  // concurrent starts with *different* titles would otherwise each compute
-  // the same "next" number and mkdir two different folder paths — reserving
-  // the title-independent name closes that hole, since both calls now
-  // contend for the exact same path. Once a call wins the bare reservation
-  // it is renamed (an atomic same-directory move) into the required
-  // TXN-YYYY-MM-0001_<safe-title> shape the rest of the system depends on —
-  // the bare name never survives as the stored folderPath. The bare
-  // reservation directory still matches getNextWorkflowTransactionInfo's
-  // scan pattern, so even the narrow crash window between the mkdir and the
-  // rename below leaves the number correctly marked as consumed rather than
-  // silently reusable.
-  const monthDir = getWorkflowTransactionMonthDir(rootDir, accountingMonth);
-  await mkdir(monthDir, { recursive: true });
+  // allocateWorkflowTransactionNumber (backed by the document_number_allocations
+  // table's UNIQUE(document_kind, accounting_month, sequence) constraint) now
+  // makes a duplicate transactionNo impossible rather than merely unlikely, so
+  // the folderPath derived from it (which embeds the now-guaranteed-unique
+  // transactionNo) can never collide with a concurrent call's folderPath
+  // either — a plain recursive mkdir is enough, and the bare-reservation/rename
+  // dance no longer earns its keep.
+  const { sequence } = await allocateWorkflowTransactionNumber(rootDir, accountingMonth);
+  const transaction = buildWorkflowTransactionPayload(
+    { accountingMonth, title, sequence, template },
+    { now },
+  );
 
-  for (let attempt = 0; attempt < WORKFLOW_TRANSACTION_ALLOCATION_MAX_ATTEMPTS; attempt += 1) {
-    const { sequence } = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
-    const transaction = buildWorkflowTransactionPayload(
-      { accountingMonth, title, sequence, template },
-      { now },
-    );
+  const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
+  await mkdir(absoluteFolderPath, { recursive: true });
 
-    const reservedFolderPath = path.join(monthDir, transaction.transactionNo);
-    try {
-      await mkdir(reservedFolderPath, { recursive: false });
-    } catch (error) {
-      if (error.code === "EEXIST") {
-        continue;
-      }
-      throw error;
-    }
+  await persistWorkflowTransaction(rootDir, transaction, []);
 
-    // The transaction number is now reserved title-independently. Claim the
-    // required title-suffixed folder shape by renaming the bare reservation
-    // into it — safe without further EEXIST handling, since no other caller
-    // can have won this same transaction number.
-    const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
-    await rename(reservedFolderPath, absoluteFolderPath);
-
-    // The folder is now reserved under this exact transaction.folderPath, so
-    // persistWorkflowTransaction writes into the same folder we just claimed.
-    await persistWorkflowTransaction(rootDir, transaction, []);
-
-    return transaction;
-  }
-
-  throw new Error("ไม่สามารถออกเลขที่ธุรกรรมได้ กรุณาลองใหม่อีกครั้ง");
+  return transaction;
 }
 
 async function findAllWorkflowTransactions(rootDir) {
