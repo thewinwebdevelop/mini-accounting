@@ -440,6 +440,82 @@ test("RECEIVABLE_PREFILL_GROUPS: every kind can receive payee, purpose, and line
 });
 
 // ---------------------------------------------------------------------------
+// Same class as the "นำมาจาก undefined" bug (an always-truthy empty group
+// blanking fields and rendering a badge with no real source): here the
+// *group* is genuinely non-empty (expense_request really does supply a
+// payee name), but one field within it -- payeeTaxId -- has no source at
+// all, because expense_request has no tax-ID field to give. The applier
+// must never manufacture "" for a field the source never supplied; it must
+// leave that key out of the patch entirely so the shared banner's existing
+// `patch[fieldName] === undefined` guard skips both the value write and the
+// badge. Otherwise the field renders blank *with* a "นำมาจาก ..." badge
+// claiming a value was carried over.
+// ---------------------------------------------------------------------------
+
+test("applyWorkflowContextToSubstituteReceipt must not manufacture an empty payeeTaxId when the source (expense_request) never supplied one", () => {
+  // expense_request's payee context only ever has `name` -- see
+  // expenseRequestToWorkflowContext, which reads paymentTargetName into
+  // `name` and has no taxId source field at all.
+  const context = { payee: { name: "คุณต้า" } };
+  const patch = workflowPrefillLogic.applyWorkflowContextToSubstituteReceipt(context, ["payee"]);
+
+  assert.equal(patch.payeeName, "คุณต้า");
+  assert.equal("payeeTaxId" in patch, false, "payeeTaxId must be absent from the patch, not an empty string, when the source never supplied it");
+});
+
+test("applyWorkflowContextToSubstituteReceipt still applies payeeTaxId when the source genuinely supplies it", () => {
+  const context = { payee: { name: "ร้านค้า A", taxId: "1234567890123" } };
+  const patch = workflowPrefillLogic.applyWorkflowContextToSubstituteReceipt(context, ["payee"]);
+
+  assert.equal(patch.payeeName, "ร้านค้า A");
+  assert.equal(patch.payeeTaxId, "1234567890123");
+});
+
+test("applyWorkflowContextToSubstituteReceipt must not manufacture an empty receiptTitle/businessPurpose when the source only supplied one of the two", () => {
+  const titleOnly = workflowPrefillLogic.applyWorkflowContextToSubstituteReceipt({ purpose: { title: "หัวข้อ" } }, ["purpose"]);
+  assert.equal(titleOnly.receiptTitle, "หัวข้อ");
+  assert.equal("businessPurpose" in titleOnly, false);
+
+  const purposeOnly = workflowPrefillLogic.applyWorkflowContextToSubstituteReceipt({ purpose: { businessPurpose: "วัตถุประสงค์" } }, ["purpose"]);
+  assert.equal("receiptTitle" in purposeOnly, false);
+  assert.equal(purposeOnly.businessPurpose, "วัตถุประสงค์");
+});
+
+test("applyWorkflowContextToExpenseRequest must not manufacture empty paymentBankName/paymentAccountNo when the source (substitute_receipt) never supplies them", () => {
+  // substitute_receipt's payee context only ever has `name`/`taxId` -- see
+  // substituteReceiptToWorkflowContext -- so bankName/accountNo are never
+  // present when the source is a substitute_receipt.
+  const context = { payee: { name: "ร้านค้า A", taxId: "1234567890123" } };
+  const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest(context, ["payee"]);
+
+  assert.equal(patch.paymentTargetName, "ร้านค้า A");
+  assert.equal("paymentBankName" in patch, false);
+  assert.equal("paymentAccountNo" in patch, false);
+});
+
+test("applyWorkflowContextToExpenseRequest must not manufacture an empty requestTitle/businessPurpose when the source only supplied one of the two", () => {
+  const titleOnly = workflowPrefillLogic.applyWorkflowContextToExpenseRequest({ purpose: { title: "หัวข้อ" } }, ["purpose"]);
+  assert.equal(titleOnly.requestTitle, "หัวข้อ");
+  assert.equal("businessPurpose" in titleOnly, false);
+});
+
+test("applyWorkflowContextToExpenseRequest must not manufacture an empty requesterRole when the source parties group only supplied requesterName", () => {
+  const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest({ parties: { requesterName: "คุณต้า" } }, []);
+  assert.equal(patch.requesterName, "คุณต้า");
+  assert.equal("requesterRole" in patch, false);
+});
+
+test("the shared workflow-document shell applier (exercised here via applyWorkflowContextToPurchaseOrder, one of its five aliases) must not manufacture an empty title/businessPurpose when the source only supplied one of the two", () => {
+  const businessPurposeOnly = workflowPrefillLogic.applyWorkflowContextToPurchaseOrder({ purpose: { businessPurpose: "วัตถุประสงค์" } }, ["purpose"]);
+  assert.equal("title" in businessPurposeOnly, false);
+  assert.equal(businessPurposeOnly.businessPurpose, "วัตถุประสงค์");
+
+  const titleOnly = workflowPrefillLogic.applyWorkflowContextToPurchaseOrder({ purpose: { title: "ชื่อเอกสาร" } }, ["purpose"]);
+  assert.equal(titleOnly.title, "ชื่อเอกสาร");
+  assert.equal("businessPurpose" in titleOnly, false);
+});
+
+// ---------------------------------------------------------------------------
 // Exhaustive per-kind x per-direction x per-group matrix. Task 6's own review
 // notes call out a prior six-entry seed table where five of six entries were
 // silently wrong because only one was asserted — this exercises every one of

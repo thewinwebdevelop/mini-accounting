@@ -33,6 +33,23 @@ function money(cents) {
   return (cents / 100).toFixed(2);
 }
 
+// Copies `value` onto `patch[key]` only when the source group actually
+// supplied it. compactGroup() (above) never puts a blank field onto a
+// context group in the first place, so `value === undefined` here means
+// "this source document has no such field" (e.g. expense_request's payee
+// group never has a `taxId`) -- not "the field happened to be blank". Using
+// `value ?? ""` instead of this guard was the bug: it manufactured an empty
+// string for a field the source never supplied, which the shared banner
+// (forms/workflow-prefill-banner.browser.js) then wrote onto the form *and*
+// tagged with a "นำมาจาก <doc>" badge, claiming a value had been carried
+// over onto a field that was actually just blank. Leaving the key out of
+// the patch entirely lets the banner's own `patch[fieldName] === undefined`
+// check skip both the write and the badge, exactly as it already does for
+// an unticked group.
+function copyIfSupplied(patch, key, value) {
+  if (value !== undefined) patch[key] = value;
+}
+
 // The three groups a user ticks independently in the UI (Task 4/Task 7).
 // `parties` and `sources` are not here: `parties` always rides along
 // automatically whenever a source document supplies it (see
@@ -126,14 +143,14 @@ function applyWorkflowContextToExpenseRequest(context = {}, groups = []) {
   const patch = {};
 
   if (groups.includes("payee") && context.payee) {
-    patch.paymentTargetName = context.payee.name ?? "";
-    patch.paymentBankName = context.payee.bankName ?? "";
-    patch.paymentAccountNo = context.payee.accountNo ?? "";
+    copyIfSupplied(patch, "paymentTargetName", context.payee.name);
+    copyIfSupplied(patch, "paymentBankName", context.payee.bankName);
+    copyIfSupplied(patch, "paymentAccountNo", context.payee.accountNo);
   }
 
   if (groups.includes("purpose") && context.purpose) {
-    patch.requestTitle = context.purpose.title ?? "";
-    patch.businessPurpose = context.purpose.businessPurpose ?? "";
+    copyIfSupplied(patch, "requestTitle", context.purpose.title);
+    copyIfSupplied(patch, "businessPurpose", context.purpose.businessPurpose);
   }
 
   if (groups.includes("lines") && Array.isArray(context.lines)) {
@@ -152,8 +169,8 @@ function applyWorkflowContextToExpenseRequest(context = {}, groups = []) {
   // `parties` always rides along when present, regardless of which of the
   // three tickable groups the caller requested.
   if (context.parties) {
-    patch.requesterName = context.parties.requesterName ?? "";
-    patch.requesterRole = context.parties.requesterRole ?? "";
+    copyIfSupplied(patch, "requesterName", context.parties.requesterName);
+    copyIfSupplied(patch, "requesterRole", context.parties.requesterRole);
   }
 
   return patch;
@@ -200,13 +217,13 @@ function applyWorkflowContextToSubstituteReceipt(context = {}, groups = []) {
   const patch = {};
 
   if (groups.includes("payee") && context.payee) {
-    patch.payeeName = context.payee.name ?? "";
-    patch.payeeTaxId = context.payee.taxId ?? "";
+    copyIfSupplied(patch, "payeeName", context.payee.name);
+    copyIfSupplied(patch, "payeeTaxId", context.payee.taxId);
   }
 
   if (groups.includes("purpose") && context.purpose) {
-    patch.receiptTitle = context.purpose.title ?? "";
-    patch.businessPurpose = context.purpose.businessPurpose ?? "";
+    copyIfSupplied(patch, "receiptTitle", context.purpose.title);
+    copyIfSupplied(patch, "businessPurpose", context.purpose.businessPurpose);
   }
 
   if (groups.includes("lines") && Array.isArray(context.lines)) {
@@ -264,12 +281,12 @@ function applyWorkflowContextToWorkflowDocumentShell(context = {}, groups = []) 
   const patch = {};
 
   if (groups.includes("payee") && context.payee) {
-    patch.payeeName = context.payee.name ?? "";
+    copyIfSupplied(patch, "payeeName", context.payee.name);
   }
 
   if (groups.includes("purpose") && context.purpose) {
-    patch.title = context.purpose.title ?? "";
-    patch.businessPurpose = context.purpose.businessPurpose ?? "";
+    copyIfSupplied(patch, "title", context.purpose.title);
+    copyIfSupplied(patch, "businessPurpose", context.purpose.businessPurpose);
   }
 
   if (groups.includes("lines") && Array.isArray(context.lines)) {
@@ -277,7 +294,7 @@ function applyWorkflowContextToWorkflowDocumentShell(context = {}, groups = []) 
   }
 
   if (context.parties) {
-    patch.requesterName = context.parties.requesterName ?? "";
+    copyIfSupplied(patch, "requesterName", context.parties.requesterName);
   }
 
   return patch;

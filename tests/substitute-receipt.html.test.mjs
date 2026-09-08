@@ -429,8 +429,43 @@ test("real workflow-prefill.logic.js fills a substitute_receipt end to end throu
   assert.equal(form.elements.payeeName.value, "ร้านค้าจริง");
   assert.equal(form.elements.payeeTaxId.value, "1234567890123");
   assert.equal(form.elements.businessPurpose.value, "วัตถุประสงค์จริงจากเอกสารก่อนหน้า");
+  // The flip side of the payeeTaxId hole below: when the source genuinely
+  // supplies a tax ID, the badge must still show -- the fix must not have
+  // overcorrected into hiding every badge unconditionally.
+  const taxIdBadge = form.querySelector('[data-badge-for="payeeTaxId"]');
+  assert.equal(taxIdBadge.hidden, false, "payeeTaxId must carry a source badge when the source document genuinely supplied a tax ID");
+  assert.match(taxIdBadge.textContent, /PO-2026-09-0001/);
   const lineDescriptions = elements.stockLineItems
     .querySelectorAll(".stock-line")
     .map((row) => row.querySelector('input[name="description"]').value);
   assert.deepEqual(lineDescriptions, ["สินค้า A"], "the lines patch must replace the stock-line rows");
+});
+
+test("real workflow-prefill.logic.js: prefilling from an expense_request source (no tax-ID field) must not badge the empty payeeTaxId", async () => {
+  // expense_request's payee context only ever carries `name` -- see
+  // expenseRequestToWorkflowContext in forms/workflow-prefill.logic.js --
+  // so payeeTaxId has nothing to receive on a substitute_receipt target.
+  const canonicalContext = {
+    payee: { name: "คุณต้า" },
+    purpose: { businessPurpose: "ค่าใช้จ่ายทดสอบ" },
+  };
+  const prefillResponse = {
+    availableGroups: ["payee", "purpose"],
+    sources: { payee: "ER-2026-09-0001", purpose: "ER-2026-09-0001" },
+    context: canonicalContext,
+  };
+  const { elements, form } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2",
+    prefillResponse,
+  });
+
+  getPrefillCheckbox(elements.workflowPrefillGroups, "payee").checked = true;
+  getPrefillCheckbox(elements.workflowPrefillGroups, "purpose").checked = true;
+
+  elements.workflowPrefillApply.dispatch("click");
+
+  assert.equal(form.elements.payeeName.value, "คุณต้า");
+  const taxIdBadge = form.querySelector('[data-badge-for="payeeTaxId"]');
+  assert.equal(taxIdBadge.hidden, true, "payeeTaxId must not carry a source badge when the source document never supplied a tax ID");
+  assert.equal(form.elements.payeeTaxId.value, "", "payeeTaxId legitimately stays blank -- there is nothing to carry over");
 });
