@@ -152,43 +152,106 @@ test("parseMultipartForm extracts payload fields and uploaded evidence files", (
   assert.equal(result.files[0].buffer.toString("utf8"), "invoice-content");
 });
 
-test("getNextExpenseRequestInfo calculates the next sequence from saved request folders", async () => {
+// getNextExpenseRequestInfo used to scan documents/YYYY/MM/.../REQ-... folder
+// names on disk for the highest sequence in use. That made it a second,
+// independent source of truth from allocateExpenseRequestNumber (the real
+// write-path allocator, which has always read document_number_allocations
+// instead) -- the two could permanently disagree the moment a number was
+// allocated without a folder ever being created for it (a write failure
+// after allocation; see the module comment in document-index.logic.js). Now
+// that read paths query the same index the write path maintains, the "/next"
+// preview reads the exact same ledger allocateExpenseRequestNumber writes
+// to, so it always agrees with the number the very next real submission will
+// receive -- proven below by allocating for real right after peeking.
+test("getNextExpenseRequestInfo previews the exact number the next real allocation will receive", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
-    await mkdir(join(rootDir, "documents", "2026", "09", "เบิกจ่าย", "REQ-2026-09-0002_old"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "09", "เบิกจ่าย", "REQ-2026-09-0010_latest"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "10", "เบิกจ่าย", "REQ-2026-10-0004_other-month"), { recursive: true });
-
     assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
-      sequence: "11",
-      requestNo: "REQ-2026-09-0011",
+      sequence: "1",
+      requestNo: "REQ-2026-09-0001",
     });
+
+    const first = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ทดสอบ",
+        requestType: "reimbursement",
+        requesterName: "คุณทดสอบ",
+        expenseLines: [],
+      },
+    });
+    assert.equal(first.requestNo, "REQ-2026-09-0001");
+
+    // Peeking again and again must never move the number itself, and must
+    // now reflect the one real submission above.
+    assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      requestNo: "REQ-2026-09-0002",
+    });
+    assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      requestNo: "REQ-2026-09-0002",
+    });
+
+    // A different month has its own independent sequence.
     assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-11"), {
       sequence: "1",
       requestNo: "REQ-2026-11-0001",
     });
+
+    const second = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ทดสอบสอง",
+        requestType: "reimbursement",
+        requesterName: "คุณทดสอบ",
+        expenseLines: [],
+      },
+    });
+    assert.equal(second.requestNo, "REQ-2026-09-0002", "the real allocation must land on exactly the number just previewed");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("getNextSubstituteReceiptInfo calculates the next SR sequence from saved receipt folders", async () => {
+test("getNextSubstituteReceiptInfo previews the exact number the next real allocation will receive", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
 
   try {
-    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0002_old"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0010_latest"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "10", "ใบรับรองแทนใบเสร็จ", "SR-2026-10-0004_other-month"), { recursive: true });
-
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
-      sequence: "11",
-      receiptNo: "SR-2026-09-0011",
+      sequence: "1",
+      receiptNo: "SR-2026-09-0001",
     });
+
+    const draft = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-04",
+        receiptTitle: "ทดสอบ",
+        receiptType: "general_expense",
+        payeeName: "ผู้ทดสอบ",
+        businessPurpose: "ทดสอบ",
+        lines: [],
+      },
+      uploads: [],
+    });
+
+    // Drafts never consume a real SR number -- the peek must still say "1".
+    assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
+      sequence: "1",
+      receiptNo: "SR-2026-09-0001",
+    });
+
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-11"), {
       sequence: "1",
       receiptNo: "SR-2026-11-0001",
     });
+
+    assert.equal(draft.draftId.startsWith("SR-DRAFT-2026-09-"), true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

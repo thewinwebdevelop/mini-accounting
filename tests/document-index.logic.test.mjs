@@ -11,6 +11,9 @@ const { openInventoryDatabase, ensureInventorySchema } = inventoryDb;
 const {
   ensureDocumentIndexSchema,
   allocateDocumentNumber,
+  peekNextDocumentNumber,
+  getDocumentIndexRowByNumber,
+  queryDocumentIndexRows,
   indexDocument,
   withDocumentIndexDatabase,
   rebuildDocumentIndex,
@@ -311,4 +314,138 @@ test("DOCUMENT_KINDS covers all seven document kinds plus workflow transactions"
     "substitute_receipt",
     "workflow_transaction",
   ]);
+});
+
+test("peekNextDocumentNumber reads document_number_allocations without inserting anything", async () => {
+  await withTempRoot(async (rootDir) => {
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      const first = allocateDocumentNumber(db, { documentKind: "expense_request", accountingMonth: "2026-09" });
+      assert.deepEqual(first, { sequence: "1", documentNo: "REQ-2026-09-0001" });
+
+      // Peeking never inserts a row, so it must be safe to call any number of
+      // times (a user reopening a form, switching months back and forth)
+      // without ever moving what the *next real* allocation will be.
+      assert.deepEqual(
+        peekNextDocumentNumber(db, { documentKind: "expense_request", accountingMonth: "2026-09" }),
+        { sequence: "2", documentNo: "REQ-2026-09-0002" },
+      );
+      assert.deepEqual(
+        peekNextDocumentNumber(db, { documentKind: "expense_request", accountingMonth: "2026-09" }),
+        { sequence: "2", documentNo: "REQ-2026-09-0002" },
+      );
+
+      const count = db.prepare("SELECT COUNT(*) AS c FROM document_number_allocations").get();
+      assert.equal(count.c, 1, "peeking must not have inserted a second allocation row");
+
+      const second = allocateDocumentNumber(db, { documentKind: "expense_request", accountingMonth: "2026-09" });
+      assert.deepEqual(second, { sequence: "2", documentNo: "REQ-2026-09-0002" },
+        "the real allocation right after a peek must land on exactly the number the peek reported");
+    });
+  });
+});
+
+test("peekNextDocumentNumber starts at sequence 1 for a kind/month with no allocations yet", async () => {
+  await withTempRoot(async (rootDir) => {
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      assert.deepEqual(
+        peekNextDocumentNumber(db, { documentKind: "workflow_transaction", accountingMonth: "2026-09" }),
+        { sequence: "1", documentNo: "TXN-2026-09-0001" },
+      );
+    });
+  });
+});
+
+test("peekNextDocumentNumber validates document kind and accounting month like allocateDocumentNumber", async () => {
+  await withTempRoot(async (rootDir) => {
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      assert.throws(() => peekNextDocumentNumber(db, { documentKind: "not_a_kind", accountingMonth: "2026-09" }));
+      assert.throws(() => peekNextDocumentNumber(db, { documentKind: "expense_request", accountingMonth: "not-a-month" }));
+    });
+  });
+});
+
+test("getDocumentIndexRowByNumber finds a single row by document_kind + document_no and returns null otherwise", async () => {
+  await withTempRoot(async (rootDir) => {
+    indexDocument(rootDir, {
+      documentKind: "expense_request",
+      documentNo: "REQ-2026-09-0001",
+      accountingMonth: "2026-09",
+      status: "submitted",
+      folderPath: "documents/2026/09/เบิกจ่าย/REQ-2026-09-0001_ทดสอบ",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+    });
+
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      const row = getDocumentIndexRowByNumber(db, "expense_request", "REQ-2026-09-0001");
+      assert.equal(row.folderPath, "documents/2026/09/เบิกจ่าย/REQ-2026-09-0001_ทดสอบ");
+      assert.equal(row.documentNo, "REQ-2026-09-0001");
+
+      assert.equal(getDocumentIndexRowByNumber(db, "expense_request", "REQ-2026-09-9999"), null);
+      // Same document_no under a different kind must not match (kind is part
+      // of the key documents.document_no is only unique within).
+      assert.equal(getDocumentIndexRowByNumber(db, "substitute_receipt", "REQ-2026-09-0001"), null);
+    });
+  });
+});
+
+test("queryDocumentIndexRows pushes every supported filter down to SQL", async () => {
+  await withTempRoot(async (rootDir) => {
+    indexDocument(rootDir, {
+      documentKind: "purchase_order",
+      documentNo: "PO-2026-09-0001",
+      accountingMonth: "2026-09",
+      status: "draft",
+      folderPath: "documents/2026/09/purchase_order/PO-2026-09-0001_a",
+      transactionNo: "TXN-2026-09-0001",
+      workflowTemplateId: "tpl-1",
+      workflowStepId: "step-1",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+    });
+    indexDocument(rootDir, {
+      documentKind: "goods_receipt",
+      documentNo: "GR-2026-09-0001",
+      accountingMonth: "2026-09",
+      status: "draft",
+      folderPath: "documents/2026/09/goods_receipt/GR-2026-09-0001_a",
+      transactionNo: "TXN-2026-09-0001",
+      workflowTemplateId: "tpl-1",
+      workflowStepId: "step-2",
+      createdAt: "2026-09-02T00:00:00.000Z",
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    });
+    indexDocument(rootDir, {
+      documentKind: "purchase_order",
+      documentNo: "PO-2026-09-0002",
+      accountingMonth: "2026-09",
+      status: "approved",
+      folderPath: "documents/2026/09/purchase_order/PO-2026-09-0002_b",
+      transactionNo: "TXN-2026-09-0002",
+      workflowTemplateId: "tpl-2",
+      workflowStepId: "step-1",
+      createdAt: "2026-09-03T00:00:00.000Z",
+      updatedAt: "2026-09-03T00:00:00.000Z",
+    });
+
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      const byKind = queryDocumentIndexRows(db, { documentKind: "purchase_order" });
+      assert.deepEqual(byKind.map((r) => r.documentNo).sort(), ["PO-2026-09-0001", "PO-2026-09-0002"]);
+
+      const byKinds = queryDocumentIndexRows(db, { documentKinds: ["purchase_order", "goods_receipt"] });
+      assert.equal(byKinds.length, 3);
+
+      const byTransaction = queryDocumentIndexRows(db, { transactionNo: "TXN-2026-09-0001" });
+      assert.deepEqual(byTransaction.map((r) => r.documentNo).sort(), ["GR-2026-09-0001", "PO-2026-09-0001"]);
+
+      const byStatus = queryDocumentIndexRows(db, { status: "approved" });
+      assert.deepEqual(byStatus.map((r) => r.documentNo), ["PO-2026-09-0002"]);
+
+      const byTemplateAndStep = queryDocumentIndexRows(db, { workflowTemplateId: "tpl-1", workflowStepId: "step-1" });
+      assert.deepEqual(byTemplateAndStep.map((r) => r.documentNo), ["PO-2026-09-0001"]);
+
+      const everything = queryDocumentIndexRows(db, {});
+      assert.equal(everything.length, 3);
+    });
+  });
 });

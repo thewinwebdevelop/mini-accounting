@@ -105,6 +105,9 @@ const {
   listPlatformOrderImports,
   postPlatformOrderImport,
 } = require("./forms/platform-orders.logic.js");
+const {
+  rebuildDocumentIndex,
+} = require("./forms/document-index.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -1988,14 +1991,58 @@ const server = createServer(async (request, response) => {
   response.end("Method not allowed");
 });
 
-server.listen(port, listenHost, () => {
-  const boundPort = server.address().port;
-  console.log(`Expense request local web app: http://localhost:${boundPort}/`);
-  if (allowNetwork) {
-    console.log(
-      `[คำเตือน] SWEET_HOUSE_ALLOW_NETWORK เปิดใช้งานอยู่ เซิร์ฟเวอร์กำลังรับฟังทุกอินเทอร์เฟซเครือข่าย (${listenHost}:${boundPort}) สามารถเข้าถึงจากเครือข่ายได้จากอุปกรณ์อื่น เช่น วงแลนสำนักงานหรือไวไฟร้านกาแฟ และระบบนี้ไม่มีระบบยืนยันตัวตนใด ๆ ทั้งสิ้น ผู้ใดก็ตามที่อยู่ในเครือข่ายเดียวกันจะสามารถเปิดดู แก้ไข หรือลบเอกสารบัญชีได้ โปรดใช้เฉพาะในเครือข่ายที่เชื่อถือได้เท่านั้น`,
+// Read paths now query the documents index (forms/document-index.logic.js)
+// instead of walking documents/ on every request -- see local-server.logic.js.
+// That makes it critical that the index is never empty/stale relative to an
+// installation's real on-disk documents the moment the server starts serving
+// requests: an owner who already has real accounting documents on disk (and
+// whose index may be empty -- a brand-new database file, or one built by an
+// older version of this app before the index existed) must never see their
+// documents "vanish" from every list/detail page just because nothing has
+// written through the index for them yet.
+//
+// rebuildDocumentIndex is idempotent and read-only against documents/ (see
+// forms/document-index.logic.js) -- it always fully re-derives the `documents`
+// table from disk, so running it unconditionally on every startup is both the
+// simplest correct answer (no "is the index actually stale?" check to get
+// wrong) and cheap: it is one recursive walk of documents/ plus one JSON.parse
+// per canonical document file, paid once per server process start, not per
+// request. For a company of this size (dozens to low hundreds of documents
+// accumulated over years) this finishes in well under a second; even an
+// installation with several thousand documents would still be a small
+// fraction of a second, and either way it only happens at boot -- the exact
+// walk this task's read-path change was meant to stop paying on every page
+// load. A failure here (e.g. a locked/corrupted database file) is logged
+// loudly but must not prevent the server from starting at all: every other
+// subsystem (inventory, company settings, ...) shares the same sqlite file
+// and would fail the same way, so refusing to start would not be any safer.
+async function rebuildDocumentIndexOnStartup() {
+  try {
+    const startedAt = Date.now();
+    const { total } = await rebuildDocumentIndex(rootDir);
+    const durationMs = Date.now() - startedAt;
+    console.log(`[ดัชนีเอกสาร] สร้างดัชนีใหม่จากไฟล์บนดิสก์เรียบร้อย (${total} เอกสาร, ${durationMs}ms)`);
+  } catch (error) {
+    console.error(
+      `[ดัชนีเอกสาร] ไม่สามารถสร้างดัชนีเอกสารใหม่ตอนเริ่มเซิร์ฟเวอร์ได้: ${error.message} — เซิร์ฟเวอร์จะยังเริ่มทำงานต่อ แต่ผลการค้นหาเอกสารอาจไม่ครบถ้วนจนกว่าจะรัน scripts/rebuild-document-index.sh`,
     );
-  } else {
-    console.log(`เซิร์ฟเวอร์รับฟังเฉพาะเครื่องนี้เท่านั้น (${listenHost}:${boundPort}) หากต้องการเปิดให้เข้าถึงจากอุปกรณ์อื่นในเครือข่าย ให้ตั้งค่า SWEET_HOUSE_ALLOW_NETWORK=1`);
   }
-});
+}
+
+async function startServer() {
+  await rebuildDocumentIndexOnStartup();
+
+  server.listen(port, listenHost, () => {
+    const boundPort = server.address().port;
+    console.log(`Expense request local web app: http://localhost:${boundPort}/`);
+    if (allowNetwork) {
+      console.log(
+        `[คำเตือน] SWEET_HOUSE_ALLOW_NETWORK เปิดใช้งานอยู่ เซิร์ฟเวอร์กำลังรับฟังทุกอินเทอร์เฟซเครือข่าย (${listenHost}:${boundPort}) สามารถเข้าถึงจากเครือข่ายได้จากอุปกรณ์อื่น เช่น วงแลนสำนักงานหรือไวไฟร้านกาแฟ และระบบนี้ไม่มีระบบยืนยันตัวตนใด ๆ ทั้งสิ้น ผู้ใดก็ตามที่อยู่ในเครือข่ายเดียวกันจะสามารถเปิดดู แก้ไข หรือลบเอกสารบัญชีได้ โปรดใช้เฉพาะในเครือข่ายที่เชื่อถือได้เท่านั้น`,
+      );
+    } else {
+      console.log(`เซิร์ฟเวอร์รับฟังเฉพาะเครื่องนี้เท่านั้น (${listenHost}:${boundPort}) หากต้องการเปิดให้เข้าถึงจากอุปกรณ์อื่นในเครือข่าย ให้ตั้งค่า SWEET_HOUSE_ALLOW_NETWORK=1`);
+    }
+  });
+}
+
+startServer();

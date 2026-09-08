@@ -52,6 +52,9 @@ const {
 } = require("./inventory.logic.js");
 const {
   allocateDocumentNumber,
+  peekNextDocumentNumber,
+  getDocumentIndexRowByNumber,
+  queryDocumentIndexRows,
   indexDocument,
   withDocumentIndexDatabase,
 } = require("./document-index.logic.js");
@@ -66,26 +69,12 @@ const workflowPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "ge
 // page and API tests can reference it by a known name rather than a glob.
 const WORKFLOW_PACKET_PDF_FILE_NAME = "99_ชุดรวมเอกสาร_workflow-transaction.pdf";
 
-function padSequence(sequence) {
-  return String(sequence).padStart(4, "0");
-}
-
 function getMonthParts(accountingMonth = "") {
   const [year, month] = String(accountingMonth).split("-");
   if (!/^\d{4}$/.test(year) || !/^\d{2}$/.test(month)) {
     throw new Error("Invalid accounting month");
   }
   return { year, month };
-}
-
-function getExpenseMonthDir(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  return path.join(rootDir, "documents", year, month, "เบิกจ่าย");
-}
-
-function getSubstituteReceiptMonthDir(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  return path.join(rootDir, "documents", year, month, "ใบรับรองแทนใบเสร็จ");
 }
 
 function getDraftMonthDir(rootDir, accountingMonth) {
@@ -115,56 +104,47 @@ function getSubstituteReceiptDraftFolderPath(accountingMonth, draftId) {
   return path.join("drafts", year, month, "substitute-receipts", draftId);
 }
 
+// Used to scan folder names under documents/YYYY/MM/... for the highest
+// sequence in use, while allocateExpenseRequestNumber (the real write-path
+// allocator, below) read the same "next number" from the
+// document_number_allocations ledger instead. Two different sources of
+// truth for the same question meant a "/next" preview could show REQ-...-0007
+// while the request that actually got submitted a moment later became
+// REQ-...-0008 (a concurrent submission won the race), or — permanently,
+// once it first happened — a folder failing to get created after a number
+// was allocated (see the module comment in document-index.logic.js) would
+// leave the disk scan and the ledger disagreeing forever, since the disk
+// scan has no way to know a number was ever spent. peekNextDocumentNumber
+// reads the exact same ledger allocateExpenseRequestNumber writes to, so the
+// number a form previews is always the number the next real submission will
+// receive — and being a plain SELECT with no INSERT, it can be called any
+// number of times (reopening the form, switching months) without ever
+// spending a real document number itself.
 async function getNextExpenseRequestInfo(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  const monthDir = getExpenseMonthDir(rootDir, accountingMonth);
-  let folderNames = [];
+  // Validates the accountingMonth format exactly as before (throws the same
+  // "Invalid accounting month" error) even though only that validation is
+  // used here now — the number itself comes from the ledger.
+  getMonthParts(accountingMonth);
 
-  try {
-    folderNames = await readdir(monthDir);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-
-  const prefix = `REQ-${year}-${month}-`;
-  const latestSequence = folderNames.reduce((latest, name) => {
-    if (!name.startsWith(prefix)) return latest;
-    const match = name.slice(prefix.length).match(/^(\d{4})/);
-    if (!match) return latest;
-    return Math.max(latest, Number.parseInt(match[1], 10));
-  }, 0);
-  const sequence = String(latestSequence + 1);
-
-  return {
-    sequence,
-    requestNo: `REQ-${year}-${month}-${padSequence(sequence)}`,
-  };
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = peekNextDocumentNumber(db, {
+      documentKind: "expense_request",
+      accountingMonth,
+    });
+    return { sequence, requestNo: documentNo };
+  });
 }
 
 async function getNextSubstituteReceiptInfo(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  const monthDir = getSubstituteReceiptMonthDir(rootDir, accountingMonth);
-  let folderNames = [];
+  getMonthParts(accountingMonth);
 
-  try {
-    folderNames = await readdir(monthDir);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-
-  const prefix = `SR-${year}-${month}-`;
-  const latestSequence = folderNames.reduce((latest, name) => {
-    if (!name.startsWith(prefix)) return latest;
-    const match = name.slice(prefix.length).match(/^(\d{4})/);
-    if (!match) return latest;
-    return Math.max(latest, Number.parseInt(match[1], 10));
-  }, 0);
-  const sequence = String(latestSequence + 1);
-
-  return {
-    sequence,
-    receiptNo: `SR-${year}-${month}-${padSequence(sequence)}`,
-  };
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = peekNextDocumentNumber(db, {
+      documentKind: "substitute_receipt",
+      accountingMonth,
+    });
+    return { sequence, receiptNo: documentNo };
+  });
 }
 
 // Unlike getNextExpenseRequestInfo/getNextSubstituteReceiptInfo/
@@ -193,54 +173,34 @@ async function getNextWorkflowDocumentInfo(rootDir, documentKind, accountingMont
   });
 }
 
-function getWorkflowTransactionMonthDir(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  return path.join(rootDir, "documents", year, month, "workflow-transactions");
-}
-
 async function getNextWorkflowTransactionInfo(rootDir, accountingMonth) {
-  const { year, month } = getMonthParts(accountingMonth);
-  const monthDir = getWorkflowTransactionMonthDir(rootDir, accountingMonth);
-  let folderNames = [];
+  getMonthParts(accountingMonth);
 
-  try {
-    folderNames = await readdir(monthDir);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-
-  const prefix = `TXN-${year}-${month}-`;
-  const latestSequence = folderNames.reduce((latest, name) => {
-    if (!name.startsWith(prefix)) return latest;
-    const match = name.slice(prefix.length).match(/^(\d{4})/);
-    if (!match) return latest;
-    return Math.max(latest, Number.parseInt(match[1], 10));
-  }, 0);
-  const sequence = String(latestSequence + 1);
-
-  return {
-    sequence,
-    transactionNo: `${prefix}${padSequence(sequence)}`,
-  };
+  return withDocumentIndexDatabase(rootDir, (db) => {
+    const { sequence, documentNo } = peekNextDocumentNumber(db, {
+      documentKind: "workflow_transaction",
+      accountingMonth,
+    });
+    return { sequence, transactionNo: documentNo };
+  });
 }
 
-// Atomic replacements for the scan-then-write allocators above. Each of
-// getNextExpenseRequestInfo/getNextSubstituteReceiptInfo/
-// getNextWorkflowTransactionInfo is kept exactly as-is (still a plain
-// directory scan) because each also backs a read-only "/next" preview route
-// hit from a form before the user has submitted anything (see
-// forms/expense-request.html and the substitute-receipt/workflow-transaction
-// equivalents) — turning those into real allocations would burn a live
-// document number every time someone opens a form or changes its month,
-// which is exactly the kind of user-visible behavior change this task rules
-// out. The functions below are called only from the real write path (the
-// moment a document is actually about to be created), and they hand out a
-// number via forms/document-index.logic.js's allocateDocumentNumber: a
-// UNIQUE constraint on (document_kind, accounting_month, sequence) in SQLite
-// makes a second caller landing on the same sequence fail its INSERT rather
-// than silently succeed, so the allocator retries with the next number
-// instead of ever handing out a duplicate. See document-index.logic.js for
-// why the ledger is a separate table from the documents index itself.
+// The real write-path allocators. Each of getNextExpenseRequestInfo/
+// getNextSubstituteReceiptInfo/getNextWorkflowTransactionInfo above is a
+// read-only peek at the exact same document_number_allocations ledger these
+// write to (see peekNextDocumentNumber in document-index.logic.js) — the two
+// used to read from different sources entirely (the preview scanned disk
+// folder names, these always read the ledger), which is what let a "/next"
+// preview permanently disagree with the number a submission actually
+// received. They still differ in one respect: only these are allowed to
+// actually spend a number (via allocateDocumentNumber's INSERT), because
+// only these run on the real write path (the moment a document is actually
+// about to be created) rather than on every form open/month change. A UNIQUE
+// constraint on (document_kind, accounting_month, sequence) in SQLite makes
+// a second caller landing on the same sequence fail its INSERT rather than
+// silently succeed, so the allocator retries with the next number instead of
+// ever handing out a duplicate. See document-index.logic.js for why the
+// ledger is a separate table from the documents index itself.
 function allocateExpenseRequestNumber(rootDir, accountingMonth) {
   return withDocumentIndexDatabase(rootDir, (db) => {
     const { sequence, documentNo } = allocateDocumentNumber(db, {
@@ -822,9 +782,21 @@ async function recordExpenseSheetMetadata({
   return payload.sheetSync;
 }
 
-async function findSubmittedExpenseRequests(rootDir) {
+// Generic disk fallback used only when the documents index has no row for an
+// identifier a caller asked for by number (see getSubmittedExpenseRequest,
+// getSubmittedSubstituteReceipt, getWorkflowDocument, getWorkflowTransaction
+// below) -- an index miss can mean the row genuinely does not exist, or that
+// the index has fallen behind disk somehow (write-through failed, the
+// process was killed between the file write and the index write, ...).
+// Disk is always the source of truth, so on a miss these fall back to
+// exactly this: a full walk for every file the app recognizes as this kind
+// of document, the same walk every read path used to do unconditionally.
+// This keeps a stale/incomplete index from ever hiding a real document --
+// the cost of a full walk is only ever paid on that rare miss, not on every
+// read.
+async function walkDocumentsForFolderPaths(rootDir, canonicalFileName) {
   const documentsRoot = path.join(rootDir, "documents");
-  const records = [];
+  const folderPaths = [];
 
   async function walk(dir) {
     let entries = [];
@@ -841,51 +813,96 @@ async function findSubmittedExpenseRequests(rootDir) {
         await walk(absolutePath);
         continue;
       }
-
-      if (entry.name !== "submission.json") continue;
-      const payload = JSON.parse(await readFile(absolutePath, "utf8"));
-      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
-      const syncMetadata = await readDriveSyncMetadata(rootDir, folderPath);
-      const status = normalizeExpenseRequestStatus(payload.status || "submitted");
-      records.push({
-        id: payload.requestNo,
-        status,
-        statusLabel: payload.statusLabel || EXPENSE_REQUEST_STATUS_LABELS[status],
-        requestNo: payload.requestNo,
-        requestTitle: getRequestTitleFromFolderPath(folderPath, payload.requestNo),
-        requesterName: payload.requesterName || "",
-        accountingMonth: getAccountingMonthFromRequestNo(payload.requestNo),
-        updatedAt: payload.createdAt || "",
-        netPayment: payload.totals?.netPayment || "0.00",
-        rawFileCount: Array.isArray(payload.rawFiles) ? payload.rawFiles.length : 0,
-        rawFiles: await listRawFiles(rootDir, folderPath),
-        folderPath,
-        pdfFiles: await listPdfFiles(rootDir, folderPath),
-        syncStatus: syncMetadata?.syncStatus || "not_synced",
-        driveFolderUrl: syncMetadata?.driveFolderUrl || "",
-        driveFolderId: syncMetadata?.driveFolderId || "",
-        drivePath: syncMetadata?.drivePath || "",
-        uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
-        syncedAt: syncMetadata?.syncedAt || "",
-        syncError: syncMetadata?.error || "",
-        sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
-        sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
-        sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
-        sheetName: payload.sheetSync?.sheetName || "",
-        sheetRowNumber: payload.sheetSync?.rowNumber || 0,
-        sheetSyncedAt: payload.sheetSync?.syncedAt || "",
-        sheetSyncError: payload.sheetSync?.error || "",
-        nextAction: getExpenseRequestNextAction(status),
-        transactionNo: payload.transactionNo || "",
-        workflowTemplateId: payload.workflowTemplateId || "",
-        workflowStepId: payload.workflowStepId || "",
-        completedAt: payload.completedAt || "",
-        completedBy: payload.completedBy || "",
-      });
+      if (entry.name !== canonicalFileName) continue;
+      folderPaths.push(path.relative(rootDir, path.dirname(path.dirname(absolutePath))));
     }
   }
 
   await walk(documentsRoot);
+  return folderPaths;
+}
+
+// Logged whenever the index points at a folder that no longer holds the file
+// it should (deleted out from under the app, moved, or never written through
+// -- see the module comment in document-index.logic.js on why disk always
+// wins). Never thrown: every caller degrades by skipping the affected record
+// (a listing) or falling back to a full disk search (a lookup by number),
+// same "degrade, don't crash" contract as the rest of this file's read
+// paths.
+function logIndexDriftWarning(documentNo, folderPath) {
+  console.error(
+    `[ดัชนีเอกสาร] พบ ${documentNo} ในดัชนีแต่ไม่พบไฟล์บนดิสก์ที่ ${folderPath} — ดิสก์คือแหล่งความจริง ข้ามรายการนี้/ค้นหาบนดิสก์แทน กรุณารัน scripts/rebuild-document-index.sh เพื่อซ่อมดัชนี`,
+  );
+}
+
+async function buildSubmittedExpenseRequestRecord(rootDir, folderPath) {
+  const absolutePath = path.join(rootDir, folderPath, "data", "submission.json");
+  const payload = JSON.parse(await readFile(absolutePath, "utf8"));
+  const resolvedFolderPath = payload.folderPath || folderPath;
+  const syncMetadata = await readDriveSyncMetadata(rootDir, resolvedFolderPath);
+  const status = normalizeExpenseRequestStatus(payload.status || "submitted");
+
+  return {
+    id: payload.requestNo,
+    status,
+    statusLabel: payload.statusLabel || EXPENSE_REQUEST_STATUS_LABELS[status],
+    requestNo: payload.requestNo,
+    requestTitle: getRequestTitleFromFolderPath(resolvedFolderPath, payload.requestNo),
+    requesterName: payload.requesterName || "",
+    accountingMonth: getAccountingMonthFromRequestNo(payload.requestNo),
+    updatedAt: payload.createdAt || "",
+    netPayment: payload.totals?.netPayment || "0.00",
+    rawFileCount: Array.isArray(payload.rawFiles) ? payload.rawFiles.length : 0,
+    rawFiles: await listRawFiles(rootDir, resolvedFolderPath),
+    folderPath: resolvedFolderPath,
+    pdfFiles: await listPdfFiles(rootDir, resolvedFolderPath),
+    syncStatus: syncMetadata?.syncStatus || "not_synced",
+    driveFolderUrl: syncMetadata?.driveFolderUrl || "",
+    driveFolderId: syncMetadata?.driveFolderId || "",
+    drivePath: syncMetadata?.drivePath || "",
+    uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
+    syncedAt: syncMetadata?.syncedAt || "",
+    syncError: syncMetadata?.error || "",
+    sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
+    sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
+    sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
+    sheetName: payload.sheetSync?.sheetName || "",
+    sheetRowNumber: payload.sheetSync?.rowNumber || 0,
+    sheetSyncedAt: payload.sheetSync?.syncedAt || "",
+    sheetSyncError: payload.sheetSync?.error || "",
+    nextAction: getExpenseRequestNextAction(status),
+    transactionNo: payload.transactionNo || "",
+    workflowTemplateId: payload.workflowTemplateId || "",
+    workflowStepId: payload.workflowStepId || "",
+    completedAt: payload.completedAt || "",
+    completedBy: payload.completedBy || "",
+  };
+}
+
+// Reads the documents index instead of walking documents/ recursively: one
+// SQL query for every row indexed as document_kind='expense_request'
+// (populated write-through by indexExpenseRequest, and backfilled by
+// rebuildDocumentIndex -- see local-server.mjs's startup call), then one
+// targeted file read per matching folder rather than a JSON.parse-per-file
+// scan of the entire tree (including every other document kind, month, and
+// the drafts/ tree, none of which can ever be a submission.json anyway). A
+// row whose folder has gone missing on disk is dropped with a warning
+// (logIndexDriftWarning) rather than failing the whole listing -- the same
+// "degrade, don't crash" contract the rest of this file already uses for a
+// single bad record.
+async function findSubmittedExpenseRequests(rootDir) {
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, { documentKind: "expense_request" }));
+  const records = [];
+
+  for (const row of rows) {
+    try {
+      records.push(await buildSubmittedExpenseRequestRecord(rootDir, row.folderPath));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(row.documentNo, row.folderPath);
+    }
+  }
+
   return records;
 }
 
@@ -934,11 +951,42 @@ function buildSubmittedEvidenceFiles(payload = {}, rawFiles = []) {
   return evidenceFiles;
 }
 
+// The point-lookup counterpart of findSubmittedExpenseRequests: looks up the
+// one row keyed by (expense_request, requestNo) instead of listing every
+// expense request just to find one of them -- the O(one recursive tree walk)
+// this used to cost on every single call (a request's own page, every file
+// download under it, cross-document prefill, ...) drops to one indexed SQL
+// lookup plus one targeted file read. Falls back to a full disk search
+// (never silently reports "not found" just because the index has not caught
+// up) if the index has no row, or if the row it has points at a folder that
+// no longer holds a submission.json.
+async function getSubmittedExpenseRequestRecord(rootDir, requestNo) {
+  const row = withDocumentIndexDatabase(rootDir, (db) => getDocumentIndexRowByNumber(db, "expense_request", requestNo));
+  if (row) {
+    try {
+      return await buildSubmittedExpenseRequestRecord(rootDir, row.folderPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(requestNo, row.folderPath);
+    }
+  }
+
+  for (const folderPath of await walkDocumentsForFolderPaths(rootDir, "submission.json")) {
+    try {
+      const candidate = await buildSubmittedExpenseRequestRecord(rootDir, folderPath);
+      if (candidate.requestNo === requestNo) return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return null;
+}
+
 async function getSubmittedExpenseRequest(rootDir, requestNo) {
   if (!requestNo) throw new Error("Missing expense request number");
 
-  const requests = await findSubmittedExpenseRequests(rootDir);
-  const request = requests.find((record) => record.requestNo === requestNo);
+  const request = await getSubmittedExpenseRequestRecord(rootDir, requestNo);
   if (!request) throw new Error("Expense request not found");
 
   const payload = JSON.parse(await readFile(path.join(rootDir, request.folderPath, "data", "submission.json"), "utf8"));
@@ -1519,75 +1567,71 @@ async function writeSubmittedSubstituteReceiptFiles(rootDir, receiptPayload) {
   };
 }
 
+async function buildSubmittedSubstituteReceiptRecord(rootDir, folderPath) {
+  const absolutePath = path.join(rootDir, folderPath, "data", "substitute-receipt.json");
+  const payload = JSON.parse(await readFile(absolutePath, "utf8"));
+  const resolvedFolderPath = payload.folderPath || folderPath;
+  const inferredStatus = listStockMovementsByReference(rootDir, "substitute_receipt", payload.receiptNo).length
+    ? "received"
+    : "pending_approval";
+  const status = normalizeSubstituteReceiptStatus(payload.status || inferredStatus);
+  const rawFiles = await listSubstituteReceiptRawFiles(rootDir, resolvedFolderPath, payload.receiptNo);
+  const pdfFiles = await listSubstituteReceiptPdfFiles(rootDir, resolvedFolderPath, payload.receiptNo);
+  const syncMetadata = await readDriveSyncMetadata(rootDir, resolvedFolderPath);
+
+  return {
+    id: payload.receiptNo,
+    receiptNo: payload.receiptNo,
+    status,
+    receiptTitle: payload.receiptTitle || getRequestTitleFromFolderPath(resolvedFolderPath, payload.receiptNo),
+    payeeName: payload.payeeName || "",
+    folderPath: resolvedFolderPath,
+    absoluteFolderPath: path.join(rootDir, resolvedFolderPath),
+    accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
+    updatedAt: payload.updatedAt || payload.createdAt || "",
+    totalAmount: payload.totals?.totalAmount || "0.00",
+    rawFileCount: rawFiles.length,
+    rawFiles,
+    pdfFiles,
+    syncStatus: syncMetadata?.syncStatus || "not_synced",
+    driveFolderUrl: syncMetadata?.driveFolderUrl || "",
+    driveFolderId: syncMetadata?.driveFolderId || "",
+    drivePath: syncMetadata?.drivePath || "",
+    uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
+    syncedAt: syncMetadata?.syncedAt || "",
+    syncError: syncMetadata?.error || "",
+    sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
+    sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
+    sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
+    sheetName: payload.sheetSync?.sheetName || "",
+    sheetRowNumber: payload.sheetSync?.rowNumber || 0,
+    sheetSyncedAt: payload.sheetSync?.syncedAt || "",
+    sheetSyncError: payload.sheetSync?.error || "",
+    payload: {
+      ...payload,
+      status,
+      statusLabel: payload.statusLabel || SUBSTITUTE_RECEIPT_STATUS_LABELS[status],
+      folderPath: payload.folderPath || resolvedFolderPath,
+    },
+  };
+}
+
+// See findSubmittedExpenseRequests above for why this reads the documents
+// index (rows where document_kind='substitute_receipt') instead of walking
+// documents/ recursively.
 async function findSubmittedSubstituteReceipts(rootDir) {
-  const documentsRoot = path.join(rootDir, "documents");
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, { documentKind: "substitute_receipt" }));
   const records = [];
 
-  async function walk(dir) {
-    let entries = [];
+  for (const row of rows) {
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      records.push(await buildSubmittedSubstituteReceiptRecord(rootDir, row.folderPath));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      return;
-    }
-
-    for (const entry of entries) {
-      const absolutePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolutePath);
-        continue;
-      }
-
-      if (entry.name !== "substitute-receipt.json") continue;
-      const payload = JSON.parse(await readFile(absolutePath, "utf8"));
-      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
-      const inferredStatus = listStockMovementsByReference(rootDir, "substitute_receipt", payload.receiptNo).length
-        ? "received"
-        : "pending_approval";
-      const status = normalizeSubstituteReceiptStatus(payload.status || inferredStatus);
-      const rawFiles = await listSubstituteReceiptRawFiles(rootDir, folderPath, payload.receiptNo);
-      const pdfFiles = await listSubstituteReceiptPdfFiles(rootDir, folderPath, payload.receiptNo);
-      const syncMetadata = await readDriveSyncMetadata(rootDir, folderPath);
-      records.push({
-        id: payload.receiptNo,
-        receiptNo: payload.receiptNo,
-        status,
-        receiptTitle: payload.receiptTitle || getRequestTitleFromFolderPath(folderPath, payload.receiptNo),
-        payeeName: payload.payeeName || "",
-        folderPath,
-        absoluteFolderPath: path.join(rootDir, folderPath),
-        accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
-        updatedAt: payload.updatedAt || payload.createdAt || "",
-        totalAmount: payload.totals?.totalAmount || "0.00",
-        rawFileCount: rawFiles.length,
-        rawFiles,
-        pdfFiles,
-        syncStatus: syncMetadata?.syncStatus || "not_synced",
-        driveFolderUrl: syncMetadata?.driveFolderUrl || "",
-        driveFolderId: syncMetadata?.driveFolderId || "",
-        drivePath: syncMetadata?.drivePath || "",
-        uploadedFileCount: syncMetadata?.uploadedFileCount || 0,
-        syncedAt: syncMetadata?.syncedAt || "",
-        syncError: syncMetadata?.error || "",
-        sheetSyncStatus: payload.sheetSync?.syncStatus || "not_synced",
-        sheetSpreadsheetUrl: payload.sheetSync?.spreadsheetUrl || "",
-        sheetSpreadsheetId: payload.sheetSync?.spreadsheetId || "",
-        sheetName: payload.sheetSync?.sheetName || "",
-        sheetRowNumber: payload.sheetSync?.rowNumber || 0,
-        sheetSyncedAt: payload.sheetSync?.syncedAt || "",
-        sheetSyncError: payload.sheetSync?.error || "",
-        payload: {
-          ...payload,
-          status,
-          statusLabel: payload.statusLabel || SUBSTITUTE_RECEIPT_STATUS_LABELS[status],
-          folderPath: payload.folderPath || folderPath,
-        },
-      });
+      logIndexDriftWarning(row.documentNo, row.folderPath);
     }
   }
 
-  await walk(documentsRoot);
   return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -1670,10 +1714,35 @@ async function listSubstituteReceipts(rootDir) {
   ].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
+// Point-lookup counterpart of findSubmittedSubstituteReceipts -- see the
+// comment above getSubmittedExpenseRequestRecord for why this indexes first
+// and falls back to a full disk search only on an index miss/drift.
+async function getSubmittedSubstituteReceiptRecord(rootDir, receiptNo) {
+  const row = withDocumentIndexDatabase(rootDir, (db) => getDocumentIndexRowByNumber(db, "substitute_receipt", receiptNo));
+  if (row) {
+    try {
+      return await buildSubmittedSubstituteReceiptRecord(rootDir, row.folderPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(receiptNo, row.folderPath);
+    }
+  }
+
+  for (const folderPath of await walkDocumentsForFolderPaths(rootDir, "substitute-receipt.json")) {
+    try {
+      const candidate = await buildSubmittedSubstituteReceiptRecord(rootDir, folderPath);
+      if (candidate.receiptNo === receiptNo) return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return null;
+}
+
 async function getSubmittedSubstituteReceipt(rootDir, receiptNo) {
   if (!receiptNo) throw new Error("Missing substitute receipt number");
-  const receipts = await findSubmittedSubstituteReceipts(rootDir);
-  const receipt = receipts.find((record) => record.receiptNo === receiptNo);
+  const receipt = await getSubmittedSubstituteReceiptRecord(rootDir, receiptNo);
   if (!receipt) throw new Error("Substitute receipt not found");
   return receipt;
 }
@@ -2041,66 +2110,81 @@ async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {
   return { absoluteFolderPath, pdfFiles };
 }
 
-async function findAllWorkflowDocuments(rootDir) {
-  const documentsRoot = path.join(rootDir, "documents");
-  const records = [];
+async function buildWorkflowDocumentRecord(rootDir, folderPath) {
+  const absolutePath = path.join(rootDir, folderPath, "data", "workflow-document.json");
+  const payload = JSON.parse(await readFile(absolutePath, "utf8"));
 
-  async function walk(dir) {
-    let entries = [];
+  return {
+    documentKind: payload.documentKind,
+    documentNo: payload.documentNo,
+    status: payload.status,
+    statusLabel: payload.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[payload.status] || payload.status,
+    title: payload.title || "",
+    transactionNo: payload.transactionNo || "",
+    workflowTemplateId: payload.workflowTemplateId || "",
+    workflowStepId: payload.workflowStepId || "",
+    folderPath: payload.folderPath || folderPath,
+    absoluteFolderPath: path.join(rootDir, folderPath),
+    updatedAt: payload.updatedAt || payload.createdAt || "",
+    payload,
+  };
+}
+
+// Reads the documents index instead of walking documents/ recursively --
+// see findSubmittedExpenseRequests above. Every filter listWorkflowDocuments
+// accepts (documentKind, transactionNo, workflowTemplateId, workflowStepId,
+// status) maps directly onto an indexed column, so filtering happens in SQL
+// rather than "list everything, then filter in JS" -- the whole point of
+// findLightweightWorkflowDocuments(rootDir, transactionNo) (a hot path on
+// every workflow-transaction page load) is exactly this transactionNo
+// pushdown, so it no longer has to look at any lightweight document outside
+// the one transaction it cares about.
+async function listWorkflowDocuments(rootDir, filters = {}) {
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, {
+    documentKind: filters.documentKind || undefined,
+    documentKinds: filters.documentKind ? undefined : LIGHTWEIGHT_DOCUMENT_KINDS,
+    transactionNo: filters.transactionNo || undefined,
+    workflowTemplateId: filters.workflowTemplateId || undefined,
+    workflowStepId: filters.workflowStepId || undefined,
+    status: filters.status || undefined,
+  }));
+
+  const records = [];
+  for (const row of rows) {
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      records.push(await buildWorkflowDocumentRecord(rootDir, row.folderPath));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      return;
-    }
-
-    for (const entry of entries) {
-      const absolutePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolutePath);
-        continue;
-      }
-
-      if (entry.name !== "workflow-document.json") continue;
-      const payload = JSON.parse(await readFile(absolutePath, "utf8"));
-      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
-      records.push({
-        documentKind: payload.documentKind,
-        documentNo: payload.documentNo,
-        status: payload.status,
-        statusLabel: payload.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[payload.status] || payload.status,
-        title: payload.title || "",
-        transactionNo: payload.transactionNo || "",
-        workflowTemplateId: payload.workflowTemplateId || "",
-        workflowStepId: payload.workflowStepId || "",
-        folderPath: payload.folderPath || folderPath,
-        absoluteFolderPath: path.join(rootDir, folderPath),
-        updatedAt: payload.updatedAt || payload.createdAt || "",
-        payload,
-      });
+      logIndexDriftWarning(row.documentNo, row.folderPath);
     }
   }
 
-  await walk(documentsRoot);
   return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-}
-
-async function listWorkflowDocuments(rootDir, filters = {}) {
-  const records = await findAllWorkflowDocuments(rootDir);
-  return records.filter((record) => {
-    if (filters.documentKind && record.documentKind !== filters.documentKind) return false;
-    if (filters.transactionNo && record.transactionNo !== filters.transactionNo) return false;
-    if (filters.workflowTemplateId && record.workflowTemplateId !== filters.workflowTemplateId) return false;
-    if (filters.workflowStepId && record.workflowStepId !== filters.workflowStepId) return false;
-    if (filters.status && record.status !== filters.status) return false;
-    return true;
-  });
 }
 
 async function getWorkflowDocument(rootDir, documentKind, documentNo) {
   if (!documentKind || !documentNo) return null;
-  const records = await findAllWorkflowDocuments(rootDir);
-  return records.find((record) => record.documentKind === documentKind && record.documentNo === documentNo) || null;
+
+  const row = withDocumentIndexDatabase(rootDir, (db) => getDocumentIndexRowByNumber(db, documentKind, documentNo));
+  if (row) {
+    try {
+      return await buildWorkflowDocumentRecord(rootDir, row.folderPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(documentNo, row.folderPath);
+    }
+  }
+
+  for (const folderPath of await walkDocumentsForFolderPaths(rootDir, "workflow-document.json")) {
+    try {
+      const candidate = await buildWorkflowDocumentRecord(rootDir, folderPath);
+      if (candidate.documentKind === documentKind && candidate.documentNo === documentNo) return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return null;
 }
 
 // Defense-in-depth path containment: resolves targetPath and refuses it unless
@@ -2295,8 +2379,7 @@ async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) 
     throw new Error("Invalid file name");
   }
 
-  const requests = await findSubmittedExpenseRequests(rootDir);
-  const request = requests.find((record) => record.requestNo === requestNo);
+  const request = await getSubmittedExpenseRequestRecord(rootDir, requestNo);
   if (!request) throw new Error("Expense request not found");
 
   const baseDir = path.resolve(rootDir, request.folderPath, section);
@@ -2463,34 +2546,28 @@ async function startWorkflowTransaction({
   return transaction;
 }
 
+async function buildWorkflowTransactionRecord(rootDir, folderPath) {
+  const absolutePath = path.join(rootDir, folderPath, "data", "workflow-transaction.json");
+  const transaction = JSON.parse(await readFile(absolutePath, "utf8"));
+  return { ...transaction, folderPath: transaction.folderPath || folderPath };
+}
+
+// See findSubmittedExpenseRequests above for why this reads the documents
+// index (rows where document_kind='workflow_transaction') instead of
+// walking documents/ recursively.
 async function findAllWorkflowTransactions(rootDir) {
-  const documentsRoot = path.join(rootDir, "documents");
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, { documentKind: "workflow_transaction" }));
   const records = [];
 
-  async function walk(dir) {
-    let entries = [];
+  for (const row of rows) {
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      records.push(await buildWorkflowTransactionRecord(rootDir, row.folderPath));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      return;
-    }
-
-    for (const entry of entries) {
-      const absolutePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolutePath);
-        continue;
-      }
-
-      if (entry.name !== "workflow-transaction.json") continue;
-      const transaction = JSON.parse(await readFile(absolutePath, "utf8"));
-      const folderPath = path.relative(rootDir, path.dirname(path.dirname(absolutePath)));
-      records.push({ ...transaction, folderPath: transaction.folderPath || folderPath });
+      logIndexDriftWarning(row.documentNo, row.folderPath);
     }
   }
 
-  await walk(documentsRoot);
   return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -2498,10 +2575,38 @@ async function listWorkflowTransactions(rootDir) {
   return findAllWorkflowTransactions(rootDir);
 }
 
+// Point lookup: one indexed SQL row plus one targeted file read, instead of
+// listing every workflow transaction on disk to find one of them -- this is
+// the choke point every step of a transaction page load goes through
+// (getWorkflowTransactionDetail, refresh, complete, prefill, the file route,
+// and the completed-guard checks inside completeWorkflowTransaction), so
+// converting it here alone removes one of the four full recursive walks a
+// single transaction page load used to trigger. Falls back to a full disk
+// search on an index miss/drift, same contract as
+// getSubmittedExpenseRequestRecord above.
 async function getWorkflowTransaction(rootDir, transactionNo) {
   if (!transactionNo) return null;
-  const transactions = await findAllWorkflowTransactions(rootDir);
-  return transactions.find((transaction) => transaction.transactionNo === transactionNo) || null;
+
+  const row = withDocumentIndexDatabase(rootDir, (db) => getDocumentIndexRowByNumber(db, "workflow_transaction", transactionNo));
+  if (row) {
+    try {
+      return await buildWorkflowTransactionRecord(rootDir, row.folderPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(transactionNo, row.folderPath);
+    }
+  }
+
+  for (const folderPath of await walkDocumentsForFolderPaths(rootDir, "workflow-transaction.json")) {
+    try {
+      const candidate = await buildWorkflowTransactionRecord(rootDir, folderPath);
+      if (candidate.transactionNo === transactionNo) return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return null;
 }
 
 // MVP child-document scan: every document type a workflow template can
@@ -2585,12 +2690,47 @@ async function readExpenseRequestChildDocument(rootDir, record) {
   }
 }
 
+// Targeted counterparts of findSubmittedExpenseRequests/
+// findSubmittedSubstituteReceipts, scoped to one transaction via the
+// transaction_no column instead of listing every expense request/substitute
+// receipt on disk and filtering in JS afterwards -- these are two of the
+// four full recursive walks a single workflow-transaction page load used to
+// trigger (the other two were the transaction lookup itself and the
+// lightweight-document listing, both already converted above).
+async function findExpenseRequestRecordsByTransaction(rootDir, transactionNo) {
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, { documentKind: "expense_request", transactionNo }));
+  const records = [];
+  for (const row of rows) {
+    try {
+      records.push(await buildSubmittedExpenseRequestRecord(rootDir, row.folderPath));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(row.documentNo, row.folderPath);
+    }
+  }
+  return records;
+}
+
+async function findSubstituteReceiptRecordsByTransaction(rootDir, transactionNo) {
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, { documentKind: "substitute_receipt", transactionNo }));
+  const records = [];
+  for (const row of rows) {
+    try {
+      records.push(await buildSubmittedSubstituteReceiptRecord(rootDir, row.folderPath));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      logIndexDriftWarning(row.documentNo, row.folderPath);
+    }
+  }
+  return records;
+}
+
 async function findWorkflowChildDocuments(rootDir, transactionNo) {
   if (!transactionNo) return [];
 
-  const [expenseRequests, substituteReceipts, lightweightDocuments] = await Promise.all([
-    findSubmittedExpenseRequests(rootDir),
-    findSubmittedSubstituteReceipts(rootDir),
+  const [matchingExpenseRequests, matchingSubstituteReceipts, lightweightDocuments] = await Promise.all([
+    findExpenseRequestRecordsByTransaction(rootDir, transactionNo),
+    findSubstituteReceiptRecordsByTransaction(rootDir, transactionNo),
     findLightweightWorkflowDocuments(rootDir, transactionNo),
   ]);
 
@@ -2601,20 +2741,17 @@ async function findWorkflowChildDocuments(rootDir, transactionNo) {
   // (Task 6) needs the real stored fields, so the full submission.json is
   // re-read per matching request here, the same way substitute receipts
   // already carry their full payload via `record.payload` below.
-  const matchingExpenseRequests = expenseRequests.filter((record) => record.transactionNo === transactionNo);
   const expenseRequestDocs = (
     await Promise.all(matchingExpenseRequests.map((record) => readExpenseRequestChildDocument(rootDir, record)))
   ).filter(Boolean);
 
-  const substituteReceiptDocs = substituteReceipts
-    .filter((record) => record.payload?.transactionNo === transactionNo)
-    .map((record) => ({
-      ...record.payload,
-      folderPath: record.folderPath,
-      pdfFiles: record.pdfFiles,
-      rawFiles: record.rawFiles,
-      documentKind: "substitute_receipt",
-    }));
+  const substituteReceiptDocs = matchingSubstituteReceipts.map((record) => ({
+    ...record.payload,
+    folderPath: record.folderPath,
+    pdfFiles: record.pdfFiles,
+    rawFiles: record.rawFiles,
+    documentKind: "substitute_receipt",
+  }));
 
   return [...expenseRequestDocs, ...substituteReceiptDocs, ...lightweightDocuments];
 }
@@ -2957,8 +3094,7 @@ async function syncExpenseRequestToDrive({
 }) {
   if (!requestNo) throw new Error("Missing expense request number");
 
-  const requests = await findSubmittedExpenseRequests(rootDir);
-  const request = requests.find((record) => record.requestNo === requestNo);
+  const request = await getSubmittedExpenseRequestRecord(rootDir, requestNo);
   if (!request) throw new Error("Expense request not found");
 
   let uploadResult;

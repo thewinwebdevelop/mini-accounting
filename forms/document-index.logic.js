@@ -193,6 +193,112 @@ function allocateDocumentNumber(db, { documentKind, accountingMonth, maxAttempts
   throw new Error("ไม่สามารถออกเลขที่เอกสารได้ กรุณาลองใหม่อีกครั้ง");
 }
 
+// อ่านอย่างเดียว (ไม่ INSERT ใด ๆ ทั้งสิ้น): บอกว่า "เลขถัดไป" ของ
+// (document_kind, accounting_month) นี้คืออะไร โดยอ่านจากตารางเดียวกับที่
+// allocateDocumentNumber ใช้ (document_number_allocations) จึงรับประกันว่า
+// เลขที่หน้าฟอร์มแสดงพรีวิว (ดู getNextExpenseRequestInfo และเพื่อนใน
+// forms/local-server.logic.js) จะตรงกับเลขที่จะถูกจองจริงเสมอ — ต่างจาก
+// ฟังก์ชันเดิมที่แต่ละฝั่งอ่านจากคนละแหล่ง (พรีวิวอ่านชื่อโฟลเดอร์บนดิสก์
+// ส่วนการจองจริงอ่านตารางนี้) ซึ่งเพี้ยนออกจากกันถาวรได้ทันทีที่มีการจองเลข
+// โดยไม่มีไฟล์ตามมา (เช่น เขียนไฟล์ไม่สำเร็จ) เรียกฟังก์ชันนี้ได้บ่อยเท่าที่
+// ต้องการ (ผู้ใช้เปิดฟอร์มซ้ำ, เปลี่ยนเดือนไปมา) โดยไม่กินเลขที่จริงแม้แต่เลขเดียว
+function peekNextDocumentNumber(db, { documentKind, accountingMonth } = {}) {
+  if (!DOCUMENT_KINDS.includes(documentKind)) {
+    throw new Error(`Invalid document kind: ${documentKind}`);
+  }
+  if (!/^\d{4}-\d{2}$/.test(String(accountingMonth || ""))) {
+    throw new Error("Invalid accounting month");
+  }
+
+  const prefix = DOCUMENT_KIND_PREFIXES[documentKind];
+  const { maxSequence } = db.prepare(`
+    SELECT COALESCE(MAX(sequence), 0) AS maxSequence
+    FROM document_number_allocations
+    WHERE document_kind = ? AND accounting_month = ?
+  `).get(documentKind, accountingMonth);
+  const sequence = maxSequence + 1;
+
+  return { sequence: String(sequence), documentNo: `${prefix}-${accountingMonth}-${padSequence(sequence)}` };
+}
+
+const DOCUMENT_INDEX_ROW_COLUMNS = `
+  document_kind AS documentKind,
+  document_no AS documentNo,
+  sequence,
+  accounting_month AS accountingMonth,
+  status,
+  folder_path AS folderPath,
+  transaction_no AS transactionNo,
+  workflow_template_id AS workflowTemplateId,
+  workflow_step_id AS workflowStepId,
+  created_at AS createdAt,
+  updated_at AS updatedAt
+`;
+
+// จุดค้นหาหลักของฝั่งอ่าน (read path): หาแถวเดียวด้วยกุญแจเดียวกับที่ตาราง
+// documents บังคับ UNIQUE ไว้ (document_kind, document_no) คืนเฉพาะ
+// "ตัวชี้" (folderPath เป็นหลัก) ให้ผู้เรียกไปอ่านไฟล์จริงบนดิสก์เองเสมอ —
+// ห้ามผู้เรียกเชื่อฟิลด์อื่น (โดยเฉพาะ status) จากแถวนี้แทนการอ่านไฟล์จริง
+// เพราะแถวดัชนีอาจเก่ากว่าไฟล์บนดิสก์ได้เสมอ (เช่น มีคนแก้ไฟล์ตรง ๆ นอกแอป)
+// — ไฟล์บนดิสก์เท่านั้นที่เป็นแหล่งความจริง ดัชนีเป็นแค่ทางลัดในการ "หา" ไฟล์
+function getDocumentIndexRowByNumber(db, documentKind, documentNo) {
+  if (!documentKind || !documentNo) return null;
+  return db.prepare(`
+    SELECT ${DOCUMENT_INDEX_ROW_COLUMNS}
+    FROM documents
+    WHERE document_kind = ? AND document_no = ?
+  `).get(documentKind, documentNo) || null;
+}
+
+// ค้นหาหลายแถวตามตัวกรอง ใช้แทนการวนอ่านทั้งต้นไม้ documents/ แล้วกรองด้วย
+// JavaScript ทีหลัง (เช่น listWorkflowDocuments เดิม) — ตัวกรองทุกตัวผลักลง
+// ไปเป็นเงื่อนไข SQL ตรง ๆ เพราะทุกฟิลด์ที่กรองได้เป็นคอลัมน์ของตาราง
+// documents อยู่แล้ว ผู้เรียกยังต้องอ่านไฟล์จริงต่อรายการเองเช่นเดิม (แถวนี้
+// ให้แค่ folderPath สำหรับค้นหา ไม่ใช่ข้อมูลที่เชื่อถือได้พอจะใช้แสดงผลตรง ๆ)
+function queryDocumentIndexRows(db, {
+  documentKind,
+  documentKinds,
+  transactionNo,
+  workflowTemplateId,
+  workflowStepId,
+  status,
+} = {}) {
+  const clauses = [];
+  const params = [];
+
+  if (documentKind) {
+    clauses.push("document_kind = ?");
+    params.push(documentKind);
+  } else if (Array.isArray(documentKinds) && documentKinds.length) {
+    clauses.push(`document_kind IN (${documentKinds.map(() => "?").join(", ")})`);
+    params.push(...documentKinds);
+  }
+  if (transactionNo) {
+    clauses.push("transaction_no = ?");
+    params.push(transactionNo);
+  }
+  if (workflowTemplateId) {
+    clauses.push("workflow_template_id = ?");
+    params.push(workflowTemplateId);
+  }
+  if (workflowStepId) {
+    clauses.push("workflow_step_id = ?");
+    params.push(workflowStepId);
+  }
+  if (status) {
+    clauses.push("status = ?");
+    params.push(status);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db.prepare(`
+    SELECT ${DOCUMENT_INDEX_ROW_COLUMNS}
+    FROM documents
+    ${where}
+    ORDER BY updated_at DESC
+  `).all(...params);
+}
+
 function parseSequenceFromDocumentNo(documentNo) {
   const match = String(documentNo || "").match(/(\d+)$/);
   return match ? Number.parseInt(match[1], 10) : 0;
@@ -464,6 +570,9 @@ module.exports = {
   ensureDocumentIndexSchema,
   withDocumentIndexDatabase,
   allocateDocumentNumber,
+  peekNextDocumentNumber,
+  getDocumentIndexRowByNumber,
+  queryDocumentIndexRows,
   indexDocument,
   upsertDocumentIndexRow,
   parseSequenceFromDocumentNo,

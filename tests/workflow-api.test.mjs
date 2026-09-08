@@ -89,30 +89,46 @@ test("starting a workflow transaction creates a TXN record from a template", asy
   }
 });
 
-test("getNextWorkflowTransactionInfo scans workflow transaction folders", async () => {
+// getNextWorkflowTransactionInfo used to scan documents/YYYY/MM/workflow-
+// transactions/TXN-... folder names on disk, a second source of truth
+// independent from allocateWorkflowTransactionNumber's document_number_
+// allocations ledger -- see the equivalent comment above the expense-request
+// "/next" tests in tests/local-server.logic.test.mjs. It now peeks the same
+// ledger startWorkflowTransaction allocates from, so the preview always
+// agrees with the number the very next real transaction will receive.
+test("getNextWorkflowTransactionInfo previews the exact number the next real allocation will receive", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
-    await mkdir(join(rootDir, "documents", "2026", "09", "workflow-transactions", "TXN-2026-09-0003_old"), { recursive: true });
     assert.deepEqual(await serverLogic.getNextWorkflowTransactionInfo(rootDir, "2026-09"), {
-      sequence: "4",
-      transactionNo: "TXN-2026-09-0004",
+      sequence: "1",
+      transactionNo: "TXN-2026-09-0001",
     });
-  } finally {
-    await rm(rootDir, { recursive: true, force: true });
-  }
-});
 
-test("getNextWorkflowTransactionInfo ignores unrelated directory names in the month folder", async () => {
-  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
-  try {
-    const monthDir = join(rootDir, "documents", "2026", "09", "workflow-transactions");
-    await mkdir(join(monthDir, "TXN-2026-09-0002_something"), { recursive: true });
-    await mkdir(join(monthDir, ".DS_Store-ish-folder"), { recursive: true });
-    await mkdir(join(monthDir, "REQ-2026-09-0001_unrelated-prefix"), { recursive: true });
-    assert.deepEqual(await serverLogic.getNextWorkflowTransactionInfo(rootDir, "2026-09"), {
-      sequence: "3",
-      transactionNo: "TXN-2026-09-0003",
+    const first = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ธุรกรรมแรก",
     });
+    assert.equal(first.transactionNo, "TXN-2026-09-0001");
+
+    assert.deepEqual(await serverLogic.getNextWorkflowTransactionInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      transactionNo: "TXN-2026-09-0002",
+    });
+    // Peeking repeatedly must never move the number.
+    assert.deepEqual(await serverLogic.getNextWorkflowTransactionInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      transactionNo: "TXN-2026-09-0002",
+    });
+
+    const second = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "ธุรกรรมที่สอง",
+    });
+    assert.equal(second.transactionNo, "TXN-2026-09-0002", "the real allocation must land on exactly the number just previewed");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
