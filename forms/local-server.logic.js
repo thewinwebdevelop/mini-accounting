@@ -35,6 +35,7 @@ const {
   deriveWorkflowProgress,
   formatWorkflowSummaryMarkdown,
   getDefaultWorkflowTemplates,
+  getDocumentTypeDefinition,
   normalizeDocumentWorkflowStatus,
   normalizeWorkflowTemplate,
   validateWorkflowTemplate,
@@ -2239,9 +2240,10 @@ async function listWorkflowDocumentSummaries(rootDir, filters = {}) {
   return Promise.all(records.map(async (record) => {
     const { absoluteFolderPath, ...rest } = record;
     const payload = record.payload || {};
-    const [pdfFiles, rawFiles] = await Promise.all([
+    const [pdfFiles, rawFiles, driveSync] = await Promise.all([
       listWorkflowDocumentPdfFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
       listWorkflowDocumentRawFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
+      readDriveSyncMetadataForListing(rootDir, record),
     ]);
 
     return {
@@ -2254,8 +2256,30 @@ async function listWorkflowDocumentSummaries(rootDir, filters = {}) {
       totalAmount: payload.totals?.grossAmount || "",
       pdfFiles: pdfFiles.map(omitAbsolutePathFromListedFile),
       rawFiles: rawFiles.map(omitAbsolutePathFromListedFile),
+      // The document's own Drive sync state (data/drive-sync.json, written by
+      // syncWorkflowDocumentToDrive), for the row's status badge and button.
+      // syncError is the Thai reason, so a failure is still explained after
+      // the page is reloaded.
+      syncStatus: driveSync?.syncStatus || "not_synced",
+      driveFolderUrl: driveSync?.driveFolderUrl || "",
+      drivePath: driveSync?.drivePath || "",
+      syncedAt: driveSync?.syncedAt || "",
+      syncError: driveSync?.syncStatus === "sync_failed" ? describeDriveSyncError(driveSync.error) : "",
     };
   }));
+}
+
+// One unreadable (hand-edited, truncated) drive-sync.json must not take the
+// whole list page down with it: it degrades to "not synced" for that one row
+// and is logged, the same "degrade, don't crash" contract
+// readExpenseRequestChildDocument uses.
+async function readDriveSyncMetadataForListing(rootDir, record) {
+  try {
+    return await readDriveSyncMetadata(rootDir, record.folderPath);
+  } catch (error) {
+    console.error(`ไม่สามารถอ่านสถานะซิงก์ Google Drive ของ ${record.documentNo} ได้: ${error.message}`);
+    return null;
+  }
 }
 
 async function getWorkflowDocument(rootDir, documentKind, documentNo) {
@@ -3273,29 +3297,237 @@ async function syncSubstituteReceiptToDrive({
   return metadata;
 }
 
-// The syncExpenseRequestToDrive()/syncSubstituteReceiptToDrive() shape
-// (inject a stubbable driveUploader, write synced/sync_failed metadata)
-// applied to a workflow transaction folder instead of a document folder —
-// with one deliberate difference: those two throw past themselves after
-// recording a failure, but this one does not. A workflow transaction's Drive
-// sync can run automatically as part of completeWorkflowTransaction, and a
-// missing/expired Drive connection there must degrade to a clear
-// sync_failed status the transaction page can show, never an unhandled
-// completion failure. The same function serves both the automatic path
-// (called internally by completeWorkflowTransaction) and the manual "sync
-// Drive" button — there is only one implementation.
+// Turns an uploader/Drive error into the Thai sentence a user reads. The two
+// errors a user can fix themselves -- no Google Drive config, or never logged
+// in (the state this app ships in: uploadFolderToGoogleDrive throws these
+// before it makes any network call) -- get a Thai explanation with the way
+// out; anything else is labelled as a Google Drive error. The original text
+// is always kept so the failure can still be diagnosed. An error that is
+// already Thai (this file's own validation messages) passes through as is.
+const THAI_CHARACTER_PATTERN = /[\u0E00-\u0E7F]/;
+
+function describeDriveSyncError(rawMessage) {
+  const raw = String(rawMessage || "").trim();
+  if (!raw) return "ซิงก์ Google Drive ไม่สำเร็จ";
+  if (/not configured/i.test(raw)) {
+    return `ยังไม่ได้ตั้งค่า Google Drive — ไปที่เมนู "ตั้งค่า Google Drive" ใส่ Client ID/Secret แล้วเข้าสู่ระบบ (${raw})`;
+  }
+  if (/not authenticated/i.test(raw)) {
+    return `ยังไม่ได้เข้าสู่ระบบ Google Drive — ไปที่เมนู "ตั้งค่า Google Drive" แล้วกดเข้าสู่ระบบ (${raw})`;
+  }
+  if (THAI_CHARACTER_PATTERN.test(raw)) return raw;
+  return `เกิดข้อผิดพลาดจาก Google Drive: ${raw}`;
+}
+
+const WORKFLOW_DOCUMENT_DRIVE_SYNC_REQUIRES_COMPLETED_MESSAGE = "ต้องกดเสร็จสิ้นเอกสารก่อน จึงจะซิงก์ Google Drive ได้";
+
+// The standalone Drive sync for the five lightweight kinds (purchase_order,
+// payment_voucher, cash_spend_declaration, payee_acknowledgement,
+// goods_receipt), in the same shape as syncExpenseRequestToDrive/
+// syncSubstituteReceiptToDrive above: a stubbable driveUploader, the result
+// written to the document's own data/drive-sync.json, and a failure recorded
+// there as sync_failed *before* it is re-thrown -- the route turns that into a
+// Thai 400 naming the document, and syncWorkflowTransactionToDrive turns it
+// into that document's per-document entry.
 //
-// Metadata is written directly onto transaction.driveSync (persisted via
-// persistWorkflowTransaction into workflow-transaction.json), not into a
-// separate data/drive-sync.json file the way the document-level helpers do,
-// because the transaction page renders driveSync straight off the
-// transaction record it already fetched.
-async function syncWorkflowTransactionToDrive({
+// Only a completed document can sync. Completed is the one state
+// saveWorkflowDocument refuses to edit, so what reaches Drive cannot go stale
+// behind the user's back; a draft can still change, and re-uploading a changed
+// one would put a second copy of every file in Drive (the uploader is not
+// idempotent -- see syncWorkflowChildDocumentToDrive below).
+async function syncWorkflowDocumentToDrive({
   rootDir,
-  transactionNo,
+  documentKind,
+  documentNo,
   driveUploader = uploadFolderToGoogleDrive,
   now = () => new Date().toISOString(),
 }) {
+  if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(documentKind)) throw new Error("ประเภทเอกสารไม่ถูกต้อง");
+  if (!documentNo) throw new Error("ไม่มีเลขที่เอกสาร");
+
+  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+  if (!record) throw new Error("ไม่พบเอกสาร");
+  if (record.status !== "completed") throw new Error(WORKFLOW_DOCUMENT_DRIVE_SYNC_REQUIRES_COMPLETED_MESSAGE);
+
+  // Defense in depth, as on every other path that turns a stored folderPath
+  // into a filesystem location: the uploader reads rootDir/folderPath
+  // recursively, so it must never be pointed outside rootDir.
+  assertPathWithinDirectory(rootDir, path.join(rootDir, record.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+
+  let uploadResult;
+  try {
+    uploadResult = await driveUploader({ rootDir, folderPath: record.folderPath });
+  } catch (error) {
+    await writeDriveSyncMetadata(rootDir, record.folderPath, {
+      documentKind,
+      documentNo,
+      syncStatus: "sync_failed",
+      error: error.message || "Google Drive sync failed",
+      syncedAt: "",
+      updatedAt: now(),
+    });
+    throw error;
+  }
+
+  const syncedAt = now();
+  const metadata = {
+    documentKind,
+    documentNo,
+    syncStatus: "synced",
+    driveFolderId: uploadResult.driveFolderId,
+    driveFolderUrl: uploadResult.driveFolderUrl,
+    drivePath: uploadResult.drivePath,
+    uploadedFileCount: uploadResult.uploadedFileCount,
+    syncedAt,
+    updatedAt: syncedAt,
+  };
+  await writeDriveSyncMetadata(rootDir, record.folderPath, metadata);
+
+  return metadata;
+}
+
+// documentKind -> that document's OWN standalone Drive sync action. The
+// workflow never uploads a child document's folder itself: it dispatches
+// here, so a child synced from the workflow is uploaded, recorded and stored
+// exactly as if the user had pressed that document's own sync button (same
+// state, same action). Each entry only adapts the shared { documentNo } to the
+// identifier its action takes. Covers every kind DOCUMENT_TYPE_DEFINITIONS
+// declares (asserted in tests/workflow-api.test.mjs).
+const DOCUMENT_DRIVE_SYNC_ACTIONS = Object.freeze({
+  expense_request: ({ documentNo, ...options }) => syncExpenseRequestToDrive({ ...options, requestNo: documentNo }),
+  substitute_receipt: ({ documentNo, ...options }) => syncSubstituteReceiptToDrive({ ...options, receiptNo: documentNo }),
+  ...Object.fromEntries(LIGHTWEIGHT_DOCUMENT_KINDS.map((documentKind) => [
+    documentKind,
+    (options) => syncWorkflowDocumentToDrive({ ...options, documentKind }),
+  ])),
+});
+
+const WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE = "ยังไม่ได้ส่ง — จะส่งเมื่อเอกสารย่อยขึ้น Google Drive ครบทุกฉบับ";
+
+function driveSyncDocumentName(documentKind, documentNo) {
+  return `${getDocumentTypeDefinition(documentKind)?.label || documentKind} ${documentNo || ""}`.trim();
+}
+
+// One child document's turn in the workflow sync. Never throws: a failure
+// becomes this child's own sync_failed entry, so one bad document never stops
+// the others from getting their turn.
+//
+// A child whose own sync record already says "synced" (the user pressed its
+// own button earlier, or an earlier workflow sync already got it there) is
+// NOT uploaded again: uploadFolderToGoogleDrive reuses Drive folders but
+// creates a brand-new Drive file for every local file on every call -- it
+// never looks for an existing file (tests/google-drive.logic.test.mjs pins
+// this down) -- so a second upload would put a duplicate of every file in
+// Drive. Anything else (never synced, sync_failed, or an expense request
+// edited after syncing, which its own save marks needs_resync) is sent
+// through the child's own action.
+async function syncWorkflowChildDocumentToDrive(rootDir, doc, { driveUploader, now }) {
+  const { documentNo } = normalizeDocumentWorkflowStatus(doc);
+  const entry = {
+    documentKind: doc.documentKind,
+    documentNo: documentNo || "",
+    workflowStepId: doc.workflowStepId || "",
+  };
+
+  try {
+    const action = DOCUMENT_DRIVE_SYNC_ACTIONS[doc.documentKind];
+    if (!action) throw new Error(`ไม่รองรับการซิงก์ Google Drive สำหรับเอกสารประเภท ${doc.documentKind}`);
+
+    const ownRecord = await readDriveSyncMetadata(rootDir, doc.folderPath);
+    const alreadySynced = ownRecord?.syncStatus === "synced";
+    const metadata = alreadySynced ? ownRecord : await action({ rootDir, documentNo, driveUploader, now });
+
+    return {
+      ...entry,
+      syncStatus: "synced",
+      alreadySynced,
+      driveFolderUrl: metadata.driveFolderUrl || "",
+      drivePath: metadata.drivePath || "",
+      syncedAt: metadata.syncedAt || "",
+    };
+  } catch (error) {
+    const raw = error.message || "Google Drive sync failed";
+    return { ...entry, syncStatus: "sync_failed", error: raw, message: describeDriveSyncError(raw) };
+  }
+}
+
+// The transaction folder's own result from an earlier sync, if any. A
+// transaction synced before child documents were included recorded only its
+// own folder's result, flat on driveSync -- that folder is in Drive already
+// and must not be uploaded a second time either.
+function previousWorkflowTransactionFolderSync(driveSync) {
+  if (!driveSync) return null;
+  if (driveSync.transactionFolder) return driveSync.transactionFolder;
+  if (driveSync.syncStatus !== "synced") return null;
+  return {
+    syncStatus: "synced",
+    driveFolderId: driveSync.driveFolderId || "",
+    driveFolderUrl: driveSync.driveFolderUrl || "",
+    drivePath: driveSync.drivePath || "",
+    uploadedFileCount: driveSync.uploadedFileCount || 0,
+    syncedAt: driveSync.syncedAt || "",
+  };
+}
+
+async function uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now }) {
+  try {
+    const uploadResult = await driveUploader({ rootDir, folderPath: transaction.folderPath });
+    return {
+      syncStatus: "synced",
+      alreadySynced: false,
+      driveFolderId: uploadResult.driveFolderId || "",
+      driveFolderUrl: uploadResult.driveFolderUrl || "",
+      drivePath: uploadResult.drivePath || "",
+      uploadedFileCount: uploadResult.uploadedFileCount || 0,
+      syncedAt: now(),
+    };
+  } catch (error) {
+    const raw = error.message || "Google Drive sync failed";
+    return { syncStatus: "sync_failed", error: raw, message: describeDriveSyncError(raw) };
+  }
+}
+
+// Syncing a completed workflow is meant to put the whole set of paperwork for
+// one purchase into Drive, not just its cover sheet. So it:
+//
+//   1. sends every child document, in template step order, through that
+//      document's OWN standalone sync action (DOCUMENT_DRIVE_SYNC_ACTIONS) --
+//      there is no second upload path for child documents in this function.
+//      Each child lands where its own button would put it (its own folder,
+//      mirrored under the Drive base path the way it is laid out on disk), so
+//      syncing from the workflow and from the document can never put one
+//      document in two places. Children go one at a time, not in parallel:
+//      ensureDrivePath's find-then-create would otherwise race and create
+//      duplicate year/month folders.
+//   2. then, only once every child is in Drive, uploads the transaction's own
+//      folder (packet PDF + summary). Its workflow-summary.md is rewritten
+//      just before that upload to list each child's Drive folder link, so the
+//      transaction folder in Drive is the index to its paperwork. Holding it
+//      back while a child is missing means the cover sheet never reaches
+//      Drive without the paperwork it describes -- and, because the uploader
+//      is not idempotent, it goes up exactly once, with a complete index.
+//
+// A partial failure is sync_failed, never plain success: `documents` has one
+// entry per child (synced / sync_failed with its own Thai `message`,
+// `alreadySynced` when it was not uploaded again), `transactionFolder` says
+// whether the folder went up, is waiting for the children, or failed, and
+// `message` names, in Thai, exactly which documents did not make it. `error`
+// stays the first underlying error. A retry skips everything already in Drive
+// (each child's own sync record, and transactionFolder here), so it
+// re-attempts only what failed.
+//
+// Never throws past itself for an upload failure (only for a transaction that
+// does not exist or is not completed): it also runs automatically inside
+// completeWorkflowTransaction, where a missing Drive connection must degrade
+// to a status the page can show, not a failed completion. There is no Google
+// Sheets write here or anywhere in the workflow layer (decision D6): each
+// child writes its own Sheets row, and a workflow row would double-count the
+// same money.
+//
+// The result is stored on transaction.driveSync (persisted via
+// persistWorkflowTransaction into workflow-transaction.json), because the
+// transaction page renders driveSync straight off the transaction record.
+async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUploader, now }) {
   if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
 
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
@@ -3305,51 +3537,118 @@ async function syncWorkflowTransactionToDrive({
   }
 
   const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
+  const stepOrder = new Map((transaction.steps || []).map((step, index) => [step.stepId, index]));
+  const orderedChildren = [...childDocuments].sort((a, b) => (
+    (stepOrder.get(a.workflowStepId) ?? Number.MAX_SAFE_INTEGER) - (stepOrder.get(b.workflowStepId) ?? Number.MAX_SAFE_INTEGER)
+  ));
 
-  let uploadResult;
-  try {
-    uploadResult = await driveUploader({
-      rootDir,
-      folderPath: transaction.folderPath,
-    });
-  } catch (error) {
-    const failedAt = now();
-    const metadata = {
-      syncStatus: "sync_failed",
-      error: error.message || "Google Drive sync failed",
-      updatedAt: failedAt,
-    };
+  const documents = [];
+  for (const doc of orderedChildren) {
+    documents.push(await syncWorkflowChildDocumentToDrive(rootDir, doc, { driveUploader, now }));
+  }
+  const missingDocuments = documents.filter((doc) => doc.syncStatus !== "synced");
+
+  const previousFolder = previousWorkflowTransactionFolderSync(transaction.driveSync);
+  let transactionFolder;
+  if (previousFolder?.syncStatus === "synced") {
+    transactionFolder = { ...previousFolder, alreadySynced: true };
+  } else if (missingDocuments.length) {
+    transactionFolder = { syncStatus: "waiting_for_documents", message: WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE };
+  } else {
+    // Persisted first so the workflow-summary.md this rewrites -- and the
+    // upload right after carries -- already links every child's Drive folder.
     await persistWorkflowTransaction(
       rootDir,
-      { ...transaction, driveSync: metadata, updatedAt: failedAt },
+      { ...transaction, driveSync: { ...(transaction.driveSync || {}), documents }, updatedAt: now() },
       childDocuments,
     );
-    return metadata;
+    transactionFolder = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
   }
 
-  const syncedAt = now();
+  const failures = [
+    ...missingDocuments.map((doc) => ({ name: driveSyncDocumentName(doc.documentKind, doc.documentNo), error: doc.error, message: doc.message })),
+    ...(transactionFolder.syncStatus === "sync_failed"
+      ? [{ name: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo}`, error: transactionFolder.error, message: transactionFolder.message }]
+      : []),
+  ];
+  const allSynced = failures.length === 0 && transactionFolder.syncStatus === "synced";
+  const syncedDocumentCount = documents.length - missingDocuments.length;
+
+  let failureSummary = {};
+  if (!allSynced) {
+    const lines = [
+      `สำเร็จ ${syncedDocumentCount} จาก ${documents.length} เอกสาร ยังไม่สำเร็จ:`,
+      ...failures.map((failure) => `- ${failure.name}: ${failure.message}`),
+    ];
+    if (transactionFolder.syncStatus === "waiting_for_documents") {
+      lines.push(`- โฟลเดอร์ธุรกรรม ${transaction.transactionNo} (ชุดรวม PDF และสรุป): ${WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE}`);
+    }
+    failureSummary = { error: failures[0].error, message: lines.join("\n") };
+  }
+
+  const finishedAt = now();
   const metadata = {
-    syncStatus: "synced",
-    driveFolderId: uploadResult.driveFolderId,
-    driveFolderUrl: uploadResult.driveFolderUrl,
-    drivePath: uploadResult.drivePath,
-    uploadedFileCount: uploadResult.uploadedFileCount,
-    syncedAt,
-    updatedAt: syncedAt,
+    syncStatus: allSynced ? "synced" : "sync_failed",
+    ...failureSummary,
+    syncedDocumentCount,
+    totalDocumentCount: documents.length,
+    documents,
+    transactionFolder,
+    // The transaction folder's own Drive link stays where the page and any
+    // earlier reader of driveSync already look for it.
+    ...(transactionFolder.syncStatus === "synced"
+      ? {
+        driveFolderId: transactionFolder.driveFolderId,
+        driveFolderUrl: transactionFolder.driveFolderUrl,
+        drivePath: transactionFolder.drivePath,
+        uploadedFileCount: transactionFolder.uploadedFileCount,
+      }
+      : {}),
+    syncedAt: allSynced ? finishedAt : "",
+    updatedAt: finishedAt,
   };
+
   await persistWorkflowTransaction(
     rootDir,
-    { ...transaction, driveSync: metadata, updatedAt: syncedAt },
+    { ...transaction, driveSync: metadata, updatedAt: finishedAt },
     childDocuments,
   );
 
   return metadata;
 }
 
+// One sync per transaction at a time. The uploader is not idempotent, so two
+// overlapping runs for the same transaction (a double-click, the manual button
+// racing completion's automatic sync, a replayed request) would each upload
+// the same not-yet-synced documents and duplicate them in Drive. A call that
+// arrives while one is already running gets that run's result instead.
+const workflowTransactionDriveSyncsInFlight = new Map();
+
+async function syncWorkflowTransactionToDrive({
+  rootDir,
+  transactionNo,
+  driveUploader = uploadFolderToGoogleDrive,
+  now = () => new Date().toISOString(),
+}) {
+  const key = `${path.resolve(rootDir)}\n${transactionNo}`;
+  const running = workflowTransactionDriveSyncsInFlight.get(key);
+  if (running) return running;
+
+  const run = runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUploader, now });
+  workflowTransactionDriveSyncsInFlight.set(key, run);
+  try {
+    return await run;
+  } finally {
+    workflowTransactionDriveSyncsInFlight.delete(key);
+  }
+}
+
 module.exports = {
   approveExpenseRequest,
   approveSubstituteReceipt,
   assertPathWithinDirectory,
+  describeDriveSyncError,
+  DOCUMENT_DRIVE_SYNC_ACTIONS,
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,
@@ -3397,6 +3696,7 @@ module.exports = {
   startWorkflowTransaction,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
+  syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
   writeWorkflowDocumentFiles,
 };

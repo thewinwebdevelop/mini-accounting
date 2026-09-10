@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import serverLogic from "../forms/local-server.logic.js";
+import workflowDocumentLogic from "../forms/workflow-document.logic.js";
 
 // Binding a fixed port let two runs of this suite collide. Bind port 0 (the OS
 // picks a free one) and read the actually-assigned port back out of the
@@ -687,5 +688,200 @@ test("parseWorkflowDocumentListFilters normalises accepted values and throws on 
   }
   for (const query of ["documentKind=expense_request", "accountingMonth=2026-00", "status=received", "transactionNo=REQ-2026-09-0001"]) {
     assert.throws(() => parse(query), THAI_TEXT, query);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Standalone Google Drive sync for the five lightweight kinds. Expense
+// requests and substitute receipts have always had their own
+// POST .../sync-drive; these five had no path to Drive at all. Every test
+// below is generated for ALL five kinds -- an earlier task on this branch
+// shipped a six-entry table with one entry asserted and five silently wrong.
+// No test here touches the network: the uploader is injected and stubbed, and
+// the HTTP test runs against a rootDir with no Google Drive config, where the
+// real uploader fails before it ever calls fetch.
+// ---------------------------------------------------------------------------
+const DRIVE_SYNC_KINDS = workflowDocumentLogic.LIGHTWEIGHT_DOCUMENT_KINDS;
+
+async function createLightweightDocument(rootDir, documentKind, { complete = true } = {}) {
+  const { documentNo } = await serverLogic.getNextWorkflowDocumentInfo(rootDir, documentKind, "2026-09");
+  const payload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+    documentKind,
+    documentNo,
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    title: `ทดสอบซิงก์ ${documentKind}`,
+    requesterName: "คุณต้า",
+    payeeName: "ร้านค้าตัวอย่าง",
+    businessPurpose: "ทดสอบซิงก์ Google Drive",
+    lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+  });
+  await serverLogic.saveWorkflowDocument({ rootDir, payload });
+  if (complete) {
+    await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy: "บัญชี" });
+  }
+  return serverLogic.getWorkflowDocument(rootDir, documentKind, documentNo);
+}
+
+async function readOwnDriveSyncMetadata(rootDir, folderPath) {
+  return JSON.parse(await readFile(join(rootDir, folderPath, "data", "drive-sync.json"), "utf8"));
+}
+
+for (const documentKind of DRIVE_SYNC_KINDS) {
+  test(`${documentKind}: syncWorkflowDocumentToDrive uploads the document's own folder through the injected uploader and records its own sync metadata`, async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-doc-drive-"));
+    try {
+      const record = await createLightweightDocument(rootDir, documentKind);
+      const uploads = [];
+      const result = await serverLogic.syncWorkflowDocumentToDrive({
+        rootDir,
+        documentKind,
+        documentNo: record.documentNo,
+        now: () => "2026-09-11T10:00:00.000Z",
+        driveUploader: async (options) => {
+          uploads.push(options);
+          return {
+            driveFolderId: `folder-${documentKind}`,
+            driveFolderUrl: `https://drive.google.com/drive/folders/folder-${documentKind}`,
+            drivePath: `base/2026/09/${documentKind}/${record.documentNo}`,
+            uploadedFileCount: 3,
+          };
+        },
+      });
+
+      assert.deepEqual(uploads, [{ rootDir, folderPath: record.folderPath }], "must upload exactly this document's own folder, once");
+      assert.equal(result.syncStatus, "synced");
+      assert.equal(result.documentKind, documentKind);
+      assert.equal(result.documentNo, record.documentNo);
+      assert.equal(result.driveFolderId, `folder-${documentKind}`);
+      assert.equal(result.driveFolderUrl, `https://drive.google.com/drive/folders/folder-${documentKind}`);
+      assert.equal(result.drivePath, `base/2026/09/${documentKind}/${record.documentNo}`);
+      assert.equal(result.uploadedFileCount, 3);
+      assert.equal(result.syncedAt, "2026-09-11T10:00:00.000Z");
+      assert.deepEqual(await readOwnDriveSyncMetadata(rootDir, record.folderPath), result, "the document's own data/drive-sync.json must hold what was returned");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${documentKind}: a failed upload is recorded on the document as sync_failed and reported to the caller, never swallowed`, async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-doc-drive-"));
+    try {
+      const record = await createLightweightDocument(rootDir, documentKind);
+      await assert.rejects(
+        () => serverLogic.syncWorkflowDocumentToDrive({
+          rootDir,
+          documentKind,
+          documentNo: record.documentNo,
+          now: () => "2026-09-11T10:00:00.000Z",
+          driveUploader: async () => { throw new Error("Google Drive is not configured"); },
+        }),
+        /Google Drive is not configured/,
+      );
+
+      const stored = await readOwnDriveSyncMetadata(rootDir, record.folderPath);
+      assert.equal(stored.syncStatus, "sync_failed");
+      assert.equal(stored.error, "Google Drive is not configured");
+      assert.equal(stored.documentKind, documentKind);
+      assert.equal(stored.documentNo, record.documentNo);
+      assert.equal(stored.updatedAt, "2026-09-11T10:00:00.000Z");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${documentKind}: a document that is not completed yet refuses to sync, in Thai, without calling the uploader`, async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-doc-drive-"));
+    try {
+      const record = await createLightweightDocument(rootDir, documentKind, { complete: false });
+      let uploaderCalls = 0;
+      await assert.rejects(
+        () => serverLogic.syncWorkflowDocumentToDrive({
+          rootDir,
+          documentKind,
+          documentNo: record.documentNo,
+          driveUploader: async () => { uploaderCalls += 1; return {}; },
+        }),
+        /เสร็จสิ้น/,
+      );
+      assert.equal(uploaderCalls, 0);
+      assert.equal(existsSync(join(rootDir, record.folderPath, "data", "drive-sync.json")), false, "a refused sync must not write sync metadata");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("syncWorkflowDocumentToDrive refuses a kind that is not one of the five lightweight kinds", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-doc-drive-"));
+  try {
+    await assert.rejects(
+      () => serverLogic.syncWorkflowDocumentToDrive({ rootDir, documentKind: "expense_request", documentNo: "REQ-2026-09-0001", driveUploader: async () => ({}) }),
+      /ประเภทเอกสารไม่ถูกต้อง/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("describeDriveSyncError turns the uploader's missing-credential errors into Thai, keeping the original text for diagnosis", () => {
+  const notConfigured = serverLogic.describeDriveSyncError("Google Drive is not configured");
+  assert.match(notConfigured, /ยังไม่ได้ตั้งค่า Google Drive/);
+  assert.match(notConfigured, /Google Drive is not configured/);
+
+  const notAuthenticated = serverLogic.describeDriveSyncError("Google Drive is not authenticated. Open /google-drive and login first.");
+  assert.match(notAuthenticated, /ยังไม่ได้เข้าสู่ระบบ Google Drive/);
+
+  assert.match(serverLogic.describeDriveSyncError("quota exceeded"), /Google Drive.*quota exceeded/);
+  assert.equal(serverLogic.describeDriveSyncError("ไม่พบเอกสาร"), "ไม่พบเอกสาร", "an error that is already Thai is passed through unchanged");
+});
+
+test("POST /api/workflow-documents/:kind/:documentNo/sync-drive exists for every lightweight kind; with no Google Drive credentials it fails with a Thai message naming the document", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-doc-drive-http-"));
+  const child = spawnLocalServer(rootDir);
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    for (const documentKind of DRIVE_SYNC_KINDS) {
+      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: purchaseOrderFormData({ documentKind, title: `ทดสอบซิงก์ ${documentKind}` }),
+      });
+      const syncRoute = `/api/workflow-documents/${documentKind}/${created.documentNo}/sync-drive`;
+
+      const draftAttempt = await requestJson(baseUrl, syncRoute, { method: "POST" });
+      assert.equal(draftAttempt.status, 400, `${documentKind}: a draft must be refused`);
+      assert.match(draftAttempt.body.error, /เสร็จสิ้น/, `${documentKind}: the refusal must say, in Thai, that the document must be completed first`);
+
+      await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "คุณต้า" }),
+      });
+
+      const beforeSync = await requestJsonOk(baseUrl, `/api/workflow-documents?documentKind=${documentKind}`);
+      assert.equal(beforeSync.documents.find((doc) => doc.documentNo === created.documentNo).syncStatus, "not_synced", documentKind);
+
+      const attempt = await requestJson(baseUrl, syncRoute, { method: "POST" });
+      assert.equal(attempt.status, 400, `${documentKind}: a failed upload must not answer 200`);
+      assert.ok(attempt.body.error.includes(created.documentNo), `${documentKind}: the error must name the document`);
+      assert.match(attempt.body.error, /ยังไม่ได้ตั้งค่า Google Drive/, `${documentKind}: the error must say, in Thai, why`);
+      assert.doesNotMatch(JSON.stringify(attempt.body), /absolutePath|absoluteFolderPath/);
+      assert.equal(JSON.stringify(attempt.body).includes(rootDir), false, `${documentKind}: must not leak the server's filesystem path`);
+
+      const afterSync = await requestJsonOk(baseUrl, `/api/workflow-documents?documentKind=${documentKind}`);
+      const listed = afterSync.documents.find((doc) => doc.documentNo === created.documentNo);
+      assert.equal(listed.syncStatus, "sync_failed", `${documentKind}: the failure must be recorded on the document`);
+      assert.match(listed.syncError, /ยังไม่ได้ตั้งค่า Google Drive/, `${documentKind}: the list must carry the Thai reason`);
+      assert.equal(JSON.stringify(listed).includes(rootDir), false, `${documentKind}: the list must not leak the server's filesystem path`);
+    }
+
+    const wrongKind = await requestJson(baseUrl, "/api/workflow-documents/expense_request/REQ-2026-09-0001/sync-drive", { method: "POST" });
+    assert.equal(wrongKind.status, 400);
+    assert.match(wrongKind.body.error, /ประเภทเอกสารไม่ถูกต้อง/);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
   }
 });

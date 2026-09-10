@@ -718,13 +718,91 @@ const DRIVE_SYNC_STATUS_LABELS = {
   sync_failed: "ซิงก์ Google Drive ไม่สำเร็จ",
 };
 
+// A failed sync's `message` (set by syncWorkflowTransactionToDrive) names, in
+// Thai, every document that did not make it into Drive and why; `error` is
+// only the first underlying error, kept as the fallback for an older record.
 function driveSyncStatusText(driveSync) {
   if (!driveSync || !driveSync.syncStatus) return "ยังไม่ได้ซิงก์ Google Drive";
   const label = DRIVE_SYNC_STATUS_LABELS[driveSync.syncStatus] || driveSync.syncStatus;
-  if (driveSync.syncStatus === "sync_failed" && driveSync.error) {
-    return `${label}: ${driveSync.error}`;
+  if (driveSync.syncStatus === "sync_failed" && (driveSync.message || driveSync.error)) {
+    return `${label}: ${driveSync.message || driveSync.error}`;
   }
   return label;
+}
+
+const DRIVE_SYNC_ITEM_STATES = {
+  synced: { text: "ขึ้น Google Drive แล้ว", className: "completed" },
+  already_synced: { text: "มีใน Google Drive อยู่แล้ว (ไม่อัปโหลดซ้ำ)", className: "completed" },
+  sync_failed: { text: "ไม่สำเร็จ", className: "sync_failed" },
+  waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
+};
+
+function driveSyncItemState(entry) {
+  if (entry.syncStatus === "synced") return entry.alreadySynced ? "already_synced" : "synced";
+  return entry.syncStatus;
+}
+
+function driveSyncItem({ title, state, url, detail }) {
+  const { text, className } = DRIVE_SYNC_ITEM_STATES[state] || { text: state || "-", className: "" };
+  const item = document.createElement("li");
+  item.className = "drive-sync-document";
+
+  const heading = document.createElement("span");
+  heading.className = "title";
+  heading.textContent = title;
+  item.appendChild(heading);
+
+  const status = document.createElement("span");
+  status.className = `status ${className}`.trim();
+  status.textContent = text;
+  item.appendChild(status);
+
+  if (url) {
+    const link = document.createElement("a");
+    link.className = "file-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = "เปิดใน Google Drive";
+    item.appendChild(link);
+  }
+
+  if (detail) {
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.textContent = detail;
+    item.appendChild(note);
+  }
+  return item;
+}
+
+// One row per child document (in step order, as the server reports them)
+// plus the transaction's own folder, so a user can see exactly which document
+// did not make it into Drive and why, and open the ones that did.
+function renderDriveSyncDocuments(list, transaction) {
+  if (!list) return;
+  list.replaceChildren();
+  const driveSync = transaction.driveSync || {};
+  const documents = Array.isArray(driveSync.documents) ? driveSync.documents : null;
+  list.hidden = !documents;
+  if (!documents) return;
+
+  for (const entry of documents) {
+    list.appendChild(driveSyncItem({
+      title: `${documentKindLabelFor(entry.documentKind)} ${entry.documentNo || "-"}`,
+      state: driveSyncItemState(entry),
+      url: entry.syncStatus === "synced" ? entry.driveFolderUrl : "",
+      detail: entry.syncStatus === "sync_failed" ? (entry.message || entry.error) : "",
+    }));
+  }
+
+  const folder = driveSync.transactionFolder || {};
+  list.appendChild(driveSyncItem({
+    title: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo || "-"} (ชุดรวม PDF และสรุป)`,
+    state: driveSyncItemState(folder),
+    url: folder.syncStatus === "synced" ? folder.driveFolderUrl : "",
+    detail: folder.syncStatus === "sync_failed" ? (folder.message || folder.error) : "",
+  }));
 }
 
 // Shown only once the transaction is completed (there is nothing to sync
@@ -733,23 +811,31 @@ function driveSyncStatusText(driveSync) {
 // every step is done, well before completeWorkflowTransaction has actually
 // run. Driven by the template snapshot's syncGoogleDrive toggle — captured
 // on the transaction at start time, not looked up live — and the
-// transaction's own driveSync state: toggle on shows the auto-sync result as
-// text with no button; toggle off shows the manual sync button. There is no
-// Sheets sync UI at all (decision D6): no syncGoogleSheets toggle, no
-// sheetSync field, no syncSheetsButton/sheetSyncStatus element.
-function renderDriveSyncSection(section, statusEl, button, transaction) {
+// transaction's own driveSync state: toggle off always shows the manual sync
+// button; toggle on already synced automatically at completion, so the button
+// appears only when a sync did not get everything into Drive — as the retry,
+// which re-attempts only what failed. There is no Sheets sync UI at all
+// (decision D6): no syncGoogleSheets toggle, no sheetSync field, no
+// syncSheetsButton/sheetSyncStatus element.
+function renderDriveSyncSection(section, statusEl, button, transaction, documentsList) {
   if (!section) return;
   const isCompleted = !!transaction.completedAt;
   section.hidden = !isCompleted;
   if (!isCompleted) {
     if (button) button.hidden = true;
+    if (documentsList) documentsList.hidden = true;
     return;
   }
 
   if (statusEl) statusEl.textContent = driveSyncStatusText(transaction.driveSync);
+  renderDriveSyncDocuments(documentsList, transaction);
 
   const syncGoogleDrive = !!transaction.templateSnapshot?.syncGoogleDrive;
-  if (button) button.hidden = syncGoogleDrive;
+  const failed = transaction.driveSync?.syncStatus === "sync_failed";
+  if (button) {
+    button.hidden = syncGoogleDrive && !failed;
+    button.textContent = failed ? "ลองซิงก์อีกครั้ง (เฉพาะรายการที่ยังไม่สำเร็จ)" : "ซิงก์ Google Drive";
+  }
 }
 
 function renderTransaction(transaction, childDocuments = []) {
@@ -765,6 +851,7 @@ function renderTransaction(transaction, childDocuments = []) {
     document.querySelector("#driveSyncStatus"),
     document.querySelector("#syncDriveButton"),
     transaction,
+    document.querySelector("#driveSyncDocuments"),
   );
   renderChecklist(
     document.querySelector("#documentChecklist"),
@@ -889,6 +976,10 @@ function initTransactionPage() {
     syncDriveButton.addEventListener("click", () => {
       if (syncDriveButton.disabled) return;
       clearStatusBox(statusBox);
+      // Disabled while the request runs: a second press would start a second
+      // upload of the same files (the server also refuses to run two syncs of
+      // one transaction at once).
+      syncDriveButton.disabled = true;
       syncTransactionDrive()
         .then((driveSync) => {
           if (driveSync.syncStatus === "sync_failed") {
@@ -897,7 +988,8 @@ function initTransactionPage() {
             setStatusBox(statusBox, "ซิงก์ Google Drive เรียบร้อยแล้ว", "success");
           }
         })
-        .catch((error) => setStatusBox(statusBox, error.message, "error"));
+        .catch((error) => setStatusBox(statusBox, error.message, "error"))
+        .finally(() => { syncDriveButton.disabled = false; });
     });
   }
 

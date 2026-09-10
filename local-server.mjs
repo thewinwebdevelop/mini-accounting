@@ -57,8 +57,10 @@ const {
   startWorkflowTransaction,
   receiveSubstituteReceiptStock,
   getSubmittedExpenseRequest,
+  describeDriveSyncError,
   syncExpenseRequestToDrive,
   syncSubstituteReceiptToDrive,
+  syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
 } = require("./forms/local-server.logic.js");
 const {
@@ -625,6 +627,24 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot complete workflow document",
+    });
+  }
+}
+
+// A lightweight document's own "Sync to Google Drive" button on the
+// /workflow-documents list page: the same per-document route expense requests
+// and substitute receipts already have. syncWorkflowDocumentToDrive records a
+// failed upload on the document before re-throwing it; here it becomes a Thai
+// 400 that names the document and says why (with no Google Drive credentials:
+// "not configured"), so a failure is never an unhandled error or a silent
+// no-op. The response carries only Drive-side fields, never a local path.
+async function handleWorkflowDocumentDriveSync(documentKind, documentNo, response) {
+  try {
+    const result = await syncWorkflowDocumentToDrive({ rootDir, documentKind, documentNo });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, {
+      error: `ซิงก์ ${documentNo || "เอกสาร"} ขึ้น Google Drive ไม่สำเร็จ: ${describeDriveSyncError(error.message)}`,
     });
   }
 }
@@ -1625,6 +1645,13 @@ const server = createServer(async (request, response) => {
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace("/complete", "");
     const [documentKind, documentNo] = remainder.split("/");
     await handleWorkflowDocumentComplete(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/sync-drive")) {
+    const segments = url.pathname.replace("/api/workflow-documents/", "").replace(/\/sync-drive$/, "").split("/");
+    const [documentKind, documentNo] = segments.length === 2 ? segments : [segments[0], ""];
+    await handleWorkflowDocumentDriveSync(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
     return;
   }
 

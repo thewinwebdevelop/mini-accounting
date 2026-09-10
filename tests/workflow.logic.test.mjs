@@ -587,3 +587,31 @@ test("formatWorkflowSummaryMarkdown renders template, step, document, and file t
   assert.match(markdown, /PO-2026-09-0001\.pdf/);
   assert.match(markdown, /A1_quote_001\.jpg/);
 });
+
+test("formatWorkflowSummaryMarkdown lists each child's Google Drive folder once the transaction has synced, so the transaction folder in Drive indexes its paperwork", () => {
+  const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
+  const transaction = workflowLogic.buildWorkflowTransactionPayload({
+    sequence: "1",
+    accountingMonth: "2026-09",
+    title: "ซื้อสต๊อกล็อตกันยายน",
+    template,
+  }, { now: () => "2026-09-06T12:00:00.000Z" });
+
+  const withoutSync = workflowLogic.formatWorkflowSummaryMarkdown(transaction, []);
+  assert.doesNotMatch(withoutSync, /Google Drive/, "no Drive section before any sync has run");
+
+  const markdown = workflowLogic.formatWorkflowSummaryMarkdown({
+    ...transaction,
+    driveSync: {
+      syncStatus: "sync_failed",
+      documents: [
+        { documentKind: "purchase_order", documentNo: "PO-2026-09-0001", syncStatus: "synced", driveFolderUrl: "https://drive.google.com/drive/folders/po" },
+        { documentKind: "payment_voucher", documentNo: "PV-2026-09-0001", syncStatus: "sync_failed", message: "ยังไม่ได้ตั้งค่า Google Drive" },
+      ],
+    },
+  }, []);
+
+  assert.match(markdown, /## เอกสารใน Google Drive/);
+  assert.match(markdown, /\| ใบสั่งซื้อ \| PO-2026-09-0001 \| ขึ้น Google Drive แล้ว \| https:\/\/drive\.google\.com\/drive\/folders\/po \|/);
+  assert.match(markdown, /\| ใบสำคัญจ่าย \| PV-2026-09-0001 \| ยังไม่ขึ้น Google Drive: ยังไม่ได้ตั้งค่า Google Drive \|  \|/);
+});

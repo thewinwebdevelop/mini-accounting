@@ -357,6 +357,22 @@ function formatWorkflowSummaryMarkdown(transaction = {}, childDocuments = []) {
     .map((file) => `| ${file.name || ""} | ${file.url || ""} |`)
     .join("\n");
 
+  // Once the transaction has synced, each child document's own Google Drive
+  // folder (see syncWorkflowTransactionToDrive in forms/local-server.logic.js).
+  // This file is uploaded as part of the transaction folder, so the
+  // transaction's folder in Drive is the index to its paperwork.
+  const driveDocuments = Array.isArray(transaction.driveSync?.documents) ? transaction.driveSync.documents : [];
+  const markdownCell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+  const driveSection = driveDocuments.length
+    ? `\n## เอกสารใน Google Drive\n\n| ประเภทเอกสาร | เลขที่เอกสาร | สถานะ | ลิงก์ |\n|---|---|---|---|\n${driveDocuments.map((doc) => {
+      const label = getDocumentTypeDefinition(doc.documentKind)?.label || doc.documentKind;
+      const status = doc.syncStatus === "synced"
+        ? "ขึ้น Google Drive แล้ว"
+        : `ยังไม่ขึ้น Google Drive: ${doc.message || doc.error || ""}`;
+      return `| ${markdownCell(label)} | ${markdownCell(doc.documentNo)} | ${markdownCell(status)} | ${markdownCell(doc.driveFolderUrl)} |`;
+    }).join("\n")}\n`
+    : "";
+
   return `# สรุปธุรกรรม Workflow
 
 เลขที่ธุรกรรม: ${transaction.transactionNo || ""}
@@ -389,7 +405,7 @@ ${pdfRows}
 | ชื่อไฟล์ | ลิงก์ |
 |---|---|
 ${rawRows}
-`;
+${driveSection}`;
 }
 
 const WorkflowLogic = {

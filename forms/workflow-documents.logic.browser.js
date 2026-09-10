@@ -151,6 +151,35 @@
     return `<a class="transaction-badge" href="${escapeHtml(href)}">Workflow ${escapeHtml(doc.transactionNo)}</a>`;
   }
 
+  function syncStatusLabel(syncStatus) {
+    if (syncStatus === "synced") return "Sync แล้ว";
+    if (syncStatus === "sync_failed") return "Sync ไม่สำเร็จ";
+    return "รอ Sync";
+  }
+
+  // This document's own Google Drive sync -- the same per-row control the
+  // expense-request and substitute-receipt list pages already have. Offered
+  // only once the document is completed, the one state the server lets it
+  // sync (a draft can still change; see syncWorkflowDocumentToDrive). A failed
+  // row keeps its Thai reason (syncError) on screen after a reload.
+  function driveSyncHtml(doc) {
+    if (doc.status !== "completed" || !doc.documentNo) return "";
+    const syncStatus = doc.syncStatus || "not_synced";
+    const driveLink = doc.driveFolderUrl
+      ? `<a class="button secondary small" href="${escapeHtml(doc.driveFolderUrl)}" target="_blank" rel="noreferrer">เปิด Drive</a>`
+      : "";
+    const reason = syncStatus === "sync_failed" && doc.syncError
+      ? `<span class="muted">${escapeHtml(doc.syncError)}</span>`
+      : "";
+    const buttonLabel = syncStatus === "synced" ? "Sync อีกครั้ง" : "Sync to Google Drive";
+    return `
+        <span class="status ${escapeHtml(syncStatus)}">${syncStatusLabel(syncStatus)}</span>
+        ${driveLink}
+        <button class="button secondary small" type="button" data-sync-drive="${escapeHtml(doc.documentNo)}">${buttonLabel}</button>
+        ${reason}
+    `;
+  }
+
   function actionHtml(doc) {
     const openUrl = `/workflow-document?documentKind=${encodeURIComponent(doc.documentKind || documentKind)}&documentNo=${encodeURIComponent(doc.documentNo || "")}`;
     const openLabel = doc.status === "draft" ? "แก้ไขต่อ" : "ดูเอกสาร";
@@ -159,6 +188,7 @@
         <a class="button primary small" data-open-document href="${escapeHtml(openUrl)}">${openLabel}</a>
         ${fileMenu("PDF", doc.pdfFiles)}
         ${fileMenu("Raw", doc.rawFiles)}
+        ${driveSyncHtml(doc)}
       </div>
     `;
   }
@@ -221,6 +251,40 @@
     loadDocuments();
   }
 
+  // POSTs this document's own sync-drive route. The server answers a failed
+  // upload with a Thai 400 that already names the document and says why; a
+  // failure that never reached the server (network) gets the same shape here.
+  async function syncDrive(documentNo, button) {
+    if (!documentNo || button.disabled) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "กำลัง Sync...";
+    listStatus.textContent = `กำลัง Sync ${documentNo} ขึ้น Google Drive...`;
+
+    try {
+      const response = await fetch(
+        `/api/workflow-documents/${encodeURIComponent(documentKind)}/${encodeURIComponent(documentNo)}/sync-drive`,
+        { method: "POST" },
+      );
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `ซิงก์ ${documentNo} ขึ้น Google Drive ไม่สำเร็จ`);
+      await loadDocuments();
+      listStatus.textContent = `Sync แล้ว: ${documentNo}`;
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = originalText;
+      const message = error.message || "";
+      // The server has already recorded the failure on the document, so the
+      // list is reloaded to show the row as "Sync ไม่สำเร็จ" with its reason
+      // rather than a stale "รอ Sync"; the message is set after the reload
+      // so the reload's own row count does not replace it.
+      await loadDocuments();
+      listStatus.textContent = message.includes(documentNo)
+        ? message
+        : `ซิงก์ ${documentNo} ขึ้น Google Drive ไม่สำเร็จ${message ? `: ${message}` : ""}`;
+    }
+  }
+
   const initialMonth = query.get("accountingMonth") || "";
   monthFilter.value = MONTH_PATTERN.test(initialMonth) ? initialMonth : "";
   const initialStatus = query.get("status") || "";
@@ -229,6 +293,11 @@
   monthFilter.addEventListener("change", onServerFilterChange);
   statusFilter.addEventListener("change", onServerFilterChange);
   searchText.addEventListener("input", render);
+  rows.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-sync-drive]");
+    if (!button) return;
+    syncDrive(button.dataset.syncDrive, button);
+  });
 
   applyPageHeading();
   renderKindTabs();

@@ -237,6 +237,22 @@
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
 
+    #driveSyncStatus { white-space: pre-line; }
+    .status.sync_failed { color: #991b1b; background: #fee2e2; }
+    .drive-sync-documents { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+    .drive-sync-documents[hidden] { display: none; }
+    .drive-sync-document {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .drive-sync-document .title { font-weight: 800; }
+
     @media (max-width: 640px) {
       .checklist-item { flex-wrap: wrap; }
     }
@@ -254,8 +270,11 @@
     step, and returns a URL (already carrying transactionNo,
     workflowTemplateId, workflowStepId, returnTo) that this page navigates to.
     complete is enabled only once every step is completed; sync-drive is the
-    manual fallback shown when the template's syncGoogleDrive toggle is off —
-    there is no Sheets sync route or UI anywhere on this page (decision D6).
+    manual fallback shown when the template's syncGoogleDrive toggle is off,
+    and the retry shown whenever a sync did not get everything into Drive. It
+    sends every child document through its own sync action, then the
+    transaction folder; #driveSyncDocuments shows each one's result. There is
+    no Sheets sync route or UI anywhere on this page (decision D6).
   -->
   <header class="topbar">
     <details class="app-menu">
@@ -334,6 +353,7 @@
       <div class="section-body">
         <div id="driveSyncStatus" class="muted">-</div>
         <button class="button secondary" type="button" id="syncDriveButton" hidden>ซิงก์ Google Drive</button>
+        <ul class="drive-sync-documents" id="driveSyncDocuments" aria-label="ผลการซิงก์ Google Drive แยกตามเอกสาร" hidden></ul>
       </div>
     </section>
 

@@ -1243,11 +1243,14 @@ function listDocumentFixture(documentKind, overrides = {}) {
 // Stub for GET /api/workflow-documents that filters by the same three query
 // parameters the real handler does, so a filter the page forgets to send
 // really does leave the wrong rows on screen.
-function createDocumentsListStubFetch(documents, { fail = false } = {}) {
+function createDocumentsListStubFetch(documents, { fail = false, onSyncDrive } = {}) {
   const calls = [];
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, options = {}) => {
     calls.push(String(url));
     const parsed = new URL(String(url), "http://localhost");
+    if (options.method === "POST" && parsed.pathname.endsWith("/sync-drive") && onSyncDrive) {
+      return onSyncDrive(parsed.pathname, options);
+    }
     if (parsed.pathname !== "/api/workflow-documents") {
       throw new Error(`Unexpected fetch in test stub: ${url}`);
     }
@@ -1265,10 +1268,10 @@ function createDocumentsListStubFetch(documents, { fail = false } = {}) {
   return { fetchImpl, calls };
 }
 
-async function setupDocumentsListSandbox({ search = "", documents = [], fail = false } = {}) {
+async function setupDocumentsListSandbox({ search = "", documents = [], fail = false, onSyncDrive } = {}) {
   const realHtml = await readFile(documentsListHtmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
-  const { fetchImpl, calls } = createDocumentsListStubFetch(documents, { fail });
+  const { fetchImpl, calls } = createDocumentsListStubFetch(documents, { fail, onSyncDrive });
 
   const location = { pathname: "/workflow-documents", search };
   const historyCalls = [];
@@ -1609,4 +1612,232 @@ test("document fields are HTML-escaped in the rendered rows", async () => {
   assert.doesNotMatch(html, /<img src=x/);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+// ---------------------------------------------------------------------------
+// Standalone Google Drive sync on the lightweight list page, for ALL five
+// kinds -- the same per-row control expense requests and substitute receipts
+// already have on their own list pages.
+// ---------------------------------------------------------------------------
+
+// The rows are HTML strings (row.innerHTML), which this fake DOM does not
+// turn into child nodes, so a click is delivered the way the browser would
+// deliver it to the delegated tbody listener: an event whose target answers
+// closest("[data-sync-drive]").
+function fakeSyncButton(documentNo, label = "Sync to Google Drive") {
+  return {
+    dataset: { syncDrive: documentNo },
+    textContent: label,
+    disabled: false,
+    closest(selector) { return selector === "[data-sync-drive]" ? this : null; },
+  };
+}
+
+for (const documentKind of LIST_KINDS) {
+  test(`${documentKind}: a completed row carries its own Drive sync status and button; a draft row has neither`, async () => {
+    const notSynced = listDocumentFixture(documentKind, { documentNo: listDocumentNo(documentKind, "2026-09", 1), status: "completed", syncStatus: "not_synced" });
+    const synced = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 2),
+      status: "completed",
+      syncStatus: "synced",
+      driveFolderUrl: "https://drive.google.com/drive/folders/abc",
+    });
+    const failed = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 3),
+      status: "completed",
+      syncStatus: "sync_failed",
+      syncError: "ยังไม่ได้ตั้งค่า Google Drive",
+    });
+    const draft = listDocumentFixture(documentKind, { documentNo: listDocumentNo(documentKind, "2026-09", 4), status: "draft" });
+
+    const { elements } = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}`,
+      documents: [notSynced, synced, failed, draft],
+    });
+    const rows = listRowsByDocumentNo(elements);
+
+    const notSyncedActions = rows[notSynced.documentNo].cells.actions;
+    assert.ok(notSyncedActions.includes(`data-sync-drive="${notSynced.documentNo}"`), "the button must carry this row's document number");
+    assert.match(cellText(notSyncedActions), /รอ Sync/);
+    assert.match(cellText(notSyncedActions), /Sync to Google Drive/);
+
+    const syncedActions = rows[synced.documentNo].cells.actions;
+    assert.match(cellText(syncedActions), /Sync แล้ว/);
+    assert.match(cellText(syncedActions), /Sync อีกครั้ง/);
+    assert.ok(syncedActions.includes('href="https://drive.google.com/drive/folders/abc"'), "a synced row links its Drive folder");
+
+    const failedActions = rows[failed.documentNo].cells.actions;
+    assert.match(cellText(failedActions), /Sync ไม่สำเร็จ/);
+    assert.match(cellText(failedActions), /ยังไม่ได้ตั้งค่า Google Drive/, "a failed row keeps showing the Thai reason after a reload");
+
+    const draftActions = rows[draft.documentNo].cells.actions;
+    assert.doesNotMatch(draftActions, /data-sync-drive/, "a draft cannot be synced, so it offers no button");
+    assert.doesNotMatch(cellText(draftActions), /Sync/);
+  });
+
+  test(`${documentKind}: pressing a row's sync button posts to that document's own sync-drive route; a failure shows the Thai reason naming the document, and a successful retry reloads the list`, async () => {
+    const doc = listDocumentFixture(documentKind, { status: "completed", syncStatus: "not_synced" });
+    const route = `/api/workflow-documents/${documentKind}/${doc.documentNo}/sync-drive`;
+    const thaiError = `ซิงก์ ${doc.documentNo} ขึ้น Google Drive ไม่สำเร็จ: ยังไม่ได้ตั้งค่า Google Drive (Google Drive is not configured)`;
+    const posts = [];
+    let succeed = false;
+
+    const { elements, calls } = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}`,
+      documents: [doc],
+      onSyncDrive: (pathname, options) => {
+        posts.push(`${options.method} ${pathname}`);
+        return succeed
+          ? { ok: true, json: async () => ({ syncStatus: "synced", documentKind, documentNo: doc.documentNo }) }
+          : { ok: false, json: async () => ({ error: thaiError }) };
+      },
+    });
+
+    elements.workflowDocumentRows.dispatch("click", { target: { closest: () => null } });
+    await settleList();
+    assert.deepEqual(posts, [], "a click that is not on a sync button must not sync anything");
+
+    const button = fakeSyncButton(doc.documentNo);
+    elements.workflowDocumentRows.dispatch("click", { target: button });
+    await settleList();
+    assert.deepEqual(posts, [`POST ${route}`]);
+    assert.equal(elements.listStatus.textContent, thaiError);
+    assert.equal(button.disabled, false, "the button comes back so the user can try again");
+    assert.equal(button.textContent, "Sync to Google Drive");
+
+    succeed = true;
+    const listLoads = () => calls.filter((url) => url.startsWith("/api/workflow-documents?")).length;
+    const loadsBefore = listLoads();
+    elements.workflowDocumentRows.dispatch("click", { target: button });
+    await settleList();
+    assert.deepEqual(posts, [`POST ${route}`, `POST ${route}`]);
+    assert.equal(listLoads(), loadsBefore + 1, "a successful sync reloads the list so the row shows its new Drive status");
+    assert.equal(elements.listStatus.textContent, `Sync แล้ว: ${doc.documentNo}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Transaction page: the workflow sync's per-document result.
+// ---------------------------------------------------------------------------
+
+// FakeNode.textContent is a plain property, not computed from children, so
+// this gathers the text of a rendered element and everything under it.
+function renderedText(node) {
+  return [node.textContent || "", ...(node.children || []).map(renderedText)].join(" ").replace(/\s+/g, " ").trim();
+}
+
+function partialDriveSyncResult() {
+  return {
+    syncStatus: "sync_failed",
+    error: "quota exceeded",
+    message: "สำเร็จ 1 จาก 2 เอกสาร ยังไม่สำเร็จ:\n- ใบสำคัญจ่าย PV-2026-09-0001: เกิดข้อผิดพลาดจาก Google Drive: quota exceeded",
+    syncedDocumentCount: 1,
+    totalDocumentCount: 2,
+    documents: [
+      { documentKind: "purchase_order", documentNo: "PO-2026-09-0001", syncStatus: "synced", alreadySynced: false, driveFolderUrl: "https://drive.google.com/drive/folders/po" },
+      { documentKind: "payment_voucher", documentNo: "PV-2026-09-0001", syncStatus: "sync_failed", error: "quota exceeded", message: "เกิดข้อผิดพลาดจาก Google Drive: quota exceeded" },
+    ],
+    transactionFolder: { syncStatus: "waiting_for_documents" },
+  };
+}
+
+function fullySyncedDriveSyncResult() {
+  return {
+    syncStatus: "synced",
+    syncedDocumentCount: 2,
+    totalDocumentCount: 2,
+    driveFolderUrl: "https://drive.google.com/drive/folders/txn",
+    documents: [
+      { documentKind: "purchase_order", documentNo: "PO-2026-09-0001", syncStatus: "synced", alreadySynced: true, driveFolderUrl: "https://drive.google.com/drive/folders/po" },
+      { documentKind: "payment_voucher", documentNo: "PV-2026-09-0001", syncStatus: "synced", alreadySynced: false, driveFolderUrl: "https://drive.google.com/drive/folders/pv" },
+    ],
+    transactionFolder: { syncStatus: "synced", driveFolderUrl: "https://drive.google.com/drive/folders/txn" },
+  };
+}
+
+test("workflow-transaction.html has a list for the per-document Drive result", async () => {
+  const html = await readFile(transactionHtmlPath, "utf8");
+  assert.match(html, /id="driveSyncDocuments"/);
+});
+
+test("a partial Drive sync lists every document with its own Thai result and offers a retry even when the template auto-syncs; the retry re-renders the result", async () => {
+  const completed = buildCompletedTransaction({
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: true },
+    driveSync: partialDriveSyncResult(),
+  });
+  let syncCalls = 0;
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed,
+    refreshedTransaction: completed,
+    onSyncDrive: () => {
+      syncCalls += 1;
+      return { ok: true, json: async () => fullySyncedDriveSyncResult() };
+    },
+  });
+
+  assert.equal(elements.syncDriveButton.hidden, false, "a failed sync must offer a retry, even on a template that syncs automatically");
+  assert.match(elements.syncDriveButton.textContent, /ลองซิงก์อีกครั้ง/);
+  assert.match(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
+  assert.match(elements.driveSyncStatus.textContent, /PV-2026-09-0001/, "the summary must name the document that did not make it");
+
+  const items = elements.driveSyncDocuments.children;
+  assert.equal(items.length, 3, "one row per child document, plus the transaction folder");
+  assert.match(renderedText(items[0]), /ใบสั่งซื้อ PO-2026-09-0001/);
+  assert.match(renderedText(items[0]), /ขึ้น Google Drive แล้ว/);
+  assert.equal(items[0].children.find((node) => node.tagName === "A")?.href, "https://drive.google.com/drive/folders/po");
+  assert.match(renderedText(items[1]), /ใบสำคัญจ่าย PV-2026-09-0001/);
+  assert.match(renderedText(items[1]), /ไม่สำเร็จ/);
+  assert.match(renderedText(items[1]), /quota exceeded/);
+  assert.equal(items[1].children.some((node) => node.tagName === "A"), false, "a document that is not in Drive has no Drive link");
+  assert.match(renderedText(items[2]), /โฟลเดอร์ธุรกรรม TXN-2026-09-0001/);
+  assert.match(renderedText(items[2]), /รอ/);
+
+  elements.syncDriveButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(syncCalls, 1);
+  assert.doesNotMatch(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
+  assert.match(elements.driveSyncStatus.textContent, /สำเร็จ/);
+  assert.equal(elements.syncDriveButton.hidden, true, "once everything is in Drive, an auto-sync template shows no button again");
+  assert.match(renderedText(elements.driveSyncDocuments.children[0]), /มีใน Google Drive อยู่แล้ว/, "a document that was already there is reported as not uploaded again");
+  assert.match(renderedText(elements.driveSyncDocuments.children[1]), /ขึ้น Google Drive แล้ว/);
+  assert.equal(elements.transactionStatus.className, "status-box active success");
+});
+
+test("pressing sync with no Google Drive credentials shows the Thai reason for every document in the status box", async () => {
+  const completed = buildCompletedTransaction({
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false },
+    driveSync: { syncStatus: "not_required" },
+  });
+  const reason = "ยังไม่ได้ตั้งค่า Google Drive (Google Drive is not configured)";
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed,
+    refreshedTransaction: completed,
+    onSyncDrive: () => ({
+      ok: true,
+      json: async () => ({
+        syncStatus: "sync_failed",
+        error: "Google Drive is not configured",
+        message: `สำเร็จ 0 จาก 2 เอกสาร ยังไม่สำเร็จ:\n- ใบสั่งซื้อ PO-2026-09-0001: ${reason}\n- ใบสำคัญจ่าย PV-2026-09-0001: ${reason}`,
+        syncedDocumentCount: 0,
+        totalDocumentCount: 2,
+        documents: [
+          { documentKind: "purchase_order", documentNo: "PO-2026-09-0001", syncStatus: "sync_failed", error: "Google Drive is not configured", message: reason },
+          { documentKind: "payment_voucher", documentNo: "PV-2026-09-0001", syncStatus: "sync_failed", error: "Google Drive is not configured", message: reason },
+        ],
+        transactionFolder: { syncStatus: "waiting_for_documents" },
+      }),
+    }),
+  });
+
+  elements.syncDriveButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(elements.transactionStatus.className, "status-box active error");
+  assert.match(elements.transactionStatus.textContent, /PO-2026-09-0001: ยังไม่ได้ตั้งค่า Google Drive/);
+  assert.match(elements.transactionStatus.textContent, /PV-2026-09-0001: ยังไม่ได้ตั้งค่า Google Drive/);
+  assert.equal(elements.syncDriveButton.hidden, false, "the retry stays available");
+  assert.equal(elements.driveSyncDocuments.children.length, 3);
 });
