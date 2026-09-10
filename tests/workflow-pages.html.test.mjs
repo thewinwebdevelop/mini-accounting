@@ -4,7 +4,8 @@ import vm from "node:vm";
 import test from "node:test";
 
 import workflowLogic from "../forms/workflow.logic.js";
-import { buildFakeDomFromHtml } from "./support/fake-dom.mjs";
+import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+import { buildFakeDomFromHtml, parseHtml } from "./support/fake-dom.mjs";
 
 const templatesHtmlPath = new URL("../forms/workflow-templates.html", import.meta.url);
 const transactionsHtmlPath = new URL("../forms/workflow-transactions.html", import.meta.url);
@@ -1178,4 +1179,434 @@ test("a manual Drive sync failure (e.g. no Google Drive credentials configured) 
   assert.match(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
   assert.match(elements.driveSyncStatus.textContent, /Google Drive is not configured/);
   assert.equal(elements.transactionStatus.className, "status-box active error");
+});
+
+// ---------------------------------------------------------------------------
+// /workflow-documents?documentKind=... -- the standalone list page for the
+// five lightweight document kinds that share forms/workflow-document.html.
+// Before this page existed, a user could create one of these documents but
+// never find it again without already knowing its URL.
+//
+// Every test below runs the real forms/workflow-documents.logic.browser.js
+// (after the real workflow.logic.js and workflow-document.logic.js, in page
+// order) against a fake DOM parsed from the real forms/workflow-documents.html.
+// Each per-kind test is generated for ALL five kinds -- an earlier task on
+// this branch shipped a six-entry table with one entry asserted and five
+// silently wrong.
+// ---------------------------------------------------------------------------
+const documentsListHtmlPath = new URL("../forms/workflow-documents.html", import.meta.url);
+const documentsListLogicPath = new URL("../forms/workflow-documents.logic.browser.js", import.meta.url);
+const workflowDocumentLogicPath = new URL("../forms/workflow-document.logic.js", import.meta.url);
+const LIST_KINDS = workflowDocumentLogic.LIGHTWEIGHT_DOCUMENT_KINDS;
+const LIST_STATUS_LABELS = workflowDocumentLogic.WORKFLOW_DOCUMENT_STATUS_LABELS;
+
+function listKindLabel(documentKind) {
+  return workflowLogic.getDocumentTypeDefinition(documentKind).label;
+}
+
+function listDocumentNo(documentKind, month, sequence) {
+  return `${workflowDocumentLogic.WORKFLOW_DOCUMENT_PREFIXES[documentKind]}-${month}-${String(sequence).padStart(4, "0")}`;
+}
+
+// Mirrors one entry of GET /api/workflow-documents -- the top-level summary
+// fields asserted against the real server in tests/workflow-document-api.test.mjs.
+function listDocumentFixture(documentKind, overrides = {}) {
+  const documentNo = overrides.documentNo || listDocumentNo(documentKind, "2026-09", 1);
+  const status = overrides.status || "draft";
+  const folderPath = `documents/2026/09/${documentKind}/${documentNo}_test`;
+  return {
+    documentKind,
+    documentKindLabel: listKindLabel(documentKind),
+    documentNo,
+    status,
+    statusLabel: LIST_STATUS_LABELS[status],
+    title: `เอกสาร ${documentNo}`,
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    payeeName: "ร้านค้าตัวอย่าง",
+    requesterName: "คุณต้า",
+    totalAmount: "1250.00",
+    transactionNo: "",
+    workflowTemplateId: "",
+    workflowStepId: "",
+    folderPath,
+    pdfFiles: [{
+      name: `${documentNo}.pdf`,
+      path: `${folderPath}/pdf/${documentNo}.pdf`,
+      url: `/workflow-documents/${documentKind}/${documentNo}/pdf/${documentNo}.pdf`,
+    }],
+    rawFiles: [],
+    ...overrides,
+  };
+}
+
+// Stub for GET /api/workflow-documents that filters by the same three query
+// parameters the real handler does, so a filter the page forgets to send
+// really does leave the wrong rows on screen.
+function createDocumentsListStubFetch(documents, { fail = false } = {}) {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(String(url));
+    const parsed = new URL(String(url), "http://localhost");
+    if (parsed.pathname !== "/api/workflow-documents") {
+      throw new Error(`Unexpected fetch in test stub: ${url}`);
+    }
+    if (fail) return { ok: false, json: async () => ({ error: "โหลดไม่สำเร็จ" }) };
+    const documentKind = parsed.searchParams.get("documentKind") || "";
+    const accountingMonth = parsed.searchParams.get("accountingMonth") || "";
+    const status = parsed.searchParams.get("status") || "";
+    const matching = documents.filter((doc) => (
+      (!documentKind || doc.documentKind === documentKind)
+      && (!accountingMonth || doc.accountingMonth === accountingMonth)
+      && (!status || doc.status === status)
+    ));
+    return { ok: true, json: async () => ({ documents: matching }) };
+  };
+  return { fetchImpl, calls };
+}
+
+async function setupDocumentsListSandbox({ search = "", documents = [], fail = false } = {}) {
+  const realHtml = await readFile(documentsListHtmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
+  const { fetchImpl, calls } = createDocumentsListStubFetch(documents, { fail });
+
+  const location = { pathname: "/workflow-documents", search };
+  const historyCalls = [];
+  const history = {
+    replaceState(_state, _title, url) {
+      historyCalls.push(String(url));
+      const queryStart = String(url).indexOf("?");
+      location.search = queryStart >= 0 ? String(url).slice(queryStart) : "";
+    },
+  };
+  const window = { fetch: fetchImpl, location, history };
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location,
+    history,
+    URLSearchParams,
+    fetch: fetchImpl,
+  });
+
+  vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(documentsListLogicPath, "utf8"), context);
+  window._handlers?.DOMContentLoaded?.();
+  await settleList();
+
+  return { elements: elementsById, calls, historyCalls, document: fakeDocument };
+}
+
+function settleList() {
+  return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+// Rendered rows are HTML strings (the house style: row.innerHTML with
+// escapeHtml, exactly like forms/substitute-receipts.logic.browser.js); split
+// each row into its data-column cells so assertions can target one column.
+function listRowCells(row) {
+  const cells = {};
+  for (const match of row.innerHTML.matchAll(/<td data-column="([\w-]+)">([\s\S]*?)<\/td>/g)) {
+    cells[match[1]] = match[2];
+  }
+  return cells;
+}
+
+function listRowsByDocumentNo(elements) {
+  const byNo = {};
+  for (const row of elements.workflowDocumentRows.children) {
+    const cells = listRowCells(row);
+    const documentNo = cellText(cells.documentNo).split(" ")[0];
+    byNo[documentNo] = { row, cells };
+  }
+  return byNo;
+}
+
+function cellText(html = "") {
+  return html
+    .replace(/<span class="mobile-label">[\s\S]*?<\/span>/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decodedAttribute(node, name) {
+  return String(node?.getAttribute(name) ?? "")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function requestParams(url) {
+  return Object.fromEntries(new URL(url, "http://localhost").searchParams.entries());
+}
+
+async function changeListFilter(element, value, eventType = "change") {
+  element.value = value;
+  element.dispatch(eventType, { target: element });
+  await settleList();
+}
+
+test("the list page covers exactly the five lightweight kinds (sanity check on the generated per-kind tests)", () => {
+  assert.deepEqual([...LIST_KINDS], [
+    "purchase_order",
+    "payment_voucher",
+    "cash_spend_declaration",
+    "payee_acknowledgement",
+    "goods_receipt",
+  ]);
+});
+
+test("workflow-documents.html loads its shared logic before the page controller, all as classic scripts", async () => {
+  const html = await readFile(documentsListHtmlPath, "utf8");
+  const scripts = [...html.matchAll(/<script src="\.\/([^"]+)"><\/script>/g)].map((match) => match[1]);
+  const workflowLogicIndex = scripts.indexOf("workflow.logic.js");
+  const documentLogicIndex = scripts.indexOf("workflow-document.logic.js");
+  const controllerIndex = scripts.indexOf("workflow-documents.logic.browser.js");
+  assert.ok(workflowLogicIndex >= 0 && documentLogicIndex >= 0 && controllerIndex >= 0, scripts.join(", "));
+  assert.ok(workflowLogicIndex < documentLogicIndex && documentLogicIndex < controllerIndex, scripts.join(", "));
+  assert.doesNotMatch(html, /type="module"/);
+
+  const controller = await readFile(documentsListLogicPath, "utf8");
+  assert.doesNotMatch(controller, /\brequire\(/);
+  assert.doesNotMatch(controller, /module\.exports/);
+  assert.doesNotMatch(controller, /^\s*(import|export) /m);
+});
+
+test("workflow-documents.html status filter offers every lightweight document status, in Thai", async () => {
+  const html = await readFile(documentsListHtmlPath, "utf8");
+  const { elementsById } = buildFakeDomFromHtml(html);
+  const optionValues = elementsById.statusFilter.children.map((option) => option.value);
+  assert.deepEqual(optionValues, ["all", ...Object.keys(LIST_STATUS_LABELS)]);
+  assert.match(html, /<option value="all">ทั้งหมด<\/option>/);
+  for (const [status, label] of Object.entries(LIST_STATUS_LABELS)) {
+    assert.ok(html.includes(`<option value="${status}">${label}</option>`), `${status} option must read "${label}"`);
+  }
+});
+
+for (const documentKind of LIST_KINDS) {
+  test(`${documentKind}: the list page shows only this kind, with number, date, title, payee, total, status, open and PDF actions`, async () => {
+    const label = listKindLabel(documentKind);
+    const standalone = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 1),
+      title: `ซื้อวัสดุ ${documentKind}`,
+      payeeName: `ผู้รับเงิน ${documentKind}`,
+      totalAmount: "1250.5",
+    });
+    const linked = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 2),
+      status: "completed",
+      documentDate: "2026-09-10",
+      transactionNo: "TXN-2026-09-0007",
+      workflowTemplateId: "stock_no_tax_invoice_company_bank",
+      workflowStepId: "step-001",
+    });
+    const otherKind = LIST_KINDS.find((kind) => kind !== documentKind);
+    const foreign = listDocumentFixture(otherKind, { documentNo: listDocumentNo(otherKind, "2026-09", 99) });
+
+    const { elements, calls, document } = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}`,
+      documents: [standalone, linked, foreign],
+    });
+
+    assert.equal(calls.length, 1, "exactly one list request on load");
+    assert.equal(new URL(calls[0], "http://localhost").pathname, "/api/workflow-documents");
+    assert.deepEqual(requestParams(calls[0]), { documentKind }, "the request is scoped to this kind and carries no other filter yet");
+
+    assert.equal(elements.pageTitle.textContent, `รายการ${label}`);
+    assert.equal(document.title, `รายการ${label} - หจก.สวีทเฮาส์`);
+    assert.equal(elements.createDocumentLink.getAttribute("href"), `/workflow-document?documentKind=${documentKind}`,
+      "create-new must open a blank standalone form of this kind (no documentNo, no transactionNo)");
+    assert.equal(elements.createDocumentLink.textContent, `สร้าง${label}ใหม่`);
+
+    const tabs = elements.documentKindTabs.children;
+    assert.deepEqual(tabs.map((tab) => tab.getAttribute("href")), LIST_KINDS.map((kind) => `/workflow-documents?documentKind=${kind}`));
+    assert.deepEqual(tabs.map((tab) => tab.textContent), LIST_KINDS.map(listKindLabel));
+    assert.deepEqual(
+      tabs.filter((tab) => tab.getAttribute("aria-current") === "page").map((tab) => tab.getAttribute("href")),
+      [`/workflow-documents?documentKind=${documentKind}`],
+    );
+
+    assert.equal(elements.workflowDocumentRows.children.length, 2, "the other kind's document must not be listed");
+    assert.equal(elements.listStatus.textContent, "พบ 2 รายการ");
+    assert.equal(elements.emptyState.hidden, true);
+    assert.equal(elements.errorState.hidden, true);
+
+    const rows = listRowsByDocumentNo(elements);
+    assert.deepEqual(Object.keys(rows).sort(), [standalone.documentNo, linked.documentNo].sort());
+
+    const standaloneCells = rows[standalone.documentNo].cells;
+    assert.equal(cellText(standaloneCells.documentNo), standalone.documentNo);
+    assert.equal(cellText(standaloneCells.documentDate), "2026-09-06");
+    assert.equal(cellText(standaloneCells.title).startsWith(standalone.title), true);
+    assert.equal(cellText(standaloneCells.payee), standalone.payeeName);
+    assert.equal(cellText(standaloneCells.total), "1,250.50");
+    assert.equal(cellText(standaloneCells.status), "แบบร่าง");
+    const standaloneActions = parseHtml(standaloneCells.actions);
+    assert.equal(
+      decodedAttribute(standaloneActions.querySelector("[data-open-document]"), "href"),
+      `/workflow-document?documentKind=${documentKind}&documentNo=${standalone.documentNo}`,
+    );
+    assert.equal(decodedAttribute(standaloneActions.querySelector(".file-link"), "href"), standalone.pdfFiles[0].url,
+      "the PDF link must be the guarded /workflow-documents/... route the API handed back");
+    assert.equal(parseHtml(rows[standalone.documentNo].row.innerHTML).querySelectorAll(".transaction-badge").length, 0,
+      "a standalone document must not show a transaction badge");
+
+    const linkedCells = rows[linked.documentNo].cells;
+    assert.equal(cellText(linkedCells.status), "เสร็จสิ้น");
+    assert.equal(cellText(linkedCells.documentDate), "2026-09-10");
+    const badges = parseHtml(rows[linked.documentNo].row.innerHTML).querySelectorAll(".transaction-badge");
+    assert.equal(badges.length, 1, "a workflow-linked document shows exactly one transaction badge");
+    assert.equal(decodedAttribute(badges[0], "href"), "/workflow-transaction?transactionNo=TXN-2026-09-0007");
+    assert.match(linkedCells.documentNo, /TXN-2026-09-0007/);
+    assert.equal(
+      decodedAttribute(parseHtml(linkedCells.actions).querySelector("[data-open-document]"), "href"),
+      `/workflow-document?documentKind=${documentKind}&documentNo=${linked.documentNo}`,
+    );
+  });
+
+  test(`${documentKind}: accounting month, status, and search filters each narrow the list`, async () => {
+    const paper = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 1),
+      title: "ซื้อกระดาษ A4",
+      payeeName: "ร้านเครื่องเขียน",
+    });
+    const shipping = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-08", 1),
+      accountingMonth: "2026-08",
+      documentDate: "2026-08-20",
+      status: "completed",
+      title: "ค่าขนส่งสินค้า",
+      payeeName: "บริษัทขนส่งด่วน",
+    });
+    const ink = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-09", 2),
+      status: "completed",
+      title: "ซื้อหมึกพิมพ์",
+      payeeName: "ร้านเครื่องเขียน",
+      transactionNo: "TXN-2026-09-0003",
+    });
+    const { elements, calls, historyCalls } = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}`,
+      documents: [paper, shipping, ink],
+    });
+    const listed = () => Object.keys(listRowsByDocumentNo(elements)).sort();
+
+    assert.deepEqual(listed(), [paper, shipping, ink].map((doc) => doc.documentNo).sort());
+
+    await changeListFilter(elements.accountingMonthFilter, "2026-09");
+    assert.deepEqual(requestParams(calls.at(-1)), { documentKind, accountingMonth: "2026-09" });
+    assert.deepEqual(listed(), [paper, ink].map((doc) => doc.documentNo).sort());
+    assert.deepEqual(requestParams(historyCalls.at(-1)), { documentKind, accountingMonth: "2026-09" },
+      "the filtered view must stay deep-linkable");
+    assert.ok(
+      elements.documentKindTabs.children.every((tab) => requestParams(tab.getAttribute("href")).accountingMonth === "2026-09"),
+      "switching kind keeps the chosen accounting month",
+    );
+
+    await changeListFilter(elements.statusFilter, "completed");
+    assert.deepEqual(requestParams(calls.at(-1)), { documentKind, accountingMonth: "2026-09", status: "completed" });
+    assert.deepEqual(listed(), [ink.documentNo]);
+
+    await changeListFilter(elements.statusFilter, "all");
+    assert.deepEqual(requestParams(calls.at(-1)), { documentKind, accountingMonth: "2026-09" }, "\"all\" sends no status filter");
+    assert.deepEqual(listed(), [paper, ink].map((doc) => doc.documentNo).sort());
+
+    await changeListFilter(elements.accountingMonthFilter, "");
+    assert.deepEqual(requestParams(calls.at(-1)), { documentKind }, "clearing the month sends no month filter");
+    assert.deepEqual(listed(), [paper, shipping, ink].map((doc) => doc.documentNo).sort());
+
+    const requestsBeforeSearch = calls.length;
+    await changeListFilter(elements.searchText, "หมึก", "input");
+    assert.deepEqual(listed(), [ink.documentNo], "search matches the title");
+    await changeListFilter(elements.searchText, "ขนส่งด่วน", "input");
+    assert.deepEqual(listed(), [shipping.documentNo], "search matches the payee");
+    await changeListFilter(elements.searchText, paper.documentNo.toLowerCase(), "input");
+    assert.deepEqual(listed(), [paper.documentNo], "search matches the document number, case-insensitively");
+    await changeListFilter(elements.searchText, "TXN-2026-09-0003", "input");
+    assert.deepEqual(listed(), [ink.documentNo], "search matches the transaction number");
+    await changeListFilter(elements.searchText, "ไม่มีเอกสารนี้", "input");
+    assert.deepEqual(listed(), []);
+    assert.equal(elements.emptyState.hidden, false);
+    assert.equal(elements.listStatus.textContent, "ไม่พบรายการ");
+    assert.equal(calls.length, requestsBeforeSearch, "search filters the loaded rows without another request");
+
+    await changeListFilter(elements.searchText, "", "input");
+    assert.equal(elements.workflowDocumentRows.children.length, 3);
+    assert.equal(elements.emptyState.hidden, true);
+  });
+
+  test(`${documentKind}: an empty result shows the empty state and still offers create-new`, async () => {
+    const { elements, calls } = await setupDocumentsListSandbox({ search: `?documentKind=${documentKind}`, documents: [] });
+    assert.deepEqual(requestParams(calls[0]), { documentKind });
+    assert.equal(elements.workflowDocumentRows.children.length, 0);
+    assert.equal(elements.emptyState.hidden, false);
+    assert.equal(elements.errorState.hidden, true);
+    assert.equal(elements.listStatus.textContent, "ไม่พบรายการ");
+    assert.equal(elements.createDocumentLink.getAttribute("href"), `/workflow-document?documentKind=${documentKind}`);
+  });
+}
+
+test("the list page restores valid month/status filters from the URL and ignores values it does not recognise", async () => {
+  for (const documentKind of LIST_KINDS) {
+    const august = listDocumentFixture(documentKind, {
+      documentNo: listDocumentNo(documentKind, "2026-08", 1),
+      accountingMonth: "2026-08",
+      status: "completed",
+    });
+    const september = listDocumentFixture(documentKind, { documentNo: listDocumentNo(documentKind, "2026-09", 1) });
+
+    const restored = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}&accountingMonth=2026-08&status=completed`,
+      documents: [august, september],
+    });
+    assert.deepEqual(requestParams(restored.calls[0]), { documentKind, accountingMonth: "2026-08", status: "completed" }, documentKind);
+    assert.equal(restored.elements.accountingMonthFilter.value, "2026-08", documentKind);
+    assert.equal(restored.elements.statusFilter.value, "completed", documentKind);
+    assert.deepEqual(Object.keys(listRowsByDocumentNo(restored.elements)), [august.documentNo], documentKind);
+
+    const ignored = await setupDocumentsListSandbox({
+      search: `?documentKind=${documentKind}&accountingMonth=${encodeURIComponent("2026-13' OR 1=1")}&status=hacked`,
+      documents: [august, september],
+    });
+    assert.deepEqual(requestParams(ignored.calls[0]), { documentKind }, `${documentKind}: invalid URL filters must not be sent`);
+    assert.equal(ignored.elements.accountingMonthFilter.value, "", documentKind);
+    assert.equal(ignored.elements.statusFilter.value, "all", documentKind);
+  }
+});
+
+test("the list page falls back to ใบสั่งซื้อ when documentKind is missing or not one of the five kinds", async () => {
+  for (const search of ["", "?documentKind=expense_request", "?documentKind=substitute_receipt", "?documentKind=%3Cscript%3E"]) {
+    const { elements, calls } = await setupDocumentsListSandbox({ search, documents: [] });
+    assert.deepEqual(requestParams(calls[0]), { documentKind: "purchase_order" }, search);
+    assert.equal(elements.pageTitle.textContent, `รายการ${listKindLabel("purchase_order")}`, search);
+    assert.equal(elements.createDocumentLink.getAttribute("href"), "/workflow-document?documentKind=purchase_order", search);
+  }
+});
+
+test("a failed list request shows the error state instead of an empty list", async () => {
+  const { elements } = await setupDocumentsListSandbox({ search: "?documentKind=goods_receipt", fail: true });
+  assert.equal(elements.errorState.hidden, false);
+  assert.equal(elements.emptyState.hidden, true);
+  assert.equal(elements.workflowDocumentRows.children.length, 0);
+  assert.equal(elements.listStatus.textContent, "โหลดรายการไม่สำเร็จ");
+});
+
+test("document fields are HTML-escaped in the rendered rows", async () => {
+  const hostile = listDocumentFixture("payment_voucher", {
+    title: "<img src=x onerror=alert(1)>",
+    payeeName: "\"><script>alert(2)</script>",
+  });
+  const { elements } = await setupDocumentsListSandbox({ search: "?documentKind=payment_voucher", documents: [hostile] });
+  const html = elements.workflowDocumentRows.children[0].innerHTML;
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });

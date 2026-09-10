@@ -2147,6 +2147,7 @@ async function listWorkflowDocuments(rootDir, filters = {}) {
     workflowTemplateId: filters.workflowTemplateId || undefined,
     workflowStepId: filters.workflowStepId || undefined,
     status: filters.status || undefined,
+    accountingMonth: filters.accountingMonth || undefined,
   }));
 
   const records = [];
@@ -2160,6 +2161,101 @@ async function listWorkflowDocuments(rootDir, filters = {}) {
   }
 
   return records.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+const WORKFLOW_DOCUMENT_LIST_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+const WORKFLOW_TRANSACTION_NO_PATTERN = /^TXN-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
+const WORKFLOW_REFERENCE_ID_MAX_LENGTH = 200;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+
+// Validates every query parameter GET /api/workflow-documents accepts before
+// any of it reaches the documents index. Each value is only ever handed to
+// queryDocumentIndexRows as a bound parameter anyway; this makes an
+// unrecognised value a Thai 400 instead of a silent empty list (and, for
+// documentKind, stops a caller from pointing this lightweight-document route
+// at expense_request/substitute_receipt rows, which have no
+// workflow-document.json to read). "all" is the list page's "no status
+// filter" option. Template/step ids are free-form (saveWorkflowTemplate takes
+// any string), so they are only bounded, never pattern-matched.
+function parseWorkflowDocumentListFilters(searchParams) {
+  const read = (name) => String(searchParams?.get?.(name) ?? "");
+
+  const documentKind = read("documentKind");
+  if (documentKind && !LIGHTWEIGHT_DOCUMENT_KINDS.includes(documentKind)) {
+    throw new Error("ประเภทเอกสารไม่ถูกต้อง");
+  }
+
+  const accountingMonth = read("accountingMonth");
+  if (accountingMonth && !WORKFLOW_DOCUMENT_LIST_MONTH_PATTERN.test(accountingMonth)) {
+    throw new Error("เดือนบัญชีไม่ถูกต้อง (ใช้รูปแบบ YYYY-MM)");
+  }
+
+  const requestedStatus = read("status");
+  const status = requestedStatus === "all" ? "" : requestedStatus;
+  if (status && !Object.prototype.hasOwnProperty.call(WORKFLOW_DOCUMENT_STATUS_LABELS, status)) {
+    throw new Error("สถานะเอกสารไม่ถูกต้อง");
+  }
+
+  const transactionNo = read("transactionNo");
+  if (transactionNo && !WORKFLOW_TRANSACTION_NO_PATTERN.test(transactionNo)) {
+    throw new Error("เลขที่ธุรกรรมไม่ถูกต้อง");
+  }
+
+  const readReferenceId = (name, message) => {
+    const value = read(name);
+    if (value.length > WORKFLOW_REFERENCE_ID_MAX_LENGTH || CONTROL_CHARACTER_PATTERN.test(value)) {
+      throw new Error(message);
+    }
+    return value;
+  };
+
+  return {
+    documentKind,
+    accountingMonth,
+    status,
+    transactionNo,
+    workflowTemplateId: readReferenceId("workflowTemplateId", "รหัส Workflow Template ไม่ถูกต้อง"),
+    workflowStepId: readReferenceId("workflowStepId", "รหัสขั้นตอน Workflow ไม่ถูกต้อง"),
+  };
+}
+
+function omitAbsolutePathFromListedFile(file) {
+  if (!file || typeof file !== "object") return file;
+  const { absolutePath, ...rest } = file;
+  return rest;
+}
+
+// One row per document for the /workflow-documents list page (GET
+// /api/workflow-documents). On top of listWorkflowDocuments' record it
+// surfaces the columns the page shows (date, payee, total, month) and the
+// document's PDF/raw files -- every url built by buildWorkflowDocumentFileUrl,
+// i.e. served only through the guarded getWorkflowDocumentFile route. The
+// server's filesystem paths (the record's absoluteFolderPath and each file's
+// absolutePath) are stripped here, before the response is ever built.
+async function listWorkflowDocumentSummaries(rootDir, filters = {}) {
+  const records = await listWorkflowDocuments(rootDir, filters);
+
+  return Promise.all(records.map(async (record) => {
+    const { absoluteFolderPath, ...rest } = record;
+    const payload = record.payload || {};
+    const [pdfFiles, rawFiles] = await Promise.all([
+      listWorkflowDocumentPdfFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
+      listWorkflowDocumentRawFiles(rootDir, record.folderPath, record.documentKind, record.documentNo),
+    ]);
+
+    return {
+      ...rest,
+      documentKindLabel: payload.documentKindLabel || record.documentKind,
+      accountingMonth: payload.accountingMonth || "",
+      documentDate: payload.documentDate || "",
+      requesterName: payload.requesterName || "",
+      payeeName: payload.payeeName || "",
+      totalAmount: payload.totals?.grossAmount || "",
+      pdfFiles: pdfFiles.map(omitAbsolutePathFromListedFile),
+      rawFiles: rawFiles.map(omitAbsolutePathFromListedFile),
+    };
+  }));
 }
 
 async function getWorkflowDocument(rootDir, documentKind, documentNo) {
@@ -3283,10 +3379,12 @@ module.exports = {
   listExpenseDrafts,
   listSubstituteReceipts,
   listWorkflowDocumentTypes,
+  listWorkflowDocumentSummaries,
   listWorkflowDocuments,
   listWorkflowTemplates,
   listWorkflowTransactions,
   parseMultipartForm,
+  parseWorkflowDocumentListFilters,
   persistWorkflowTransaction,
   receiveSubstituteReceiptStock,
   refreshWorkflowTransaction,

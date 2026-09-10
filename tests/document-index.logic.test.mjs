@@ -449,3 +449,45 @@ test("queryDocumentIndexRows pushes every supported filter down to SQL", async (
     });
   });
 });
+
+// The /workflow-documents list page filters by accounting month; that filter
+// must be pushed down to SQL (an indexed column) as a bound parameter, the
+// same as every other filter above.
+test("queryDocumentIndexRows narrows by accountingMonth as a bound SQL filter", async () => {
+  await withTempRoot(async (rootDir) => {
+    const rows = [
+      ["purchase_order", "PO-2026-08-0001", "2026-08"],
+      ["purchase_order", "PO-2026-09-0001", "2026-09"],
+      ["goods_receipt", "GR-2026-09-0001", "2026-09"],
+    ];
+    for (const [documentKind, documentNo, accountingMonth] of rows) {
+      indexDocument(rootDir, {
+        documentKind,
+        documentNo,
+        accountingMonth,
+        status: "draft",
+        folderPath: `documents/${accountingMonth.replace("-", "/")}/${documentKind}/${documentNo}_a`,
+        createdAt: `${accountingMonth}-01T00:00:00.000Z`,
+        updatedAt: `${accountingMonth}-01T00:00:00.000Z`,
+      });
+    }
+
+    await withDocumentIndexDatabase(rootDir, (db) => {
+      assert.deepEqual(
+        queryDocumentIndexRows(db, { accountingMonth: "2026-09" }).map((row) => row.documentNo).sort(),
+        ["GR-2026-09-0001", "PO-2026-09-0001"],
+      );
+      assert.deepEqual(
+        queryDocumentIndexRows(db, { documentKind: "purchase_order", accountingMonth: "2026-08" }).map((row) => row.documentNo),
+        ["PO-2026-08-0001"],
+      );
+      assert.deepEqual(
+        queryDocumentIndexRows(db, { documentKinds: ["purchase_order", "goods_receipt"], accountingMonth: "2026-09" }).map((row) => row.documentNo).sort(),
+        ["GR-2026-09-0001", "PO-2026-09-0001"],
+      );
+      // A value that would widen the query if it were ever spliced into the
+      // SQL text must match nothing when bound.
+      assert.deepEqual(queryDocumentIndexRows(db, { accountingMonth: "2026-09' OR '1'='1" }), []);
+    });
+  });
+});

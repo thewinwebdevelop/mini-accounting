@@ -515,3 +515,177 @@ test("every lightweight workflow document kind serves its PDF and raw files from
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// /workflow-documents list page + the list API it reads (step 2).
+// ---------------------------------------------------------------------------
+const THAI_TEXT = /[฀-๿]/;
+
+test("GET /workflow-documents serves the list page and GET /api/workflow-documents narrows every lightweight kind by month and status, with guarded file links", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-list-"));
+  const child = spawnLocalServer(rootDir);
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+
+    for (const route of ["/workflow-documents", "/workflow-documents/", "/workflow-documents?documentKind=goods_receipt"]) {
+      const page = await fetch(`${baseUrl}${route}`);
+      assert.equal(page.status, 200, route);
+      assert.match(await page.text(), /id="workflowDocumentRows"/, route);
+    }
+
+    const created = {};
+    for (const documentKind of LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const standalone = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: lightweightDocumentFormData(documentKind, "", { workflowStepId: "", payeeName: `ผู้รับเงิน ${documentKind}` }),
+      });
+      const august = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: lightweightDocumentFormData(documentKind, "", {
+          workflowStepId: "",
+          accountingMonth: "2026-08",
+          documentDate: "2026-08-15",
+          title: `เอกสารเดือนสิงหาคม ${documentKind}`,
+        }),
+      });
+      await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${august.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "คุณต้า" }),
+      });
+      const linked = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: lightweightDocumentFormData(documentKind, "TXN-2026-09-0001"),
+      });
+      created[documentKind] = { standalone, august, linked };
+    }
+
+    const everything = await requestJsonOk(baseUrl, "/api/workflow-documents");
+    assert.equal(everything.documents.length, LIGHTWEIGHT_DOCUMENT_KINDS.length * 3);
+
+    const numbers = (body) => body.documents.map((doc) => doc.documentNo).sort();
+    for (const documentKind of LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const { standalone, august, linked } = created[documentKind];
+      const route = (query) => `/api/workflow-documents?documentKind=${documentKind}${query}`;
+
+      const all = await requestJsonOk(baseUrl, route(""));
+      assert.deepEqual(numbers(all), [standalone, august, linked].map((doc) => doc.documentNo).sort(), documentKind);
+      assert.ok(all.documents.every((doc) => doc.documentKind === documentKind), `${documentKind}: list must be scoped to the kind`);
+
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&accountingMonth=2026-08"))), [august.documentNo], documentKind);
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&accountingMonth=2026-09"))), [standalone.documentNo, linked.documentNo].sort(), documentKind);
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&status=completed"))), [august.documentNo], documentKind);
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&status=draft"))), [standalone.documentNo, linked.documentNo].sort(), documentKind);
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&accountingMonth=2026-09&status=completed"))), [], documentKind);
+      assert.deepEqual(numbers(await requestJsonOk(baseUrl, route("&status=all"))), numbers(all), `${documentKind}: status=all means no status filter`);
+
+      const byNo = Object.fromEntries(all.documents.map((doc) => [doc.documentNo, doc]));
+      const standaloneItem = byNo[standalone.documentNo];
+      assert.equal(standaloneItem.documentDate, "2026-09-06", documentKind);
+      assert.equal(standaloneItem.accountingMonth, "2026-09", documentKind);
+      assert.equal(standaloneItem.title, `เอกสารทดสอบ ${documentKind}`, documentKind);
+      assert.equal(standaloneItem.payeeName, `ผู้รับเงิน ${documentKind}`, documentKind);
+      assert.equal(standaloneItem.totalAmount, "10.00", documentKind);
+      assert.equal(standaloneItem.status, "draft", documentKind);
+      assert.equal(standaloneItem.statusLabel, "แบบร่าง", documentKind);
+      assert.equal(standaloneItem.transactionNo, "", documentKind);
+      assert.equal(byNo[linked.documentNo].transactionNo, "TXN-2026-09-0001", documentKind);
+      assert.equal(byNo[august.documentNo].statusLabel, "เสร็จสิ้น", documentKind);
+      assert.equal(byNo[august.documentNo].documentDate, "2026-08-15", documentKind);
+
+      for (const doc of all.documents) {
+        assert.equal("absoluteFolderPath" in doc, false, `${doc.documentNo}: must not leak absoluteFolderPath`);
+        assert.ok(doc.pdfFiles.length >= 1, `${doc.documentNo}: list entry must carry its PDF`);
+        assert.equal(doc.rawFiles.length, 1, `${doc.documentNo}: list entry must carry its raw evidence`);
+        for (const file of [...doc.pdfFiles, ...doc.rawFiles]) {
+          assert.equal("absolutePath" in file, false, `${doc.documentNo}: file entries must not leak absolutePath`);
+          assert.ok(
+            file.url.startsWith(`/workflow-documents/${documentKind}/${doc.documentNo}/`),
+            `${doc.documentNo}: file url must use the guarded workflow-document route, got ${file.url}`,
+          );
+          const served = await fetch(`${baseUrl}${file.url}`);
+          assert.equal(served.status, 200, `${file.url} must be servable`);
+          await served.arrayBuffer();
+        }
+      }
+      assert.equal(JSON.stringify(all).includes(rootDir), false, `${documentKind}: list response must not contain the server's filesystem root`);
+    }
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/workflow-documents rejects filter values it does not recognise with a Thai 400 instead of querying with them", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-list-filters-"));
+  const child = spawnLocalServer(rootDir);
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData() });
+
+    const rejected = [
+      "documentKind=expense_request",
+      "documentKind=substitute_receipt",
+      "documentKind=workflow_transaction",
+      `documentKind=${encodeURIComponent("purchase_order' OR '1'='1")}`,
+      "accountingMonth=2026-13",
+      "accountingMonth=2026-9",
+      "accountingMonth=202609",
+      `accountingMonth=${encodeURIComponent("2026-09' OR 1=1 --")}`,
+      "status=bogus",
+      `status=${encodeURIComponent("draft' --")}`,
+      `transactionNo=${encodeURIComponent("' OR ''='")}`,
+      "transactionNo=TXN-2026-9-1",
+      `workflowTemplateId=${"x".repeat(201)}`,
+      "workflowStepId=step-001%00",
+      "workflowTemplateId=tpl%0A1",
+    ];
+    for (const query of rejected) {
+      const { status, body } = await requestJson(baseUrl, `/api/workflow-documents?${query}`);
+      assert.equal(status, 400, query);
+      assert.match(String(body.error), THAI_TEXT, `${query}: error must be Thai`);
+      assert.equal(body.documents, undefined, `${query}: a rejected filter must not return any documents`);
+    }
+
+    const accepted = await requestJsonOk(
+      baseUrl,
+      "/api/workflow-documents?documentKind=purchase_order&accountingMonth=2026-09&status=draft&transactionNo=&workflowTemplateId=&workflowStepId=",
+    );
+    assert.deepEqual(accepted.documents.map((doc) => doc.documentNo), ["PO-2026-09-0001"]);
+    const noTransaction = await requestJsonOk(baseUrl, "/api/workflow-documents?transactionNo=TXN-2026-09-0001");
+    assert.deepEqual(noTransaction.documents, []);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("parseWorkflowDocumentListFilters normalises accepted values and throws on anything else", () => {
+  const parse = (query) => serverLogic.parseWorkflowDocumentListFilters(new URLSearchParams(query));
+
+  assert.deepEqual(parse(""), {
+    documentKind: "",
+    accountingMonth: "",
+    status: "",
+    transactionNo: "",
+    workflowTemplateId: "",
+    workflowStepId: "",
+  });
+  assert.deepEqual(parse("documentKind=goods_receipt&accountingMonth=2026-09&status=all&transactionNo=TXN-2026-09-0004&workflowTemplateId=stock_no_tax_invoice_company_bank&workflowStepId=step-004"), {
+    documentKind: "goods_receipt",
+    accountingMonth: "2026-09",
+    status: "",
+    transactionNo: "TXN-2026-09-0004",
+    workflowTemplateId: "stock_no_tax_invoice_company_bank",
+    workflowStepId: "step-004",
+  });
+  for (const status of ["draft", "pending_approval", "approved", "completed", "cancelled"]) {
+    assert.equal(parse(`status=${status}`).status, status);
+  }
+  for (const query of ["documentKind=expense_request", "accountingMonth=2026-00", "status=received", "transactionNo=REQ-2026-09-0001"]) {
+    assert.throws(() => parse(query), THAI_TEXT, query);
+  }
+});

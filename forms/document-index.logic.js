@@ -262,6 +262,7 @@ function queryDocumentIndexRows(db, {
   workflowTemplateId,
   workflowStepId,
   status,
+  accountingMonth,
 } = {}) {
   const clauses = [];
   const params = [];
@@ -288,6 +289,13 @@ function queryDocumentIndexRows(db, {
   if (status) {
     clauses.push("status = ?");
     params.push(status);
+  }
+  // accounting_month มีดัชนีร่วมกับ document_kind อยู่แล้ว
+  // (idx_documents_kind_month) — หน้ารายการ /workflow-documents กรองด้วย
+  // เดือนบัญชีผ่านเงื่อนไขนี้ เป็น bound parameter เช่นเดียวกับตัวกรองอื่น
+  if (accountingMonth) {
+    clauses.push("accounting_month = ?");
+    params.push(accountingMonth);
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";

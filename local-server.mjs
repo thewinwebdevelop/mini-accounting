@@ -42,7 +42,8 @@ const {
   listExpenseRequests,
   listSubstituteReceipts,
   listWorkflowDocumentTypes,
-  listWorkflowDocuments,
+  listWorkflowDocumentSummaries,
+  parseWorkflowDocumentListFilters,
   listWorkflowTemplates,
   listWorkflowTransactions,
   parseMultipartForm,
@@ -156,6 +157,8 @@ function safeStaticPath(urlPath) {
     "/substitute-receipt-vendors/": "/substitute-receipt-vendors.html",
     "/workflow-document": "/workflow-document.html",
     "/workflow-document/": "/workflow-document.html",
+    "/workflow-documents": "/workflow-documents.html",
+    "/workflow-documents/": "/workflow-documents.html",
     "/workflow-templates": "/workflow-templates.html",
     "/workflow-templates/": "/workflow-templates.html",
     "/workflow-transactions": "/workflow-transactions.html",
@@ -662,16 +665,16 @@ function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
   };
 }
 
+// Backs the /workflow-documents list page. Every filter is validated by
+// parseWorkflowDocumentListFilters (a Thai 400 on anything unrecognised)
+// before it reaches the documents index, where each is a bound parameter.
+// listWorkflowDocumentSummaries already strips absolutePath from every file
+// entry; omitAbsoluteFolderPath stays here as the same last line of defence
+// the other workflow-document routes use.
 async function handleWorkflowDocumentList(url, response) {
   try {
-    const filters = {
-      documentKind: url.searchParams.get("documentKind") || "",
-      transactionNo: url.searchParams.get("transactionNo") || "",
-      workflowTemplateId: url.searchParams.get("workflowTemplateId") || "",
-      workflowStepId: url.searchParams.get("workflowStepId") || "",
-      status: url.searchParams.get("status") || "",
-    };
-    const documents = await listWorkflowDocuments(rootDir, filters);
+    const filters = parseWorkflowDocumentListFilters(url.searchParams);
+    const documents = await listWorkflowDocumentSummaries(rootDir, filters);
     sendJson(response, 200, { documents: documents.map(omitAbsoluteFolderPath) });
   } catch (error) {
     sendJson(response, 400, {
