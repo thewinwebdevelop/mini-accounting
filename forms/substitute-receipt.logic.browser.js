@@ -270,6 +270,7 @@ window.addEventListener("DOMContentLoaded", () => {
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
       businessPurpose: form.elements.businessPurpose.value,
+      additionalNote: form.elements.additionalNote.value,
       lines: collectLines(),
       evidenceFiles: collectEvidenceFilesForValidation(),
     };
@@ -358,6 +359,7 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
     form.elements.paymentReference.value = payload.paymentReference || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
+    form.elements.additionalNote.value = payload.additionalNote || "";
     if (vendorPresetSelect) vendorPresetSelect.value = "";
     state.existingEvidenceFiles = payload.evidenceFiles || {};
     lineItems.replaceChildren();

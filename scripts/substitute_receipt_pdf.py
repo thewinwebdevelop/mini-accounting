@@ -243,7 +243,7 @@ def build_substitute_receipt_story(payload):
                 paragraph(line.get("quantity")), money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
                 paragraph("-"),
             ])
-        col_widths = [10 * mm, 32 * mm, 60 * mm, 14 * mm, 22 * mm, 24 * mm, 20 * mm]
+        col_widths = [12 * mm, 32 * mm, 58 * mm, 14 * mm, 22 * mm, 24 * mm, 20 * mm]
         align_right_cols = [3, 4, 5]
     else:
         item_rows = [[
@@ -266,6 +266,16 @@ def build_substitute_receipt_story(payload):
         _totals_box(total_amount),
         Spacer(1, 10),
         Paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}", styles["DocBody"]),
+    ])
+
+    additional_note = paragraph_text(payload.get("additionalNote"))
+    if additional_note:
+        story.extend([
+            Spacer(1, 4),
+            Paragraph(f"หมายเหตุเพิ่มเติม: {additional_note}", styles["DocBody"]),
+        ])
+
+    story.extend([
         Spacer(1, 6),
         Paragraph(
             f"ข้าพเจ้าขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ "

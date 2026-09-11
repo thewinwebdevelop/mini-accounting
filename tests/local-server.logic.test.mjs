@@ -382,6 +382,7 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
         paymentChannel: "โอนผ่านบัญชีบริษัท",
         paymentReference: "KBANK-TR-001",
         businessPurpose: "ซื้อสินค้าเพื่อขาย",
+        additionalNote: "แบ่งจ่ายเงินสด 500 บาท และโอน 1,700 บาท",
         lines: [
           {
             stockSkuId: "1",
@@ -432,6 +433,7 @@ test("saveSubstituteReceiptSubmission writes PDF packet, raw evidence, and workf
     const receiptText = await extractPdfText(join(result.absoluteFolderPath, "pdf", "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"));
     assert.match(receiptText, /ใบรับรองแทนใบเสร็จรับเงิน/);
     assert.match(receiptText, /SR-2026-09-0001/);
+    assert.match(receiptText, /หมายเหตุเพิ่มเติม.*แบ่งจ่ายเงินสด 500 บาท และโอน 1,700 บาท/);
     assert.doesNotMatch(receiptText, /Checklist หลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });

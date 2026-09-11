@@ -22,6 +22,7 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /name="evidence_paymentSlip"/);
   assert.match(html, /name="evidence_purchaseOrder"/);
   assert.match(html, /name="evidence_goodsReceived"/);
+  assert.match(html, /name="additionalNote"/);
   assert.match(html, /id="submitSubstituteReceipt"/);
   assert.match(html, /id="saveDraft"/);
   assert.match(html, /id="submitForApproval"/);

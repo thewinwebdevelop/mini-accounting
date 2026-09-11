@@ -248,6 +248,7 @@ function buildSubstituteReceiptPayload(data = {}) {
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
     businessPurpose: cleanText(data.businessPurpose),
+    additionalNote: cleanText(data.additionalNote),
     lines,
     totals: {
       totalAmount: money(totalCents),
@@ -287,6 +288,7 @@ function formatSubstituteReceiptMarkdown(payload = {}) {
 ช่องทางชำระเงิน: ${payload.paymentChannel || ""}
 เลขอ้างอิงชำระเงิน: ${payload.paymentReference || ""}
 วัตถุประสงค์ทางธุรกิจ: ${payload.businessPurpose || ""}
+หมายเหตุเพิ่มเติม: ${payload.additionalNote || ""}
 โฟลเดอร์: ${payload.folderPath || ""}
 
 ## รายการ
