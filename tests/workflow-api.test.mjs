@@ -8,8 +8,11 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import serverLogic from "../forms/local-server.logic.js";
+import inventoryLogic from "../forms/inventory.logic.js";
 import workflowLogic from "../forms/workflow.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+
+const { createProduct, createStockSku } = inventoryLogic;
 
 const execFileAsync = promisify(execFile);
 
@@ -715,7 +718,7 @@ test("readExpenseRequestChildDocument degrades to null instead of throwing when 
   }
 });
 
-test("refreshWorkflowTransaction injects documentKind so expense_request and the substitute_receipt hybrid rule dispatch correctly", async () => {
+test("refreshWorkflowTransaction keeps an approved substitute receipt in progress until its explicit complete action", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
     const txn = await serverLogic.startWorkflowTransaction({
@@ -797,10 +800,93 @@ test("refreshWorkflowTransaction injects documentKind so expense_request and the
     const afterReceipt = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
     assert.equal(
       afterReceipt.steps[1].workflowStatus,
-      "completed",
-      "an approved general_expense substitute_receipt must dispatch through the hybrid rule, which needs documentKind injected",
+      "in_progress",
+      "an approved general_expense substitute_receipt must remain in progress until explicitly completed",
     );
-    assert.equal(afterReceipt.steps[2].workflowStatus, "not_started", "payment_voucher step should now be unblocked");
+    assert.equal(afterReceipt.steps[2].workflowStatus, "blocked", "payment_voucher step must remain blocked after receipt approval");
+
+    await serverLogic.completeSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      completedBy: "บัญชี",
+    });
+    const afterComplete = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterComplete.steps[1].workflowStatus, "completed", "explicit completion must complete the substitute_receipt step");
+    assert.equal(afterComplete.steps[2].workflowStatus, "not_started", "explicit completion must unblock the payment_voucher step");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("refreshWorkflowTransaction keeps a received stock substitute receipt in progress until its explicit complete action", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "O7", name: "สินค้า O7", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "O7-STOCK-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    await serverLogic.saveWorkflowTemplate({
+      rootDir,
+      template: {
+        templateId: "o7_stock_receipt_test",
+        name: "ทดสอบปิดใบรับรองสต๊อก",
+        documentSteps: [
+          { documentKind: "substitute_receipt", receiptType: "stock_purchase" },
+          { documentKind: "payment_voucher" },
+        ],
+      },
+    });
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "o7_stock_receipt_test",
+      accountingMonth: "2026-09",
+      title: "รับสินค้า O7",
+    });
+    const savedReceipt = await serverLogic.saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-05",
+        receiptTitle: "ใบรับรองแทนใบเสร็จสต๊อก",
+        receiptType: "stock_purchase",
+        payeeName: "ผู้ขายทดสอบ",
+        businessPurpose: "ซื้อสินค้าทดสอบ",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[0].stepId,
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "สินค้า O7", quantity: "2", unitCost: "100" }],
+      },
+      uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+    });
+    await serverLogic.approveSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    await serverLogic.receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+
+    const afterReceive = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterReceive.steps[0].workflowStatus, "in_progress", "receiving stock must not complete the substitute_receipt step");
+    assert.equal(afterReceive.steps[1].workflowStatus, "blocked", "payment_voucher must remain blocked after stock receiving");
+
+    await serverLogic.completeSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      completedBy: "บัญชี",
+    });
+    const afterComplete = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterComplete.steps[0].workflowStatus, "completed");
+    assert.equal(afterComplete.steps[1].workflowStatus, "not_started", "explicit completion must unblock the payment_voucher step");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -2059,9 +2145,9 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
     body: JSON.stringify({ completedBy: "บัญชี" }),
   });
 
-  // substitute_receipt: its own dedicated submission route. A general_expense
-  // receipt counts as workflow-completed once approved (the hybrid rule in
-  // deriveChildWorkflowStatus), which is reachable over HTTP.
+  // substitute_receipt: its own dedicated submission, approval, and explicit
+  // completion routes. Native completed is required before the workflow step
+  // can count as completed.
   const receiptFormData = new FormData();
   receiptFormData.append("payload", JSON.stringify({
     accountingMonth: "2026-09",
@@ -2080,6 +2166,10 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
   await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
     method: "POST",
     body: JSON.stringify({ approvedBy: "บัญชี" }),
+  });
+  await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ completedBy: "บัญชี" }),
   });
 
   return txn;
@@ -2284,9 +2374,8 @@ test("director_expense_transfer (a real shipped template) completes end to end p
     assert.equal(afterExpense.steps[1].workflowStatus, "not_started", "substitute_receipt step must now be unblocked");
 
     // Step 2: substitute_receipt — its own dedicated submission route, then
-    // approve, then the newly-wired complete route (not load-bearing here —
-    // the hybrid rule already completes an approved general_expense receipt —
-    // but wired for consistency, so exercised here too).
+    // approve, then explicitly complete. Approval alone remains in progress
+    // and keeps the payment voucher blocked.
     const receiptFormData = new FormData();
     receiptFormData.append("payload", JSON.stringify({
       accountingMonth: "2026-09",
@@ -2307,6 +2396,10 @@ test("director_expense_transfer (a real shipped template) completes end to end p
       method: "POST",
       body: JSON.stringify({ approvedBy: "บัญชี" }),
     });
+    const afterReceiptApproval = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(afterReceiptApproval.steps[1].workflowStatus, "in_progress", "approved substitute_receipt must remain in progress");
+    assert.equal(afterReceiptApproval.steps[2].workflowStatus, "blocked", "payment_voucher must remain blocked until explicit receipt completion");
+
     const receiptCompleted = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "บัญชี" }),

@@ -142,10 +142,10 @@ function renderDocumentStepsList() {
     row.querySelector(".step-order").textContent = String(index + 1);
     row.querySelector(".step-label").textContent = documentKindLabel(step.documentKind);
 
-    // receiptType only means anything on a substitute_receipt step (see
-    // deriveChildWorkflowStatus's hybrid completion rule in
-    // forms/workflow.logic.js) -- the selector stays hidden for every other
-    // document kind. A step's receiptType is defaulted right here, at render
+    // receiptType only means anything on a substitute_receipt step, where it
+    // controls whether stock receiving applies. Native "completed" alone
+    // unlocks the next workflow step. The selector stays hidden for every
+    // other document kind. A step's receiptType is defaulted here, at render
     // time, to whatever the select is showing (its first option,
     // "stock_purchase", when the step never declared one) so the visible
     // value and the value collectTemplatePayload/saveTemplate actually save

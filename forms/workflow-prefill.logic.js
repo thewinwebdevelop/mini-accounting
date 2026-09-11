@@ -375,16 +375,9 @@ function isGroupNonEmpty(value) {
 // "completed" are ever used as a source.
 //
 // Recency is the document's `workflowStepId` ("step-001", "step-002", …),
-// NOT `completedAt`. `completedAt` looks tempting (it's an ISO string, so
-// lexicographic comparison "just works"), but it is not reliably stamped: the
-// hybrid substitute_receipt completion rule (workflow.logic.js
-// deriveChildWorkflowStatus) reports a receipt as workflow-completed on
-// native status alone (general_expense+approved, stock_purchase+received)
-// without ever setting completedAt, so it can be "" on a completed source.
-// "" sorts before every real ISO string, which made a completed-but-unstamped
-// document look like the *oldest* one regardless of when it actually
-// completed. workflowStepId has no such gap: every child document carries
-// one, it sorts lexicographically into exactly template order, and a
+// NOT `completedAt`. Workflow order is the authoritative source precedence;
+// timestamps may be missing on legacy records or equal in deterministic test
+// fixtures. workflowStepId sorts lexicographically into template order, and a
 // separate binding rule already forces documents to be produced in strict
 // template order (a step after the first incomplete step is `blocked`) — so
 // step order IS completion order, deterministically, with no dependence on

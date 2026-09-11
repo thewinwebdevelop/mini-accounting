@@ -53,11 +53,10 @@ window.addEventListener("DOMContentLoaded", () => {
     // Present only when this page was opened via start-document for a
     // substitute_receipt step whose *snapshotted* workflow template declared
     // a receiptType (see handleWorkflowTransactionStartDocument in
-    // local-server.mjs and buildWorkflowStepOpenUrl). A free-form dropdown
-    // here decides, all by itself, whether the workflow step can ever
-    // complete (deriveChildWorkflowStatus's hybrid rule in
-    // forms/workflow.logic.js), so once the workflow has declared the type
-    // for this step it must not be changeable from this form. Absent (both
+    // local-server.mjs and buildWorkflowStepOpenUrl). The type controls whether
+    // stock receiving applies; native "completed" alone unlocks the next
+    // workflow step. Once the workflow has declared the type for this step it
+    // must not be changeable from this form. Absent (both
     // for standalone use and for a workflow step whose template never
     // declared one), the field stays exactly as free as it always was.
     receiptType: workflowSearchParams.get("receiptType") || "",

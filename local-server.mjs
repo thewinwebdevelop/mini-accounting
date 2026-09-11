@@ -419,11 +419,9 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
   }
 }
 
-// substitute_receipt already reaches workflow-completed through the existing
-// approve/receive-stock routes (deriveChildWorkflowStatus's hybrid rule), so
-// this route is not load-bearing for the workflow the way the expense-request
-// one above is. Wired anyway for consistency: completeSubstituteReceipt is
-// implemented and unit-tested but was otherwise unreachable over HTTP.
+// Approval and stock receiving remain native substitute_receipt transitions,
+// but only this explicit completion route reaches native "completed" and
+// unlocks the next workflow step under owner decision O7.
 async function handleSubstituteReceiptComplete(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);

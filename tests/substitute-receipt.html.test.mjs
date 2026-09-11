@@ -279,10 +279,9 @@ test("opened from a workflow step: hidden fields are populated and a safe return
 
 // --- receiptType lock: a workflow-declared step locks the field ----------
 //
-// A free-form receiptType dropdown decides, all by itself, whether a
-// workflow step can ever complete (see deriveChildWorkflowStatus's hybrid
-// rule in forms/workflow.logic.js). start-document now carries the
-// snapshotted template's declared receiptType as a `receiptType` query
+// receiptType controls whether stock receiving applies; native "completed"
+// alone unlocks the next workflow step. start-document carries the snapshotted
+// template's declared receiptType as a `receiptType` query
 // param (see handleWorkflowTransactionStartDocument in local-server.mjs);
 // this page must preselect and lock the field when that param is present,
 // and leave it completely free otherwise (standalone use, or a workflow

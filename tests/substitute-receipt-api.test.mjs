@@ -217,10 +217,9 @@ test("expense request API approves submitted requests and reports sheet sync sta
   }
 });
 
-// A free-form receiptType dropdown decides, all by itself, whether a
-// workflow step can ever complete (see deriveChildWorkflowStatus's hybrid
-// rule in forms/workflow.logic.js). forms/substitute-receipt.html locks the
-// field in the browser when opened from a workflow step, but that is a UI
+// receiptType controls whether stock receiving applies; native "completed"
+// alone unlocks the next workflow step. forms/substitute-receipt.html locks
+// the field in the browser when opened from a workflow step, but that is a UI
 // affordance only -- this test exercises the real HTTP submission route
 // (multipart form, real local-server.mjs process) with a receiptType that
 // disagrees with what the workflow step's snapshotted template declared, to

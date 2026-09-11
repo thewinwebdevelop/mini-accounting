@@ -2733,8 +2733,8 @@ async function getWorkflowTransaction(rootDir, transactionNo) {
 // reference lives in one of three places on disk. Expense requests and
 // substitute receipts do not carry a documentKind field on their own record,
 // so it is injected here before the record reaches normalizeDocumentWorkflowStatus
-// (in workflow.logic.js), which dispatches on documentKind — including the
-// hybrid substitute_receipt completion rule that inspects receiptType.
+// (in workflow.logic.js). Every kind must reach native "completed" before its
+// workflow step unlocks the next step.
 async function findLightweightWorkflowDocuments(rootDir, transactionNo) {
   if (!transactionNo) return [];
   const records = await listWorkflowDocuments(rootDir, { transactionNo });

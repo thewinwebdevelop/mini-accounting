@@ -167,11 +167,9 @@ test("buildWorkflowPrefillContext lets the most recently completed document win 
   assert.equal(sources.purpose, "PO-2026-09-0001");
 });
 
-test("buildWorkflowPrefillContext: a later step wins over an earlier step even when the later step has an empty completedAt (hybrid substitute_receipt completion never stamps completedAt)", () => {
+test("buildWorkflowPrefillContext: a later completed step wins over an earlier completed step", () => {
   // Reproduction: purchase_order -> substitute_receipt -> payment_voucher.
-  // The substitute_receipt reaches workflow-completed via the hybrid rule
-  // (general_expense + approved) without ever getting a completedAt stamp,
-  // so it is "" even though it completed strictly after the purchase order.
+  // The later workflow step wins by step order, independent of timestamps.
   const po = {
     documentKind: "purchase_order",
     documentNo: "PO-2026-09-0010",
@@ -186,9 +184,9 @@ test("buildWorkflowPrefillContext: a later step wins over an earlier step even w
     documentKind: "substitute_receipt",
     documentNo: "SR-2026-09-0010",
     workflowStepId: "step-002",
-    status: "approved",
+    status: "completed",
     receiptType: "general_expense",
-    completedAt: "",
+    completedAt: "2026-09-02T08:00:00.000Z",
     payeeName: "ร้านค้า B",
     businessPurpose: "",
     lines: [{ description: "หมึกพิมพ์", quantity: "2", unitCost: "50.00", lineTotal: "100.00" }],
@@ -218,7 +216,7 @@ test("buildWorkflowPrefillContext: a later step wins over an earlier step when b
     documentKind: "substitute_receipt",
     documentNo: "SR-2026-09-0011",
     workflowStepId: "step-002",
-    status: "approved",
+    status: "completed",
     receiptType: "general_expense",
     completedAt: "",
     payeeName: "ร้านค้า B",
@@ -321,9 +319,9 @@ test("buildWorkflowPrefillContext: a later step supplying only payee must not bl
     documentKind: "substitute_receipt",
     documentNo: "SR-2026-09-0015",
     workflowStepId: "step-002",
-    status: "approved",
+    status: "completed",
     receiptType: "general_expense",
-    completedAt: "",
+    completedAt: "2026-09-02T08:00:00.000Z",
     payeeName: "ร้านค้า B",
     // No businessPurpose, no lines at all.
   };
@@ -370,8 +368,9 @@ test("buildWorkflowPrefillContext + applyWorkflowPrefillGroups: a substitute_rec
   const completedReceipt = {
     documentKind: "substitute_receipt",
     documentNo: "SR-2026-09-0001",
-    status: "approved",
+    status: "completed",
     receiptType: "general_expense",
+    completedAt: "2026-09-02T08:00:00.000Z",
     payeeName: "ร้านค้า ก",
     businessPurpose: "ค่าใช้จ่ายทดสอบ",
     lines: [{ description: "รายการ", quantity: "1", unitCost: "100.00", lineTotal: "100.00" }],
