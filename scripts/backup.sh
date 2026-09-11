@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# สำรองข้อมูล documents/, data/ (ฐานข้อมูล SQLite) และ config/ ไปไว้นอก repo
+# สำรองข้อมูล documents/, drafts/, data/ (ฐานข้อมูล SQLite) และ config/ ไปไว้นอก repo
 # ดูรายละเอียดกลไกและตัวแปรแวดล้อมที่ปรับได้ (SWEET_HOUSE_ROOT_DIR,
 # SWEET_HOUSE_BACKUP_DIR) ใน scripts/backup.mjs
 #
