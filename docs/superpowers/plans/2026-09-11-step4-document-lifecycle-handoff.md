@@ -75,7 +75,7 @@ Index coupling — `documents.status` has a **CHECK constraint** built from `DOC
 
 ## 3. Decisions the owner must make BEFORE implementation
 
-Do not decide these yourself. Rows marked **DECIDED** or **DEFERRED** are settled by the owner (2026-09-11); rows marked **PENDING** must be confirmed with the owner before you implement them.
+Do not decide these yourself. Rows marked **DECIDED** or **DEFERRED** are settled by the owner (2026-09-11). **Every other row is only a recommendation — confirm it with the owner before implementing it.**
 
 | # | Question | Recommendation | Why |
 |---|---|---|---|
@@ -87,7 +87,7 @@ Do not decide these yourself. Rows marked **DECIDED** or **DEFERRED** are settle
 | **D-F** | Keep the D12 `receiptType` lock inside workflows? (It is the one deliberate standalone/workflow difference) | **Keep** | It prevents a real stock purchase from completing at `approved` and skipping stock receiving |
 | **D-G** | One generic form for the five kinds, or a dedicated form per kind? | **Defer; keep the generic form** | Separate, larger decision |
 | **D-H** | Fix Drive re-sync duplicating files? (`uploadFolderToGoogleDrive` reuses folders via `ensureDrivePath` but calls `uploadFileToDrive` for every file on every sync) | Optional; small, can ride along | Pre-existing; affects every sync button |
-| **D-J** | After C3, substitute receipts become the only kind whose drafts live in a separate un-numbered store (`SR-DRAFT-…`, `createSubstituteReceiptDraftId`). Align them too — draft as a status on the numbered `SR-` record? | **PENDING — ask the owner.** Recommendation: yes, in the same step, reusing the T4.3a migration pattern | Otherwise C3 itself creates a new divergence |
+| **D-J** | Align substitute-receipt drafts too — draft as a status on the numbered `SR-` record instead of the separate `SR-DRAFT-…` store? | **DECIDED (owner): yes, in the same step.** Spec in §3.3, work in T4.3b | Without it, C3 itself would create a new divergence |
 
 ### 3.1 Expense request flow today — context for D-C (verified at `58d517a`)
 
@@ -130,6 +130,25 @@ Required behaviour:
 
 Test impact, **approved by the owner through choosing C3**: roughly 29 existing references encode the old lifecycle — `"submitted"` (15, across `tests/document-index.logic.test.mjs`, `tests/document-index-consistency.test.mjs`, `tests/expense-request.logic.test.mjs`, `tests/local-server.logic.test.mjs`, `tests/document-numbering.test.mjs`, `tests/expense-requests.html.test.mjs`), "บันทึกแล้ว" (1, `tests/expense-request.logic.test.mjs`), and the separate draft store (`saveExpenseDraft` 8, `getExpenseDraft` 3, `listExpenseDrafts` 2, all in `tests/local-server.logic.test.mjs`). These **may** be updated to the new lifecycle; list every changed assertion in your report with before and after. Any assertion change **outside** the expense-request lifecycle still requires asking the owner.
 
+### 3.3 D-J — substitute-receipt drafts become numbered records (DECIDED)
+
+Verified on the owner's install (read-only) and in the code at `a85b567`:
+- Drafts live in a separate un-numbered store: `createSubstituteReceiptDraftId` (`forms/local-server.logic.js:97`, ids `SR-DRAFT-YYYY-MM-<unique>`), `saveSubstituteReceiptDraft` (`:1142`), `getSubstituteReceiptDraft` (`:1086`), `findSubstituteReceiptDraftRecords` (`:1051`), `writeSubstituteReceiptDraftRecord` (`:1132`).
+- `listSubstituteReceipts` merges those drafts into the list with `status: "draft"` and an edit link `/substitute-receipt?draftId=…`.
+- The status values already match the target — `draft`, `pending_approval`, `approved`, `received`, `completed`, `cancelled`, `voided` (`SUBSTITUTE_RECEIPT_TRANSITIONS`). **No status rename is needed**; only where drafts are stored changes. This makes D-J lower risk than C3.
+- The owner has **zero** substitute drafts. The owner's one submitted receipt, `SR-2026-09-0001` (`stock_purchase`), has **no `status` field**, like the expense request.
+
+Required behaviour:
+1. "บันทึกแบบร่าง" creates or updates a numbered `SR-` record with `status: "draft"`; the `SR-` number is allocated at first draft save through the atomic allocator. The separate `SR-DRAFT-…` store is no longer written.
+2. Submitting moves `draft → pending_approval` on the same record. Every existing transition in `SUBSTITUTE_RECEIPT_TRANSITIONS` keeps its meaning, including `pending_approval → draft`.
+3. Stock-line locking (`assertStockLinesUnchanged`) and `receiveSubstituteReceiptStock` behave exactly as today.
+4. A record with a missing status migrates to **whatever status the app reports for it today** — read what the current code shows for `SR-2026-09-0001`; do not guess — and it appears in the dry-run for the owner. Apply the same rule to the expense request in §3.2.
+5. Legacy `?draftId=` links (both `/expense-request` and `/substitute-receipt` use them) either resolve to the migrated numbered record or show a Thai "not found" message — never an error page.
+6. Because a numbered draft carries `transactionNo`, `workflowTemplateId` and `workflowStepId` from its first save, the D12 `receiptType` lock re-applies from the stored record when the draft is reopened from its list link. This closes the T4.7 re-lock item.
+7. Same migration mechanics as §3.2 item 6 (it can be the same script): idempotent, `--dry-run`, backup first, backup copy before live, **live only after the owner has seen the dry-run**.
+
+Test impact, **approved by the owner through D-J**: the separate substitute draft store appears in `tests/local-server.logic.test.mjs` (`saveSubstituteReceiptDraft` 6, `getSubstituteReceiptDraft` 3, `SR-DRAFT` 2), and `draftId` appears 30 times across `tests/expense-requests.html.test.mjs`, `tests/expense-request.html.test.mjs`, `tests/local-server.logic.test.mjs` and `tests/substitute-receipt.html.test.mjs` (shared with C3). These may be updated; list every changed assertion with before and after. Assertions about substitute-receipt **statuses, transitions, stock locking or receiving must not change.**
+
 ---
 
 ## 4. Work breakdown (assuming the recommended decisions)
@@ -149,7 +168,7 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 - Tests: all five kinds, not one representative.
 
 ### T4.3 Retrofit the two older families onto the central module
-- `substitute_receipt` guards call the central module with **no behaviour change** — its existing tests must pass unchanged (unless D-J is approved).
+- `substitute_receipt` guards call the central module; its **status values and transitions do not change** — only where drafts are stored (D-J), see T4.3b.
 - `expense_request` moves to the new lifecycle per C3 — see T4.3a.
 - Add `cancel` routes (and `void` for substitute receipts) per D-D.
 - Do **not** modify `forms/expense-request.logic.js`, `forms/substitute-receipt.logic.js`, `forms/inventory.logic.js`, or `createPurchaseInMovement()` beyond what the retrofit strictly requires; prefer putting enforcement in `forms/local-server.logic.js`. If you believe one of these must change, ask first.
@@ -158,6 +177,10 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 - Implement §3.2 in full, in its own commit(s) separate from T4.2, so it can be reviewed and reverted on its own.
 - Order: central module (T4.1) → migration script with `--dry-run` → dry-run against a backup copy, report to the owner → routes and UI → live migration only after the owner has seen the dry-run.
 - Prove: approval still writes the same Sheets row; a workflow containing an expense request (e.g. `director_expense_transfer`) still completes end to end; the `/drafts` redirect still lands on the draft list.
+
+### T4.3b Substitute-receipt draft migration (D-J)
+- Implement §3.3 in its own commit(s), after T4.3a, so both families share one migration script and one pattern.
+- Prove: a `stock_purchase` receipt still locks its stock lines and receives stock exactly as before; a `general_expense` receipt inside a workflow still completes its step at `approved`; the D12 lock re-applies when a workflow-linked draft is reopened from the list.
 
 ### T4.4 Workflow integration
 - `deriveChildWorkflowStatus` semantics unchanged; lightweight documents now reach `completed` only via `approved → completed`.
@@ -172,7 +195,7 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 
 ### T4.7 Small leftovers
 - Link from `forms/workflow-document.html` back to its list page `/workflow-documents?documentKind=...`.
-- Reopening a workflow-linked substitute-receipt draft from its list link does not visually re-lock `receiptType` (the server still enforces it).
+- ~~Reopening a workflow-linked substitute-receipt draft from its list link does not re-lock `receiptType`~~ — resolved by T4.3b (numbered drafts carry their workflow relation fields; re-lock from the stored record).
 - Optional D-H: make Drive re-sync skip files already uploaded.
 
 ---
@@ -214,7 +237,7 @@ Start the server (`PORT` free, loopback), then for a lightweight document: save 
 
 - Every declared state on every kind is reachable through an action, and every action is guarded by the central module.
 - The five lightweight kinds require approval before completion (per D-B) and can be cancelled.
-- Substitute receipts behave exactly as before, now routed through the central module, with cancel and void added (unless D-J changes their drafts).
+- Substitute receipts keep their statuses and transitions, now routed through the central module, with cancel and void added; their drafts are numbered `SR-` records (D-J), and the owner's `SR-2026-09-0001` is handled as shown in the dry-run the owner reviewed.
 - Expense requests follow the C3 lifecycle (§3.2); the owner's `REQ-2026-09-0001` is migrated as shown in the dry-run the owner reviewed.
 - A shipped template completes end to end over HTTP including approvals.
 - Full suite green with more tests than the 511 + 19 baseline; no existing assertion rewritten without the owner's approval.
