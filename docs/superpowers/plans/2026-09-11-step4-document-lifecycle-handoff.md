@@ -75,18 +75,36 @@ Index coupling — `documents.status` has a **CHECK constraint** built from `DOC
 
 ## 3. Decisions the owner must make BEFORE implementation
 
-Do not decide these yourself. Each has a recommendation; confirm with the owner.
+Do not decide these yourself. Rows marked **DECIDED** or **DEFERRED** are settled by the owner (2026-09-11); rows marked **PENDING** must be confirmed with the owner before you implement them.
 
 | # | Question | Recommendation | Why |
 |---|---|---|---|
 | **D-A** | Shape of the lifecycle | **One canonical transition table in one pure module**, with each kind declaring which states it uses plus kind-specific extensions (`received`, `voided` for substitute receipts) | One place to reason about and test; new document types declare instead of re-implementing |
-| **D-B** | Must the five lightweight kinds pass approval before `completed`? | **Yes**: `draft → pending_approval → approved → completed`. At minimum for `payment_voucher` | Brings them to parity with the other two families; closes one-person payment authorisation |
-| **D-C** | Change `expense_request`'s lifecycle to match (add `draft` / `pending_approval` as statuses)? | **No, not in step 4.** Map it into the canonical table as it is | In daily use; its drafts live in a separate store by design |
+| **D-B** | Must the five lightweight kinds pass approval before `completed`? | **DECIDED (owner): all five kinds require approval** — `draft → pending_approval → approved → completed`, no shortcut from `draft` to `completed` | Parity with the other two families; closes one-person payment authorisation |
+| **D-C** | Change `expense_request`'s lifecycle to match the others? | **PENDING — owner reviewing.** Options C1/C2/C3 in §3.1; recommendation C2 (keep the flow, relabel only) | In daily use; approval also writes the Google Sheets row |
 | **D-D** | Add `cancel` (and `void` for substitute receipts after `received`) actions? | **Yes, cancel from every pre-completion state on all kinds; void only where declared** | Declared states must have actions |
-| **D-E** | Approver identity without authentication | **Require a non-empty approver name** on approve and cancel, recorded in `statusHistory` | Real segregation of duties needs auth, which is deliberately out of scope |
+| **D-E** | Approver identity without authentication | **DEFERRED (owner): handle together with authentication later.** Do not add approver-name requirements in step 4; leave `approvedBy` handling as it is | Real segregation of duties needs auth |
 | **D-F** | Keep the D12 `receiptType` lock inside workflows? (It is the one deliberate standalone/workflow difference) | **Keep** | It prevents a real stock purchase from completing at `approved` and skipping stock receiving |
 | **D-G** | One generic form for the five kinds, or a dedicated form per kind? | **Defer; keep the generic form** | Separate, larger decision |
 | **D-H** | Fix Drive re-sync duplicating files? (`uploadFolderToGoogleDrive` reuses folders via `ensureDrivePath` but calls `uploadFileToDrive` for every file on every sync) | Optional; small, can ride along | Pre-existing; affects every sync button |
+
+### 3.1 Expense request flow today — context for D-C (verified at `58d517a`)
+
+1. **บันทึกแบบร่าง** (`#saveDraft`) → a separate draft record under `drafts/YYYY/MM/DRAFT-YYYY-MM-<unique>/`. **No `REQ-` number yet.**
+2. **บันทึกใบเบิกจ่าย** (`#submitRequest`) → allocates `REQ-YYYY-MM-NNNN`; status `submitted`, **labelled "บันทึกแล้ว"** even though it means "waiting for approval".
+3. On the **list page** `/expense-requests`, button **"อนุมัติ"** (only while `submitted`) → `approved` "อนุมัติแล้ว". Approval also **writes the Google Sheets row** via `recordMonthlyExpense`; if that fails the button becomes "ลง Sheet อีกครั้ง".
+4. On the list page, once approved and synced → `completed` "เสร็จสิ้น".
+5. `cancelled` "ยกเลิก" is declared but has no action.
+
+How it differs from the others: the waiting-for-approval state is labelled "บันทึกแล้ว" (the others say "รอตรวจอนุมัติ"); approval happens on the list page (substitute receipts approve on the form page); drafts are a separate un-numbered store (same as substitute receipts — lightweight drafts, by contrast, are numbered documents from their first save).
+
+| Option | What changes | Risk |
+|---|---|---|
+| **C1** | Nothing. Map into the central table (`submitted` ≡ waiting for approval) and add `cancel` per D-D | None |
+| **C2** (recommended) | C1 + relabel `submitted` from "บันทึกแล้ว" to "รอตรวจอนุมัติ". Stored value stays `submitted`; no data migration | Very low; any test asserting the old label needs owner approval to change |
+| **C3** | Full alignment: make draft a status on the numbered record and rename stored `submitted` → `pending_approval` | Highest: migrate existing records, touch the approve/Sheets path of a flow in daily use |
+
+Note for T4.2: lightweight drafts consume a document number at first save. With cancel added, an abandoned draft keeps its number as a `cancelled` record, which is auditable; do not change this without asking.
 
 ---
 
@@ -101,7 +119,7 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 
 ### T4.2 Lightweight kinds reach parity (standalone first)
 - Server functions + routes: `POST /api/workflow-documents/:kind/:no/submit`, `/approve`, `/cancel`.
-- Per D-B, `/complete` requires `approved`.
+- Per D-B (decided): for **all five** kinds, `/complete` requires `approved`; `draft → completed` is no longer allowed.
 - Server owns identifiers, paths, status, history and stamps (never trust client JSON — three Criticals on this branch came from that). Repeat calls are true no-ops that preserve the original stamp. Re-check the on-disk status immediately before the commit write (the existing `beforeCommit` pattern). Keep the SQLite index write-through.
 - UI: `forms/workflow-document.html` + `forms/workflow-document.logic.browser.js` show only the buttons `availableDocumentActions` allows. The list page `forms/workflow-documents.html` already filters by these statuses.
 - Tests: all five kinds, not one representative.
@@ -119,8 +137,8 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 ### T4.5 Index migration (only if new status values are introduced)
 - Rebuild the `documents` table to update the CHECK constraint, using the existing migration mechanism (`forms/inventory-db.logic.js`, `forms/document-index.logic.js`). Must be safe on the live database; verify against a backup copy first and report row counts before/after.
 
-### T4.6 Approver identity (D-E)
-- Approve and cancel require a non-empty actor name, recorded in `statusHistory`; fix the substitute-receipt UI that currently posts `approvedBy: ""`.
+### T4.6 Approver identity — DEFERRED (D-E)
+- Out of scope for step 4. The owner will address approver identity together with authentication. Do not change how `approvedBy` is captured; the known issue that the substitute-receipt UI posts `approvedBy: ""` stays as is for now.
 
 ### T4.7 Small leftovers
 - Link from `forms/workflow-document.html` back to its list page `/workflow-documents?documentKind=...`.
