@@ -551,6 +551,56 @@
       text-decoration: none;
     }
 
+    .button[hidden] {
+      display: none;
+    }
+
+    .field-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #14532d;
+      font-size: 11px;
+      font-weight: 800;
+      width: fit-content;
+    }
+
+    .field-badge[hidden] {
+      display: none;
+    }
+
+    .prefill-banner {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #93c5fd;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: #1e3a8a;
+    }
+
+    .prefill-banner[hidden] {
+      display: none;
+    }
+
+    .prefill-banner p {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .prefill-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .bottom-action-bar {
       position: fixed;
       z-index: 30;
@@ -742,6 +792,19 @@
             <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
           </div>
           <div class="menu-group">
+            <div class="menu-group-title">เอกสารจัดซื้อ / จ่ายเงิน</div>
+            <a class="menu-item" href="/workflow-documents?documentKind=purchase_order">ใบสั่งซื้อ</a>
+            <a class="menu-item" href="/workflow-documents?documentKind=payment_voucher">ใบสำคัญจ่าย</a>
+            <a class="menu-item" href="/workflow-documents?documentKind=cash_spend_declaration">ใบรับรองการจ่ายเงินสดส่วนตัว</a>
+            <a class="menu-item" href="/workflow-documents?documentKind=payee_acknowledgement">ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย</a>
+            <a class="menu-item" href="/workflow-documents?documentKind=goods_receipt">ใบรับของ/ใบรับสินค้าเข้าคลัง</a>
+          </div>
+          <div class="menu-group">
+            <div class="menu-group-title">Workflow</div>
+            <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+            <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+          </div>
+          <div class="menu-group">
             <div class="menu-group-title">ระบบ</div>
             <a class="menu-item" href="/">หน้าหลัก</a>
             <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
@@ -754,10 +817,24 @@
         <h1 class="brand-title">แบบฟอร์มใบเบิกจ่าย</h1>
         <p class="brand-subtitle">หจก.สวีทเฮาส์ - เตรียมข้อมูลสำหรับสร้าง PDF ใบเบิกจ่ายและชุดรวมส่งตรวจ</p>
       </div>
+      <a class="button secondary" id="workflowReturnLink" href="/workflow-transactions" hidden>กลับไปที่ Workflow</a>
     </header>
 
     <main class="layout">
       <form class="form-stack" id="expenseForm">
+        <input type="hidden" name="transactionNo" id="transactionNo">
+        <input type="hidden" name="workflowTemplateId" id="workflowTemplateId">
+        <input type="hidden" name="workflowStepId" id="workflowStepId">
+
+        <div class="prefill-banner" id="workflowPrefillBanner" hidden>
+          <p>พบข้อมูลจากเอกสารก่อนหน้าใน Workflow นี้ เลือกกลุ่มข้อมูลที่ต้องการนำมาใช้</p>
+          <div id="workflowPrefillGroups"></div>
+          <div class="actions">
+            <button type="button" id="workflowPrefillApply" class="button primary">ใช้ข้อมูลเดิม</button>
+            <button type="button" id="workflowPrefillDismiss" class="button secondary">กรอกใหม่</button>
+          </div>
+        </div>
+
         <section class="section">
           <div class="section-header">
             <h2 class="section-title">1. ข้อมูลเอกสาร</h2>
@@ -778,6 +855,7 @@
               <div class="field span-6">
                 <label for="requestTitle">ชื่อรายการ/ชื่อโฟลเดอร์ *</label>
                 <input id="requestTitle" name="requestTitle" placeholder="เช่น ค่าแพ็คสินค้า" required>
+                <span class="field-badge" data-badge-for="requestTitle" hidden></span>
               </div>
               <div class="field span-12">
                 <label>ประเภทคำขอ *</label>
@@ -799,6 +877,7 @@
               <div class="field span-4">
                 <label for="requesterName">ชื่อผู้ขอ *</label>
                 <input id="requesterName" name="requesterName" placeholder="เช่น คุณสวีท เจ้าของบริษัท" required>
+                <span class="field-badge" data-badge-for="requesterName" hidden></span>
               </div>
               <div class="field span-4">
                 <label for="requesterRole">แผนก/ตำแหน่ง</label>
@@ -819,6 +898,7 @@
               <div class="field span-8">
                 <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
                 <textarea id="businessPurpose" name="businessPurpose" placeholder="เช่น ซื้อซองไปรษณีย์และถุงแพ็คสินค้าเพื่อใช้จัดส่งออเดอร์ Shopee และ TikTok Shop" required></textarea>
+                <span class="field-badge" data-badge-for="businessPurpose" hidden></span>
               </div>
             </div>
           </div>
@@ -833,14 +913,17 @@
               <div class="field span-4">
                 <label for="paymentTargetName">ชื่อผู้รับเงิน/ผู้ขาย *</label>
                 <input id="paymentTargetName" name="paymentTargetName" placeholder="เช่น คุณสวีท / ร้านแพ็คกิ้งตัวอย่าง" required>
+                <span class="field-badge" data-badge-for="paymentTargetName" hidden></span>
               </div>
               <div class="field span-4">
                 <label for="paymentBankName">ธนาคาร/ช่องทางจ่าย</label>
                 <input id="paymentBankName" name="paymentBankName" placeholder="เช่น กสิกรไทย / พร้อมเพย์">
+                <span class="field-badge" data-badge-for="paymentBankName" hidden></span>
               </div>
               <div class="field span-4">
                 <label for="paymentAccountNo">เลขบัญชี/รายละเอียดบัญชี</label>
                 <input id="paymentAccountNo" name="paymentAccountNo" placeholder="เช่น 123-4-56789-0">
+                <span class="field-badge" data-badge-for="paymentAccountNo" hidden></span>
               </div>
             </div>
           </div>
@@ -852,6 +935,7 @@
             <button class="button secondary" type="button" id="addLine">เพิ่มรายการ</button>
           </div>
           <div class="section-body">
+            <span class="field-badge" data-badge-for="lines" hidden></span>
             <div class="line-table" id="lineItems"></div>
           </div>
         </section>
@@ -988,6 +1072,9 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./expense-request.logic.js"></script>
+  <script src="./workflow-return-link.browser.js"></script>
+  <script src="./workflow-prefill.logic.js"></script>
+  <script src="./workflow-prefill-banner.browser.js"></script>
   <script>
   window.addEventListener("DOMContentLoaded", async () => {
     const {
@@ -1004,6 +1091,64 @@
     const output = document.querySelector("#output");
     const errorsBox = document.querySelector("#errors");
     const saveStatus = document.querySelector("#saveStatus");
+
+    // --- Workflow context (Task 9) -----------------------------------
+    // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as
+    // query params only when this page is opened from a workflow
+    // transaction step (see /api/workflow-transactions/:transactionNo/start-document/:stepId).
+    // Opened standalone (no query params), everything below stays inert:
+    // the hidden fields stay blank, the return link stays hidden, and no
+    // prefill fetch fires.
+    const workflowParams = new URLSearchParams(location.search);
+    const workflowContext = {
+      transactionNo: workflowParams.get("transactionNo") || "",
+      workflowTemplateId: workflowParams.get("workflowTemplateId") || "",
+      workflowStepId: workflowParams.get("workflowStepId") || "",
+      returnTo: workflowParams.get("returnTo") || "",
+    };
+    const workflowReturnLink = document.querySelector("#workflowReturnLink");
+
+    function applyWorkflowHiddenFields() {
+      form.elements.transactionNo.value = workflowContext.transactionNo;
+      form.elements.workflowTemplateId.value = workflowContext.workflowTemplateId;
+      form.elements.workflowStepId.value = workflowContext.workflowStepId;
+    }
+
+    function applyWorkflowReturnLink() {
+      const safeReturnTo = window.sanitizeWorkflowReturnTo(workflowContext.returnTo);
+      if (safeReturnTo && workflowReturnLink) {
+        workflowReturnLink.href = safeReturnTo;
+        workflowReturnLink.hidden = false;
+      }
+    }
+
+    // Cross-document prefill (Task 4/Task 6/Task 7, Item 4 followup): the
+    // fetch/render/apply/badge mechanics are shared with
+    // forms/workflow-document.logic.browser.js and
+    // forms/substitute-receipt.logic.browser.js via
+    // forms/workflow-prefill-banner.browser.js. Only this form's own field
+    // names differ per group, and its lines live under the `expenseLines`
+    // patch key (every other kind uses `lines`).
+    const workflowPrefillBanner = window.WorkflowPrefillBanner.create({
+      documentKind: "expense_request",
+      transactionNo: workflowContext.transactionNo,
+      workflowStepId: workflowContext.workflowStepId,
+      form,
+      fields: {
+        payee: ["paymentTargetName", "paymentBankName", "paymentAccountNo"],
+        purpose: ["requestTitle", "businessPurpose"],
+        // requesterRole is also produced by the adapter but has never been
+        // applied here -- only requesterName rides along automatically.
+        parties: ["requesterName"],
+      },
+      linesPatchKey: "expenseLines",
+      applyLines(lines) {
+        lineItems.innerHTML = "";
+        lines.forEach((line, index) => addLineFromData(line, index === lines.length - 1));
+      },
+      onApplied: () => updatePreview(),
+    });
+    // --- End workflow context -----------------------------------------
     const uploadCards = [...document.querySelectorAll("[data-evidence-card]")];
     const uploadedFileState = Object.fromEntries(uploadCards.map((card) => [card.dataset.evidenceCard, []]));
     const savedEvidenceFileState = Object.fromEntries(uploadCards.map((card) => [card.dataset.evidenceCard, []]));
@@ -1161,6 +1306,9 @@
         paymentTargetName: fields.paymentTargetName.value,
         paymentBankName: fields.paymentBankName.value,
         paymentAccountNo: fields.paymentAccountNo.value,
+        transactionNo: fields.transactionNo.value,
+        workflowTemplateId: fields.workflowTemplateId.value,
+        workflowStepId: fields.workflowStepId.value,
         expenseLines,
         evidenceFiles: collectEvidenceFiles(),
       };
@@ -1265,6 +1413,15 @@
       const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
       if (requestTypeInput) requestTypeInput.checked = true;
 
+      // A draft saved earlier from within a workflow already carries its own
+      // transactionNo/workflowTemplateId/workflowStepId; preserve those on
+      // reload even if this particular URL no longer carries the query
+      // params (e.g. opened again later from a plain draft link).
+      workflowContext.transactionNo = payload.transactionNo || workflowContext.transactionNo;
+      workflowContext.workflowTemplateId = payload.workflowTemplateId || workflowContext.workflowTemplateId;
+      workflowContext.workflowStepId = payload.workflowStepId || workflowContext.workflowStepId;
+      applyWorkflowHiddenFields();
+
       lineItems.innerHTML = "";
       const lines = Array.isArray(payload.expenseLines) && payload.expenseLines.length ? payload.expenseLines : [{}];
       lines.forEach((line, index) => addLineFromData(line, index === lines.length - 1));
@@ -1304,6 +1461,13 @@
       form.elements.paymentAccountNo.value = payload.paymentAccountNo || "";
       const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
       if (requestTypeInput) requestTypeInput.checked = true;
+
+      // Preserve an already-submitted request's own workflow context across
+      // reloads, same reasoning as loadDraft above.
+      workflowContext.transactionNo = payload.transactionNo || workflowContext.transactionNo;
+      workflowContext.workflowTemplateId = payload.workflowTemplateId || workflowContext.workflowTemplateId;
+      workflowContext.workflowStepId = payload.workflowStepId || workflowContext.workflowStepId;
+      applyWorkflowHiddenFields();
 
       lineItems.innerHTML = "";
       const lines = Array.isArray(payload.expenseLines) && payload.expenseLines.length ? payload.expenseLines : [{}];
@@ -1448,6 +1612,9 @@
       }
     });
 
+    applyWorkflowHiddenFields();
+    applyWorkflowReturnLink();
+
     setDateDefaults();
     await updateNextRequestNo();
     const draftIdFromUrl = new URLSearchParams(location.search).get("draftId");
@@ -1458,6 +1625,11 @@
       await loadSubmittedRequest(requestNoFromUrl);
     } else {
       addLine();
+      // Only fetch cross-document prefill for a brand-new, never-saved
+      // document: an existing draft/request already has its own real data,
+      // so offering to overwrite it with an earlier document's data would be
+      // wrong.
+      workflowPrefillBanner.load();
     }
   });
   </script>

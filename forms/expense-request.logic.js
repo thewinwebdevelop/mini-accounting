@@ -6,6 +6,7 @@ const REQUEST_TYPE_LABELS = {
 const EXPENSE_REQUEST_STATUS_LABELS = {
   submitted: "บันทึกแล้ว",
   approved: "อนุมัติแล้ว",
+  completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
 };
 
@@ -167,6 +168,11 @@ function buildExpensePayload(data = {}) {
     paymentTargetName: String(data.paymentTargetName ?? "").trim(),
     paymentBankName: String(data.paymentBankName ?? "").trim(),
     paymentAccountNo: String(data.paymentAccountNo ?? "").trim(),
+    transactionNo: String(data.transactionNo ?? "").trim(),
+    workflowTemplateId: String(data.workflowTemplateId ?? "").trim(),
+    workflowStepId: String(data.workflowStepId ?? "").trim(),
+    completedAt: String(data.completedAt ?? "").trim(),
+    completedBy: String(data.completedBy ?? "").trim(),
     expenseLines: data.expenseLines,
     totals,
     evidence,

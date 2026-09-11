@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ความคืบหน้าธุรกรรม Workflow - หจก.สวีทเฮาส์</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #66788a;
+      --line: #d9e2ec;
+      --soft: #f5f7fa;
+      --panel: #ffffff;
+      --brand: #334e68;
+      --brand-strong: #102a43;
+      --accent: #0f766e;
+      --danger: #b91c1c;
+      --shadow: 0 12px 28px rgba(16, 42, 67, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Sukhumvit Set", "Thonburi", "Noto Sans Thai", Arial, sans-serif;
+      background: #eef2f6;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, select { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 22px;
+      color: #ffffff;
+      background: var(--brand-strong);
+      box-shadow: 0 2px 10px rgba(16, 42, 67, 0.16);
+    }
+
+    .brand-title { margin: 0; font-size: 18px; font-weight: 800; }
+    .brand-subtitle { margin: 2px 0 0; color: #d9e2ec; font-size: 12px; }
+    .app-menu { position: relative; }
+    .menu-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 900;
+      list-style: none;
+    }
+    .menu-button::-webkit-details-marker { display: none; }
+    .menu-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: min(330px, calc(100vw - 32px));
+      max-height: calc(100vh - 70px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 10px;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .menu-group + .menu-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef2f6; }
+    .menu-group-title { margin: 5px 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .menu-item:hover { background: var(--soft); }
+
+    .topbar-info { flex: 1; }
+    .topbar-actions { display: flex; align-items: center; gap: 8px; }
+
+    .page {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .section {
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      color: #ffffff;
+      background: var(--brand);
+    }
+
+    .section-title { margin: 0; font-size: 14px; font-weight: 800; }
+    .section-body { display: grid; gap: 10px; padding: 14px; }
+
+    .summary-list { display: grid; gap: 6px; margin: 0; }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #eef2f6;
+    }
+    .summary-row dt { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .summary-row dd { margin: 0; text-align: right; font-weight: 900; }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 7px 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .button.primary { color: #ffffff; background: var(--accent); }
+    .button.secondary { color: var(--brand-strong); background: #ffffff; border-color: #bcccdc; }
+    .button.small { min-height: 30px; padding: 6px 10px; font-size: 12px; }
+    .button:disabled { opacity: 0.45; cursor: not-allowed; }
+    /* An author rule (however low its specificity) always outranks the UA
+       stylesheet's [hidden] { display: none } default, so .button's own
+       `display: inline-flex` above would otherwise keep a hidden .button
+       element (#workflowPacketLink, #syncDriveButton) visibly rendered
+       despite its `hidden` attribute/property being true. This raises the
+       hidden case's specificity above plain .button to win instead. */
+    .button[hidden] { display: none; }
+
+    .checklist { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .checklist-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .step-order {
+      display: grid;
+      flex-shrink: 0;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .step-body { flex: 1; min-width: 0; }
+    .step-label { font-weight: 800; }
+    .step-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+    .step-actions { flex-shrink: 0; }
+
+    .status {
+      display: inline-flex;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status.not_started { color: #475569; background: #e2e8f0; }
+    .status.in_progress { color: #7c2d12; background: #ffedd5; }
+    .status.completed { color: #166534; background: #dcfce7; }
+    .status.blocked { color: #64748b; background: #f1f5f9; }
+    .muted { color: var(--muted); font-size: 12px; }
+
+    .child-document-files { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .child-document-files-item {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .child-document-files-item .title { font-weight: 800; margin-bottom: 6px; }
+    .file-groups { display: flex; flex-wrap: wrap; gap: 16px; }
+    .file-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .file-group-label { color: var(--brand); font-size: 12px; font-weight: 800; }
+    .file-link {
+      padding: 4px 8px;
+      color: var(--brand-strong);
+      background: var(--soft);
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .file-link:hover { background: #e4e7eb; }
+    .empty-row { padding: 12px; border: 1px dashed #bcccdc; border-radius: 8px; color: var(--muted); text-align: center; }
+
+    .status-box {
+      display: none;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--brand-strong);
+      font-size: 12px;
+      white-space: pre-line;
+    }
+    .status-box.active { display: block; }
+    .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+
+    #driveSyncStatus { white-space: pre-line; }
+    .status.sync_failed { color: #991b1b; background: #fee2e2; }
+    .drive-sync-documents { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+    .drive-sync-documents[hidden] { display: none; }
+    .drive-sync-document {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .drive-sync-document .title { font-weight: 800; }
+
+    @media (max-width: 640px) {
+      .checklist-item { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    This page drives the transaction forward through these API calls (see
+    forms/workflow.logic.browser.js):
+      POST /api/workflow-transactions/:transactionNo/refresh
+      POST /api/workflow-transactions/:transactionNo/start-document/:stepId
+      POST /api/workflow-transactions/:transactionNo/complete
+      POST /api/workflow-transactions/:transactionNo/sync-drive
+    start-document self-refreshes server-side before checking the current
+    step, and returns a URL (already carrying transactionNo,
+    workflowTemplateId, workflowStepId, returnTo) that this page navigates to.
+    complete is enabled only once every step is completed; sync-drive is the
+    manual fallback shown when the template's syncGoogleDrive toggle is off,
+    and the retry shown whenever a sync did not get everything into Drive. It
+    sends every child document through its own sync action, then the
+    transaction folder; #driveSyncDocuments shows each one's result. There is
+    no Sheets sync route or UI anywhere on this page (decision D6).
+  -->
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนูหลัก">
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบสต๊อก</div>
+          <a class="menu-item" href="/inventory-dashboard">Dashboard สต๊อก</a>
+          <a class="menu-item" href="/inventory-stock-list">List Stock</a>
+          <a class="menu-item" href="/inventory-ledger">ข้อมูลสต๊อก / Stock Card</a>
+          <a class="menu-item" href="/inventory-purchase-in">รับสินค้าเข้าคลัง</a>
+          <a class="menu-item" href="/inventory">สร้างสินค้า / Stock SKU</a>
+          <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
+          <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
+          <a class="menu-item" href="/platform-orders">Platform Orders</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
+          <a class="menu-item" href="/expense-requests">รายการใบเบิกจ่ายทั้งหมด</a>
+          <a class="menu-item" href="/expense-request">สร้างใบเบิกจ่ายใหม่</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ใบรับรองแทนใบเสร็จ</div>
+          <a class="menu-item" href="/substitute-receipts">รายการใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt">สร้างใบรับรองแทนใบเสร็จ</a>
+          <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">เอกสารจัดซื้อ / จ่ายเงิน</div>
+          <a class="menu-item" href="/workflow-documents?documentKind=purchase_order">ใบสั่งซื้อ</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payment_voucher">ใบสำคัญจ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=cash_spend_declaration">ใบรับรองการจ่ายเงินสดส่วนตัว</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payee_acknowledgement">ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=goods_receipt">ใบรับของ/ใบรับสินค้าเข้าคลัง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">Workflow</div>
+          <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+          <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
+        </div>
+      </nav>
+    </details>
+    <div class="topbar-info">
+      <h1 class="brand-title">ธุรกรรม <span id="transactionNumber">-</span></h1>
+      <p class="brand-subtitle"><span id="transactionTitleDisplay">-</span> · Template: <span id="transactionTemplateName">-</span></p>
+    </div>
+    <div class="topbar-actions">
+      <button class="button secondary small" type="button" id="refreshTransactionButton">รีเฟรชสถานะ</button>
+      <a class="button secondary small" id="workflowPacketLink" href="#" hidden>ดาวน์โหลดชุดรวมเอกสาร Workflow</a>
+      <a class="button secondary small" href="/workflow-transactions">รายการธุรกรรมทั้งหมด</a>
+    </div>
+  </header>
+
+  <main class="page" id="transactionPage" data-transactions-url="/api/workflow-transactions">
+    <section class="section" aria-label="ความคืบหน้าธุรกรรม">
+      <div class="section-header">
+        <h2 class="section-title">ความคืบหน้า</h2>
+      </div>
+      <div class="section-body">
+        <div id="workflowProgress" class="muted">กำลังโหลดข้อมูล...</div>
+        <button class="button primary" type="button" id="completeTransactionButton" disabled>ปิดงานธุรกรรม</button>
+        <div class="status-box" id="transactionStatus"></div>
+      </div>
+    </section>
+
+    <section class="section" aria-label="ซิงก์ Google Drive" id="driveSyncSection" hidden>
+      <div class="section-header">
+        <h2 class="section-title">ซิงก์ Google Drive</h2>
+      </div>
+      <div class="section-body">
+        <div id="driveSyncStatus" class="muted">-</div>
+        <button class="button secondary" type="button" id="syncDriveButton" hidden>ซิงก์ Google Drive</button>
+        <ul class="drive-sync-documents" id="driveSyncDocuments" aria-label="ผลการซิงก์ Google Drive แยกตามเอกสาร" hidden></ul>
+      </div>
+    </section>
+
+    <section class="section" aria-label="ลำดับเอกสารของธุรกรรมนี้">
+      <div class="section-header">
+        <h2 class="section-title">ลำดับเอกสารที่ต้องจัดทำ</h2>
+      </div>
+      <div class="section-body">
+        <ul class="checklist" id="documentChecklist"></ul>
+      </div>
+    </section>
+
+    <section class="section" aria-label="ไฟล์เอกสารย่อยของธุรกรรมนี้">
+      <div class="section-header">
+        <h2 class="section-title">ไฟล์เอกสารแยกตามรายการ</h2>
+      </div>
+      <div class="section-body">
+        <ul class="child-document-files" id="childDocumentFiles"></ul>
+      </div>
+    </section>
+  </main>
+
+  <template id="documentChecklistItemTemplate">
+    <li class="checklist-item">
+      <span class="step-order"></span>
+      <div class="step-body">
+        <div class="step-label"></div>
+        <div class="step-meta">
+          <span class="status workflow-status"></span>
+          <span class="status native-status" hidden></span>
+          <span class="document-no muted" hidden></span>
+        </div>
+      </div>
+      <div class="step-actions">
+        <button type="button" class="button primary small" data-step-action>เปิดเอกสาร</button>
+      </div>
+    </li>
+  </template>
+
+  <script src="./workflow.logic.js"></script>
+  <script src="./workflow.logic.browser.js"></script>
+</body>
+</html>

@@ -93,7 +93,7 @@ def text(value, fallback="-"):
 
 
 def document_no(payload):
-    return payload.get("requestNo") or payload.get("receiptNo")
+    return payload.get("requestNo") or payload.get("receiptNo") or payload.get("documentNo")
 
 
 def amount(value):

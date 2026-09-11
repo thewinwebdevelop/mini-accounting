@@ -179,6 +179,7 @@
     .status.draft { color: #78350f; background: #fef3c7; }
     .status.submitted { color: #166534; background: #dcfce7; }
     .status.approved { color: #155e75; background: #cffafe; }
+    .status.completed { color: #166534; background: #dcfce7; }
     .status.not_synced { color: #7c2d12; background: #ffedd5; }
     .status.synced { color: #155e75; background: #cffafe; }
     .status.needs_resync { color: #7c2d12; background: #fef3c7; }
@@ -273,6 +274,19 @@
           <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
         </div>
         <div class="menu-group">
+          <div class="menu-group-title">เอกสารจัดซื้อ / จ่ายเงิน</div>
+          <a class="menu-item" href="/workflow-documents?documentKind=purchase_order">ใบสั่งซื้อ</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payment_voucher">ใบสำคัญจ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=cash_spend_declaration">ใบรับรองการจ่ายเงินสดส่วนตัว</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payee_acknowledgement">ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=goods_receipt">ใบรับของ/ใบรับสินค้าเข้าคลัง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">Workflow</div>
+          <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+          <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+        </div>
+        <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
@@ -344,6 +358,7 @@
         draft: "แบบร่าง",
         submitted: "บันทึกแล้ว",
         approved: "อนุมัติแล้ว",
+        completed: "เสร็จสิ้น",
         cancelled: "ยกเลิก",
       }[status] || status || "-";
     }
@@ -418,8 +433,16 @@
         : request.status === "approved" && request.sheetSyncStatus !== "synced"
           ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}">ลง Sheet อีกครั้ง</button>`
         : "";
+      // The natural place to close out an approved expense request: once it
+      // is approved and already synced to Sheet, there is nothing left to do
+      // but mark it complete — the same control workflow-document.html gives
+      // every lightweight kind ("เสร็จสิ้นเอกสาร"), wired here for
+      // expense_request so its workflow step can ever leave in_progress.
+      const completeButton = request.status === "approved" && request.sheetSyncStatus === "synced"
+        ? `<button class="button primary small" type="button" data-complete="${escapeHtml(requestNo)}">เสร็จสิ้น</button>`
+        : "";
 
-      return `<div class="actions">${approveButton}${editTarget}${pdfTarget}${rawTarget}${driveTarget}${sheetTarget}${syncButton}${drivePath}</div>`;
+      return `<div class="actions">${approveButton}${completeButton}${editTarget}${pdfTarget}${rawTarget}${driveTarget}${sheetTarget}${syncButton}${drivePath}</div>`;
     }
 
     function render() {
@@ -513,6 +536,30 @@
       }
     }
 
+    async function completeRequest(requestNo, button) {
+      if (!requestNo) return;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "กำลังบันทึก...";
+      listStatus.textContent = `กำลังทำให้ ${requestNo} เสร็จสิ้น...`;
+
+      try {
+        const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}/complete`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ completedBy: "" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "ทำให้เสร็จสิ้นไม่สำเร็จ");
+        await loadRequests();
+        listStatus.textContent = `เสร็จสิ้นแล้ว: ${requestNo}`;
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = originalText;
+        listStatus.textContent = error.message || "ทำให้เสร็จสิ้นไม่สำเร็จ";
+      }
+    }
+
     const initialStatus = new URLSearchParams(location.search).get("status");
     if (["all", "draft", "submitted", "approved"].includes(initialStatus)) {
       statusFilter.value = initialStatus;
@@ -522,6 +569,11 @@
       const button = event.target.closest("[data-sync-drive]");
       if (button) {
         syncDrive(button.dataset.syncDrive, button);
+        return;
+      }
+      const completeButton = event.target.closest("[data-complete]");
+      if (completeButton) {
+        completeRequest(completeButton.dataset.complete, completeButton);
         return;
       }
       const approveButton = event.target.closest("[data-approve]");

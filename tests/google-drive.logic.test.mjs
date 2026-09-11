@@ -211,3 +211,71 @@ test("uploadFolderToGoogleDrive creates Drive folders and uploads local files", 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+// The workflow Drive sync's "already synced" handling rests on this: the
+// uploader reuses Drive *folders* (ensureDrivePath looks each one up before
+// creating it) but never looks for an existing *file* -- every call opens a
+// fresh upload session per local file, so uploading the same folder twice
+// puts every file in Drive twice.
+test("uploadFolderToGoogleDrive reuses folders but is not idempotent for files: a second upload of the same folder creates every file again", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-drive-"));
+  const folderPath = "documents/2026/09/purchase_order/PO-2026-09-0001_ทดสอบ";
+  const absoluteFolderPath = join(rootDir, folderPath);
+  const folders = new Map();
+  const folderQueries = [];
+  const uploadSessions = [];
+  let nextId = 1;
+
+  try {
+    await mkdir(join(absoluteFolderPath, "pdf"), { recursive: true });
+    await writeFile(join(absoluteFolderPath, "pdf", "PO-2026-09-0001.pdf"), "%PDF-test");
+    await saveGoogleDriveConfig({ rootDir, clientId: "client-id.apps.googleusercontent.com", clientSecret: "client-secret" });
+    await writeFile(join(rootDir, "config", "google-drive-token.json"), JSON.stringify({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+
+    // A fake Drive that remembers the folders it has created, so a lookup
+    // for an existing folder finds it the way the real API would.
+    const fetchImpl = async (url, options = {}) => {
+      const target = String(url);
+      if (target.startsWith("https://www.googleapis.com/drive/v3/files?")) {
+        const query = new URL(target).searchParams.get("q");
+        folderQueries.push(query);
+        const [, parentId, name] = query.match(/^'(.+?)' in parents and name = '(.+?)'/);
+        const id = folders.get(`${parentId}/${name}`);
+        return { ok: true, json: async () => ({ files: id ? [{ id, webViewLink: `https://drive.google.com/drive/folders/${id}` }] : [] }) };
+      }
+      if (target === "https://www.googleapis.com/drive/v3/files") {
+        const body = JSON.parse(options.body);
+        const id = `folder-${nextId++}`;
+        folders.set(`${body.parents[0]}/${body.name}`, id);
+        return { ok: true, json: async () => ({ id, webViewLink: `https://drive.google.com/drive/folders/${id}` }) };
+      }
+      if (target.startsWith("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable")) {
+        uploadSessions.push(JSON.parse(options.body).name);
+        const sessionId = nextId++;
+        return { ok: true, headers: { get: (header) => (header.toLowerCase() === "location" ? `https://upload.example/${sessionId}` : null) } };
+      }
+      if (target.startsWith("https://upload.example/")) {
+        return { ok: true, json: async () => ({ id: `file-${nextId++}` }) };
+      }
+      throw new Error(`Unexpected URL: ${target}`);
+    };
+
+    const first = await uploadFolderToGoogleDrive({ rootDir, folderPath, fetchImpl });
+    const foldersAfterFirst = folders.size;
+    const second = await uploadFolderToGoogleDrive({ rootDir, folderPath, fetchImpl });
+
+    assert.equal(second.driveFolderId, first.driveFolderId, "the document's Drive folder is found and reused, not created twice");
+    assert.equal(folders.size, foldersAfterFirst, "no folder is created on the second upload");
+    assert.deepEqual(uploadSessions, ["PO-2026-09-0001.pdf", "PO-2026-09-0001.pdf"], "the same file is uploaded again on the second call");
+    assert.ok(
+      folderQueries.every((query) => query.includes("mimeType = 'application/vnd.google-apps.folder'")),
+      "the uploader only ever looks up folders, never an existing file",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

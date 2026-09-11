@@ -17,10 +17,13 @@ const {
   createProduct,
   createStockSku,
   getStockCard,
+  listStockMovementsByReference,
 } = inventoryLogic;
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  completeExpenseRequest,
+  completeSubstituteReceipt,
   getExpenseDraft,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
@@ -98,6 +101,29 @@ function validSlipUpload() {
   return [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }];
 }
 
+function validExpensePayload(overrides = {}) {
+  return {
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าส่งพัสดุ",
+    requestType: "reimbursement",
+    requesterName: "คุณต้า",
+    businessPurpose: "เบิกค่าใช้จ่าย",
+    paymentTargetName: "คุณต้า",
+    expenseLines: [
+      {
+        date: "2026-09-05",
+        category: "ค่าส่ง/ขนส่ง",
+        description: "ค่าส่งสินค้า",
+        vendor: "ขนส่งตัวอย่าง",
+        amountBeforeVat: "100",
+        vatAmount: "7",
+        withholdingTax: "3",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 test("parseMultipartForm extracts payload fields and uploaded evidence files", () => {
   const boundary = "----sweet-house-test";
   const body = Buffer.from(
@@ -126,43 +152,106 @@ test("parseMultipartForm extracts payload fields and uploaded evidence files", (
   assert.equal(result.files[0].buffer.toString("utf8"), "invoice-content");
 });
 
-test("getNextExpenseRequestInfo calculates the next sequence from saved request folders", async () => {
+// getNextExpenseRequestInfo used to scan documents/YYYY/MM/.../REQ-... folder
+// names on disk for the highest sequence in use. That made it a second,
+// independent source of truth from allocateExpenseRequestNumber (the real
+// write-path allocator, which has always read document_number_allocations
+// instead) -- the two could permanently disagree the moment a number was
+// allocated without a folder ever being created for it (a write failure
+// after allocation; see the module comment in document-index.logic.js). Now
+// that read paths query the same index the write path maintains, the "/next"
+// preview reads the exact same ledger allocateExpenseRequestNumber writes
+// to, so it always agrees with the number the very next real submission will
+// receive -- proven below by allocating for real right after peeking.
+test("getNextExpenseRequestInfo previews the exact number the next real allocation will receive", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
-    await mkdir(join(rootDir, "documents", "2026", "09", "เบิกจ่าย", "REQ-2026-09-0002_old"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "09", "เบิกจ่าย", "REQ-2026-09-0010_latest"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "10", "เบิกจ่าย", "REQ-2026-10-0004_other-month"), { recursive: true });
-
     assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
-      sequence: "11",
-      requestNo: "REQ-2026-09-0011",
+      sequence: "1",
+      requestNo: "REQ-2026-09-0001",
     });
+
+    const first = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ทดสอบ",
+        requestType: "reimbursement",
+        requesterName: "คุณทดสอบ",
+        expenseLines: [],
+      },
+    });
+    assert.equal(first.requestNo, "REQ-2026-09-0001");
+
+    // Peeking again and again must never move the number itself, and must
+    // now reflect the one real submission above.
+    assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      requestNo: "REQ-2026-09-0002",
+    });
+    assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-09"), {
+      sequence: "2",
+      requestNo: "REQ-2026-09-0002",
+    });
+
+    // A different month has its own independent sequence.
     assert.deepEqual(await getNextExpenseRequestInfo(rootDir, "2026-11"), {
       sequence: "1",
       requestNo: "REQ-2026-11-0001",
     });
+
+    const second = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ทดสอบสอง",
+        requestType: "reimbursement",
+        requesterName: "คุณทดสอบ",
+        expenseLines: [],
+      },
+    });
+    assert.equal(second.requestNo, "REQ-2026-09-0002", "the real allocation must land on exactly the number just previewed");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("getNextSubstituteReceiptInfo calculates the next SR sequence from saved receipt folders", async () => {
+test("getNextSubstituteReceiptInfo previews the exact number the next real allocation will receive", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
 
   try {
-    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0002_old"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "09", "ใบรับรองแทนใบเสร็จ", "SR-2026-09-0010_latest"), { recursive: true });
-    await mkdir(join(rootDir, "documents", "2026", "10", "ใบรับรองแทนใบเสร็จ", "SR-2026-10-0004_other-month"), { recursive: true });
-
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
-      sequence: "11",
-      receiptNo: "SR-2026-09-0011",
+      sequence: "1",
+      receiptNo: "SR-2026-09-0001",
     });
+
+    const draft = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-04",
+        receiptTitle: "ทดสอบ",
+        receiptType: "general_expense",
+        payeeName: "ผู้ทดสอบ",
+        businessPurpose: "ทดสอบ",
+        lines: [],
+      },
+      uploads: [],
+    });
+
+    // Drafts never consume a real SR number -- the peek must still say "1".
+    assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
+      sequence: "1",
+      receiptNo: "SR-2026-09-0001",
+    });
+
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-11"), {
       sequence: "1",
       receiptNo: "SR-2026-11-0001",
     });
+
+    assert.equal(draft.draftId.startsWith("SR-DRAFT-2026-09-"), true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -594,6 +683,81 @@ test("approve and receive substitute receipt stock are separate idempotent trans
   }
 });
 
+test("receiveSubstituteReceiptStock repeated call is a true no-op: preserves the audit stamp, appends no history, and never double-counts inventory", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-receive-noop-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "NOP", name: "เสื้อ NOP", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "NOP-BLACK-L",
+      color: "ดำ",
+      size: "L",
+      defaultUnitCost: "80",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ NOP", quantity: "3", unitCost: "80" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const received = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลังสินค้า A",
+      now: () => "2026-09-05T09:00:00.000Z",
+    });
+    assert.equal(received.status, "received");
+    assert.equal(received.stockMovements.length, 1);
+
+    const loadedFirst = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedFirst.payload.stockReceipt.receivedAt, "2026-09-05T09:00:00.000Z");
+    assert.equal(loadedFirst.payload.stockReceipt.receivedBy, "คลังสินค้า A");
+    const historyLengthAfterFirstReceive = loadedFirst.payload.statusHistory.length;
+
+    const movementsAfterFirstReceive = listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo);
+    assert.equal(movementsAfterFirstReceive.length, 1);
+    const balanceAfterFirstReceive = getStockCard(rootDir, stockSku.id).balance.quantityOnHand;
+    assert.equal(balanceAfterFirstReceive, 3);
+
+    // A retry (or double-clicked "receive" button) with a different actor and
+    // a later timestamp must not throw, must not rewrite who received the
+    // goods and when, must not append to statusHistory, and — separately —
+    // must not double-count inventory: no second movement set, no balance
+    // change.
+    const receivedAgain = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-06",
+      receivedBy: "คลังสินค้า B",
+      now: () => "2026-09-06T15:30:00.000Z",
+    });
+    assert.equal(receivedAgain.status, "received");
+
+    const loadedAgain = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedAgain.payload.stockReceipt.receivedAt, "2026-09-05T09:00:00.000Z", "original receivedAt must survive a repeat receive");
+    assert.equal(loadedAgain.payload.stockReceipt.receivedBy, "คลังสินค้า A", "original receivedBy must survive a repeat receive");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstReceive, "repeat receive must append no history entry");
+
+    // Inventory side: movements and balance are unchanged by the second call.
+    assert.equal(receivedAgain.stockMovements.length, 1, "repeat receive must not report a second movement set");
+    assert.deepEqual(
+      receivedAgain.stockMovements.map((movement) => movement.id),
+      movementsAfterFirstReceive.map((movement) => movement.id),
+      "repeat receive must return the same movement ids created by the first receive",
+    );
+    const movementsAfterSecondReceive = listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo);
+    assert.equal(movementsAfterSecondReceive.length, 1, "no second purchase-in movement may be created in the database");
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, balanceAfterFirstReceive, "stock balance must be unchanged by a repeat receive");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("approveSubstituteReceipt records an approved receipt into the monthly expense sheet", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-sheet-"));
   const recordedEntries = [];
@@ -640,6 +804,318 @@ test("approveSubstituteReceipt records an approved receipt into the monthly expe
     assert.equal(loaded.payload.sheetSync.spreadsheetId, "sheet-2026");
     assert.equal(loaded.payload.sheetSync.sheetName, "2026-09");
     assert.equal(loaded.payload.sheetSync.rowNumber, 2);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt marks an approved general expense receipt completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const completed = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(completed.completedAt, "2026-09-06T15:00:00.000Z");
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.statusLabel, "เสร็จสิ้น");
+    assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loaded.payload.completedBy, "บัญชี");
+    assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+    assert.equal(
+      loaded.payload.statusHistory.filter((entry) => entry.toStatus === "completed").length,
+      1,
+    );
+
+    const receipts = await listSubstituteReceipts(rootDir);
+    const listedReceipt = receipts.find((receipt) => receipt.receiptNo === submitted.receiptNo);
+    assert.equal(listedReceipt.nextAction, "เสร็จสิ้น");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 8a: appendSubstituteReceiptStatus used to stamp changedAt from the
+// real wall clock while its callers (approveSubstituteReceipt,
+// receiveSubstituteReceiptStock, completeSubstituteReceipt) stamped their own
+// audit field (approvedAt/receivedAt/completedAt) from the injectable `now`
+// — one event, two clocks, so statusHistory.at(-1).changedAt could disagree
+// with the audit field describing the exact same event. now() is injected
+// here specifically so a real clock split would show up as a mismatch
+// (real wall-clock time never equals a fixed injected string).
+test("appendSubstituteReceiptStatus stamps one timestamp per event: statusHistory.changedAt matches the caller's own audit field", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+
+    await approveSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      approvedBy: "บัญชี",
+      now: () => "2026-09-06T10:00:00.000Z",
+    });
+    const afterApprove = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(afterApprove.payload.approvedAt, "2026-09-06T10:00:00.000Z");
+    assert.equal(
+      afterApprove.payload.statusHistory.at(-1).changedAt,
+      afterApprove.payload.approvedAt,
+      "the approval event's statusHistory entry must carry the exact same timestamp as approvedAt",
+    );
+
+    await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    const afterComplete = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(afterComplete.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(
+      afterComplete.payload.statusHistory.at(-1).changedAt,
+      afterComplete.payload.completedAt,
+      "the completion event's statusHistory entry must carry the exact same timestamp as completedAt",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("appendSubstituteReceiptStatus stamps one timestamp for the receive-stock event too", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "TS8", name: "เสื้อ TS8", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "TS8-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ TS8", quantity: "1", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+      now: () => "2026-09-06T12:00:00.000Z",
+    });
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.stockReceipt.receivedAt, "2026-09-06T12:00:00.000Z");
+    assert.equal(
+      loaded.payload.statusHistory.at(-1).changedAt,
+      loaded.payload.stockReceipt.receivedAt,
+      "the receive-stock event's statusHistory entry must carry the exact same timestamp as stockReceipt.receivedAt",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 8b: a fresh completion used to hand back pdfFiles entries shaped like
+// {name, path, absolutePath, size, pageCount, annexedRawFiles} (straight from
+// the PDF generator script), while the idempotent no-op (repeat completion)
+// branch handed back {name, path, absolutePath, url} (from listPdfFiles) —
+// same field, two shapes, depending on whether the caller happened to be
+// first. Settled on the listPdfFiles shape (carries a working download url,
+// which is what a caller of approve/receive/complete actually wants; nothing
+// in this codebase reads size/pageCount off these responses — the browser
+// only ever reads pdfFiles.length).
+test("completeSubstituteReceipt's pdfFiles carry the same {name, url} shape on a fresh completion and on the idempotent repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+
+    const firstComplete = await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
+    const repeatComplete = await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "someone-else" });
+
+    assert.ok(firstComplete.pdfFiles.length > 0);
+    for (const file of firstComplete.pdfFiles) {
+      assert.ok(file.url, "a fresh completion's pdfFiles entries must carry a working url, not just size/pageCount");
+    }
+    assert.deepEqual(
+      firstComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      repeatComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      "a fresh completion and an idempotent repeat must hand back the same pdfFiles shape",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt is idempotent when a completed receipt is completed again", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "general_expense",
+        lines: [{ description: "ค่าส่งสินค้า", quantity: "1", unitCost: "85" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    const afterFirstComplete = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    const historyLengthAfterFirstComplete = afterFirstComplete.payload.statusHistory.length;
+
+    // A retry (double-click, replayed request, different actor) must not overwrite
+    // the audit-trail fields recorded by the original completion.
+    const completedAgain = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "ผู้จัดการ",
+      now: () => "2026-09-06T16:00:00.000Z",
+    });
+    assert.equal(completedAgain.status, "completed");
+    assert.equal(completedAgain.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(completedAgain.completedBy, "บัญชี");
+
+    const loadedAgain = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loadedAgain.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loadedAgain.payload.completedBy, "บัญชี");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstComplete);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt marks a received stock purchase receipt completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "CMP", name: "เสื้อ CMP", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "CMP-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ CMP", quantity: "2", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+
+    const completed = await completeSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      completedBy: "บัญชี",
+    });
+    assert.equal(completed.status, "completed");
+
+    // Completing the receipt must not touch the already-recorded stock movement / balance.
+    assert.equal(getStockCard(rootDir, stockSku.id).balance.quantityOnHand, 2);
+
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.stockReceipt.movementIds.length, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt refuses to complete a receipt still pending approval", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+
+    await assert.rejects(
+      completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" }),
+      /Invalid substitute receipt status transition: pending_approval -> completed/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeSubstituteReceipt does not allow receiving stock after completion", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "PST", name: "เสื้อ PST", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "PST-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: Object.assign(validSubstituteReceiptPayload(), {
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "เสื้อ PST", quantity: "1", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
+
+    await assert.rejects(
+      receiveSubstituteReceiptStock({
+        rootDir,
+        receiptNo: submitted.receiptNo,
+        receivedDate: "2026-09-05",
+        receivedBy: "คลัง",
+      }),
+      /Invalid substitute receipt status transition: completed -> received/,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -712,6 +1188,142 @@ test("approveExpenseRequest moves a submitted request to approved and records mo
     const approvedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(approvedRecord.status, "approved");
     assert.equal(approvedRecord.sheetSyncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest transitions approved request to completed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    const completed = await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.completedBy, "บัญชี");
+    assert.equal(completed.completedAt, "2026-09-06T15:00:00.000Z");
+
+    const loaded = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loaded.payload.status, "completed");
+    assert.equal(loaded.payload.statusLabel, "เสร็จสิ้น");
+    assert.equal(loaded.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loaded.payload.completedBy, "บัญชี");
+    assert.equal(loaded.payload.statusHistory.at(-1).toStatus, "completed");
+    assert.equal(
+      loaded.payload.statusHistory.filter((entry) => entry.toStatus === "completed").length,
+      1,
+    );
+
+    const requests = await listExpenseRequests(rootDir);
+    const listedRequest = requests.find((request) => request.requestNo === saved.requestNo);
+    assert.equal(listedRequest.nextAction, "เสร็จสิ้น");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// Item 8b, expense-request side of the same fix: completeExpenseRequest's
+// fresh-completion branch used to hand back the raw PDF-generator shape
+// (size/pageCount, no url) while its own idempotent repeat branch used
+// listPdfFiles's shape (url, no size/pageCount). Both must now agree.
+test("completeExpenseRequest's pdfFiles carry the same {name, url} shape on a fresh completion and on the idempotent repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+
+    const firstComplete = await completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" });
+    const repeatComplete = await completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "someone-else" });
+
+    assert.ok(firstComplete.pdfFiles.length > 0);
+    for (const file of firstComplete.pdfFiles) {
+      assert.ok(file.url, "a fresh completion's pdfFiles entries must carry a working url, not just size/pageCount");
+    }
+    assert.deepEqual(
+      firstComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      repeatComplete.pdfFiles.map((file) => ({ name: file.name, url: file.url })),
+      "a fresh completion and an idempotent repeat must hand back the same pdfFiles shape",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest refuses to complete a request that was never approved", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+
+    await assert.rejects(
+      completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" }),
+      /Invalid expense request status transition: submitted -> completed/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("completeExpenseRequest is idempotent when a completed request is completed again", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
+  try {
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    await approveExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      approvedBy: "เจ้าของ",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "บัญชี",
+      now: () => "2026-09-06T15:00:00.000Z",
+    });
+    const afterFirstComplete = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    const historyLengthAfterFirstComplete = afterFirstComplete.payload.statusHistory.length;
+
+    // A retry (double-click, replayed request, different actor) must not overwrite
+    // the audit-trail fields recorded by the original completion.
+    const completedAgain = await completeExpenseRequest({
+      rootDir,
+      requestNo: saved.requestNo,
+      completedBy: "ผู้จัดการ",
+      now: () => "2026-09-06T16:00:00.000Z",
+    });
+    assert.equal(completedAgain.status, "completed");
+    assert.equal(completedAgain.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(completedAgain.completedBy, "บัญชี");
+
+    const loadedAgain = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loadedAgain.payload.completedAt, "2026-09-06T15:00:00.000Z");
+    assert.equal(loadedAgain.payload.completedBy, "บัญชี");
+    assert.equal(loadedAgain.payload.statusHistory.length, historyLengthAfterFirstComplete);
+
+    // Cannot fall back to approved once completed.
+    await assert.rejects(
+      approveExpenseRequest({
+        rootDir,
+        requestNo: saved.requestNo,
+        approvedBy: "เจ้าของ",
+        expenseRecorder: async () => ({ syncStatus: "not_required" }),
+      }),
+      /Invalid expense request status transition: completed -> approved/,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

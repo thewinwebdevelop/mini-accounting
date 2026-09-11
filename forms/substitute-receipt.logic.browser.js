@@ -37,6 +37,34 @@ window.addEventListener("DOMContentLoaded", () => {
   const stockReceiptNotice = document.querySelector("#stockReceiptNotice");
   const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
 
+  // --- Workflow context (Task 9) ---------------------------------------
+  // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as query
+  // params only when this page is opened from a workflow transaction step
+  // (see /api/workflow-transactions/:transactionNo/start-document/:stepId).
+  // Opened standalone (no query params), everything below stays inert: the
+  // hidden fields stay blank, the return link stays hidden, and no prefill
+  // fetch fires.
+  const workflowSearchParams = new URLSearchParams(location.search);
+  const workflowContext = {
+    transactionNo: workflowSearchParams.get("transactionNo") || "",
+    workflowTemplateId: workflowSearchParams.get("workflowTemplateId") || "",
+    workflowStepId: workflowSearchParams.get("workflowStepId") || "",
+    returnTo: workflowSearchParams.get("returnTo") || "",
+    // Present only when this page was opened via start-document for a
+    // substitute_receipt step whose *snapshotted* workflow template declared
+    // a receiptType (see handleWorkflowTransactionStartDocument in
+    // local-server.mjs and buildWorkflowStepOpenUrl). A free-form dropdown
+    // here decides, all by itself, whether the workflow step can ever
+    // complete (deriveChildWorkflowStatus's hybrid rule in
+    // forms/workflow.logic.js), so once the workflow has declared the type
+    // for this step it must not be changeable from this form. Absent (both
+    // for standalone use and for a workflow step whose template never
+    // declared one), the field stays exactly as free as it always was.
+    receiptType: workflowSearchParams.get("receiptType") || "",
+  };
+  const receiptTypeWorkflowNote = document.querySelector("#receiptTypeWorkflowNote");
+  const workflowReturnLink = document.querySelector("#workflowReturnLink");
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -139,7 +167,11 @@ window.addEventListener("DOMContentLoaded", () => {
   function applyStockLineLock() {
     const locked = stockLinesLocked();
     addLineButton.disabled = locked;
-    form.elements.receiptType.disabled = locked;
+    // A workflow-declared receiptType (see workflowContext.receiptType
+    // above) stays locked regardless of the receipt's own approved/received
+    // status -- it must never be re-enabled just because the document is
+    // still a fresh draft.
+    form.elements.receiptType.disabled = locked || !!workflowContext.receiptType;
     lineItems.querySelectorAll(".stock-line").forEach((row) => {
       row.querySelector('select[name="stockSkuId"]').disabled = locked;
       row.querySelector('input[name="quantity"]').disabled = locked;
@@ -270,6 +302,9 @@ window.addEventListener("DOMContentLoaded", () => {
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
       businessPurpose: form.elements.businessPurpose.value,
+      transactionNo: form.elements.transactionNo.value,
+      workflowTemplateId: form.elements.workflowTemplateId.value,
+      workflowStepId: form.elements.workflowStepId.value,
       lines: collectLines(),
       evidenceFiles: collectEvidenceFilesForValidation(),
     };
@@ -347,11 +382,61 @@ window.addEventListener("DOMContentLoaded", () => {
     updatePreview();
   }
 
+  function applyWorkflowHiddenFields() {
+    form.elements.transactionNo.value = workflowContext.transactionNo;
+    form.elements.workflowTemplateId.value = workflowContext.workflowTemplateId;
+    form.elements.workflowStepId.value = workflowContext.workflowStepId;
+  }
+
+  function applyWorkflowReturnLink() {
+    const safeReturnTo = window.sanitizeWorkflowReturnTo(workflowContext.returnTo);
+    if (safeReturnTo && workflowReturnLink) {
+      workflowReturnLink.href = safeReturnTo;
+      workflowReturnLink.hidden = false;
+    }
+  }
+
+  // Cross-document prefill (Task 4/Task 6/Task 7, Item 4 followup): the
+  // fetch/render/apply/badge mechanics are shared with
+  // forms/workflow-document.logic.browser.js and forms/expense-request.html
+  // via forms/workflow-prefill-banner.browser.js. Only this form's own field
+  // names differ per group. substitute_receipt has no requester field at
+  // all, so `fields.parties` is omitted -- the shared controller then never
+  // has a parties field to apply here.
+  const workflowPrefillBanner = window.WorkflowPrefillBanner.create({
+    documentKind: "substitute_receipt",
+    transactionNo: workflowContext.transactionNo,
+    workflowStepId: workflowContext.workflowStepId,
+    form,
+    fields: {
+      payee: ["payeeName", "payeeTaxId"],
+      purpose: ["receiptTitle", "businessPurpose"],
+    },
+    applyLines(lines) {
+      lineItems.replaceChildren();
+      for (const line of lines) addStockLine(line);
+    },
+    onApplied: () => updatePreview(),
+  });
+
+  function applyWorkflowReceiptTypeLock() {
+    if (!workflowContext.receiptType) return;
+    form.elements.receiptType.value = workflowContext.receiptType;
+    form.elements.receiptType.disabled = true;
+    if (receiptTypeWorkflowNote) receiptTypeWorkflowNote.hidden = false;
+  }
+
   function fillForm(payload = {}) {
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
     form.elements.receiptDate.value = payload.receiptDate || todayInputValue();
     form.elements.receiptType.disabled = false;
     form.elements.receiptType.value = payload.receiptType || "stock_purchase";
+    // Overrides the value/disabled state above when this page was opened
+    // from a workflow step that declared a receiptType -- the workflow's
+    // decision always wins over whatever a reloaded draft/receipt payload
+    // carries. A no-op for standalone use and for a workflow step whose
+    // template never declared one (workflowContext.receiptType is "").
+    applyWorkflowReceiptTypeLock();
     form.elements.receiptTitle.value = payload.receiptTitle || "";
     form.elements.payeeName.value = payload.payeeName || "";
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";
@@ -359,6 +444,14 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.paymentReference.value = payload.paymentReference || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
     if (vendorPresetSelect) vendorPresetSelect.value = "";
+    // A draft/receipt saved earlier from within a workflow already carries
+    // its own transactionNo/workflowTemplateId/workflowStepId; preserve
+    // those on reload even if this particular URL no longer carries the
+    // query params (e.g. opened again later from a plain list link).
+    workflowContext.transactionNo = payload.transactionNo || workflowContext.transactionNo;
+    workflowContext.workflowTemplateId = payload.workflowTemplateId || workflowContext.workflowTemplateId;
+    workflowContext.workflowStepId = payload.workflowStepId || workflowContext.workflowStepId;
+    applyWorkflowHiddenFields();
     state.existingEvidenceFiles = payload.evidenceFiles || {};
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
@@ -497,6 +590,9 @@ window.addEventListener("DOMContentLoaded", () => {
     setTimeout(resetFormState);
   });
 
+  applyWorkflowHiddenFields();
+  applyWorkflowReturnLink();
+
   fillForm();
   Promise.all([refreshStockSkus(), refreshVendors(), refreshNextReceipt()])
     .then(async () => {
@@ -504,6 +600,12 @@ window.addEventListener("DOMContentLoaded", () => {
         await loadDraft(queryDraftId);
       } else if (queryReceiptNo) {
         await loadReceipt(queryReceiptNo);
+      } else {
+        // Only fetch cross-document prefill for a brand-new, never-saved
+        // document: an existing draft/receipt already has its own real
+        // data, so offering to overwrite it with an earlier document's data
+        // would be wrong.
+        workflowPrefillBanner.load();
       }
       updatePreview();
     })
