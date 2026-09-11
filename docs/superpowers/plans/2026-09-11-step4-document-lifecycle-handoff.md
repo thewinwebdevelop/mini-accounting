@@ -81,12 +81,13 @@ Do not decide these yourself. Rows marked **DECIDED** or **DEFERRED** are settle
 |---|---|---|---|
 | **D-A** | Shape of the lifecycle | **One canonical transition table in one pure module**, with each kind declaring which states it uses plus kind-specific extensions (`received`, `voided` for substitute receipts) | One place to reason about and test; new document types declare instead of re-implementing |
 | **D-B** | Must the five lightweight kinds pass approval before `completed`? | **DECIDED (owner): all five kinds require approval** — `draft → pending_approval → approved → completed`, no shortcut from `draft` to `completed` | Parity with the other two families; closes one-person payment authorisation |
-| **D-C** | Change `expense_request`'s lifecycle to match the others? | **PENDING — owner reviewing.** Options C1/C2/C3 in §3.1; recommendation C2 (keep the flow, relabel only) | In daily use; approval also writes the Google Sheets row |
+| **D-C** | Change `expense_request`'s lifecycle to match the others? | **DECIDED (owner): C3 — full alignment.** Spec in §3.2, work in T4.3a | Highest-risk option, chosen by the owner for consistency across all document types |
 | **D-D** | Add `cancel` (and `void` for substitute receipts after `received`) actions? | **Yes, cancel from every pre-completion state on all kinds; void only where declared** | Declared states must have actions |
 | **D-E** | Approver identity without authentication | **DEFERRED (owner): handle together with authentication later.** Do not add approver-name requirements in step 4; leave `approvedBy` handling as it is | Real segregation of duties needs auth |
 | **D-F** | Keep the D12 `receiptType` lock inside workflows? (It is the one deliberate standalone/workflow difference) | **Keep** | It prevents a real stock purchase from completing at `approved` and skipping stock receiving |
 | **D-G** | One generic form for the five kinds, or a dedicated form per kind? | **Defer; keep the generic form** | Separate, larger decision |
 | **D-H** | Fix Drive re-sync duplicating files? (`uploadFolderToGoogleDrive` reuses folders via `ensureDrivePath` but calls `uploadFileToDrive` for every file on every sync) | Optional; small, can ride along | Pre-existing; affects every sync button |
+| **D-J** | After C3, substitute receipts become the only kind whose drafts live in a separate un-numbered store (`SR-DRAFT-…`, `createSubstituteReceiptDraftId`). Align them too — draft as a status on the numbered `SR-` record? | **PENDING — ask the owner.** Recommendation: yes, in the same step, reusing the T4.3a migration pattern | Otherwise C3 itself creates a new divergence |
 
 ### 3.1 Expense request flow today — context for D-C (verified at `58d517a`)
 
@@ -101,10 +102,33 @@ How it differs from the others: the waiting-for-approval state is labelled "บ�
 | Option | What changes | Risk |
 |---|---|---|
 | **C1** | Nothing. Map into the central table (`submitted` ≡ waiting for approval) and add `cancel` per D-D | None |
-| **C2** (recommended) | C1 + relabel `submitted` from "บันทึกแล้ว" to "รอตรวจอนุมัติ". Stored value stays `submitted`; no data migration | Very low; any test asserting the old label needs owner approval to change |
-| **C3** | Full alignment: make draft a status on the numbered record and rename stored `submitted` → `pending_approval` | Highest: migrate existing records, touch the approve/Sheets path of a flow in daily use |
+| **C2** | C1 + relabel `submitted` from "บันทึกแล้ว" to "รอตรวจอนุมัติ". Stored value stays `submitted`; no data migration | Very low; any test asserting the old label needs owner approval to change |
+| **C3** ✅ **chosen by the owner** | Full alignment: make draft a status on the numbered record and rename stored `submitted` → `pending_approval` | Highest: migrate existing records, touch the approve/Sheets path of a flow in daily use |
 
 Note for T4.2: lightweight drafts consume a document number at first save. With cancel added, an abandoned draft keeps its number as a `cancelled` record, which is auditable; do not change this without asking.
+
+### 3.2 C3 — target expense request lifecycle (DECIDED)
+
+Target: `draft → pending_approval → approved → completed`, plus `cancelled` — the same lifecycle as the lightweight kinds.
+
+Facts verified against the owner's real data (read-only) and the code at `bc866c2`:
+- The owner's install has exactly **one** expense request, `REQ-2026-09-0001`, whose payload has **no `status` field at all** and an empty `statusHistory`. Today `normalizeExpenseRequestStatus` treats a missing status as `submitted`. The migration must handle a missing status, not only a literal `submitted`.
+- **Zero** expense drafts and **zero** substitute drafts exist under `drafts/` on the owner's install.
+- The `/drafts` page only redirects to `/expense-requests?status=draft`; keep that URL working.
+- The Google Sheets row (`buildExpenseRequestSheetEntry`) carries **no status**, so renaming the status does not change Sheets output. Approval must still write the row exactly as it does today.
+- `documents.status` CHECK already allows `draft`, `submitted` and `pending_approval` (`forms/document-index.logic.js:51`), so C3 needs **no** index table rebuild. Keep `submitted` allowed for legacy history.
+
+Required behaviour:
+1. **Draft is a status on the numbered record.** "บันทึกแบบร่าง" creates or updates a `REQ-` record with `status: "draft"`; the `REQ-` number is allocated at first draft save through the existing atomic allocator. New expense drafts no longer go to the separate `drafts/` store.
+2. **New submit action "ส่งตรวจอนุมัติ"**: `draft → pending_approval`. Approve is allowed only from `pending_approval`. Offer approve on the form page as well as keeping the list-page button, so the actions match the other kinds.
+3. **Stored value renamed.** New records never store `submitted`. Existing records whose status is missing or `submitted` migrate to `pending_approval`.
+4. **Never rewrite `statusHistory`.** Historical entries may say `submitted`; readers interpret legacy `submitted` as `pending_approval`. The migration appends one history entry recording the migration itself.
+5. **Legacy `DRAFT-…` records** (none on the owner's install, but handle them): convert each into a numbered `draft` record, or keep them readable; state which, and report counts.
+6. **Migration mechanics.** A separate idempotent script with a `--dry-run` mode that prints every change it would make; take a backup first (`scripts/backup.sh`); run it against a backup copy before live data; report each record before and after. Re-running it changes nothing. **Run it on the owner's live data only after the owner has seen the dry-run report.**
+7. Labels: `draft` "แบบร่าง", `pending_approval` "รอตรวจอนุมัติ", `approved` "อนุมัติแล้ว", `completed` "เสร็จสิ้น", `cancelled` "ยกเลิก".
+8. Inside a workflow, an expense request now also passes `draft → pending_approval → approved → completed`, and its relation fields (`transactionNo`, `workflowTemplateId`, `workflowStepId`) live on the numbered draft record from its first save.
+
+Test impact, **approved by the owner through choosing C3**: roughly 29 existing references encode the old lifecycle — `"submitted"` (15, across `tests/document-index.logic.test.mjs`, `tests/document-index-consistency.test.mjs`, `tests/expense-request.logic.test.mjs`, `tests/local-server.logic.test.mjs`, `tests/document-numbering.test.mjs`, `tests/expense-requests.html.test.mjs`), "บันทึกแล้ว" (1, `tests/expense-request.logic.test.mjs`), and the separate draft store (`saveExpenseDraft` 8, `getExpenseDraft` 3, `listExpenseDrafts` 2, all in `tests/local-server.logic.test.mjs`). These **may** be updated to the new lifecycle; list every changed assertion in your report with before and after. Any assertion change **outside** the expense-request lifecycle still requires asking the owner.
 
 ---
 
@@ -125,9 +149,15 @@ Follow TDD in every task: failing test → confirm it fails for the right reason
 - Tests: all five kinds, not one representative.
 
 ### T4.3 Retrofit the two older families onto the central module
-- `substitute_receipt` and `expense_request` guards call the central module. **Behaviour must not change** — their existing tests must pass unchanged.
+- `substitute_receipt` guards call the central module with **no behaviour change** — its existing tests must pass unchanged (unless D-J is approved).
+- `expense_request` moves to the new lifecycle per C3 — see T4.3a.
 - Add `cancel` routes (and `void` for substitute receipts) per D-D.
 - Do **not** modify `forms/expense-request.logic.js`, `forms/substitute-receipt.logic.js`, `forms/inventory.logic.js`, or `createPurchaseInMovement()` beyond what the retrofit strictly requires; prefer putting enforcement in `forms/local-server.logic.js`. If you believe one of these must change, ask first.
+
+### T4.3a Expense request lifecycle migration (C3)
+- Implement §3.2 in full, in its own commit(s) separate from T4.2, so it can be reviewed and reverted on its own.
+- Order: central module (T4.1) → migration script with `--dry-run` → dry-run against a backup copy, report to the owner → routes and UI → live migration only after the owner has seen the dry-run.
+- Prove: approval still writes the same Sheets row; a workflow containing an expense request (e.g. `director_expense_transfer`) still completes end to end; the `/drafts` redirect still lands on the draft list.
 
 ### T4.4 Workflow integration
 - `deriveChildWorkflowStatus` semantics unchanged; lightweight documents now reach `completed` only via `approved → completed`.
@@ -184,7 +214,8 @@ Start the server (`PORT` free, loopback), then for a lightweight document: save 
 
 - Every declared state on every kind is reachable through an action, and every action is guarded by the central module.
 - The five lightweight kinds require approval before completion (per D-B) and can be cancelled.
-- The two older families behave exactly as before, now routed through the central module, with cancel (and void) added.
+- Substitute receipts behave exactly as before, now routed through the central module, with cancel and void added (unless D-J changes their drafts).
+- Expense requests follow the C3 lifecycle (§3.2); the owner's `REQ-2026-09-0001` is migrated as shown in the dry-run the owner reviewed.
 - A shipped template completes end to end over HTTP including approvals.
 - Full suite green with more tests than the 511 + 19 baseline; no existing assertion rewritten without the owner's approval.
 - Commits staged by path, pushed; PR target decided by the owner.
