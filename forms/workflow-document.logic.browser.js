@@ -24,6 +24,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const lineCountPreview = document.querySelector("#lineCountPreview");
   const totalAmountPreview = document.querySelector("#totalAmountPreview");
   const pageTitle = document.querySelector("#pageTitle");
+  const documentListLink = document.querySelector("#workflowDocumentListLink");
 
   function todayInputValue() {
     const now = new Date();
@@ -69,6 +70,12 @@ window.addEventListener("DOMContentLoaded", () => {
   function applyDocumentKindLabel() {
     const definition = workflowLogic?.getDocumentTypeDefinition?.(state.documentKind);
     if (definition?.label && pageTitle) pageTitle.textContent = definition.label;
+  }
+
+  function applyDocumentListLink() {
+    if (logic?.LIGHTWEIGHT_DOCUMENT_KINDS?.includes(state.documentKind)) {
+      documentListLink?.setAttribute("href", `/workflow-documents?documentKind=${encodeURIComponent(state.documentKind)}`);
+    }
   }
 
   function addLine(initial = {}) {
@@ -244,6 +251,7 @@ window.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("submit", (event) => event.preventDefault());
 
   applyDocumentKindLabel();
+  applyDocumentListLink();
   fillForm();
 
   if (state.documentNo) {

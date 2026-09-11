@@ -37,7 +37,7 @@ function runAsClassicScriptInBrowserSandbox(source) {
 // applyPrefillPatch is reached through in the real page. Returns the elements
 // a test needs to drive and inspect the per-group prefill checkboxes.
 async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}) {
-  const { documentKind = "purchase_order", loadRealPrefillLogic = false } = options;
+  const { documentKind = "purchase_order", loadRealPrefillLogic = false, search } = options;
 
   const realHtml = await readFile(htmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
@@ -52,7 +52,7 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}
   const context = vm.createContext({
     window,
     document: fakeDocument,
-    location: { search: `?documentKind=${documentKind}&transactionNo=TXN-2026-09-0001&workflowStepId=step-1` },
+    location: { search: search ?? `?documentKind=${documentKind}&transactionNo=TXN-2026-09-0001&workflowStepId=step-1` },
     URLSearchParams,
     // The script calls bare `fetch(...)`, which in a real browser resolves
     // through the global object (== window). In this vm context the sandbox
@@ -140,6 +140,26 @@ test("workflow document shell hides the return link until a valid returnTo is re
   const returnLinkMatch = html.match(/<a[^>]*id="workflowReturnLink"[^>]*>/);
   assert.ok(returnLinkMatch, "expected a #workflowReturnLink anchor");
   assert.match(returnLinkMatch[0], /hidden/);
+});
+
+test("workflow document list backlink stays visible and keeps supported kinds scoped", async () => {
+  const cases = [
+    ["?documentKind=purchase_order", "/workflow-documents?documentKind=purchase_order"],
+    ["?documentKind=payment_voucher", "/workflow-documents?documentKind=payment_voucher"],
+    ["?documentKind=cash_spend_declaration", "/workflow-documents?documentKind=cash_spend_declaration"],
+    ["?documentKind=payee_acknowledgement", "/workflow-documents?documentKind=payee_acknowledgement"],
+    ["?documentKind=goods_receipt", "/workflow-documents?documentKind=goods_receipt"],
+    ["?documentKind=unknown_kind", "/workflow-documents"],
+    ["", "/workflow-documents"],
+  ];
+
+  for (const [search, expectedHref] of cases) {
+    const { elements } = await setupWorkflowDocumentPrefillSandbox({}, { search });
+    const link = elements.workflowDocumentListLink;
+    assert.ok(link, `${search || "missing documentKind"}: expected a list backlink`);
+    assert.equal(link.hidden, false, `${search || "missing documentKind"}: list backlink must remain visible`);
+    assert.equal(link.getAttribute("href"), expectedHref, `${search || "missing documentKind"}: list backlink href`);
+  }
 });
 
 test("workflow document shell shows a prefill banner with apply/dismiss actions", async () => {
