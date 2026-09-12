@@ -56,11 +56,25 @@
 - เอกสารขั้นที่ complete แล้วไม่ย้อนกลับ; การยกเลิกใช้ O3 (cancel ทั้ง workflow)
 - Assertion/test เดิมที่คาดว่า approved/received จบขั้นอัตโนมัติต้องเปลี่ยนตามคำตัดสินนี้และรายงานก่อน/หลัง
 
-## คำถามที่ส่งให้เจ้าของงานแล้ว
+### O8 — ยืนยันสถาปัตยกรรมและฟอร์มเดิม (D-A / D-F / D-G)
+
+เจ้าของงานตอบ “ใช่” ต่อการใช้ state machine กลางหนึ่งชุด, คง receiptType lock ตาม workflow และคงฟอร์มร่วมของ lightweight ทั้ง 5 ชนิดตาม handoff ยืนยันทั้งสามข้อแล้ว ไม่ต้องถามซ้ำ
+
+## คำถามที่ยังรอคำตอบ
 
 1. Workflow sync Sheets ลงหนึ่งแถวต่อ transaction หรือไม่ และใช้ยอด/ข้อมูลจากเอกสารใดหรือให้เลือกก่อน sync?
 2. Cancel ทั้ง workflow ต้องย้อนสต๊อกและลบ Sheets ของทั้ง transaction หรือไม่? หากสต๊อกไม่พอ ห้าม cancel หรืออนุญาตติดลบ?
 3. ใน modal O4 เมื่อเลือกไม่รับสต๊อก ให้ complete ต่อหรือกลับหน้าเอกสารโดยไม่ complete?
+4. หลังส่งตรวจอนุมัติ ล็อกเนื้อหาและไฟล์แนบหรือยังให้แก้ได้โดยคงสถานะเดิม?
+
+## การจัดทีมล่าสุด (2026-09-12)
+
+เจ้าของงานเปลี่ยนโมเดลสำหรับงานถัดไป โดย PM ยังคงจัดงานและถามเมื่อข้อกำหนดไม่ชัดเจน:
+
+- Architecture & Security review: GPT-5.6 Sol, Medium
+- Senior backend / frontend developer: GPT-5.6 Terra, Medium
+- Junior backend / frontend developer: GPT-5.5 สำหรับงานตาม spec หรืองานง่าย; ไม่ระบุ reasoning จึงใช้ค่าเริ่มต้น Medium
+- งานและผลรีวิวที่เสร็จแล้วคงหลักฐานโมเดลเดิม; งานรีวิวที่ค้างส่งต่อให้ทีมตามการตั้งค่าใหม่นี้
 
 ## ประเด็นที่ต้องทบทวนในแผน
 
@@ -68,7 +82,7 @@
 - ยกเลิก transaction ที่มีเอกสารลูก completed แล้วโดยไม่แก้ย้อนหลังประวัติการ complete
 - แยกการบันทึกสถานะจากงาน sync ภายนอก และการ retry ที่ไม่สร้างสต๊อก/แถว/ไฟล์ซ้ำ
 - Assertion เดิมที่ขัดกับ O1–O6 ต้องปรับตามคำสั่งล่าสุดและรายงานก่อน/หลัง; ไม่คงข้อห้ามจาก handoff เพื่อขัดคำสั่งใหม่
-- คำถามเดิมที่ยังไม่ได้ตอบ (เช่น D-A, D-G, legacy draft policy, D-H) ยังไม่ได้รับการตัดสินจากคำตอบชุดนี้
+- คำถามเดิมเรื่อง legacy draft policy และ D-H ยังไม่ได้รับการตัดสิน; D-A/D-F/D-G ยืนยันแล้วตาม O8
 - การ migration ข้อมูลจริงยังไม่เริ่ม ต้องผ่านรายงาน dry-run ให้เจ้าของงานดูก่อน
 
 ## ความคืบหน้าที่แยกทำได้โดยไม่ต้องเดาคำตอบ
@@ -76,4 +90,6 @@
 - `82c3690`: เพิ่มลิงก์จากฟอร์ม lightweight กลับรายการเอกสารตามชนิด; ผ่านการทดสอบและ Architecture/Security review
 - `17418fd`: สำรอง drafts/ พร้อมไฟล์แนบด้วยกลไก copy-and-verify เดิม; ผ่านการทดสอบและ Architecture/Security review
 - `4dd2c05`: เปลี่ยน derived workflow status เป็น explicit completed เท่านั้นตาม O7; ชุดทดสอบที่เกี่ยวข้อง 173 รายการและชุดเต็ม 515 Node + 19 Python ผ่าน; Architecture/Security review ผ่านโดยไม่มี Critical/Important findings
-- งาน lifecycle กลาง, approval ของ lightweight, migration, cancel/void และ manual sync ยังไม่เสร็จ ไม่ถือว่าความคืบหน้าข้างต้นเป็นการส่งมอบ Step 4 ทั้งหมด
+- `93e1530`: lifecycle กลางพร้อมชุดทดสอบ matrix และ browser/CommonJS ผ่าน Architecture/Security review; ยังไม่เชื่อมเข้า API/หน้าฟอร์ม
+- `49b631b`: กรอง absolutePath/absoluteFolderPath ที่ JSON response กลาง; ชุดเต็มผ่าน 531 Node + 19 Python; Architecture/Security (Sol Medium) review ผ่าน ไม่มี findings และ reviewer ยืนยัน RED/GREEN ซ้ำ
+- งานเชื่อม lifecycle เข้า API/หน้าฟอร์ม, approval ของ lightweight, migration, cancel/void และ manual sync ยังไม่เสร็จ ไม่ถือว่าความคืบหน้าข้างต้นเป็นการส่งมอบ Step 4 ทั้งหมด
