@@ -2065,7 +2065,8 @@ const ALL_DOCUMENT_KINDS = [
   "substitute_receipt",
 ];
 
-async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
+async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl, { captureResponse } = {}) {
+  const capture = captureResponse || (() => {});
   await requestJsonOk(baseUrl, "/api/workflow-templates", {
     method: "POST",
     body: JSON.stringify({
@@ -2103,10 +2104,19 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
     formData.append("evidence_evidence", new Blob([`evidence-for-${documentKind}`], { type: "text/plain" }), "evidence.txt");
 
     const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: formData });
-    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+    capture(`${documentKind} submission`, created);
+    const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
     });
+    capture(`${documentKind} complete`, completed);
+    if (captureResponse) {
+      const repeated = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "คุณต้า" }),
+      });
+      capture(`${documentKind} repeat complete`, repeated);
+    }
   }
 
   // expense_request: its own dedicated submission route. A PDF is generated
@@ -2134,16 +2144,26 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
   }));
   expenseFormData.append("evidence_businessEvidence", new Blob(["evidence-for-expense_request"], { type: "text/plain" }), "evidence.txt");
   const expenseSubmitted = await requestJsonOk(baseUrl, "/api/expense-requests", { method: "POST", body: expenseFormData });
-  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
+  capture("expense_request submission", expenseSubmitted);
+  const expenseApproved = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
     method: "POST",
     body: JSON.stringify({ approvedBy: "เจ้าของ" }),
   });
+  capture("expense_request approve", expenseApproved);
   // Completed over its real HTTP route (Important 2 fix) — an expense_request
   // step could never leave in_progress before this route was wired.
-  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+  const expenseCompleted = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
     method: "POST",
     body: JSON.stringify({ completedBy: "บัญชี" }),
   });
+  capture("expense_request complete", expenseCompleted);
+  if (captureResponse) {
+    const expenseRepeated = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    capture("expense_request repeat complete", expenseRepeated);
+  }
 
   // substitute_receipt: its own dedicated submission, approval, and explicit
   // completion routes. Native completed is required before the workflow step
@@ -2163,17 +2183,127 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
   }));
   receiptFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
   const receiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", { method: "POST", body: receiptFormData });
-  await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
+  capture("substitute_receipt submission", receiptSubmitted);
+  const receiptApproved = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
     method: "POST",
     body: JSON.stringify({ approvedBy: "บัญชี" }),
   });
-  await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+  capture("substitute_receipt approve", receiptApproved);
+  const receiptCompleted = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
     method: "POST",
     body: JSON.stringify({ completedBy: "บัญชี" }),
   });
+  capture("substitute_receipt complete", receiptCompleted);
+  if (captureResponse) {
+    const receiptRepeated = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    capture("substitute_receipt repeat complete", receiptRepeated);
+  }
 
   return txn;
 }
+
+function assertNoPrivateAbsolutePathKeys(value, label, location = "response") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertNoPrivateAbsolutePathKeys(entry, label, `${location}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  for (const [key, nested] of Object.entries(value)) {
+    assert.notEqual(key, "absolutePath", `${label}: ${location} must omit absolutePath`);
+    assert.notEqual(key, "absoluteFolderPath", `${label}: ${location} must omit absoluteFolderPath`);
+    assertNoPrivateAbsolutePathKeys(nested, label, `${location}.${key}`);
+  }
+}
+
+test("every document action JSON response recursively omits private absolute path keys", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const responses = [];
+    const txn = await buildTransactionWithEveryDocumentKind(rootDir, baseUrl, {
+      captureResponse: (label, body) => responses.push({ label, body }),
+    });
+
+    const { product } = await requestJsonOk(baseUrl, "/api/inventory/products", {
+      method: "POST",
+      body: JSON.stringify({ productCode: "PATH-GUARD", name: "สินค้าทดสอบ path guard", category: "เสื้อ" }),
+    });
+    const { stockSku } = await requestJsonOk(baseUrl, "/api/inventory/stock-skus", {
+      method: "POST",
+      body: JSON.stringify({
+        productId: product.id,
+        sku: "PATH-GUARD-ONE",
+        color: "ขาว",
+        size: "M",
+        defaultUnitCost: "10",
+      }),
+    });
+    const stockReceiptFormData = new FormData();
+    stockReceiptFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-06",
+      receiptTitle: "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ",
+      receiptType: "stock_purchase",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ receive-stock response",
+      lines: [{
+        stockSkuId: String(stockSku.id),
+        sku: stockSku.sku,
+        description: "สินค้าทดสอบ",
+        quantity: "1",
+        unitCost: "10",
+      }],
+    }));
+    stockReceiptFormData.append("evidence_paymentSlip", new Blob(["stock-slip"], { type: "text/plain" }), "stock-slip.txt");
+    const stockReceiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: stockReceiptFormData,
+    });
+    responses.push({ label: "stock substitute_receipt submission", body: stockReceiptSubmitted });
+    const stockReceiptApproved = await requestJsonOk(baseUrl, `/api/substitute-receipts/${stockReceiptSubmitted.receiptNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+    responses.push({ label: "stock substitute_receipt approve", body: stockReceiptApproved });
+    const stockReceived = await requestJsonOk(baseUrl, `/api/substitute-receipts/${stockReceiptSubmitted.receiptNo}/receive-stock`, {
+      method: "POST",
+      body: JSON.stringify({ receivedDate: "2026-09-07", receivedBy: "คลัง" }),
+    });
+    responses.push({ label: "stock substitute_receipt receive-stock", body: stockReceived });
+
+    for (const { label, body } of responses) {
+      assertNoPrivateAbsolutePathKeys(body, label);
+    }
+    assert.equal(responses.length, 26, "all seven submissions/completions/repeats plus approve and receive-stock actions must be checked");
+    const literalValueResponse = await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "reserved_key_string_test",
+        name: "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ",
+        documentSteps: [{ documentKind: "purchase_order" }],
+      }),
+    });
+    assert.equal(literalValueResponse.name, "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ");
+    assert.ok(stockReceiptApproved.pdfFiles[0].name, "public PDF metadata must keep its name");
+    assert.ok(stockReceiptApproved.pdfFiles[0].path, "public PDF metadata must keep its relative path");
+    assert.ok(stockReceiptApproved.pdfFiles[0].url, "public PDF metadata must keep its download URL");
+    const pdfDownload = await fetch(`${baseUrl}${stockReceiptApproved.pdfFiles[0].url}`);
+    assert.equal(pdfDownload.status, 200, "a returned PDF URL must still download successfully");
+    assert.match(pdfDownload.headers.get("content-type") || "", /application\/pdf/);
+
+    const detail = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+    assertNoPrivateAbsolutePathKeys(detail, "workflow transaction detail");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 
 async function assertDetailCarriesEveryChildDocument(baseUrl, detail, txn) {
   assert.ok(Array.isArray(detail.childDocuments), "response must carry a childDocuments array");

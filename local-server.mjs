@@ -141,7 +141,9 @@ const mimeTypes = {
 
 function sendJson(response, statusCode, data) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(data));
+  response.end(JSON.stringify(data, (key, value) => (
+    key === "absolutePath" || key === "absoluteFolderPath" ? undefined : value
+  )));
 }
 
 function safeStaticPath(urlPath) {
