@@ -23,6 +23,8 @@ const {
   getWorkflowDocument,
   getNextWorkflowDocumentInfo,
   saveWorkflowDocument,
+  submitWorkflowDocument,
+  approveWorkflowDocument,
   completeWorkflowDocument,
   approveExpenseRequest,
   startWorkflowTransaction,
@@ -257,6 +259,8 @@ test("the documents index agrees with disk after a completion", async () => {
 test("the documents index agrees with disk after a lightweight document is completed", async () => {
   await withTempRoot(async (rootDir) => {
     const created = await createLightweightDocument(rootDir, "purchase_order", "สั่งซื้อทดสอบ");
+    await submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo, completedBy: "บัญชี" });
 
     const rows = await readDocumentIndexRows(rootDir, "purchase_order");
@@ -269,6 +273,8 @@ test("the documents index agrees with disk after a lightweight document is compl
 test("a save refused by the completed-document guard leaves no trace in the documents index", async () => {
   await withTempRoot(async (rootDir) => {
     const created = await createLightweightDocument(rootDir, "purchase_order", "สั่งซื้อทดสอบ");
+    await submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo, completedBy: "บัญชี" });
 
     const beforeRows = await readDocumentIndexRows(rootDir, "purchase_order");

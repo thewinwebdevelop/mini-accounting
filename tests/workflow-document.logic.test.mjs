@@ -68,6 +68,44 @@ test("every lightweight kind requires submit and approval before completion", as
   }
 });
 
+test("concurrent identical lifecycle actions keep one winner stamp and one index status", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({ documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06", title: "แข่งกันส่ง", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }] });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    const [first, second] = await Promise.all([
+      serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "แรก", now: () => "2026-09-06T13:00:00.000Z" }),
+      serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "สอง", now: () => "2026-09-06T14:00:00.000Z" }),
+    ]);
+    assert.equal(first.status, "pending_approval");
+    assert.equal(second.status, "pending_approval");
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.equal(stored.payload.statusHistory.length, 1);
+    assert.equal(stored.payload.submittedBy, "แรก");
+    const indexed = await serverLogic.listWorkflowDocumentSummaries(rootDir, { documentKind: "purchase_order" });
+    assert.equal(indexed[0].status, "pending_approval");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("an approval winning an edit race refuses the stale upload without an orphan", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({ documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06", title: "แข่งแก้ไข", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }] });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    const staleEdit = { ...stored.payload, title: "ต้องไม่ทับ", updatedAt: "later" };
+    const approval = serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    const edit = serverLogic.saveWorkflowDocument({ rootDir, payload: staleEdit, uploads: [{ evidenceKey: "evidence", originalName: "race.txt", buffer: Buffer.from("race"), type: "text/plain" }] });
+    await approval;
+    await assert.rejects(() => edit, /เอกสารถูกเปลี่ยนสถานะแล้ว/);
+    const after = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.equal(after.status, "approved");
+    assert.equal(after.payload.title, payload.title);
+    assert.deepEqual(after.payload.rawFiles, []);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
 test("buildWorkflowDocumentPayload creates document numbers by kind", () => {
   const payload = docLogic.buildWorkflowDocumentPayload({
     documentKind: "payment_voucher",

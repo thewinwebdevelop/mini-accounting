@@ -17,6 +17,8 @@ const {
   completeSubstituteReceipt,
   startWorkflowTransaction,
   saveWorkflowDocument,
+  submitWorkflowDocument,
+  approveWorkflowDocument,
   completeWorkflowDocument,
   refreshWorkflowTransaction,
   completeWorkflowTransaction,
@@ -143,6 +145,8 @@ test("the write-through documents index matches a full from-disk rebuild after a
       }),
       uploads: [],
     });
+    await submitWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo, completedBy: "บัญชี" });
 
     await refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo, regeneratePacket: false });

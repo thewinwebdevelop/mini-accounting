@@ -370,6 +370,42 @@ test("Critical 1: editing a workflow document with existing evidence must not de
   }
 });
 
+test("O9 HTTP edits preserve pending and approved lifecycle authority while appending evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const create = purchaseOrderFormData({ transactionNo: "TXN-2026-09-0001", workflowTemplateId: "template", workflowStepId: "step" });
+    create.append("evidence_evidence", new Blob(["original"], { type: "text/plain" }), "original.txt");
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: create });
+    const submitted = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({ submittedBy: "ผู้ส่ง" }) });
+    const pendingEdit = purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขรออนุมัติ", status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged", completedAt: "forged", submittedBy: "forged", folderPath: "forged", transactionNo: "forged", workflowTemplateId: "forged", workflowStepId: "forged" });
+    pendingEdit.append("evidence_evidence", new Blob(["appended"], { type: "text/plain" }), "appended.txt");
+    const pendingSaved = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: pendingEdit });
+    assert.equal(pendingSaved.status, "pending_approval");
+    assert.deepEqual(pendingSaved.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+    const approved = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "ผู้อนุมัติ" }) });
+    const approvedSaved = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขอนุมัติแล้ว", status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged", completedAt: "forged", submittedBy: "forged", approvedBy: "forged", transactionNo: "forged", workflowTemplateId: "forged", workflowStepId: "forged" }) });
+    assert.equal(approvedSaved.status, "approved");
+    const stored = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(stored.payload.title, "แก้ไขอนุมัติแล้ว");
+    assert.equal(stored.payload.submittedAt, submitted.submittedAt);
+    assert.equal(stored.payload.submittedBy, "ผู้ส่ง");
+    assert.equal(stored.payload.approvedAt, approved.approvedAt);
+    assert.equal(stored.payload.approvedBy, "ผู้อนุมัติ");
+    assert.equal(stored.payload.statusHistory.length, 2);
+    assert.equal(stored.payload.transactionNo, "TXN-2026-09-0001");
+    assert.equal(await (await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_001.txt`)).text(), "original");
+    assert.equal(await (await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_002.txt`)).text(), "appended");
+    const listed = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");
+    assert.equal(listed.documents[0].status, "approved");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("editing a workflow document cannot forge transactionNo/workflowTemplateId/workflowStepId to move it to a different workflow step", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
   const child = spawnLocalServer(rootDir);
