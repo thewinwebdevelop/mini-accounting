@@ -406,6 +406,28 @@ test("O9 HTTP edits preserve pending and approved lifecycle authority while appe
   }
 });
 
+test("O9 HTTP edits retain lifecycle audit fields for every lightweight kind", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    for (const documentKind of workflowDocumentLogic.LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, title: `${documentKind} draft` }) });
+      const submitted = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({ submittedBy: "ผู้ส่ง" }) });
+      const pending = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} pending edit`, status: "draft", statusHistory: [], submittedAt: "forged" }) });
+      assert.equal(pending.status, "pending_approval");
+      const approved = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "ผู้อนุมัติ" }) });
+      const final = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} approved edit`, status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged" }) });
+      assert.equal(final.status, "approved");
+      const stored = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}`);
+      assert.equal(stored.payload.submittedAt, submitted.submittedAt);
+      assert.equal(stored.payload.approvedAt, approved.approvedAt);
+      assert.equal(stored.payload.statusHistory.length, 2);
+    }
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
 test("editing a workflow document cannot forge transactionNo/workflowTemplateId/workflowStepId to move it to a different workflow step", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
   const child = spawnLocalServer(rootDir);
