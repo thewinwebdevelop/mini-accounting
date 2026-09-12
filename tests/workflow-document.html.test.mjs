@@ -454,6 +454,81 @@ test("workflow document mutations validate authoritative status, prevent overlap
   assert.match(statusBox.textContent, /สถานะ/, "a missing authoritative status is reported instead of adopting a draft fallback");
 });
 
+test("malformed authoritative statuses preserve lifecycle controls and selected uploads for saves and transitions", async () => {
+  const cases = [
+    {
+      name: "pending save with a missing status",
+      status: "pending_approval",
+      actionId: "saveWorkflowDocument",
+      expectedRoute: "/api/workflow-documents",
+      response: { documentNo: "PO-2026-09-0001", pdfFiles: [] },
+      expectedPreview: "รอตรวจอนุมัติ",
+      expectedVisibility: { save: false, submit: true, approve: false, complete: true },
+    },
+    {
+      name: "pending save with an invalid status",
+      status: "pending_approval",
+      actionId: "saveWorkflowDocument",
+      expectedRoute: "/api/workflow-documents",
+      response: { documentNo: "PO-2026-09-0001", status: "bogus", pdfFiles: [] },
+      expectedPreview: "รอตรวจอนุมัติ",
+      expectedVisibility: { save: false, submit: true, approve: false, complete: true },
+    },
+    {
+      name: "approved completion with a missing status",
+      status: "approved",
+      actionId: "completeWorkflowDocument",
+      expectedRoute: "/api/workflow-documents/purchase_order/PO-2026-09-0001/complete",
+      response: { documentNo: "PO-2026-09-0001", pdfFiles: [] },
+      expectedPreview: "อนุมัติแล้ว",
+      expectedVisibility: { save: false, submit: true, approve: true, complete: false },
+    },
+    {
+      name: "approved completion with an invalid status",
+      status: "approved",
+      actionId: "completeWorkflowDocument",
+      expectedRoute: "/api/workflow-documents/purchase_order/PO-2026-09-0001/complete",
+      response: { documentNo: "PO-2026-09-0001", status: "bogus", pdfFiles: [] },
+      expectedPreview: "อนุมัติแล้ว",
+      expectedVisibility: { save: false, submit: true, approve: true, complete: false },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+      fetchHandler(route, options) {
+        if (options.method !== "POST") {
+          return jsonResponse({ status: scenario.status, payload: lifecyclePayload(scenario.status, "purchase_order") });
+        }
+        return jsonResponse(scenario.response);
+      },
+    });
+    const {
+      workflowDocumentForm: form,
+      workflowDocumentStatus: statusBox,
+      documentStatusPreview,
+      saveWorkflowDocument: save,
+      submitWorkflowDocument: submit,
+      approveWorkflowDocument: approve,
+      completeWorkflowDocument: complete,
+    } = elements;
+    const upload = form.querySelector('[name="evidence_evidence"]');
+    upload.files = [{ name: "retry-evidence.pdf" }];
+
+    elements[scenario.actionId].dispatch("click");
+    await settleBrowserWork();
+
+    assert.equal(calls.at(-1).route, scenario.expectedRoute, `${scenario.name}: sends its normal mutation request`);
+    assert.match(statusBox.textContent, /สถานะ/, `${scenario.name}: reports an authoritative-status error`);
+    assert.equal(documentStatusPreview.textContent, scenario.expectedPreview, `${scenario.name}: keeps the previous status preview`);
+    assert.equal(save.hidden, scenario.expectedVisibility.save, `${scenario.name}: save visibility is unchanged`);
+    assert.equal(submit.hidden, scenario.expectedVisibility.submit, `${scenario.name}: submit visibility is unchanged`);
+    assert.equal(approve.hidden, scenario.expectedVisibility.approve, `${scenario.name}: approve visibility is unchanged`);
+    assert.equal(complete.hidden, scenario.expectedVisibility.complete, `${scenario.name}: complete visibility is unchanged`);
+    assert.equal(upload.files.length, 1, `${scenario.name}: keeps the selected evidence for retry`);
+  }
+});
+
 test("a cancelled record retains its baseline save control but exposes no lifecycle action", async () => {
   const { elements } = await setupWorkflowDocumentLifecycleSandbox({
     status: "cancelled",
