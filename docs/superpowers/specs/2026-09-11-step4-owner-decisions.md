@@ -98,4 +98,5 @@
 - `93e1530`: lifecycle กลางพร้อมชุดทดสอบ matrix และ browser/CommonJS ผ่าน Architecture/Security review
 - `49b631b`: กรอง absolutePath/absoluteFolderPath ที่ JSON response กลาง; ชุดเต็มผ่าน 531 Node + 19 Python; Architecture/Security (Sol Medium) review ผ่าน ไม่มี findings และ reviewer ยืนยัน RED/GREEN ซ้ำ
 - `52d2bbc` ถึง `e235372`: backend lightweight ทั้ง 5 ชนิดเชื่อม submit/approve/complete เข้ากฎกลาง และแก้เนื้อหา/เพิ่มไฟล์หลังส่งตรวจโดยคงสถานะตาม O9; ผ่าน Architecture/Security review หลังแก้ race ไฟล์แนบและเพิ่ม coverage ครบ ผล production ชุดเต็ม 538 Node + 19 Python ผ่าน; test-only รอบท้ายผ่านชุด logic 28 รายการและชุดที่เกี่ยวข้องก่อนหน้า 57 รายการ
-- งานเชื่อมหน้าฟอร์ม lightweight กำลังเริ่ม; migration, cancel/void และ manual sync ยังไม่เสร็จ ไม่ถือว่าความคืบหน้าข้างต้นเป็นการส่งมอบ Step 4 ทั้งหมด
+- `a59b425` และ `f6a6040`: หน้าฟอร์ม lightweight ทั้ง 5 ชนิดใช้ปุ่มส่งตรวจ/อนุมัติ/complete จากกฎกลาง คงการบันทึกหลังส่งตรวจตาม O9 ป้องกันคำสั่งซ้อน และไม่ส่งไฟล์แนบเดิมซ้ำหลังบันทึกสำเร็จ; Architecture/Security review ผ่าน ชุด production เต็ม 542 Node + 19 Python ผ่าน และชุดหน้าฟอร์มหลังเพิ่ม test-only รอบท้ายผ่าน 27 รายการ
+- งาน lifecycle สำหรับ lightweight ในขอบเขต submit/approve/complete และแก้ไขหลังส่งตรวจผ่านรีวิวแล้ว; migration, cancel/void, manual sync และ retrofit ER/SR ยังไม่เสร็จ ไม่ถือว่าความคืบหน้าข้างต้นเป็นการส่งมอบ Step 4 ทั้งหมด
