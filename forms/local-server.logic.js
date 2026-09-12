@@ -2438,9 +2438,39 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   // Existing records share the same local-process queue as lifecycle actions.
   // New records have no server document number until their allocator-backed save.
   if (!payload.documentNo) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads });
-  return withWorkflowDocumentMutation(rootDir, payload.documentKind, payload.documentNo, () => (
-    saveWorkflowDocumentUnlocked({ rootDir, payload, uploads })
-  ));
+  return withWorkflowDocumentMutation(rootDir, payload.documentKind, payload.documentNo, async () => {
+    const record = await getWorkflowDocument(rootDir, payload.documentKind, payload.documentNo);
+    if (!record) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads });
+    const stored = record.payload || {};
+    const storedStatus = stored.status || "draft";
+    if (storedStatus === "completed") throw new Error(WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE);
+    if ((payload.status || "draft") !== storedStatus) throw new Error(WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE);
+    // Reload these server-owned fields only after acquiring the queue. In
+    // particular, evidenceFiles must come from the preceding queued save so
+    // simultaneous uploads allocate distinct suffixes instead of clobbering.
+    const authoritativePayload = {
+      ...payload,
+      documentKind: record.documentKind,
+      documentNo: record.documentNo,
+      folderPath: record.folderPath,
+      status: storedStatus,
+      statusLabel: stored.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[storedStatus],
+      statusHistory: stored.statusHistory ?? [],
+      submittedAt: stored.submittedAt ?? "",
+      submittedBy: stored.submittedBy ?? "",
+      approvedAt: stored.approvedAt ?? "",
+      approvedBy: stored.approvedBy ?? "",
+      completedAt: stored.completedAt ?? "",
+      completedBy: stored.completedBy ?? "",
+      createdAt: stored.createdAt ?? "",
+      evidenceFiles: stored.evidenceFiles ?? {},
+      rawFiles: stored.rawFiles ?? [],
+      transactionNo: stored.transactionNo ?? "",
+      workflowTemplateId: stored.workflowTemplateId ?? "",
+      workflowStepId: stored.workflowStepId ?? "",
+    };
+    return saveWorkflowDocumentUnlocked({ rootDir, payload: authoritativePayload, uploads });
+  });
 }
 
 async function transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus, stampAt, stampBy, actor = "", historyNote, now }) {
