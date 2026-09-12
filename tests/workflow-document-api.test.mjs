@@ -413,10 +413,17 @@ test("O9 HTTP edits retain lifecycle audit fields for every lightweight kind", a
     const port = await waitForServerPort(child);
     const baseUrl = `http://localhost:${port}`;
     for (const documentKind of workflowDocumentLogic.LIGHTWEIGHT_DOCUMENT_KINDS) {
-      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, title: `${documentKind} draft` }) });
+      const createForm = purchaseOrderFormData({ documentKind, title: `${documentKind} draft` });
+      createForm.append("evidence_evidence", new Blob([`original-${documentKind}`], { type: "text/plain" }), "original.txt");
+      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: createForm });
       const submitted = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({ submittedBy: "ผู้ส่ง" }) });
-      const pending = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} pending edit`, status: "draft", statusHistory: [], submittedAt: "forged" }) });
+      const pendingForm = purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} pending edit`, status: "draft", statusHistory: [], submittedAt: "forged" });
+      pendingForm.append("evidence_evidence", new Blob([`new-${documentKind}`], { type: "text/plain" }), "new.txt");
+      const pending = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: pendingForm });
       assert.equal(pending.status, "pending_approval");
+      assert.deepEqual(pending.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+      assert.equal(await (await fetch(`${baseUrl}/workflow-documents/${documentKind}/${created.documentNo}/raw/evidence_001.txt`)).text(), `original-${documentKind}`);
+      assert.equal(await (await fetch(`${baseUrl}/workflow-documents/${documentKind}/${created.documentNo}/raw/evidence_002.txt`)).text(), `new-${documentKind}`);
       const approved = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "ผู้อนุมัติ" }) });
       const final = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} approved edit`, status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged" }) });
       assert.equal(final.status, "approved");
@@ -424,6 +431,9 @@ test("O9 HTTP edits retain lifecycle audit fields for every lightweight kind", a
       assert.equal(stored.payload.submittedAt, submitted.submittedAt);
       assert.equal(stored.payload.approvedAt, approved.approvedAt);
       assert.equal(stored.payload.statusHistory.length, 2);
+      assert.deepEqual(final.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+      const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, { method: "POST", body: JSON.stringify({ completedBy: "ผู้ปิด" }) });
+      assert.equal(completed.status, "completed");
     }
   } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
 });
