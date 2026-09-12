@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -50,14 +50,28 @@ test("every lightweight kind requires submit and approval before completion", as
         title: documentKind, businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
       });
       const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+      const dataPath = join(rootDir, saved.folderPath, "data", "workflow-document.json");
       await assert.rejects(() => serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
       await assert.rejects(() => serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
       const submitted = await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, submittedBy: "ผู้ส่ง", now: () => "2026-09-06T13:00:00.000Z" });
+      const afterSubmit = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const submitPdf = await readFile(submitted.pdfFiles[0].absolutePath);
       const repeatedSubmit = await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, submittedBy: "คนอื่น", now: () => "2026-09-06T13:30:00.000Z" });
+      const afterRepeatedSubmit = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeatedSubmit.pdfFiles[0].absolutePath), submitPdf);
+      const beforePendingComplete = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), beforePendingComplete, "rejected pending completion must not write disk");
       const approved = await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, approvedBy: "ผู้อนุมัติ", now: () => "2026-09-06T14:00:00.000Z" });
+      const afterApprove = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const approvePdf = await readFile(approved.pdfFiles[0].absolutePath);
       const repeatedApprove = await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, approvedBy: "คนอื่น", now: () => "2026-09-06T14:30:00.000Z" });
+      const afterRepeatedApprove = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeatedApprove.pdfFiles[0].absolutePath), approvePdf);
       await assert.rejects(() => serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
       const completed = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "ผู้ปิด", now: () => "2026-09-06T15:00:00.000Z" });
+      const afterComplete = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const completePdf = await readFile(completed.pdfFiles[0].absolutePath);
       assert.equal(submitted.status, "pending_approval");
       assert.equal(repeatedSubmit.submittedBy, "ผู้ส่ง");
       assert.equal(approved.status, "approved");
@@ -68,6 +82,17 @@ test("every lightweight kind requires submit and approval before completion", as
       assert.equal(completed.completedBy, "ผู้ปิด");
       const repeated = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "คนอื่น" });
       assert.equal(repeated.completedBy, "ผู้ปิด");
+      const afterRepeatedComplete = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeated.pdfFiles[0].absolutePath), completePdf);
+      for (const [before, after, pdfBytes, result] of [[afterSubmit, afterRepeatedSubmit, submitPdf, repeatedSubmit], [afterApprove, afterRepeatedApprove, approvePdf, repeatedApprove], [afterComplete, afterRepeatedComplete, completePdf, repeated]]) {
+        assert.equal(after.payload.updatedAt, before.payload.updatedAt, "idempotent action must not update timestamp");
+        assert.deepEqual(after.payload.statusHistory, before.payload.statusHistory, "idempotent action must not append history");
+        assert.deepEqual(result.pdfFiles.map(({ name, url }) => ({ name, url })), before.payload.status === "completed" ? repeated.pdfFiles.map(({ name, url }) => ({ name, url })) : result.pdfFiles.map(({ name, url }) => ({ name, url })));
+      }
+      const completedDisk = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      await assert.rejects(() => serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), completedDisk, "completed rejections must not write disk");
     }
   } finally {
     await rm(rootDir, { recursive: true, force: true });
