@@ -9,6 +9,7 @@ const browserLogicPath = new URL("../forms/workflow-document.logic.browser.js", 
 const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", import.meta.url);
 const workflowLogicPath = new URL("../forms/workflow.logic.js", import.meta.url);
 const workflowDocumentLogicPath = new URL("../forms/workflow-document.logic.js", import.meta.url);
+const documentLifecycleLogicPath = new URL("../forms/document-lifecycle.logic.js", import.meta.url);
 const workflowPrefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
 const workflowPrefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
@@ -64,6 +65,7 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}
 
   vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
   vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(documentLifecycleLogicPath, "utf8"), context);
   if (loadRealPrefillLogic) {
     // Matches real page order: workflow-prefill.logic.js loads before the
     // page controller (forms/workflow-document.html). Loading the actual
@@ -89,6 +91,73 @@ async function setupWorkflowDocumentPrefillSandbox(prefillResponse, options = {}
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   return { context, elements: elementsById };
+}
+
+class RecordedFormData {
+  constructor() {
+    this.entries = [];
+  }
+
+  append(name, value, fileName) {
+    this.entries.push({ name, value, fileName });
+  }
+}
+
+async function settleBrowserWork() {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+async function setupWorkflowDocumentLifecycleSandbox({
+  documentKind = "purchase_order",
+  documentNo = "PO-2026-09-0001",
+  status = "draft",
+  fetchHandler,
+} = {}) {
+  const realHtml = await readFile(htmlPath, "utf8");
+  const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
+  const calls = [];
+  const stubFetch = async (route, options = {}) => {
+    calls.push({ route, options });
+    return fetchHandler(route, options, calls);
+  };
+  const window = { fetch: stubFetch };
+  window.addEventListener = (type, handler) => {
+    (window._handlers ??= {})[type] = handler;
+  };
+  const context = vm.createContext({
+    window,
+    document: fakeDocument,
+    location: { search: `?documentKind=${documentKind}&documentNo=${documentNo}` },
+    URLSearchParams,
+    FormData: RecordedFormData,
+    fetch: stubFetch,
+  });
+
+  vm.runInContext(await readFile(workflowLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(documentLifecycleLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(workflowPrefillBannerPath, "utf8"), context);
+  vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
+  context.window._handlers.DOMContentLoaded();
+  await settleBrowserWork();
+  return { context, elements: elementsById, calls, status };
+}
+
+function jsonResponse(body, ok = true) {
+  return { ok, json: async () => body };
+}
+
+function lifecyclePayload(status, documentKind) {
+  return {
+    status,
+    documentKind,
+    documentNo: "PO-2026-09-0001",
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-13",
+    title: "ทดสอบเอกสาร",
+    businessPurpose: "ทดสอบการทำงาน",
+    lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "10" }],
+  };
 }
 
 function getPrefillCheckbox(prefillGroupsContainer, group) {
@@ -271,7 +340,132 @@ test("workflow document controller loads the shared prefill banner module and wi
 test("workflow document browser controller posts saves and completions to the workflow document API", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
   assert.match(browserLogic, /\/api\/workflow-documents/);
-  assert.match(browserLogic, /\/complete/);
+  assert.match(browserLogic, /transitionWorkflowDocument/);
+  assert.match(browserLogic, /"submit"/);
+  assert.match(browserLogic, /"approve"/);
+  assert.match(browserLogic, /"complete"/);
+});
+
+test("workflow document shell loads canonical lifecycle logic before the browser controller and exposes each supported action", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const lifecycleIndex = html.indexOf("document-lifecycle.logic.js");
+  const controllerIndex = html.indexOf("workflow-document.logic.browser.js");
+  assert.ok(lifecycleIndex !== -1 && lifecycleIndex < controllerIndex, "canonical lifecycle logic must load before the controller");
+  assert.match(html, /id="submitWorkflowDocument"/);
+  assert.match(html, /id="approveWorkflowDocument"/);
+  assert.match(html, /id="completeWorkflowDocument"/);
+  assert.match(html, /ส่งตรวจอนุมัติ/);
+  assert.match(html, /อนุมัติ/);
+  assert.match(html, /เสร็จสิ้นเอกสาร/);
+});
+
+test("all lightweight kinds render canonical lifecycle actions, preserve editable non-draft saves, and use exact routes", async () => {
+  const kinds = ["purchase_order", "payment_voucher", "cash_spend_declaration", "payee_acknowledgement", "goods_receipt"];
+  for (const documentKind of kinds) {
+    let currentStatus = "draft";
+    const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+      documentKind,
+      status: currentStatus,
+      fetchHandler(route, options) {
+        if (options.method !== "POST") {
+          return jsonResponse({ status: currentStatus, payload: lifecyclePayload(currentStatus, documentKind) });
+        }
+        if (route === "/api/workflow-documents") return jsonResponse({ documentNo: "PO-2026-09-0001", status: currentStatus, pdfFiles: [] });
+        if (route.endsWith("/submit")) currentStatus = "pending_approval";
+        if (route.endsWith("/approve")) currentStatus = "approved";
+        if (route.endsWith("/complete")) currentStatus = "completed";
+        return jsonResponse({ documentNo: "PO-2026-09-0001", status: currentStatus, pdfFiles: [] });
+      },
+    });
+    const { saveWorkflowDocument: save, submitWorkflowDocument: submit, approveWorkflowDocument: approve, completeWorkflowDocument: complete } = elements;
+
+    assert.equal(save.hidden, false, `${documentKind}: draft remains saveable`);
+    assert.equal(submit.hidden, false, `${documentKind}: draft exposes submit`);
+    assert.equal(approve.hidden, true, `${documentKind}: draft hides approve`);
+    assert.equal(complete.hidden, true, `${documentKind}: draft hides complete`);
+
+    submit.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/submit`);
+    assert.equal(save.hidden, false, `${documentKind}: pending approval remains saveable under O9`);
+    assert.equal(approve.hidden, false, `${documentKind}: pending approval exposes approve`);
+
+    save.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(calls.at(-1).route, "/api/workflow-documents", `${documentKind}: pending save uses multipart route`);
+    assert.equal(approve.hidden, false, `${documentKind}: authoritative pending save does not reset status`);
+
+    approve.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/approve`);
+    assert.equal(complete.hidden, false, `${documentKind}: approved exposes complete`);
+
+    save.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(complete.hidden, false, `${documentKind}: authoritative approved save does not reset status`);
+
+    complete.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/complete`);
+    assert.equal(save.hidden, true, `${documentKind}: completed document remains locked`);
+    assert.equal(submit.hidden, true, `${documentKind}: completed hides lifecycle actions`);
+  }
+});
+
+test("workflow document mutations validate authoritative status, prevent overlap, and preserve upload retry semantics", async () => {
+  let saveAttempts = 0;
+  let releaseFirstSave;
+  const firstSave = new Promise((resolve) => { releaseFirstSave = resolve; });
+  const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+    fetchHandler: async (route, options) => {
+      if (options.method !== "POST") return jsonResponse({ status: "pending_approval", payload: lifecyclePayload("pending_approval", "purchase_order") });
+      if (route.endsWith("/approve")) return jsonResponse({ status: "approved", documentNo: "PO-2026-09-0001", pdfFiles: [] });
+      saveAttempts += 1;
+      if (saveAttempts === 1) {
+        await firstSave;
+        return jsonResponse({ error: "บันทึกไม่สำเร็จ" }, false);
+      }
+      if (saveAttempts === 2) return jsonResponse({ documentNo: "PO-2026-09-0001", status: "pending_approval", pdfFiles: [] });
+      return jsonResponse({ documentNo: "PO-2026-09-0001", pdfFiles: [] });
+    },
+  });
+  const { saveWorkflowDocument: save, approveWorkflowDocument: approve, workflowDocumentStatus: statusBox, workflowDocumentForm: form } = elements;
+  const upload = form.querySelector('[name="evidence_evidence"]');
+  upload.files = [{ name: "invoice.pdf" }];
+
+  save.dispatch("click");
+  save.dispatch("click");
+  approve.dispatch("click");
+  assert.equal(calls.filter((call) => call.options.method === "POST").length, 1, "a pending save blocks duplicate saves and an overlapping transition");
+  releaseFirstSave();
+  await settleBrowserWork();
+  assert.equal(upload.files.length, 1, "a failed save retains selected evidence for retry");
+
+  save.dispatch("click");
+  await settleBrowserWork();
+  assert.equal(upload.files.length, 0, "a successful multipart save clears submitted evidence");
+  const retryBody = calls.at(-1).options.body;
+  assert.equal(retryBody.entries.filter((entry) => entry.name === "evidence_evidence").length, 1, "retry includes retained evidence once");
+
+  save.dispatch("click");
+  await settleBrowserWork();
+  const contentOnlyBody = calls.at(-1).options.body;
+  assert.equal(contentOnlyBody.entries.filter((entry) => entry.name === "evidence_evidence").length, 0, "later content-only save does not append prior evidence again");
+  assert.match(statusBox.textContent, /สถานะ/, "a missing authoritative status is reported instead of adopting a draft fallback");
+});
+
+test("a cancelled record retains its baseline save control but exposes no lifecycle action", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    status: "cancelled",
+    fetchHandler(route, options) {
+      assert.equal(options.method, undefined, "this fixture only loads the record");
+      return jsonResponse({ status: "cancelled", payload: lifecyclePayload("cancelled", "purchase_order") });
+    },
+  });
+  assert.equal(elements.saveWorkflowDocument.hidden, false);
+  assert.equal(elements.submitWorkflowDocument.hidden, true);
+  assert.equal(elements.approveWorkflowDocument.hidden, true);
+  assert.equal(elements.completeWorkflowDocument.hidden, true);
 });
 
 test("workflow-document.logic.js runs as a classic script in a require-less browser sandbox and populates window.WorkflowDocumentLogic", async () => {

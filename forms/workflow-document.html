@@ -440,6 +440,8 @@
 
       <div class="actions">
         <button class="button secondary" type="button" id="saveWorkflowDocument">บันทึกเอกสาร</button>
+        <button class="button primary" type="button" id="submitWorkflowDocument" hidden>ส่งตรวจอนุมัติ</button>
+        <button class="button primary" type="button" id="approveWorkflowDocument" hidden>อนุมัติ</button>
         <button class="button primary" type="button" id="completeWorkflowDocument" hidden>เสร็จสิ้นเอกสาร</button>
       </div>
       <div class="status-box" id="workflowDocumentStatus"></div>
@@ -494,6 +496,7 @@
 
   <script src="./workflow.logic.js"></script>
   <script src="./workflow-document.logic.js"></script>
+  <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
