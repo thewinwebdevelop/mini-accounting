@@ -453,6 +453,8 @@ test("refreshWorkflowTransaction really scans lightweight documents and unblocks
       lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
     await serverLogic.completeWorkflowDocument({
       rootDir,
       documentKind: "purchase_order",
@@ -597,6 +599,8 @@ test("refreshWorkflowTransaction with regeneratePacket:false derives and persist
       lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo, completedBy: "คุณต้า" });
 
     let packetGeneratorCalls = 0;
@@ -922,6 +926,8 @@ test("getWorkflowTransactionPrefill builds context from completed sibling docume
       workflowStepId: txn.steps[0].stepId,
     });
     const po = await serverLogic.saveWorkflowDocument({ rootDir, payload: poPayload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo, completedBy: "บัญชี" });
 
     const prefill = await serverLogic.getWorkflowTransactionPrefill({
@@ -1083,6 +1089,8 @@ async function completeSingleStepTransaction(rootDir, templateOverrides) {
     workflowStepId: txn.steps[0].stepId,
   });
   await serverLogic.saveWorkflowDocument({ rootDir, payload });
+  await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo });
+  await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo });
   await serverLogic.completeWorkflowDocument({
     rootDir,
     documentKind: "payment_voucher",
@@ -1326,6 +1334,8 @@ async function submitAndCompletePurchaseOrder(baseUrl, txn) {
       workflowStepId: txn.steps[0].stepId,
     }),
   });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
   await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/complete`, {
     method: "POST",
     body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2105,6 +2115,8 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl, { capture
 
     const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: formData });
     capture(`${documentKind} submission`, created);
+    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2407,6 +2419,8 @@ test("POST .../complete refuses until every step is done, then completes and sur
         workflowStepId: txn.steps[0].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2551,6 +2565,8 @@ test("director_expense_transfer (a real shipped template) completes end to end p
         workflowStepId: txn.steps[2].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "บัญชี" }),
@@ -2605,6 +2621,8 @@ test("GET/refresh/complete workflow-transaction routes never leak absolutePath o
         workflowStepId: txn.steps[0].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2681,6 +2699,8 @@ async function completeMultiStepTransaction(rootDir, documentKinds = ["purchase_
       workflowStepId: txn.steps[index].stepId,
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy: "บัญชี" });
     children.push(await serverLogic.getWorkflowDocument(rootDir, documentKind, documentNo));
   }

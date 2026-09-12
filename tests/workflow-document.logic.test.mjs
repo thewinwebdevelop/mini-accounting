@@ -18,6 +18,56 @@ test("lightweight workflow documents expose required standalone kinds", () => {
   ]);
 });
 
+test("submitWorkflowDocument moves a draft to pending approval with an immutable audit stamp", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06",
+      title: "ส่งตรวจ", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    const first = await serverLogic.submitWorkflowDocument({
+      rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "ผู้ส่ง",
+      now: () => "2026-09-06T13:00:00.000Z",
+    });
+    assert.equal(first.status, "pending_approval");
+    assert.equal(first.submittedAt, "2026-09-06T13:00:00.000Z");
+    assert.equal(first.submittedBy, "ผู้ส่ง");
+    assert.deepEqual((await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo)).payload.statusHistory, [{
+      fromStatus: "draft", toStatus: "pending_approval", changedAt: "2026-09-06T13:00:00.000Z", note: "submitted", actor: "ผู้ส่ง",
+    }]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("every lightweight kind requires submit and approval before completion", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    for (const documentKind of docLogic.LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const payload = docLogic.buildWorkflowDocumentPayload({
+        documentKind, sequence: String(docLogic.LIGHTWEIGHT_DOCUMENT_KINDS.indexOf(documentKind) + 1), accountingMonth: "2026-09", documentDate: "2026-09-06",
+        title: documentKind, businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+      });
+      const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+      await assert.rejects(() => serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      const submitted = await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, submittedBy: "ผู้ส่ง", now: () => "2026-09-06T13:00:00.000Z" });
+      const approved = await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, approvedBy: "ผู้อนุมัติ", now: () => "2026-09-06T14:00:00.000Z" });
+      const completed = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "ผู้ปิด", now: () => "2026-09-06T15:00:00.000Z" });
+      assert.equal(submitted.status, "pending_approval");
+      assert.equal(approved.status, "approved");
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.submittedBy, "ผู้ส่ง");
+      assert.equal(completed.approvedBy, "ผู้อนุมัติ");
+      assert.equal(completed.completedBy, "ผู้ปิด");
+      const repeated = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "คนอื่น" });
+      assert.equal(repeated.completedBy, "ผู้ปิด");
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("buildWorkflowDocumentPayload creates document numbers by kind", () => {
   const payload = docLogic.buildWorkflowDocumentPayload({
     documentKind: "payment_voucher",
@@ -276,6 +326,8 @@ test("completeWorkflowDocument stamps completedAt/completedBy once and is idempo
       lines: [{ description: "ค่าขนส่ง", quantity: "1", unitCost: "300" }],
     }, { now: () => "2026-09-06T12:00:00.000Z" });
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "cash_spend_declaration", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "cash_spend_declaration", documentNo: saved.documentNo });
 
     const first = await serverLogic.completeWorkflowDocument({
       rootDir,
@@ -422,6 +474,8 @@ test("saveWorkflowDocument works without any workflow context (transactionNo abs
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
     const record = await serverLogic.getWorkflowDocument(rootDir, "payee_acknowledgement", saved.documentNo);
     assert.equal(record.payload.transactionNo, "");
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "payee_acknowledgement", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "payee_acknowledgement", documentNo: saved.documentNo });
 
     const completed = await serverLogic.completeWorkflowDocument({
       rootDir,
@@ -480,10 +534,10 @@ test("Critical 3 exploit: saveWorkflowDocument refuses a folderPath that resolve
   }
 });
 
-test("completeWorkflowDocument refuses to complete a cancelled document but allows every other origin status", async () => {
+test("completeWorkflowDocument only accepts approved documents", async () => {
   const statusOutcomes = {
-    draft: "accepted",
-    pending_approval: "accepted",
+    draft: "rejected",
+    pending_approval: "rejected",
     approved: "accepted",
     cancelled: "rejected",
   };
@@ -541,6 +595,8 @@ test("completeWorkflowDocument stays idempotent even though completed is not in 
       lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
     }, { now: () => "2026-09-06T12:00:00.000Z" });
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
 
     await serverLogic.completeWorkflowDocument({
       rootDir,

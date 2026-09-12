@@ -24,11 +24,11 @@ const {
   LIGHTWEIGHT_DOCUMENT_KINDS,
   WORKFLOW_DOCUMENT_PREFIXES,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
-  assertWorkflowDocumentCompletable,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
   sanitizeEvidenceKey,
 } = require("./workflow-document.logic.js");
+const { assertDocumentTransition } = require("./document-lifecycle.logic.js");
 const {
   DOCUMENT_TYPE_DEFINITIONS,
   buildWorkflowTransactionPayload,
@@ -64,6 +64,17 @@ const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
 const workflowDocumentPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_document_pdf.py");
 const workflowPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_packet_pdf.py");
+const workflowDocumentMutationQueues = new Map();
+
+function withWorkflowDocumentMutation(rootDir, documentKind, documentNo, work) {
+  const key = `${path.resolve(rootDir)}\u0000${documentKind}\u0000${documentNo}`;
+  const previous = workflowDocumentMutationQueues.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(work);
+  workflowDocumentMutationQueues.set(key, next);
+  return next.finally(() => {
+    if (workflowDocumentMutationQueues.get(key) === next) workflowDocumentMutationQueues.delete(key);
+  });
+}
 
 // Fixed name so the packet always overwrites the previous one on refresh
 // (there is only ever one packet per transaction) and so the transaction
@@ -2327,8 +2338,9 @@ function assertPathWithinDirectory(baseDir, targetPath, message) {
 // refusal (as opposed to, say, a PDF-generation failure) when deciding whether
 // a failed attempt needs to clean up raw files it just wrote.
 const WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE = "ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้";
+const WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE = "เอกสารถูกเปลี่ยนสถานะแล้ว กรุณาลองใหม่";
 
-async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
+async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [] }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
     throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
   }
@@ -2342,15 +2354,19 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   // .../complete request could otherwise land in during the mkdir calls that
   // precede that commit. The route's own early check (in local-server.mjs)
   // stays too, for a fast, clear error before this function is even called.
-  const assertNotCompletedOnDisk = async () => {
+  const sourceStatus = payload.status || "draft";
+  const assertCurrentStatusOnDisk = async () => {
     if (!payload.documentNo) return;
     const currentOnDisk = await getWorkflowDocument(rootDir, payload.documentKind, payload.documentNo);
     if (currentOnDisk?.status === "completed") {
       throw new Error(WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE);
     }
+    if (currentOnDisk && (currentOnDisk.payload.status || "draft") !== sourceStatus) {
+      throw new Error(WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE);
+    }
   };
 
-  await assertNotCompletedOnDisk();
+  await assertCurrentStatusOnDisk();
 
   const existingEvidenceFiles = payload.evidenceFiles ?? {};
   // Count against the same sanitized slug buildWorkflowDocumentRawFileName uses
@@ -2394,14 +2410,14 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
 
   let pdfFiles;
   try {
-    ({ pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload, { beforeCommit: assertNotCompletedOnDisk }));
+    ({ pdfFiles } = await writeWorkflowDocumentFiles(rootDir, finalPayload, { beforeCommit: assertCurrentStatusOnDisk }));
   } catch (error) {
     // Only the completed-guard refusal (not, say, a PDF-generation failure —
     // which happens *after* the JSON commit succeeds, so the raw files it
     // references are no longer orphans) means this attempt's raw files were
     // never committed to anything. Clean those up so a refused save — including
     // a naive client retry — never leaves an unreferenced file behind.
-    if (error.message === WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE && writtenRawPaths.length) {
+    if ([WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE, WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE].includes(error.message) && writtenRawPaths.length) {
       await Promise.all(writtenRawPaths.map((targetPath) => rm(targetPath, { force: true }).catch(() => {})));
     }
     throw error;
@@ -2418,59 +2434,64 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   };
 }
 
-async function completeWorkflowDocument({
-  rootDir,
-  documentKind,
-  documentNo,
-  completedBy = "",
-  now = () => new Date().toISOString(),
-}) {
-  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
-  if (!record) throw new Error("ไม่พบเอกสาร");
+async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
+  // Existing records share the same local-process queue as lifecycle actions.
+  // New records have no server document number until their allocator-backed save.
+  if (!payload.documentNo) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads });
+  return withWorkflowDocumentMutation(rootDir, payload.documentKind, payload.documentNo, () => (
+    saveWorkflowDocumentUnlocked({ rootDir, payload, uploads })
+  ));
+}
 
-  const payload = { ...record.payload, folderPath: record.folderPath };
-  const currentStatus = payload.status || "draft";
-
-  if (currentStatus === "completed") {
-    // A repeat completion call (retry, double-click, replayed request) is a no-op:
-    // completedAt/completedBy are the audit record of who closed the document and
-    // when, so they must not be overwritten, and no duplicate history entry is added.
-    return {
-      documentKind: payload.documentKind,
-      documentNo: payload.documentNo,
-      status: payload.status,
-      completedAt: payload.completedAt,
-      completedBy: payload.completedBy,
-      folderPath: payload.folderPath,
-      pdfFiles: await listWorkflowDocumentPdfFiles(rootDir, payload.folderPath, payload.documentKind, payload.documentNo),
+async function transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus, stampAt, stampBy, actor = "", historyNote, now }) {
+  return withWorkflowDocumentMutation(rootDir, documentKind, documentNo, async () => {
+    const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    if (!record) throw new Error("ไม่พบเอกสาร");
+    const payload = { ...record.payload, folderPath: record.folderPath };
+    const sourceStatus = payload.status || "draft";
+    if (sourceStatus === targetStatus) {
+      return workflowDocumentTransitionResult(payload, await listWorkflowDocumentPdfFiles(rootDir, payload.folderPath, payload.documentKind, payload.documentNo));
+    }
+    assertDocumentTransition(documentKind, sourceStatus, targetStatus);
+    const changedAt = now();
+    payload.status = targetStatus;
+    payload.statusLabel = WORKFLOW_DOCUMENT_STATUS_LABELS[targetStatus];
+    payload[stampAt] = changedAt;
+    payload[stampBy] = actor || "";
+    payload.statusHistory = [...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []), {
+      fromStatus: sourceStatus, toStatus: targetStatus, changedAt, note: historyNote, actor: actor || "",
+    }];
+    payload.updatedAt = changedAt;
+    const beforeCommit = async () => {
+      const current = await getWorkflowDocument(rootDir, documentKind, documentNo);
+      if (!current || (current.payload.status || "draft") !== sourceStatus) throw new Error(WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE);
     };
-  }
+    const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit });
+    return workflowDocumentTransitionResult(payload, pdfFiles);
+  });
+}
 
-  // A cancelled document must never be silently reopened by completing it.
-  assertWorkflowDocumentCompletable(currentStatus);
-
-  const completedAt = now();
-  payload.statusHistory = [
-    ...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []),
-    { fromStatus: currentStatus, toStatus: "completed", changedAt: completedAt, note: "completed" },
-  ];
-  payload.status = "completed";
-  payload.statusLabel = WORKFLOW_DOCUMENT_STATUS_LABELS.completed;
-  payload.completedAt = completedAt;
-  payload.completedBy = completedBy || "";
-  payload.updatedAt = completedAt;
-
-  const { pdfFiles } = await writeWorkflowDocumentFiles(rootDir, payload);
-
+function workflowDocumentTransitionResult(payload, pdfFiles) {
   return {
-    documentKind: payload.documentKind,
-    documentNo: payload.documentNo,
-    status: payload.status,
-    completedAt: payload.completedAt,
-    completedBy: payload.completedBy,
-    folderPath: payload.folderPath,
-    pdfFiles,
+    documentKind: payload.documentKind, documentNo: payload.documentNo, status: payload.status,
+    statusLabel: payload.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[payload.status],
+    submittedAt: payload.submittedAt || "", submittedBy: payload.submittedBy || "",
+    approvedAt: payload.approvedAt || "", approvedBy: payload.approvedBy || "",
+    completedAt: payload.completedAt || "", completedBy: payload.completedBy || "",
+    folderPath: payload.folderPath, pdfFiles,
   };
+}
+
+async function submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy = "", now = () => new Date().toISOString() }) {
+  return transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus: "pending_approval", stampAt: "submittedAt", stampBy: "submittedBy", actor: submittedBy, historyNote: "submitted", now });
+}
+
+async function approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy = "", now = () => new Date().toISOString() }) {
+  return transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus: "approved", stampAt: "approvedAt", stampBy: "approvedBy", actor: approvedBy, historyNote: "approved", now });
+}
+
+async function completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy = "", now = () => new Date().toISOString() }) {
+  return transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus: "completed", stampAt: "completedAt", stampBy: "completedBy", actor: completedBy, historyNote: "completed", now });
 }
 
 async function getWorkflowDocumentFile({ rootDir, documentKind, documentNo, section, fileName }) {
@@ -3646,6 +3667,7 @@ async function syncWorkflowTransactionToDrive({
 module.exports = {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  approveWorkflowDocument,
   assertPathWithinDirectory,
   describeDriveSyncError,
   DOCUMENT_DRIVE_SYNC_ACTIONS,
@@ -3692,6 +3714,7 @@ module.exports = {
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
+  submitWorkflowDocument,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   syncExpenseRequestToDrive,

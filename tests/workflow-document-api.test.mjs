@@ -72,6 +72,11 @@ async function requestJsonOk(baseUrl, route, options = {}) {
   return body;
 }
 
+async function advanceToApproved(baseUrl, documentKind, documentNo) {
+  await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
+}
+
 function purchaseOrderFormData(overrides = {}) {
   const formData = new FormData();
   formData.append("payload", JSON.stringify({
@@ -134,6 +139,7 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
     assert.equal(list.documents.length, 2);
     assert.ok(list.documents.every((doc) => !("absoluteFolderPath" in doc)), "list must not leak the server's absolute filesystem path");
 
+    await advanceToApproved(baseUrl, "purchase_order", submitted.documentNo);
     const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -258,6 +264,7 @@ test("Critical 3: editing an existing document carries its documentNo/folderPath
     const allDocs = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");
     assert.equal(allDocs.documents.length, 1, "editing must not orphan a second folder under the same documentNo");
 
+    await advanceToApproved(baseUrl, "purchase_order", created.documentNo);
     await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -457,6 +464,7 @@ test("every lightweight workflow document kind serves its PDF and raw files from
       // Complete once (first-time path), then again (the idempotent repeat-
       // completion no-op) — the repeat branch is the one that used to hand
       // back the wrong URL (forms/local-server.logic.js, completeWorkflowDocument).
+      await advanceToApproved(baseUrl, documentKind, created.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -551,6 +559,7 @@ test("GET /workflow-documents serves the list page and GET /api/workflow-documen
           title: `เอกสารเดือนสิงหาคม ${documentKind}`,
         }),
       });
+      await advanceToApproved(baseUrl, documentKind, august.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${august.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -718,6 +727,8 @@ async function createLightweightDocument(rootDir, documentKind, { complete = tru
   });
   await serverLogic.saveWorkflowDocument({ rootDir, payload });
   if (complete) {
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy: "บัญชี" });
   }
   return serverLogic.getWorkflowDocument(rootDir, documentKind, documentNo);
@@ -855,6 +866,7 @@ test("POST /api/workflow-documents/:kind/:documentNo/sync-drive exists for every
       assert.equal(draftAttempt.status, 400, `${documentKind}: a draft must be refused`);
       assert.match(draftAttempt.body.error, /เสร็จสิ้น/, `${documentKind}: the refusal must say, in Thai, that the document must be completed first`);
 
+      await advanceToApproved(baseUrl, documentKind, created.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),

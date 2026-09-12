@@ -198,6 +198,10 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
     transactionNo: cleanText(data.transactionNo),
     workflowTemplateId: cleanText(data.workflowTemplateId),
     workflowStepId: cleanText(data.workflowStepId),
+    submittedAt: cleanText(data.submittedAt),
+    submittedBy: cleanText(data.submittedBy),
+    approvedAt: cleanText(data.approvedAt),
+    approvedBy: cleanText(data.approvedBy),
     completedAt: cleanText(data.completedAt),
     completedBy: cleanText(data.completedBy),
     company: data.company ? {

@@ -18,6 +18,7 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  approveWorkflowDocument,
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,
@@ -53,6 +54,7 @@ const {
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
+  submitWorkflowDocument,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   receiveSubstituteReceiptStock,
@@ -580,6 +582,10 @@ async function handleWorkflowDocumentSubmission(request, response) {
         folderPath: existingDocument.folderPath,
         status: existingDocument.status,
         statusHistory: existingDocument.payload?.statusHistory ?? [],
+        submittedAt: existingDocument.payload?.submittedAt ?? "",
+        submittedBy: existingDocument.payload?.submittedBy ?? "",
+        approvedAt: existingDocument.payload?.approvedAt ?? "",
+        approvedBy: existingDocument.payload?.approvedBy ?? "",
         completedAt: existingDocument.payload?.completedAt ?? "",
         completedBy: existingDocument.payload?.completedBy ?? "",
         createdAt: existingDocument.payload?.createdAt ?? "",
@@ -597,6 +603,10 @@ async function handleWorkflowDocumentSubmission(request, response) {
         sequence: nextInfo.sequence,
         status: "draft",
         statusHistory: [],
+        submittedAt: "",
+        submittedBy: "",
+        approvedAt: "",
+        approvedBy: "",
         completedAt: "",
         completedBy: "",
         createdAt: "",
@@ -628,6 +638,19 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
     sendJson(response, 400, {
       error: error.message || "Cannot complete workflow document",
     });
+  }
+}
+
+async function handleWorkflowDocumentAction(action, documentKind, documentNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const actions = {
+      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: body.submittedBy }),
+      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: body.approvedBy }),
+    };
+    sendJson(response, 200, await actions[action]());
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "ไม่สามารถเปลี่ยนสถานะเอกสารได้" });
   }
 }
 
@@ -1638,6 +1661,14 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && request.url === "/api/workflow-documents") {
     await handleWorkflowDocumentSubmission(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve"))) {
+    const action = url.pathname.endsWith("/submit") ? "submit" : "approve";
+    const remainder = url.pathname.replace("/api/workflow-documents/", "").replace(new RegExp(`/${action}$`), "");
+    const [documentKind, documentNo] = remainder.split("/");
+    await handleWorkflowDocumentAction(action, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
 
