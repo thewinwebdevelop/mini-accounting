@@ -1,13 +1,7 @@
 window.addEventListener("DOMContentLoaded", () => {
   const logic = window.SubstituteReceiptLogic;
   const evidenceKeys = ["paymentSlip", "purchaseOrder", "goodsReceived", "otherEvidence"];
-  const statusLabels = {
-    draft: "แบบร่าง",
-    pending_approval: "รอตรวจอนุมัติ",
-    approved: "อนุมัติแล้ว",
-    received: "รับเข้าคลังแล้ว",
-    cancelled: "ยกเลิก",
-  };
+  const lifecycleLogic = window.DocumentLifecycleLogic;
   const state = {
     stockSkus: [],
     vendors: [],
@@ -16,6 +10,8 @@ window.addEventListener("DOMContentLoaded", () => {
     receiptNo: "",
     status: "draft",
     existingEvidenceFiles: {},
+    mutationInFlight: false,
+    modalOpen: false,
   };
 
   const queryDraftId = new URLSearchParams(location.search).get("draftId");
@@ -29,6 +25,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const submitForApprovalButton = document.querySelector("#submitForApproval");
   const approveReceiptButton = document.querySelector("#approveReceipt");
   const receiveStockButton = document.querySelector("#receiveStock");
+  const completeReceiptButton = document.querySelector("#completeReceipt");
+  const stockBeforeCompleteDialog = document.querySelector("#stockBeforeCompleteDialog");
+  const confirmReceiveBeforeCompleteButton = document.querySelector("#confirmReceiveBeforeComplete");
+  const declineReceiveBeforeCompleteButton = document.querySelector("#declineReceiveBeforeComplete");
   const receiptStatus = document.querySelector("#receiptStatus");
   const receiptNoPreview = document.querySelector("#receiptNoPreview");
   const lineCountPreview = document.querySelector("#lineCountPreview");
@@ -112,6 +112,52 @@ window.addEventListener("DOMContentLoaded", () => {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "บันทึกข้อมูลไม่สำเร็จ");
     return result;
+  }
+
+  function adoptAuthoritativeStatus(result) {
+    if (!Object.prototype.hasOwnProperty.call(result, "status")) {
+      throw new Error("เซิร์ฟเวอร์ส่งสถานะเอกสารไม่ครบถ้วน");
+    }
+    return lifecycleLogic.normalizeDocumentStatus("substitute_receipt", result.status);
+  }
+
+  function adoptExpectedStatus(result, expectedStatus) {
+    const status = adoptAuthoritativeStatus(result);
+    if (status !== expectedStatus) {
+      throw new Error("เซิร์ฟเวอร์ส่งสถานะเอกสารไม่ถูกต้อง");
+    }
+    return status;
+  }
+
+  function setMutationControlsDisabled(disabled) {
+    [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton]
+      .forEach((button) => { button.disabled = disabled; });
+  }
+
+  async function runMutation(work, { allowWhileModalOpen = false } = {}) {
+    if (state.mutationInFlight || (state.modalOpen && !allowWhileModalOpen)) return;
+    state.mutationInFlight = true;
+    setMutationControlsDisabled(true);
+    try {
+      await work();
+    } finally {
+      state.mutationInFlight = false;
+      setReceiptState(state.status);
+    }
+  }
+
+  function closeStockBeforeCompleteDialog() {
+    if (!state.modalOpen) return;
+    state.modalOpen = false;
+    stockBeforeCompleteDialog.hidden = true;
+    completeReceiptButton.focus();
+  }
+
+  function openStockBeforeCompleteDialog() {
+    if (state.mutationInFlight || state.modalOpen) return;
+    state.modalOpen = true;
+    stockBeforeCompleteDialog.hidden = false;
+    confirmReceiveBeforeCompleteButton.focus();
   }
 
   function skuLabel(sku) {
@@ -201,13 +247,22 @@ window.addEventListener("DOMContentLoaded", () => {
     applyStockLineLock();
   }
 
+  function availableActions() {
+    return lifecycleLogic.availableDocumentActions("substitute_receipt", state.status, {
+      receiptType: form.elements.receiptType.value,
+    });
+  }
+
   function setReceiptState(status) {
-    state.status = status || "draft";
-    receiptStatus.textContent = statusLabels[state.status] || state.status;
+    state.status = lifecycleLogic.normalizeDocumentStatus("substitute_receipt", status || "draft");
+    const actions = availableActions();
+    receiptStatus.textContent = lifecycleLogic.DOCUMENT_STATUS_LABELS[state.status];
     saveDraftButton.hidden = state.status !== "draft";
-    submitForApprovalButton.hidden = state.status !== "draft";
-    approveReceiptButton.hidden = state.status !== "pending_approval";
-    receiveStockButton.hidden = state.status !== "approved" || form.elements.receiptType.value !== "stock_purchase";
+    submitForApprovalButton.hidden = !actions.includes("submit");
+    approveReceiptButton.hidden = !actions.includes("approve");
+    receiveStockButton.hidden = !actions.includes("receive_stock");
+    completeReceiptButton.hidden = !actions.includes("complete");
+    setMutationControlsDisabled(state.mutationInFlight);
     receiptNoPreview.textContent = state.receiptNo || state.nextReceipt?.receiptNo || "-";
     applyReceiptTypeState();
   }
@@ -521,10 +576,11 @@ window.addEventListener("DOMContentLoaded", () => {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
+    const status = adoptExpectedStatus(result, "pending_approval");
 
     state.draftId = "";
     state.receiptNo = result.receiptNo;
-    state.status = result.status || "pending_approval";
+    state.status = status;
     state.existingEvidenceFiles = collectEvidenceFilesForValidation();
     setReceiptState(state.status);
     setStatus(`ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, "success");
@@ -538,12 +594,12 @@ window.addEventListener("DOMContentLoaded", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ approvedBy: "" }),
     });
-    state.status = result.status || "approved";
+    state.status = adoptExpectedStatus(result, "approved");
     setReceiptState(state.status);
     setStatus(`อนุมัติ ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
 
-  async function receiveStock() {
+  async function receiveStock({ closeDialogAfterSuccess = false } = {}) {
     if (!state.receiptNo) return;
     const receivedDate = window.prompt("วันที่รับสินค้า", todayInputValue());
     if (!receivedDate) return;
@@ -553,9 +609,23 @@ window.addEventListener("DOMContentLoaded", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ receivedDate, receivedBy: "" }),
     });
-    state.status = result.status || "received";
+    state.status = adoptExpectedStatus(result, "received");
     setReceiptState(state.status);
-    setStatus(`รับสินค้าเข้าคลัง ${escapeHtml(state.receiptNo)} แล้ว ${result.stockMovements.length} รายการ`, "success");
+    setStatus(`รับสินค้าเข้าคลัง ${escapeHtml(state.receiptNo)} แล้ว ${(result.stockMovements || []).length} รายการ`, "success");
+    if (closeDialogAfterSuccess) closeStockBeforeCompleteDialog();
+  }
+
+  async function completeReceipt() {
+    if (!state.receiptNo) return;
+    clearStatus();
+    const result = await api(`/api/substitute-receipts/${encodeURIComponent(state.receiptNo)}/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ completedBy: "" }),
+    });
+    state.status = adoptExpectedStatus(result, "completed");
+    setReceiptState(state.status);
+    setStatus(`เสร็จสิ้นเอกสาร ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
 
   function resetFormState() {
@@ -570,9 +640,39 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   addLineButton.addEventListener("click", () => addStockLine());
-  saveDraftButton.addEventListener("click", () => saveDraft().catch((error) => setStatus(error.message, "error")));
-  approveReceiptButton.addEventListener("click", () => approveReceipt().catch((error) => setStatus(error.message, "error")));
-  receiveStockButton.addEventListener("click", () => receiveStock().catch((error) => setStatus(error.message, "error")));
+  saveDraftButton.addEventListener("click", () => runMutation(saveDraft).catch((error) => setStatus(error.message, "error")));
+  approveReceiptButton.addEventListener("click", () => runMutation(approveReceipt).catch((error) => setStatus(error.message, "error")));
+  receiveStockButton.addEventListener("click", () => runMutation(receiveStock).catch((error) => setStatus(error.message, "error")));
+  completeReceiptButton.addEventListener("click", () => {
+    if (state.status === "approved" && form.elements.receiptType.value === "stock_purchase") {
+      openStockBeforeCompleteDialog();
+      return;
+    }
+    runMutation(completeReceipt).catch((error) => setStatus(error.message, "error"));
+  });
+  confirmReceiveBeforeCompleteButton.addEventListener("click", () => {
+    runMutation(() => receiveStock({ closeDialogAfterSuccess: true }), { allowWhileModalOpen: true })
+      .catch((error) => setStatus(error.message, "error"));
+  });
+  declineReceiveBeforeCompleteButton.addEventListener("click", closeStockBeforeCompleteDialog);
+  stockBeforeCompleteDialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeStockBeforeCompleteDialog();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    if (event.shiftKey) {
+      (document.activeElement === confirmReceiveBeforeCompleteButton
+        ? declineReceiveBeforeCompleteButton
+        : confirmReceiveBeforeCompleteButton).focus();
+    } else {
+      (document.activeElement === declineReceiveBeforeCompleteButton
+        ? confirmReceiveBeforeCompleteButton
+        : declineReceiveBeforeCompleteButton).focus();
+    }
+  });
   form.elements.accountingMonth.addEventListener("change", () => refreshNextReceipt().catch((error) => setStatus(error.message, "error")));
   form.elements.receiptType.addEventListener("change", () => {
     applyReceiptTypeState();
@@ -583,9 +683,13 @@ window.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("change", updatePreview);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    submitForApproval().catch((error) => setStatus(error.message, "error"));
+    runMutation(submitForApproval).catch((error) => setStatus(error.message, "error"));
   });
-  form.addEventListener("reset", () => {
+  form.addEventListener("reset", (event) => {
+    if (state.modalOpen || state.mutationInFlight) {
+      event.preventDefault();
+      return;
+    }
     setTimeout(resetFormState);
   });
 
