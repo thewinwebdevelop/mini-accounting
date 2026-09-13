@@ -1105,6 +1105,13 @@ test("completeSubstituteReceipt does not allow receiving stock after completion"
       uploads: validSlipUpload(),
     });
     await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    const received = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+    assert.equal(received.stockMovements.length, 1);
     await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
 
     await assert.rejects(
@@ -1115,6 +1122,11 @@ test("completeSubstituteReceipt does not allow receiving stock after completion"
         receivedBy: "คลัง",
       }),
       /Invalid substitute receipt status transition: completed -> received/,
+    );
+    assert.deepEqual(
+      listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo).map((movement) => movement.id),
+      received.stockMovements.map((movement) => movement.id),
+      "a rejected post-completion receive must retain the original movement set",
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });

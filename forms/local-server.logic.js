@@ -2048,6 +2048,10 @@ async function completeSubstituteReceipt({
     };
   }
 
+  if ((payload.receiptType || "stock_purchase") === "stock_purchase" && currentStatus === "approved") {
+    throw new Error("ซื้อสต๊อกต้องรับสินค้าเข้าคลังก่อนเสร็จสิ้นเอกสาร");
+  }
+
   const completedAt = now();
   appendSubstituteReceiptStatus(payload, "completed", "completed", completedBy, () => completedAt);
   payload.completedAt = completedAt;
