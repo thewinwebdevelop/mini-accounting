@@ -84,6 +84,12 @@
 
 Manual sync Sheets ที่ระดับ transaction ต้องใช้ข้อมูลรายจ่ายจาก REQ เป็นหลัก ถ้าไม่มี REQ จึงใช้ SR ไม่บวกรวมยอดจากเอกสารลูกหลายชนิดที่อ้างถึงรายจ่ายเดียวกัน ใช้ตัวอ้างอิงระดับ workflow เพื่อให้การ sync ซ้ำไม่สร้างแถวรายจ่ายซ้ำ
 
+### O13 — workflow ต้อง complete ก่อน sync Sheets
+
+เจ้าของงานเลือก “กดได้เฉพาะเมื่อ workflow complete” สำหรับปุ่ม sync Sheets ระดับ workflow
+
+ทั้งหน้าฟอร์มและ backend ต้องบังคับว่า workflow complete แล้วจึง manual sync Sheets ได้ การมี REQ หรือ SR อยู่เพียงอย่างเดียวไม่ทำให้ sync ได้ก่อน workflow เสร็จ เงื่อนไขนี้เป็นของ workflow; ไม่เปลี่ยน O5 สำหรับ standalone
+
 ## คำถามที่ยังรอคำตอบ
 
 2. Cancel ทั้ง workflow ต้องย้อนสต๊อกและลบ Sheets ของทั้ง transaction หรือไม่? หากสต๊อกไม่พอ ห้าม cancel หรืออนุญาตติดลบ?
