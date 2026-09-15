@@ -58,6 +58,40 @@ async function findExpenseSpreadsheet({ accessToken, fetchImpl, title, parentId 
   return data.files?.[0] || null;
 }
 
+async function findDriveFolderReadOnly({ accessToken, fetchImpl, name, parentId }) {
+  const query = [
+    `'${escapeDriveQueryValue(parentId)}' in parents`,
+    `name = '${escapeDriveQueryValue(name)}'`,
+    "mimeType = 'application/vnd.google-apps.folder'",
+    "trashed = false",
+  ].join(" and ");
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("q", query);
+  url.searchParams.set("fields", "files(id,name,webViewLink)");
+  url.searchParams.set("pageSize", "1");
+  const data = await driveFetchJson({ accessToken, fetchImpl, url: url.toString() });
+  return data.files?.[0] || null;
+}
+
+async function findExpenseSpreadsheetReadOnly({ rootDir, accessToken, fetchImpl, accountingMonth }) {
+  const config = await getGoogleDriveConfig(rootDir);
+  let parentId = "root";
+  for (const name of [
+    ...splitDrivePath(config?.driveBasePath || "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี"),
+    expenseSheetFolderName,
+  ]) {
+    const folder = await findDriveFolderReadOnly({ accessToken, fetchImpl, name, parentId });
+    if (!folder) return null;
+    parentId = folder.id;
+  }
+  return findExpenseSpreadsheet({
+    accessToken,
+    fetchImpl,
+    title: buildSpreadsheetTitle(accountingMonth),
+    parentId,
+  });
+}
+
 async function createExpenseSpreadsheet({ accessToken, fetchImpl, title, parentId }) {
   return driveFetchJson({
     accessToken,
@@ -149,6 +183,85 @@ async function getValues({ accessToken, fetchImpl, spreadsheetId, range }) {
   const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
   const data = await sheetsFetchJson({ accessToken, fetchImpl, url: url.toString() });
   return data.values || [];
+}
+
+function normalizeSourceKeys(sourceKeys) {
+  const keys = [...new Set((sourceKeys || []).map((key) => String(key || "").trim()).filter(Boolean))];
+  if (!keys.length) throw new Error("Missing monthly expense source keys");
+  return keys;
+}
+
+function normalizeKnownLocations(knownLocations = []) {
+  const locations = [];
+  const seen = new Set();
+  for (const reference of knownLocations) {
+    const spreadsheetId = String(reference?.spreadsheetId || "").trim();
+    const sheetName = String(reference?.sheetName || "").trim();
+    if (!spreadsheetId && !sheetName) continue;
+    if (!spreadsheetId || !sheetName) throw new Error("Invalid known monthly expense location");
+    const key = `${spreadsheetId}\u0000${sheetName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    locations.push({ spreadsheetId, sheetName });
+  }
+  return locations;
+}
+
+async function findMonthlyExpenseSourceKeyConflicts({
+  rootDir,
+  accountingMonth,
+  sourceKeys,
+  knownLocations = [],
+  fetchImpl = fetch,
+}) {
+  const keys = normalizeSourceKeys(sourceKeys);
+  const keySet = new Set(keys);
+  const accessToken = await getValidAccessToken({ rootDir, fetchImpl });
+  const locations = normalizeKnownLocations(knownLocations);
+  const checkedLocations = [];
+  const conflicts = [];
+  const inspected = new Set();
+
+  async function inspectLocation(location) {
+    const locationKey = `${location.spreadsheetId}\u0000${location.sheetName}`;
+    if (inspected.has(locationKey)) return;
+    const values = await getValues({
+      accessToken,
+      fetchImpl,
+      spreadsheetId: location.spreadsheetId,
+      range: `${escapeSheetName(location.sheetName)}!A:A`,
+    });
+    inspected.add(locationKey);
+    checkedLocations.push(location);
+    values.forEach((row, index) => {
+      const sourceKey = String(row?.[0] || "");
+      if (keySet.has(sourceKey)) {
+        conflicts.push({ ...location, sourceKey, rowNumber: index + 1 });
+      }
+    });
+  }
+
+  for (const location of locations) await inspectLocation(location);
+
+  const destination = await findExpenseSpreadsheetReadOnly({
+    rootDir,
+    accessToken,
+    fetchImpl,
+    accountingMonth,
+  });
+  if (destination) {
+    const sheetName = String(accountingMonth);
+    const metadata = await sheetsFetchJson({
+      accessToken,
+      fetchImpl,
+      url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(destination.id)}?fields=sheets.properties`,
+    });
+    if ((metadata.sheets || []).some((sheet) => sheet.properties?.title === sheetName)) {
+      await inspectLocation({ spreadsheetId: destination.id, sheetName });
+    }
+  }
+
+  return { conflicts, checkedLocations };
 }
 
 async function updateValues({ accessToken, fetchImpl, spreadsheetId, range, values }) {
@@ -269,5 +382,6 @@ async function recordMonthlyExpense({
 module.exports = {
   buildExpenseRow,
   expenseHeaders,
+  findMonthlyExpenseSourceKeyConflicts,
   recordMonthlyExpense,
 };
