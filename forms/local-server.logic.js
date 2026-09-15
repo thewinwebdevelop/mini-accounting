@@ -771,6 +771,93 @@ function buildSubstituteReceiptSheetEntry(payload = {}, driveMetadata = {}, appr
   };
 }
 
+function assertWorkflowSheetTransaction(transaction) {
+  const transactionNo = typeof transaction?.transactionNo === "string" ? transaction.transactionNo.trim() : "";
+  const accountingMonth = typeof transaction?.accountingMonth === "string" ? transaction.accountingMonth.trim() : "";
+  if (!transactionNo || !/^(?:\d{4})-(?:0[1-9]|1[0-2])$/.test(accountingMonth)) {
+    throw new Error("ข้อมูล workflow transaction ไม่ครบถ้วนหรือเดือนไม่ถูกต้อง");
+  }
+}
+
+function resolveWorkflowSheetExpenseSource(transaction, childDocuments) {
+  assertWorkflowSheetTransaction(transaction);
+  const matchingChildren = (Array.isArray(childDocuments) ? childDocuments : [])
+    .filter((child) => child?.transactionNo === transaction.transactionNo);
+  const expenseRequests = matchingChildren.filter((child) => child.documentKind === "expense_request");
+  if (expenseRequests.length === 1) return expenseRequests[0];
+  if (expenseRequests.length > 1) {
+    throw new Error(`พบเอกสาร expense_request มากกว่าหนึ่งรายการสำหรับ workflow ${transaction.transactionNo}`);
+  }
+
+  const substituteReceipts = matchingChildren.filter((child) => child.documentKind === "substitute_receipt");
+  if (substituteReceipts.length === 1) return substituteReceipts[0];
+  if (substituteReceipts.length > 1) {
+    throw new Error(`พบเอกสาร substitute_receipt มากกว่าหนึ่งรายการสำหรับ workflow ${transaction.transactionNo}`);
+  }
+  throw new Error(`ไม่พบเอกสารค่าใช้จ่าย REQ หรือ SR สำหรับ workflow ${transaction.transactionNo}`);
+}
+
+function isNonNegativeDecimalString(value) {
+  return typeof value === "string"
+    && /^(?:\d+)(?:\.\d+)?$/.test(value)
+    && Number.isFinite(Number(value));
+}
+
+function assertWorkflowSheetSource(transaction, sourceDocument) {
+  if (!sourceDocument || sourceDocument.transactionNo !== transaction.transactionNo) {
+    throw new Error("เอกสารต้นทางไม่ตรงกับ workflow transaction");
+  }
+  if (!["expense_request", "substitute_receipt"].includes(sourceDocument.documentKind)) {
+    throw new Error("เอกสารต้นทางไม่ใช่ REQ หรือ SR");
+  }
+  const nativeId = sourceDocument.documentKind === "expense_request" ? sourceDocument.requestNo : sourceDocument.receiptNo;
+  if (typeof nativeId !== "string" || !nativeId.trim()) {
+    throw new Error("เอกสารต้นทางไม่มีเลขที่เอกสาร");
+  }
+  if (sourceDocument.accountingMonth && sourceDocument.accountingMonth !== transaction.accountingMonth) {
+    throw new Error("เดือนบัญชีของเอกสารต้นทางไม่ตรงกับ workflow transaction");
+  }
+
+  const monetaryValues = sourceDocument.documentKind === "expense_request"
+    ? [
+      sourceDocument.totals?.amountBeforeVat,
+      sourceDocument.totals?.vatAmount,
+      sourceDocument.totals?.grossAmount,
+      sourceDocument.totals?.withholdingTax,
+      sourceDocument.totals?.netPayment,
+    ]
+    : [sourceDocument.totals?.totalAmount];
+  if (!monetaryValues.every(isNonNegativeDecimalString)) {
+    throw new Error("ยอดเงินของเอกสารต้นทางไม่ถูกต้อง");
+  }
+}
+
+function buildWorkflowTransactionSheetEntry(transaction, sourceDocument) {
+  assertWorkflowSheetTransaction(transaction);
+  assertWorkflowSheetSource(transaction, sourceDocument);
+  const sourceEntry = sourceDocument.documentKind === "expense_request"
+    ? buildExpenseRequestSheetEntry(sourceDocument, {}, sourceDocument.approvedAt || "")
+    : buildSubstituteReceiptSheetEntry(sourceDocument, {}, sourceDocument.approvedAt || "");
+  const entry = {
+    ...sourceEntry,
+    sourceKey: `workflow_transaction:${transaction.transactionNo}`,
+    accountingMonth: transaction.accountingMonth,
+    documentNo: transaction.transactionNo,
+    documentUrl: transaction.driveSync?.driveFolderUrl || "",
+  };
+  const emittedAmounts = [
+    entry.amountBeforeVat,
+    entry.vatAmount,
+    entry.grossAmount,
+    entry.withholdingTax,
+    entry.netPayment,
+  ];
+  if (!emittedAmounts.every(isNonNegativeDecimalString)) {
+    throw new Error("ยอดเงินของเอกสารต้นทางไม่ถูกต้อง");
+  }
+  return entry;
+}
+
 async function recordExpenseSheetMetadata({
   rootDir,
   folderPath,
@@ -3703,6 +3790,7 @@ module.exports = {
   approveSubstituteReceipt,
   approveWorkflowDocument,
   assertPathWithinDirectory,
+  buildWorkflowTransactionSheetEntry,
   describeDriveSyncError,
   DOCUMENT_DRIVE_SYNC_ACTIONS,
   completeExpenseRequest,
@@ -3743,6 +3831,7 @@ module.exports = {
   persistWorkflowTransaction,
   receiveSubstituteReceiptStock,
   refreshWorkflowTransaction,
+  resolveWorkflowSheetExpenseSource,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,

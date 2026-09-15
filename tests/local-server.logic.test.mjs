@@ -42,6 +42,8 @@ const {
   saveSubstituteReceiptSubmission,
   syncSubstituteReceiptToDrive,
   syncExpenseRequestToDrive,
+  resolveWorkflowSheetExpenseSource,
+  buildWorkflowTransactionSheetEntry,
 } = serverLogic;
 
 function getPythonExecutable() {
@@ -96,6 +98,180 @@ function validSubstituteReceiptPayload(overrides = {}) {
     ...overrides,
   };
 }
+
+test("workflow Sheets source helpers expose the parent-level contract", () => {
+  assert.equal(typeof resolveWorkflowSheetExpenseSource, "function");
+  assert.equal(typeof buildWorkflowTransactionSheetEntry, "function");
+});
+
+function workflowTransaction(overrides = {}) {
+  return {
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    driveSync: { driveFolderUrl: "https://drive.example/workflows/WF-2026-09-0001" },
+    ...overrides,
+  };
+}
+
+function workflowExpenseRequest(overrides = {}) {
+  return {
+    documentKind: "expense_request",
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    requestNo: "REQ-2026-09-0001",
+    approvedAt: "2026-09-10T08:30:00.000Z",
+    paymentTargetName: "ร้านวัสดุ",
+    requestTitle: "ซื้อวัสดุสำนักงาน",
+    expenseLines: [{ category: "อุปกรณ์สำนักงาน" }],
+    totals: {
+      amountBeforeVat: "100.00",
+      vatAmount: "7.00",
+      grossAmount: "107.00",
+      withholdingTax: "3.00",
+      netPayment: "104.00",
+    },
+    ...overrides,
+  };
+}
+
+function workflowSubstituteReceipt(overrides = {}) {
+  return {
+    documentKind: "substitute_receipt",
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    receiptNo: "SR-2026-09-0001",
+    approvedAt: "2026-09-11T08:30:00.000Z",
+    payeeName: "ร้านค้าทั่วไป",
+    receiptTitle: "ซื้อของใช้",
+    receiptType: "general_expense",
+    receiptTypeLabel: "ค่าใช้จ่ายทั่วไป",
+    totals: { totalAmount: "250.50" },
+    ...overrides,
+  };
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return value;
+}
+
+test("resolveWorkflowSheetExpenseSource selects the single REQ before SR and ignores foreign/lightweight children", () => {
+  const req = workflowExpenseRequest();
+  const sr = workflowSubstituteReceipt({ totals: { totalAmount: "999.99" } });
+  const foreignReq = workflowExpenseRequest({ transactionNo: "WF-2026-09-OTHER", requestNo: "REQ-FOREIGN" });
+  const lightweight = { documentKind: "purchase_order", transactionNo: "WF-2026-09-0001", documentNo: "PO-1" };
+
+  assert.strictEqual(
+    resolveWorkflowSheetExpenseSource(workflowTransaction(), [foreignReq, lightweight, sr, req]),
+    req,
+  );
+});
+
+test("resolveWorkflowSheetExpenseSource uses one SR only when no REQ exists", () => {
+  const sr = workflowSubstituteReceipt();
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(workflowTransaction(), [sr]), sr);
+});
+
+test("resolveWorkflowSheetExpenseSource exposes missing and ambiguous source cases", () => {
+  const transaction = workflowTransaction();
+  assert.throws(() => resolveWorkflowSheetExpenseSource(transaction, []), /ไม่พบเอกสารค่าใช้จ่าย REQ หรือ SR/);
+  assert.throws(
+    () => resolveWorkflowSheetExpenseSource(transaction, [workflowExpenseRequest(), workflowExpenseRequest({ requestNo: "REQ-2" })]),
+    /พบเอกสาร expense_request มากกว่าหนึ่งรายการ.*WF-2026-09-0001/,
+  );
+  assert.throws(
+    () => resolveWorkflowSheetExpenseSource(transaction, [workflowSubstituteReceipt(), workflowSubstituteReceipt({ receiptNo: "SR-2" })]),
+    /พบเอกสาร substitute_receipt มากกว่าหนึ่งรายการ.*WF-2026-09-0001/,
+  );
+});
+
+test("buildWorkflowTransactionSheetEntry maps a REQ into the exact 14-column parent row", () => {
+  const entry = buildWorkflowTransactionSheetEntry(workflowTransaction(), workflowExpenseRequest());
+  assert.deepEqual(entry, {
+    sourceKey: "workflow_transaction:WF-2026-09-0001",
+    approvedAt: "2026-09-10T08:30:00.000Z",
+    accountingMonth: "2026-09",
+    documentType: "ใบเบิกจ่าย",
+    documentNo: "WF-2026-09-0001",
+    payeeName: "ร้านวัสดุ",
+    title: "ซื้อวัสดุสำนักงาน",
+    category: "อุปกรณ์สำนักงาน",
+    amountBeforeVat: "100.00",
+    vatAmount: "7.00",
+    grossAmount: "107.00",
+    withholdingTax: "3.00",
+    netPayment: "104.00",
+    documentUrl: "https://drive.example/workflows/WF-2026-09-0001",
+  });
+  assert.equal(Object.keys(entry).length, 14);
+});
+
+test("buildWorkflowTransactionSheetEntry maps an SR total without inventing tax values", () => {
+  const entry = buildWorkflowTransactionSheetEntry(workflowTransaction(), workflowSubstituteReceipt());
+  assert.deepEqual(entry, {
+    sourceKey: "workflow_transaction:WF-2026-09-0001",
+    approvedAt: "2026-09-11T08:30:00.000Z",
+    accountingMonth: "2026-09",
+    documentType: "ใบรับรองแทนใบเสร็จรับเงิน",
+    documentNo: "WF-2026-09-0001",
+    payeeName: "ร้านค้าทั่วไป",
+    title: "ซื้อของใช้",
+    category: "ค่าใช้จ่ายทั่วไป",
+    amountBeforeVat: "250.50",
+    vatAmount: "0.00",
+    grossAmount: "250.50",
+    withholdingTax: "0.00",
+    netPayment: "250.50",
+    documentUrl: "https://drive.example/workflows/WF-2026-09-0001",
+  });
+});
+
+test("workflow Sheets source helpers do not mutate frozen inputs and produce a stable parent key", () => {
+  const transaction = deepFreeze(workflowTransaction());
+  const source = deepFreeze(workflowExpenseRequest());
+  const children = deepFreeze([source]);
+  const before = JSON.parse(JSON.stringify({ transaction, source, children }));
+
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(transaction, children), source);
+  assert.deepEqual(
+    buildWorkflowTransactionSheetEntry(transaction, source),
+    buildWorkflowTransactionSheetEntry(transaction, source),
+  );
+  assert.deepEqual({ transaction, source, children }, before);
+});
+
+test("buildWorkflowTransactionSheetEntry rejects malformed selected sources instead of defaulting money to zero", () => {
+  const transaction = workflowTransaction();
+  const invalidSources = [
+    workflowExpenseRequest({ accountingMonth: "2026-10" }),
+    workflowExpenseRequest({ transactionNo: "WF-OTHER" }),
+    workflowExpenseRequest({ requestNo: "" }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "-1", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "NaN", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "1e3", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowSubstituteReceipt({ receiptNo: "" }),
+    workflowSubstituteReceipt({ totals: {} }),
+    { ...workflowExpenseRequest(), documentKind: "purchase_order" },
+  ];
+
+  for (const source of invalidSources) {
+    assert.throws(() => buildWorkflowTransactionSheetEntry(transaction, source), /.+/);
+  }
+  assert.throws(() => buildWorkflowTransactionSheetEntry({ transactionNo: "", accountingMonth: "2026-09" }, workflowExpenseRequest()), /.+/);
+  assert.throws(() => buildWorkflowTransactionSheetEntry({ transactionNo: "WF-1", accountingMonth: "2026-99" }, workflowExpenseRequest()), /.+/);
+});
+
+test("an invalid REQ remains the selected source and cannot fall back to a valid SR", () => {
+  const transaction = workflowTransaction();
+  const invalidReq = workflowExpenseRequest({ totals: { amountBeforeVat: "", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } });
+  const validSr = workflowSubstituteReceipt();
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(transaction, [invalidReq, validSr]), invalidReq);
+  assert.throws(() => buildWorkflowTransactionSheetEntry(transaction, invalidReq), /ยอดเงินของเอกสารต้นทางไม่ถูกต้อง/);
+});
 
 function validSlipUpload() {
   return [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }];
