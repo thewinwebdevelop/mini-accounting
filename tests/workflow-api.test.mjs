@@ -1262,13 +1262,15 @@ async function waitForServerPort(child) {
   });
 }
 
-function spawnLocalServer(rootDir) {
-  return spawn(process.execPath, ["local-server.mjs"], {
+function spawnLocalServer(rootDir, { fetchMode = "", fetchLog = "" } = {}) {
+  const preload = new URL("./helpers/workflow-sheets-fetch-preload.mjs", import.meta.url).pathname;
+  return spawn(process.execPath, fetchMode ? ["--import", preload, "local-server.mjs"] : ["local-server.mjs"], {
     cwd: new URL("..", import.meta.url),
     env: {
       ...process.env,
       PORT: "0",
       SWEET_HOUSE_ROOT_DIR: rootDir,
+      ...(fetchMode ? { WORKFLOW_SHEETS_FETCH_MODE: fetchMode, WORKFLOW_SHEETS_FETCH_LOG: fetchLog } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1342,6 +1344,56 @@ async function submitAndCompletePurchaseOrder(baseUrl, txn) {
   });
   return submitted;
 }
+
+async function seedSheetsSyncTransaction(rootDir, { completedAt = "2026-09-10T00:00:00.000Z" } = {}) {
+  const transactionNo = "TXN-2026-09-0001";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0001";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0001";
+  await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, "config"), { recursive: true });
+  await writeFile(join(rootDir, "config", "google-drive-config.json"), JSON.stringify({ clientId: "test", clientSecret: "test", driveBasePath: "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี" }));
+  await writeFile(join(rootDir, "config", "google-drive-token.json"), JSON.stringify({ access_token: "test-token", refresh_token: "test-refresh", expiresAt: Date.now() + 3_600_000 }));
+  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt, steps: [{ stepId: "expense", documentKind: "expense_request" }] }));
+  await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({ requestNo: "REQ-2026-09-0001", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder, requestTitle: "ค่าใช้จ่ายจริง", paymentTargetName: "ร้านค้า", workflowStepId: "expense", totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" } }));
+  const indexLogic = await import("../forms/document-index.logic.js");
+  indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0001", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
+  return { transactionNo, transactionFolder };
+}
+
+test("POST workflow Sheets sync uses real loopback fetch, ignores hostile body, and resyncs one parent row", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-http-"));
+  const logPath = join(rootDir, "fetch.log");
+  const { transactionNo } = await seedSheetsSyncTransaction(rootDir);
+  const child = spawnLocalServer(rootDir, { fetchMode: "success", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const first = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({ accountingMonth: "1999-01", sourceKey: "evil", amount: "999999" }) });
+    assert.equal(first.sourceKey, "workflow_transaction:TXN-2026-09-0001");
+    assert.equal(first.sourceDocumentNo, "REQ-2026-09-0001");
+    assert.equal(first.rowNumber, 2);
+    const second = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(second.sourceKey, first.sourceKey);
+    assert.equal(second.rowNumber, 2);
+    const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(calls.some((call) => call.method === "POST" && call.url.includes(":append")));
+    assert.equal(calls.filter((call) => call.method === "POST" && decodeURIComponent(call.url).includes(":append")).length, 2, "the test double preserves the stable parent key response across retries");
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync returns 409 without a parent mutation when child rows conflict", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-conflict-"));
+  const logPath = join(rootDir, "fetch.log"); const { transactionNo } = await seedSheetsSyncTransaction(rootDir);
+  const child = spawnLocalServer(rootDir, { fetchMode: "conflict", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const result = await requestJson(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 409); assert.equal(result.body.code, "workflow_child_sheet_rows_exist");
+    const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(calls.every((call) => call.method === "GET"));
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
 
 test("GET /api/workflow-document-types exposes registered document kinds over HTTP", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
