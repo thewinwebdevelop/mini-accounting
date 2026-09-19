@@ -1,4 +1,4 @@
-const { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } = require("node:fs/promises");
+const { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } = require("node:fs/promises");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -46,7 +46,7 @@ const {
 } = require("./workflow-prefill.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
-const { recordMonthlyExpense } = require("./google-sheets.logic.js");
+const { recordMonthlyExpense, findMonthlyExpenseSourceKeyConflicts } = require("./google-sheets.logic.js");
 const {
   createPurchaseInMovement,
   listStockMovementsByReference,
@@ -1934,15 +1934,13 @@ async function approveExpenseRequest({
   appendExpenseRequestStatus(payload, "approved", "approved", approvedBy, () => approvedAt);
   payload.approvedAt = approvedAt;
   payload.approvedBy = approvedBy || "";
-  const driveMetadata = await readDriveSyncMetadata(rootDir, request.folderPath);
-  await recordExpenseSheetMetadata({
-    rootDir,
-    folderPath: request.folderPath,
-    payload,
-    entry: buildExpenseRequestSheetEntry(payload, driveMetadata, approvedAt),
-    expenseRecorder,
-    now,
-  });
+  if (payload.transactionNo) {
+    payload.workflowSheetSync = { syncStatus: "managed_by_workflow", transactionNo: payload.transactionNo, updatedAt: now() };
+    if (!payload.sheetSync) payload.sheetSync = payload.workflowSheetSync;
+  } else {
+    const driveMetadata = await readDriveSyncMetadata(rootDir, request.folderPath);
+    await recordExpenseSheetMetadata({ rootDir, folderPath: request.folderPath, payload, entry: buildExpenseRequestSheetEntry(payload, driveMetadata, approvedAt), expenseRecorder, now });
+  }
   const { pdfFiles } = await writeSubmittedExpenseRequestFiles(rootDir, payload);
 
   return {
@@ -1970,15 +1968,13 @@ async function approveSubstituteReceipt({
   appendSubstituteReceiptStatus(payload, "approved", "approved", approvedBy, () => approvedAt);
   payload.approvedAt = approvedAt;
   payload.approvedBy = approvedBy || "";
-  const driveMetadata = await readDriveSyncMetadata(rootDir, receipt.folderPath);
-  await recordExpenseSheetMetadata({
-    rootDir,
-    folderPath: receipt.folderPath,
-    payload,
-    entry: buildSubstituteReceiptSheetEntry(payload, driveMetadata, approvedAt),
-    expenseRecorder,
-    now,
-  });
+  if (payload.transactionNo) {
+    payload.workflowSheetSync = { syncStatus: "managed_by_workflow", transactionNo: payload.transactionNo, updatedAt: now() };
+    if (!payload.sheetSync) payload.sheetSync = payload.workflowSheetSync;
+  } else {
+    const driveMetadata = await readDriveSyncMetadata(rootDir, receipt.folderPath);
+    await recordExpenseSheetMetadata({ rootDir, folderPath: receipt.folderPath, payload, entry: buildSubstituteReceiptSheetEntry(payload, driveMetadata, approvedAt), expenseRecorder, now });
+  }
   const { pdfFiles } = await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
 
   return {
@@ -3061,11 +3057,102 @@ async function getWorkflowTransactionDetail(rootDir, transactionNo) {
   // the rest of this function.
   const pdfFiles = await listWorkflowTransactionPdfFiles(rootDir, transaction.folderPath, transaction.transactionNo);
 
+  const sheetSync = await readWorkflowSheetSyncMetadata(rootDir, transaction);
   return {
     ...transaction,
+    ...(sheetSync ? { sheetSync } : {}),
     childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
     pdfFiles,
   };
+}
+
+function expectedFinancialDocumentKinds(transaction) {
+  return new Set([
+    ...(transaction.steps || []),
+    ...(transaction.templateSnapshot?.documentSteps || []),
+  ].map((step) => step?.documentKind).filter((kind) => kind === "expense_request" || kind === "substitute_receipt"));
+}
+
+async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, {
+    documentKinds: ["expense_request", "substitute_receipt"], transactionNo: transaction.transactionNo,
+  }));
+  const expected = expectedFinancialDocumentKinds(transaction);
+  const foundKinds = new Set(rows.map((row) => row.documentKind));
+  if (expected.has("expense_request") && !foundKinds.has("expense_request")) throw new Error("ไม่พบหรือไม่สามารถอ่านเอกสาร REQ ที่คาดไว้สำหรับ workflow");
+  if (expected.has("substitute_receipt") && !foundKinds.has("substitute_receipt")) throw new Error("ไม่พบหรือไม่สามารถอ่านเอกสาร SR ที่คาดไว้สำหรับ workflow");
+  const children = [];
+  for (const row of rows) {
+    const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    const fileName = row.documentKind === "expense_request" ? "submission.json" : "substitute-receipt.json";
+    let payload;
+    try { payload = JSON.parse(await readFile(path.join(folder, "data", fileName), "utf8")); }
+    catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
+    const nativeNo = row.documentKind === "expense_request" ? payload.requestNo : payload.receiptNo;
+    if (payload.transactionNo !== transaction.transactionNo || nativeNo !== row.documentNo) {
+      throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ตรงกับ workflow transaction");
+    }
+    children.push({ ...payload, folderPath: row.folderPath, documentKind: row.documentKind });
+  }
+  return children;
+}
+
+function workflowSheetSyncPath(rootDir, transaction) {
+  const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, transaction.folderPath || ""), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  return path.join(folder, "data", "sheet-sync.json");
+}
+
+async function readWorkflowSheetSyncMetadata(rootDir, transaction) {
+  try { return JSON.parse(await readFile(workflowSheetSyncPath(rootDir, transaction), "utf8")); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+async function writeWorkflowSheetSyncMetadata(rootDir, transaction, metadata) {
+  const target = workflowSheetSyncPath(rootDir, transaction);
+  const dataDir = path.dirname(target);
+  await mkdir(dataDir, { recursive: true });
+  const temporary = path.join(dataDir, `.sheet-sync-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  try { await writeFile(temporary, `${JSON.stringify(metadata, null, 2)}\n`, "utf8"); await rename(temporary, target); }
+  finally { await rm(temporary, { force: true }).catch(() => {}); }
+}
+
+const workflowTransactionSheetsSyncsInFlight = new Map();
+async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflictChecker = findMonthlyExpenseSourceKeyConflicts, expenseRecorder = recordMonthlyExpense, now = () => new Date().toISOString() }) {
+  const key = `${path.resolve(rootDir)}\n${transactionNo}`;
+  if (workflowTransactionSheetsSyncsInFlight.has(key)) return workflowTransactionSheetsSyncsInFlight.get(key);
+  const run = (async () => {
+    const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+    if (!transaction) throw new Error("ไม่พบธุรกรรม");
+    if (typeof transaction.completedAt !== "string" || !transaction.completedAt.trim()) throw new Error("ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Sheets ได้");
+    const children = await collectWorkflowFinancialChildrenStrict(rootDir, transaction);
+    const source = resolveWorkflowSheetExpenseSource(transaction, children);
+    const entry = buildWorkflowTransactionSheetEntry(transaction, source);
+    const sourceKeys = children.map((child) => `${child.documentKind === "expense_request" ? "expense_request" : "substitute_receipt"}:${child.documentKind === "expense_request" ? child.requestNo : child.receiptNo}`);
+    const knownLocations = children.map((child) => ({ spreadsheetId: child.sheetSync?.spreadsheetId || "", sheetName: child.sheetSync?.sheetName || "" }));
+    let preflight;
+    try { preflight = await conflictChecker({ rootDir, accountingMonth: transaction.accountingMonth, sourceKeys, knownLocations }); }
+    catch (error) {
+      const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+      await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_preflight_failed", error: "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", syncedAt: "", updatedAt: now() });
+      throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
+    }
+    if (preflight.conflicts?.length) {
+      const documentNos = sourceKeys.map((sourceKey) => sourceKey.split(":")[1]).filter(Boolean).join(", ");
+      const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts: preflight.conflicts, syncedAt: "", updatedAt: now() };
+      await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
+    }
+    try {
+      const recorded = await expenseRecorder({ rootDir, entry, now }); const stamp = now();
+      const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
+      await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
+    } catch (error) {
+      const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+      await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_sync_failed", error: "ไม่สามารถซิงก์ Google Sheets ได้", syncedAt: "", updatedAt: now() });
+      throw new Error("ไม่สามารถซิงก์ Google Sheets ได้");
+    }
+  })();
+  workflowTransactionSheetsSyncsInFlight.set(key, run);
+  try { return await run; } finally { workflowTransactionSheetsSyncsInFlight.delete(key); }
 }
 
 // The packet PDF is only ever a convenience download link over the
@@ -3844,5 +3931,6 @@ module.exports = {
   syncSubstituteReceiptToDrive,
   syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
+  syncWorkflowTransactionToSheets,
   writeWorkflowDocumentFiles,
 };

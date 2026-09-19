@@ -1219,14 +1219,14 @@ test("syncWorkflowTransactionToDrive returns a sync_failed status without throwi
   }
 });
 
-test("local server exposes workflow transaction completion and sync routes", async () => {
+test("local server exposes workflow transaction completion, Drive, and Sheets sync routes", async () => {
   const source = await readFile(new URL("../local-server.mjs", import.meta.url), "utf8");
   assert.match(source, /completeWorkflowTransaction/);
   assert.match(source, /syncWorkflowTransactionToDrive/);
   assert.match(source, /\/complete/);
   assert.match(source, /\/sync-drive/);
-  assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
-  assert.doesNotMatch(source, /\/sync-sheets/);
+  assert.match(source, /syncWorkflowTransactionToSheets/);
+  assert.match(source, /\/sync-sheets/);
 });
 
 // ---------------------------------------------------------------------------

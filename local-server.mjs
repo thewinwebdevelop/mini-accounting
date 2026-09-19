@@ -64,6 +64,7 @@ const {
   syncSubstituteReceiptToDrive,
   syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
+  syncWorkflowTransactionToSheets,
 } = require("./forms/local-server.logic.js");
 const {
   buildWorkflowDocumentPayload,
@@ -913,6 +914,19 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
   }
 }
 
+async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
+  try {
+    const result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
+    if (result.syncStatus === "blocked_child_rows") {
+      sendJson(response, 409, { error: result.error, code: result.code, conflicts: result.conflicts });
+      return;
+    }
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 400, { error: error.message || "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Sheets ได้", code: "workflow_sheet_sync_failed" });
+  }
+}
+
 async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   try {
     const documentKind = url.searchParams.get("documentKind") || "";
@@ -1717,6 +1731,14 @@ const server = createServer(async (request, response) => {
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-drive", ""));
     await handleWorkflowTransactionDriveSync(transactionNo, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/sync-sheets")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/sync-sheets", ""));
+    await handleWorkflowTransactionSheetsSync(transactionNo, response);
     return;
   }
 

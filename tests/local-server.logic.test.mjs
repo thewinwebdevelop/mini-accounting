@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,7 +44,61 @@ const {
   syncExpenseRequestToDrive,
   resolveWorkflowSheetExpenseSource,
   buildWorkflowTransactionSheetEntry,
+  syncWorkflowTransactionToSheets,
 } = serverLogic;
+
+test("syncWorkflowTransactionToSheets uses the completed REQ as one parent-keyed row", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-"));
+  const transactionNo = "TXN-2026-09-0001";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0001";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0001";
+  try {
+    await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+    await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({
+      transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt: "2026-09-10T00:00:00.000Z",
+      steps: [{ stepId: "expense", documentKind: "expense_request" }],
+    }));
+    await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({
+      requestNo: "REQ-2026-09-0001", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder,
+      requestTitle: "ค่าใช้จ่าย", paymentTargetName: "ร้านค้า", workflowStepId: "expense",
+      totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" },
+    }));
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+    indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0001", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
+    let preflightCalls = 0;
+    let recorderCalls = 0;
+    const options = {
+      rootDir, transactionNo, now: () => "2026-09-11T00:00:00.000Z",
+      conflictChecker: async ({ sourceKeys }) => { preflightCalls += 1; assert.deepEqual(sourceKeys, ["expense_request:REQ-2026-09-0001"]); return { conflicts: [], checkedLocations: [] }; },
+      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
+    };
+    const [result, duplicate] = await Promise.all([syncWorkflowTransactionToSheets(options), syncWorkflowTransactionToSheets(options)]);
+    assert.deepEqual(duplicate, result);
+    assert.equal(preflightCalls, 1);
+    assert.equal(recorderCalls, 1);
+    assert.deepEqual(result, {
+      syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentKind: "expense_request", sourceDocumentNo: "REQ-2026-09-0001", sourceWorkflowStepId: "expense",
+      spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, syncedAt: "2026-09-11T00:00:00.000Z", updatedAt: "2026-09-11T00:00:00.000Z",
+    });
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("syncWorkflowTransactionToSheets refuses an uncompleted transaction before external calls", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-guard-"));
+  const transactionNo = "TXN-2026-09-0099";
+  const folderPath = "documents/2026/09/workflow-transactions/TXN-2026-09-0099";
+  try {
+    await mkdir(join(rootDir, folderPath, "data"), { recursive: true });
+    await writeFile(join(rootDir, folderPath, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath, status: "completed" }));
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath });
+    let calls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ต้องปิดงาน Workflow/);
+    assert.equal(calls, 0);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
 
 function getPythonExecutable() {
   const bundledPython = join(
