@@ -3088,6 +3088,7 @@ async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
     let payload;
     try { payload = JSON.parse(await readFile(path.join(folder, "data", fileName), "utf8")); }
     catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
+    if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ถูกต้องสำหรับซิงก์ Google Sheets");
     const nativeNo = row.documentKind === "expense_request" ? payload.requestNo : payload.receiptNo;
     if (payload.transactionNo !== transaction.transactionNo || nativeNo !== row.documentNo) {
       throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ตรงกับ workflow transaction");
@@ -3123,6 +3124,7 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
   const run = (async () => {
     const transaction = await getWorkflowTransaction(rootDir, transactionNo);
     if (!transaction) throw new Error("ไม่พบธุรกรรม");
+    if (transaction.transactionNo !== transactionNo) throw new Error("ข้อมูลธุรกรรมไม่ตรงกับเลขที่ที่ร้องขอ");
     if (typeof transaction.completedAt !== "string" || !transaction.completedAt.trim()) throw new Error("ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Sheets ได้");
     const children = await collectWorkflowFinancialChildrenStrict(rootDir, transaction);
     const source = resolveWorkflowSheetExpenseSource(transaction, children);
