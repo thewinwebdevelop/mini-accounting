@@ -1,4 +1,4 @@
-const { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } = require("node:fs/promises");
+const { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } = require("node:fs/promises");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -3083,10 +3083,16 @@ async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
   if (expected.has("substitute_receipt") && !foundKinds.has("substitute_receipt")) throw new Error("ไม่พบหรือไม่สามารถอ่านเอกสาร SR ที่คาดไว้สำหรับ workflow");
   const children = [];
   for (const row of rows) {
-    const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    const rootReal = await realpath(rootDir);
+    const folder = await realpath(assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง"));
+    assertPathWithinDirectory(rootReal, folder, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
     const fileName = row.documentKind === "expense_request" ? "submission.json" : "substitute-receipt.json";
+    const dataDir = await realpath(path.join(folder, "data"));
+    assertPathWithinDirectory(rootReal, dataDir, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    const sourceFile = await realpath(path.join(dataDir, fileName));
+    assertPathWithinDirectory(rootReal, sourceFile, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
     let payload;
-    try { payload = JSON.parse(await readFile(path.join(folder, "data", fileName), "utf8")); }
+    try { payload = JSON.parse(await readFile(sourceFile, "utf8")); }
     catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
     if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ถูกต้องสำหรับซิงก์ Google Sheets");
     const nativeNo = row.documentKind === "expense_request" ? payload.requestNo : payload.receiptNo;
@@ -3103,8 +3109,20 @@ function workflowSheetSyncPath(rootDir, transaction) {
   return path.join(folder, "data", "sheet-sync.json");
 }
 
+function normalizeWorkflowSheetSyncMetadata(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  const strings = ["syncStatus", "sourceKey", "sourceDocumentKind", "sourceDocumentNo", "sourceWorkflowStepId", "spreadsheetId", "spreadsheetUrl", "sheetName", "syncedAt", "updatedAt", "code", "error"];
+  const normalized = {};
+  for (const key of strings) if (typeof value[key] === "string") normalized[key] = value[key];
+  if (!["synced", "sync_failed", "blocked_child_rows"].includes(normalized.syncStatus)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  if (value.rowNumber !== undefined && (!Number.isInteger(value.rowNumber) || value.rowNumber < 1)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  if (value.rowNumber) normalized.rowNumber = value.rowNumber;
+  if (Array.isArray(value.conflicts)) normalized.conflicts = value.conflicts.filter((item) => item && typeof item.sourceKey === "string" && typeof item.spreadsheetId === "string" && typeof item.sheetName === "string" && Number.isInteger(item.rowNumber)).map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
+  return normalized;
+}
+
 async function readWorkflowSheetSyncMetadata(rootDir, transaction) {
-  try { return JSON.parse(await readFile(workflowSheetSyncPath(rootDir, transaction), "utf8")); }
+  try { return normalizeWorkflowSheetSyncMetadata(JSON.parse(await readFile(workflowSheetSyncPath(rootDir, transaction), "utf8"))); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
@@ -3112,6 +3130,7 @@ async function writeWorkflowSheetSyncMetadata(rootDir, transaction, metadata) {
   const target = workflowSheetSyncPath(rootDir, transaction);
   const dataDir = path.dirname(target);
   await mkdir(dataDir, { recursive: true });
+  assertPathWithinDirectory(await realpath(rootDir), await realpath(dataDir), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
   const temporary = path.join(dataDir, `.sheet-sync-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try { await writeFile(temporary, `${JSON.stringify(metadata, null, 2)}\n`, "utf8"); await rename(temporary, target); }
   finally { await rm(temporary, { force: true }).catch(() => {}); }
@@ -3139,12 +3158,14 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
       throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
     }
     if (preflight.conflicts?.length) {
-      const documentNos = sourceKeys.map((sourceKey) => sourceKey.split(":")[1]).filter(Boolean).join(", ");
-      const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts: preflight.conflicts, syncedAt: "", updatedAt: now() };
+      const conflicts = preflight.conflicts.filter((item) => item && sourceKeys.includes(item.sourceKey) && typeof item.spreadsheetId === "string" && typeof item.sheetName === "string" && Number.isInteger(item.rowNumber)).map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
+      const documentNos = [...new Set(conflicts.map((item) => item.sourceKey.split(":")[1]).filter(Boolean))].join(", ");
+      const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts, syncedAt: "", updatedAt: now() };
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     }
     try {
       const recorded = await expenseRecorder({ rootDir, entry, now }); const stamp = now();
+      if (!recorded || recorded.syncStatus !== "synced" || ![recorded.spreadsheetId, recorded.spreadsheetUrl, recorded.sheetName].every((value) => typeof value === "string" && value) || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
       const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     } catch (error) {

@@ -923,7 +923,8 @@ async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
     }
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Sheets ได้", code: "workflow_sheet_sync_failed" });
+    const safeErrors = new Set(["ไม่พบธุรกรรม", "ข้อมูลธุรกรรมไม่ตรงกับเลขที่ที่ร้องขอ", "ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Sheets ได้", "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", "ไม่สามารถซิงก์ Google Sheets ได้"]);
+    sendJson(response, 400, { error: safeErrors.has(error.message) ? error.message : "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Sheets ได้", code: "workflow_sheet_sync_failed" });
   }
 }
 

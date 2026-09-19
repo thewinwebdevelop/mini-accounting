@@ -72,7 +72,7 @@ test("syncWorkflowTransactionToSheets uses the completed REQ as one parent-keyed
     const options = {
       rootDir, transactionNo, now: () => "2026-09-11T00:00:00.000Z",
       conflictChecker: async ({ sourceKeys }) => { preflightCalls += 1; assert.deepEqual(sourceKeys, ["expense_request:REQ-2026-09-0001"]); return { conflicts: [], checkedLocations: [] }; },
-      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
+      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
     };
     const [result, duplicate] = await Promise.all([syncWorkflowTransactionToSheets(options), syncWorkflowTransactionToSheets(options)]);
     assert.deepEqual(duplicate, result);
