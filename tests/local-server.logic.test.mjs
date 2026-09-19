@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,6 +44,7 @@ const {
   syncExpenseRequestToDrive,
   resolveWorkflowSheetExpenseSource,
   buildWorkflowTransactionSheetEntry,
+  getWorkflowTransactionDetail,
   syncWorkflowTransactionToSheets,
 } = serverLogic;
 
@@ -72,7 +73,7 @@ test("syncWorkflowTransactionToSheets uses the completed REQ as one parent-keyed
     const options = {
       rootDir, transactionNo, now: () => "2026-09-11T00:00:00.000Z",
       conflictChecker: async ({ sourceKeys }) => { preflightCalls += 1; assert.deepEqual(sourceKeys, ["expense_request:REQ-2026-09-0001"]); return { conflicts: [], checkedLocations: [] }; },
-      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
+      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
     };
     const [result, duplicate] = await Promise.all([syncWorkflowTransactionToSheets(options), syncWorkflowTransactionToSheets(options)]);
     assert.deepEqual(duplicate, result);
@@ -80,7 +81,7 @@ test("syncWorkflowTransactionToSheets uses the completed REQ as one parent-keyed
     assert.equal(recorderCalls, 1);
     assert.deepEqual(result, {
       syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentKind: "expense_request", sourceDocumentNo: "REQ-2026-09-0001", sourceWorkflowStepId: "expense",
-      spreadsheetId: "sheet-id", spreadsheetUrl: "https://sheet", sheetName: "2026-09", rowNumber: 5, syncedAt: "2026-09-11T00:00:00.000Z", updatedAt: "2026-09-11T00:00:00.000Z",
+      spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 5, syncedAt: "2026-09-11T00:00:00.000Z", updatedAt: "2026-09-11T00:00:00.000Z",
     });
   } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
@@ -97,6 +98,122 @@ test("syncWorkflowTransactionToSheets refuses an uncompleted transaction before 
     let calls = 0;
     await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ต้องปิดงาน Workflow/);
     assert.equal(calls, 0);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+async function seedWorkflowSheetsFixture(rootDir, { includeSr = false } = {}) {
+  const transactionNo = "TXN-2026-09-0042";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0042";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0042";
+  const receiptFolder = "documents/2026/09/substitute-receipts/SR-2026-09-0042";
+  await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+  if (includeSr) await mkdir(join(rootDir, receiptFolder, "data"), { recursive: true });
+  const steps = [{ stepId: "req", documentKind: "expense_request" }, ...(includeSr ? [{ stepId: "sr", documentKind: "substitute_receipt" }] : [])];
+  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt: "2026-09-10T00:00:00.000Z", steps }));
+  await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({ requestNo: "REQ-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder, requestTitle: "ค่าใช้จ่าย", paymentTargetName: "ร้านค้า", workflowStepId: "req", totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" } }));
+  if (includeSr) await writeFile(join(rootDir, receiptFolder, "data", "substitute-receipt.json"), JSON.stringify({ receiptNo: "SR-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: receiptFolder, receiptTitle: "ใบรับรอง", payeeName: "ร้านค้า", workflowStepId: "sr", totals: { totalAmount: "100.00" } }));
+  const indexLogic = await import("../forms/document-index.logic.js");
+  indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
+  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo });
+  return { transactionNo, transactionFolder, requestFolder, receiptFolder };
+}
+
+test("workflow Sheets sync rejects every child and transaction symlink component before external work", async () => {
+  for (const target of ["child-folder", "child-data", "child-file", "transaction-folder", "transaction-data", "sidecar"]) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-symlink-"));
+    const outside = await mkdtemp(join(tmpdir(), "sweet-house-sheets-outside-"));
+    try {
+      const fixture = await seedWorkflowSheetsFixture(rootDir);
+      if (target === "child-folder") {
+        const linked = join(rootDir, fixture.requestFolder);
+        await rm(linked, { recursive: true, force: true });
+        await mkdir(join(outside, "data"), { recursive: true });
+        await writeFile(join(outside, "data", "submission.json"), JSON.stringify({}));
+        await symlink(outside, linked);
+      } else if (target === "child-data") {
+        const data = join(rootDir, fixture.requestFolder, "data"); const payload = await readFile(join(data, "submission.json"));
+        await rm(data, { recursive: true, force: true }); await mkdir(outside, { recursive: true }); await writeFile(join(outside, "submission.json"), payload); await symlink(outside, data);
+      } else if (target === "child-file") {
+        const source = join(rootDir, fixture.requestFolder, "data", "submission.json"); const payload = await readFile(source);
+        const external = join(outside, "submission.json"); await writeFile(external, payload); await rm(source); await symlink(external, source);
+      } else if (target === "transaction-folder") {
+        const folder = join(rootDir, fixture.transactionFolder); const transactionJson = await readFile(join(folder, "data", "workflow-transaction.json"));
+        await rm(folder, { recursive: true, force: true }); await mkdir(join(outside, "data"), { recursive: true }); await writeFile(join(outside, "data", "workflow-transaction.json"), transactionJson); await symlink(outside, folder);
+      } else if (target === "transaction-data") {
+        const data = join(rootDir, fixture.transactionFolder, "data");
+        const transactionJson = await readFile(join(data, "workflow-transaction.json"));
+        await rm(data, { recursive: true, force: true });
+        await mkdir(outside, { recursive: true });
+        await writeFile(join(outside, "workflow-transaction.json"), transactionJson);
+        await symlink(outside, data);
+      } else {
+        const external = join(outside, "sheet-sync.json"); await writeFile(external, JSON.stringify({ hostile: true }));
+        await symlink(external, join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"));
+      }
+      let calls = 0;
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /โฟลเดอร์|อ่านเอกสาร/);
+      assert.equal(calls, 0);
+      assert.equal(existsSync(join(outside, "sheet-sync.json")), target === "sidecar", "must not write a sidecar outside the workspace");
+      if (target === "sidecar") assert.equal(await readFile(join(outside, "sheet-sync.json"), "utf8"), JSON.stringify({ hostile: true }));
+    } finally { await rm(rootDir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+  }
+});
+
+test("workflow Sheets sync rejects corrupt transaction identity and every non-object child payload before preflight", async () => {
+  for (const payload of ["null", "[]", "17"]) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-integrity-"));
+    try {
+      const fixture = await seedWorkflowSheetsFixture(rootDir);
+      await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), payload);
+      let calls = 0;
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ไม่สามารถอ่านเอกสารค่าใช้จ่าย/);
+      assert.equal(calls, 0);
+    } finally { await rm(rootDir, { recursive: true, force: true }); }
+  }
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-identity-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: "TXN-2026-09-0099", accountingMonth: "2026-09", folderPath: fixture.transactionFolder });
+    let calls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: "TXN-2026-09-0099", conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ข้อมูลธุรกรรมไม่ตรง/);
+    assert.equal(calls, 0);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow Sheets sync never persists hostile recorder or sidecar metadata and names only conflicting SR", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-metadata-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    for (const recorded of [
+      { syncStatus: "failed", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: {}, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://evil.example/secret", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2099-01", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 0 },
+    ]) {
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [] }), expenseRecorder: async () => recorded }), /ไม่สามารถซิงก์ Google Sheets/);
+      const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+      assert.equal(sidecar.syncStatus, "sync_failed");
+    }
+    const sourcePayload = JSON.parse(await readFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "utf8"));
+    sourcePayload.workflowStepId = { hostile: true };
+    await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(sourcePayload));
+    let sourceCalls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { sourceCalls += 1; }, expenseRecorder: async () => { sourceCalls += 1; } }), /ข้อมูลเอกสารค่าใช้จ่าย/);
+    assert.equal(sourceCalls, 0, "object source metadata must be refused before external work");
+    sourcePayload.workflowStepId = "req";
+    await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(sourcePayload));
+    await writeFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), JSON.stringify({ syncStatus: "synced", spreadsheetId: "sheet-id", nested: { absolutePath: rootDir } }));
+    const detail = await getWorkflowTransactionDetail(rootDir, fixture.transactionNo);
+    assert.equal(detail.sheetSync, undefined, "malformed sidecar is ignored rather than merged");
+    const blocked = await syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [{ sourceKey: "substitute_receipt:SR-2026-09-0042", spreadsheetId: "sheet-id", sheetName: "2026-09", rowNumber: 8 }] }), expenseRecorder: async () => { throw new Error("must not record"); } });
+    assert.equal(blocked.syncStatus, "blocked_child_rows");
+    assert.match(blocked.error, /SR-2026-09-0042/); assert.doesNotMatch(blocked.error, /REQ-2026-09-0042/);
+    assert.deepEqual(blocked.conflicts.map((item) => item.sourceKey), ["substitute_receipt:SR-2026-09-0042"]);
   } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
 

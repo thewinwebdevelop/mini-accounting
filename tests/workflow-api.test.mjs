@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import test from "node:test";
@@ -1393,6 +1393,27 @@ test("POST workflow Sheets sync returns 409 without a parent mutation when child
     const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(calls.every((call) => call.method === "GET"));
   } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync maps filesystem containment failures without exposing its workspace path", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-path-http-"));
+  const outside = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-path-outside-"));
+  let child;
+  try {
+    const { transactionNo, transactionFolder } = await seedSheetsSyncTransaction(rootDir);
+    const dataDir = join(rootDir, transactionFolder, "data");
+    const transactionJson = await readFile(join(dataDir, "workflow-transaction.json"));
+    await rm(dataDir, { recursive: true, force: true });
+    await writeFile(join(outside, "workflow-transaction.json"), transactionJson);
+    await symlink(outside, dataDir);
+    child = spawnLocalServer(rootDir);
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const result = await requestJson(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, "workflow_sheet_sync_failed");
+    assert.equal(JSON.stringify(result.body).includes(rootDir), false);
+    assert.equal(JSON.stringify(result.body).includes(outside), false);
+  } finally { if (child) await stopServer(child); await rm(rootDir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
 test("GET /api/workflow-document-types exposes registered document kinds over HTTP", async () => {

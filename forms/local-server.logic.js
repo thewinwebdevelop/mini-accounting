@@ -3094,7 +3094,7 @@ async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
     let payload;
     try { payload = JSON.parse(await readFile(sourceFile, "utf8")); }
     catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
-    if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ถูกต้องสำหรับซิงก์ Google Sheets");
+    if (!payload || Array.isArray(payload) || typeof payload !== "object") throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้");
     const nativeNo = row.documentKind === "expense_request" ? payload.requestNo : payload.receiptNo;
     if (payload.transactionNo !== transaction.transactionNo || nativeNo !== row.documentNo) {
       throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ตรงกับ workflow transaction");
@@ -3104,35 +3104,102 @@ async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
   return children;
 }
 
-function workflowSheetSyncPath(rootDir, transaction) {
+async function workflowSheetSyncPath(rootDir, transaction, { createDataDirectory = false } = {}) {
+  // Do this before any remote preflight/recording.  A lexical path check is
+  // insufficient: an indexed transaction folder or its data directory can be
+  // a symlink to an arbitrary location.
+  const rootReal = await realpath(rootDir);
   const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, transaction.folderPath || ""), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
-  return path.join(folder, "data", "sheet-sync.json");
+  const folderReal = await realpath(folder);
+  assertPathWithinDirectory(rootReal, folderReal, "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  const dataDir = path.join(folderReal, "data");
+  try {
+    assertPathWithinDirectory(rootReal, await realpath(dataDir), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  } catch (error) {
+    if (!createDataDirectory || error.code !== "ENOENT") throw error;
+    // The real parent was checked above, before mkdir.  Re-resolve after it
+    // exists so a symlink introduced at the data component cannot redirect a
+    // sidecar write.
+    await mkdir(dataDir, { recursive: true });
+    assertPathWithinDirectory(rootReal, await realpath(dataDir), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  }
+  const target = path.join(dataDir, "sheet-sync.json");
+  // A pre-existing sidecar must not be followed outside root while reading
+  // prior retry metadata.  Check it now as well, before preflight can make a
+  // remote request; ENOENT is the normal first-sync case.
+  try { assertPathWithinDirectory(rootReal, await realpath(target), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  return target;
+}
+
+function isSafeWorkflowSheetText(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function isSafeWorkflowSheetId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
+}
+
+function isSafeWorkflowSpreadsheetUrl(value, spreadsheetId) {
+  if (!isSafeWorkflowSheetId(spreadsheetId) || typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "docs.google.com"
+      && url.pathname === `/spreadsheets/d/${spreadsheetId}` && !url.search && !url.hash;
+  } catch { return false; }
 }
 
 function normalizeWorkflowSheetSyncMetadata(value) {
   if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
-  const strings = ["syncStatus", "sourceKey", "sourceDocumentKind", "sourceDocumentNo", "sourceWorkflowStepId", "spreadsheetId", "spreadsheetUrl", "sheetName", "syncedAt", "updatedAt", "code", "error"];
-  const normalized = {};
-  for (const key of strings) if (typeof value[key] === "string") normalized[key] = value[key];
-  if (!["synced", "sync_failed", "blocked_child_rows"].includes(normalized.syncStatus)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
-  if (value.rowNumber !== undefined && (!Number.isInteger(value.rowNumber) || value.rowNumber < 1)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
-  if (value.rowNumber) normalized.rowNumber = value.rowNumber;
-  if (Array.isArray(value.conflicts)) normalized.conflicts = value.conflicts.filter((item) => item && typeof item.sourceKey === "string" && typeof item.spreadsheetId === "string" && typeof item.sheetName === "string" && Number.isInteger(item.rowNumber)).map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
+  const status = value.syncStatus;
+  if (!["synced", "sync_failed", "blocked_child_rows"].includes(status)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  const normalized = { syncStatus: status };
+  const copyText = (key, required = false) => {
+    if (value[key] === undefined && !required) return;
+    if (value[key] === "" && !required) return;
+    if (!isSafeWorkflowSheetText(value[key])) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+    normalized[key] = value[key];
+  };
+  const copyEmptyTimestamp = () => {
+    if (value.syncedAt !== "" && !isSafeWorkflowSheetText(value.syncedAt)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+    normalized.syncedAt = value.syncedAt;
+  };
+  if (status === "synced") {
+    copyText("sourceKey", true); copyText("sourceDocumentKind", true); copyText("sourceDocumentNo", true);
+    copyText("sourceWorkflowStepId"); copyText("spreadsheetId", true); copyText("sheetName", true);
+    copyText("syncedAt", true); copyText("updatedAt", true);
+    if (!isSafeWorkflowSheetId(normalized.spreadsheetId) || !isSafeWorkflowSpreadsheetUrl(value.spreadsheetUrl, normalized.spreadsheetId)
+      || !Number.isInteger(value.rowNumber) || value.rowNumber < 1) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+    normalized.spreadsheetUrl = value.spreadsheetUrl; normalized.rowNumber = value.rowNumber;
+  } else if (status === "blocked_child_rows") {
+    copyText("code", true); copyText("error", true); copyEmptyTimestamp(); copyText("updatedAt", true);
+    if (normalized.code !== "workflow_child_sheet_rows_exist" || !Array.isArray(value.conflicts)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+    normalized.conflicts = value.conflicts.map((item) => {
+      if (!item || typeof item !== "object" || !isSafeWorkflowSheetText(item.sourceKey)
+        || !isSafeWorkflowSheetId(item.spreadsheetId) || !isSafeWorkflowSheetText(item.sheetName)
+        || !Number.isInteger(item.rowNumber) || item.rowNumber < 1) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+      return { sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber };
+    });
+  } else {
+    copyText("code", true); copyText("error", true); copyEmptyTimestamp(); copyText("updatedAt", true);
+    if (!["workflow_sheet_preflight_failed", "workflow_sheet_sync_failed"].includes(normalized.code)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  }
   return normalized;
 }
 
 async function readWorkflowSheetSyncMetadata(rootDir, transaction) {
-  try { return normalizeWorkflowSheetSyncMetadata(JSON.parse(await readFile(workflowSheetSyncPath(rootDir, transaction), "utf8"))); }
-  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  try { return normalizeWorkflowSheetSyncMetadata(JSON.parse(await readFile(await workflowSheetSyncPath(rootDir, transaction), "utf8"))); }
+  // A detail read must never echo malformed attacker-controlled JSON.  The
+  // sync path separately proves containment before it makes external calls.
+  catch { return null; }
 }
 
 async function writeWorkflowSheetSyncMetadata(rootDir, transaction, metadata) {
-  const target = workflowSheetSyncPath(rootDir, transaction);
+  const target = await workflowSheetSyncPath(rootDir, transaction, { createDataDirectory: true });
   const dataDir = path.dirname(target);
-  await mkdir(dataDir, { recursive: true });
-  assertPathWithinDirectory(await realpath(rootDir), await realpath(dataDir), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+  const safeMetadata = normalizeWorkflowSheetSyncMetadata(metadata);
   const temporary = path.join(dataDir, `.sheet-sync-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-  try { await writeFile(temporary, `${JSON.stringify(metadata, null, 2)}\n`, "utf8"); await rename(temporary, target); }
+  try { await writeFile(temporary, `${JSON.stringify(safeMetadata, null, 2)}\n`, "utf8"); await rename(temporary, target); }
   finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
 
@@ -3144,9 +3211,13 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
     const transaction = await getWorkflowTransaction(rootDir, transactionNo);
     if (!transaction) throw new Error("ไม่พบธุรกรรม");
     if (transaction.transactionNo !== transactionNo) throw new Error("ข้อมูลธุรกรรมไม่ตรงกับเลขที่ที่ร้องขอ");
+    await workflowSheetSyncPath(rootDir, transaction, { createDataDirectory: true });
     if (typeof transaction.completedAt !== "string" || !transaction.completedAt.trim()) throw new Error("ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Sheets ได้");
     const children = await collectWorkflowFinancialChildrenStrict(rootDir, transaction);
     const source = resolveWorkflowSheetExpenseSource(transaction, children);
+    if (source.workflowStepId !== undefined && source.workflowStepId !== "" && !isSafeWorkflowSheetText(source.workflowStepId)) {
+      throw new Error("ข้อมูลเอกสารค่าใช้จ่ายไม่ถูกต้องสำหรับซิงก์ Google Sheets");
+    }
     const entry = buildWorkflowTransactionSheetEntry(transaction, source);
     const sourceKeys = children.map((child) => `${child.documentKind === "expense_request" ? "expense_request" : "substitute_receipt"}:${child.documentKind === "expense_request" ? child.requestNo : child.receiptNo}`);
     const knownLocations = children.map((child) => ({ spreadsheetId: child.sheetSync?.spreadsheetId || "", sheetName: child.sheetSync?.sheetName || "" }));
@@ -3158,14 +3229,20 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
       throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
     }
     if (preflight.conflicts?.length) {
-      const conflicts = preflight.conflicts.filter((item) => item && sourceKeys.includes(item.sourceKey) && typeof item.spreadsheetId === "string" && typeof item.sheetName === "string" && Number.isInteger(item.rowNumber)).map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
+      const conflicts = preflight.conflicts.filter((item) => item && sourceKeys.includes(item.sourceKey)
+        && isSafeWorkflowSheetText(item.sourceKey) && isSafeWorkflowSheetId(item.spreadsheetId)
+        && isSafeWorkflowSheetText(item.sheetName) && Number.isInteger(item.rowNumber) && item.rowNumber > 0)
+        .map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
       const documentNos = [...new Set(conflicts.map((item) => item.sourceKey.split(":")[1]).filter(Boolean))].join(", ");
       const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts, syncedAt: "", updatedAt: now() };
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     }
     try {
       const recorded = await expenseRecorder({ rootDir, entry, now }); const stamp = now();
-      if (!recorded || recorded.syncStatus !== "synced" || ![recorded.spreadsheetId, recorded.spreadsheetUrl, recorded.sheetName].every((value) => typeof value === "string" && value) || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
+      if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
+        || !isSafeWorkflowSpreadsheetUrl(recorded.spreadsheetUrl, recorded.spreadsheetId)
+        || !isSafeWorkflowSheetText(recorded.sheetName) || recorded.sheetName !== transaction.accountingMonth
+        || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
       const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     } catch (error) {
