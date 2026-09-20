@@ -381,7 +381,17 @@ async function recordMonthlyExpense({
 }
 
 const monthlyExpenseDeletionQueues = new Map();
-const monthlyExpenseSourceKeyPattern = /^(expense_request:REQ|substitute_receipt:SR|workflow_transaction:TXN)-(\d{4}-\d{2})-([A-Za-z0-9][A-Za-z0-9._-]{3,})$/;
+const monthlyExpenseSourceKeyPattern = /^(expense_request:REQ|substitute_receipt:SR|workflow_transaction:TXN)-(\d{4}-\d{2})-(\d{4,})$/;
+
+function isCanonicalMonthlyExpenseSequence(sequence) {
+  if (!/^\d{4,}$/.test(sequence)) return false;
+  try {
+    const numericSequence = BigInt(sequence);
+    return numericSequence > 0n && numericSequence.toString().padStart(4, "0") === sequence;
+  } catch {
+    return false;
+  }
+}
 
 function monthlyExpenseDeletionError(code, message, partialResult) {
   const error = new Error(`${code}: ${message}`);
@@ -402,7 +412,7 @@ function normalizeDeletionInput({ rootDir, accountingMonth, sourceKey, knownLoca
     throw monthlyExpenseDeletionError("INVALID_MONTHLY_EXPENSE_SOURCE_KEY", "Invalid source key");
   }
   const sourceKeyMatch = sourceKey.match(monthlyExpenseSourceKeyPattern);
-  if (!sourceKeyMatch || sourceKeyMatch[2] !== accountingMonth) {
+  if (!sourceKeyMatch || sourceKeyMatch[2] !== accountingMonth || !isCanonicalMonthlyExpenseSequence(sourceKeyMatch[3])) {
     throw monthlyExpenseDeletionError("INVALID_MONTHLY_EXPENSE_SOURCE_KEY", "Invalid source key or month mismatch");
   }
   if (!Array.isArray(knownLocations)) {

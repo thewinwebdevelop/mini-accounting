@@ -412,6 +412,90 @@ test("deleteMonthlyExpenseRowsBySourceKey preflights every known location before
   }
 });
 
+test("deleteMonthlyExpenseRowsBySourceKey fails closed for each configured and trusted-location preflight failure", async () => {
+  const cases = [
+    {
+      name: "missing known tab",
+      expectedCode: "MONTHLY_EXPENSE_KNOWN_LOCATION_UNREADABLE",
+      knownLocations: [{ spreadsheetId: "known-sheet", sheetName: "2026-09" }],
+      fetchImpl: async (url) => {
+        const urlText = String(url);
+        if (urlText.startsWith("https://www.googleapis.com/drive/v3/files?")) return deleteDriveResponse(urlText, { destination: false });
+        if (urlText.includes("known-sheet?fields=sheets.properties")) return googleOk({ sheets: [{ properties: { title: "renamed", sheetId: 31 } }] });
+        throw new Error(`Unexpected URL: ${urlText}`);
+      },
+    },
+    {
+      name: "known values failure after earlier match",
+      expectedCode: "MONTHLY_EXPENSE_KNOWN_LOCATION_UNREADABLE",
+      knownLocations: [
+        { spreadsheetId: "first-known", sheetName: "2026-09" },
+        { spreadsheetId: "second-known", sheetName: "2026-09" },
+      ],
+      fetchImpl: async (url) => {
+        const urlText = String(url);
+        if (urlText.startsWith("https://www.googleapis.com/drive/v3/files?")) return deleteDriveResponse(urlText, { destination: false });
+        const spreadsheetId = sheetIdFromUrl(urlText);
+        if (urlText.includes("?fields=sheets.properties")) return googleOk({ sheets: [{ properties: { title: "2026-09", sheetId: spreadsheetId === "first-known" ? 32 : 33 } }] });
+        if (urlText.includes("second-known/values/")) return { ok: false, status: 503, json: async () => ({ error: "known values failure" }) };
+        if (urlText.includes("first-known/values/")) return googleOk({ values: [["Source Key"], ["expense_request:REQ-2026-09-0001"]] });
+        throw new Error(`Unexpected URL: ${urlText}`);
+      },
+    },
+    {
+      name: "configured Drive discovery failure",
+      expectedCode: "MONTHLY_EXPENSE_DESTINATION_DISCOVERY_FAILED",
+      fetchImpl: async (url) => {
+        if (String(url).startsWith("https://www.googleapis.com/drive/v3/files?")) return { ok: false, status: 503, json: async () => ({ error: "drive discovery failure" }) };
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    },
+    {
+      name: "configured destination metadata request failure",
+      expectedCode: "MONTHLY_EXPENSE_DESTINATION_DISCOVERY_FAILED",
+      fetchImpl: async (url) => {
+        const urlText = String(url);
+        if (urlText.startsWith("https://www.googleapis.com/drive/v3/files?")) return deleteDriveResponse(urlText);
+        if (urlText.includes("?fields=sheets.properties")) return { ok: false, status: 503, json: async () => ({ error: "destination metadata failure" }) };
+        throw new Error(`Unexpected URL: ${urlText}`);
+      },
+    },
+    {
+      name: "configured destination values failure",
+      expectedCode: "MONTHLY_EXPENSE_VALUES_READ_FAILED",
+      fetchImpl: async (url) => {
+        const urlText = String(url);
+        if (urlText.startsWith("https://www.googleapis.com/drive/v3/files?")) return deleteDriveResponse(urlText);
+        if (urlText.includes("?fields=sheets.properties")) return googleOk({ sheets: [{ properties: { title: "2026-09", sheetId: 34 } }] });
+        if (urlText.includes("/values/")) return { ok: false, status: 503, json: async () => ({ error: "destination values failure" }) };
+        throw new Error(`Unexpected URL: ${urlText}`);
+      },
+    },
+  ];
+
+  for (const fixture of cases) {
+    const rootDir = await mkdtemp(join(tmpdir(), `sweet-house-sheet-delete-preflight-${fixture.name.replace(/\s+/g, "-")}-`));
+    const calls = [];
+    try {
+      await writeValidGoogleAuth(rootDir);
+      const error = await deleteMonthlyExpenseRowsBySourceKey({
+        rootDir,
+        accountingMonth: "2026-09",
+        sourceKey: "expense_request:REQ-2026-09-0001",
+        knownLocations: fixture.knownLocations,
+        fetchImpl: async (url, options = {}) => {
+          calls.push({ url: String(url), method: options.method || "GET" });
+          return fixture.fetchImpl(url, options);
+        },
+      }).catch((caught) => caught);
+      assert.equal(error.code, fixture.expectedCode, fixture.name);
+      assert.equal(calls.some((call) => call.method === "POST" && call.url.endsWith(":batchUpdate")), false, fixture.name);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("deleteMonthlyExpenseRowsBySourceKey recomputes the final row after a row moves", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheet-delete-reread-"));
   const calls = [];
@@ -608,6 +692,12 @@ test("deleteMonthlyExpenseRowsBySourceKey rejects invalid inputs before authenti
       { accountingMonth: "2026-09", sourceKey: "unknown:REQ-2026-09-0001" },
       { accountingMonth: "2026-09", sourceKey: " expense_request:REQ-2026-09-0001" },
       { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2026-09-0001,substitute_receipt:SR-2026-09-0002" },
+      { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2026-09-ABCD" },
+      { accountingMonth: "2026-09", sourceKey: "substitute_receipt:SR-2026-09-0001.extra" },
+      { accountingMonth: "2026-09", sourceKey: "workflow_transaction:TXN-2026-09-0001_extra" },
+      { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2026-09-0001-extra" },
+      { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2026-09-001" },
+      { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2026-09-0000" },
       { accountingMonth: "2026-9", sourceKey: "expense_request:REQ-2026-09-0001" },
       { accountingMonth: "2026-09", sourceKey: "expense_request:REQ-2025-09-0001" },
     ]) {
