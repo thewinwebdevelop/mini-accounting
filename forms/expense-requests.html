@@ -372,6 +372,7 @@
 
     function sheetStatusLabel(syncStatus) {
       if (syncStatus === "synced") return "ลง Sheet แล้ว";
+      if (syncStatus === "managed_by_workflow") return "ลง Sheet จากหน้า Workflow";
       if (syncStatus === "needs_resync") return "Sheet ต้องอัปเดต";
       if (syncStatus === "sync_failed") return "Sheet ไม่สำเร็จ";
       return "รอ Sheet";
@@ -399,6 +400,7 @@
       }
 
       const requestNo = request.requestNo || "";
+      const workflowManaged = !!request.transactionNo;
       const editTarget = `<a class="button primary small" href="/expense-request?requestNo=${encodeURIComponent(requestNo)}">แก้ไข</a>`;
       const reimbursementPdf = (request.pdfFiles || []).find((file) => file.name?.includes("ใบเบิกจ่าย"));
       const auditPacket = (request.pdfFiles || []).find((file) => file.name?.includes("audit-packet"));
@@ -430,7 +432,7 @@
       const syncButton = `<button class="button warn small" type="button" data-sync-drive="${escapeHtml(requestNo)}">${syncButtonLabel}</button>`;
       const approveButton = request.status === "submitted"
         ? `<button class="button primary small" type="button" data-approve="${escapeHtml(requestNo)}">อนุมัติ</button>`
-        : request.status === "approved" && request.sheetSyncStatus !== "synced"
+        : request.status === "approved" && !workflowManaged && request.sheetSyncStatus !== "synced"
           ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}">ลง Sheet อีกครั้ง</button>`
         : "";
       // The natural place to close out an approved expense request: once it
@@ -438,7 +440,7 @@
       // but mark it complete — the same control workflow-document.html gives
       // every lightweight kind ("เสร็จสิ้นเอกสาร"), wired here for
       // expense_request so its workflow step can ever leave in_progress.
-      const completeButton = request.status === "approved" && request.sheetSyncStatus === "synced"
+      const completeButton = request.status === "approved" && (workflowManaged || request.sheetSyncStatus === "synced")
         ? `<button class="button primary small" type="button" data-complete="${escapeHtml(requestNo)}">เสร็จสิ้น</button>`
         : "";
 
@@ -528,6 +530,8 @@
         await loadRequests();
         listStatus.textContent = result.sheetSync?.syncStatus === "synced"
           ? `อนุมัติและลง Sheet แล้ว: ${requestNo}`
+          : result.sheetSync?.syncStatus === "managed_by_workflow"
+            ? `อนุมัติแล้ว — ลง Sheet จากหน้า Workflow หลังปิดงาน: ${requestNo}`
           : `อนุมัติแล้ว แต่ยังลง Sheet ไม่สำเร็จ: ${requestNo}`;
       } catch (error) {
         button.disabled = false;

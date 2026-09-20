@@ -203,10 +203,8 @@ function renderTemplateEditor(documentTypes, templates) {
 }
 
 // Reads the ordered document kinds and the syncGoogleDrive toggle straight
-// from the DOM/state. There is no syncGoogleSheets field anywhere: the
-// workflow layer never writes its own Sheets row (see decision D6) because
-// each child document already writes its own row for the real amount, and a
-// transaction bundles several of those documents for the same money.
+// from the DOM/state. Sheets is deliberately absent from templates: it is a
+// manual action on a closed transaction, never an automatic template action.
 function collectTemplatePayload() {
   const nameInput = document.querySelector("#templateName");
   const descriptionInput = document.querySelector("#templateDescription");
@@ -507,6 +505,7 @@ const transactionPageState = {
   transaction: null,
   childDocuments: [],
 };
+let transactionExternalSyncInFlight = false;
 
 function transactionNoFromQuery() {
   return getQueryParam("transactionNo") || "";
@@ -814,9 +813,8 @@ function renderDriveSyncDocuments(list, transaction) {
 // transaction's own driveSync state: toggle off always shows the manual sync
 // button; toggle on already synced automatically at completion, so the button
 // appears only when a sync did not get everything into Drive — as the retry,
-// which re-attempts only what failed. There is no Sheets sync UI at all
-// (decision D6): no syncGoogleSheets toggle, no sheetSync field, no
-// syncSheetsButton/sheetSyncStatus element.
+// which re-attempts only what failed. Sheets has no template toggle: O12 is
+// always a manual, parent-only action after O13's persisted completion.
 function renderDriveSyncSection(section, statusEl, button, transaction, documentsList) {
   if (!section) return;
   const isCompleted = !!transaction.completedAt;
@@ -838,6 +836,72 @@ function renderDriveSyncSection(section, statusEl, button, transaction, document
   }
 }
 
+function safeSpreadsheetUrl(value) {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "docs.google.com" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function sheetConflictDocumentNos(conflicts) {
+  if (!Array.isArray(conflicts)) return [];
+  return [...new Set(conflicts.map((conflict) => {
+    const key = typeof conflict?.sourceKey === "string" ? conflict.sourceKey : "";
+    const match = key.match(/^(?:expense_request|substitute_receipt):(.+)$/);
+    return match?.[1] || "";
+  }).filter(Boolean))];
+}
+
+function sheetSyncStatusText(sheetSync, transaction) {
+  if (!sheetSync || sheetSync.syncStatus === "synced" && !validSheetSyncResult(sheetSync, transaction.transactionNo, transaction)) {
+    return "ยังไม่ได้ซิงก์ Google Sheets";
+  }
+  if (sheetSync.syncStatus === "synced") {
+    return `ซิงก์ Google Sheets สำเร็จแล้ว${sheetSync.sourceDocumentNo ? ` (${sheetSync.sourceDocumentNo})` : ""}`;
+  }
+  if (sheetSync.syncStatus === "blocked_child_rows") {
+    const documentNos = sheetConflictDocumentNos(sheetSync.conflicts);
+    return `${sheetSync.error || "พบรายการเอกสารย่อยใน Google Sheets"}${documentNos.length ? `: ${documentNos.join(", ")}` : ""}`;
+  }
+  if (sheetSync.syncStatus === "sync_failed") return sheetSync.error || "ไม่สามารถซิงก์ Google Sheets ได้";
+  return "ยังไม่ได้ซิงก์ Google Sheets";
+}
+
+function renderSheetSyncSection(section, statusEl, link, button, transaction) {
+  if (!section) return;
+  const isCompleted = !!transaction.completedAt;
+  section.hidden = !isCompleted;
+  if (!isCompleted) {
+    if (button) button.hidden = true;
+    if (link) { link.hidden = true; link.href = "#"; }
+    return;
+  }
+  const sheetSync = transaction.sheetSync;
+  const validSynced = sheetSync?.syncStatus === "synced" && validSheetSyncResult(sheetSync, transaction.transactionNo, transaction);
+  if (statusEl) statusEl.textContent = sheetSyncStatusText(sheetSync, transaction);
+  const syncedUrl = validSynced ? safeSpreadsheetUrl(sheetSync.spreadsheetUrl) : "";
+  if (link) {
+    link.hidden = !syncedUrl;
+    link.href = syncedUrl || "#";
+  }
+  if (button) {
+    button.hidden = false;
+    button.textContent = validSynced ? "ซิงก์ Google Sheets อีกครั้ง"
+      : sheetSync?.syncStatus === "blocked_child_rows" ? "ตรวจสอบแล้วลองอีกครั้ง"
+        : sheetSync?.syncStatus === "sync_failed" ? "ลองซิงก์ Google Sheets อีกครั้ง" : "ซิงก์ Google Sheets";
+  }
+}
+
+function setTransactionSyncButtonsDisabled(disabled) {
+  const driveButton = document.querySelector("#syncDriveButton");
+  const sheetButton = document.querySelector("#syncSheetsButton");
+  if (driveButton) driveButton.disabled = disabled;
+  if (sheetButton) sheetButton.disabled = disabled;
+}
+
 function renderTransaction(transaction, childDocuments = []) {
   transactionPageState.transaction = transaction;
   transactionPageState.childDocuments = childDocuments;
@@ -852,6 +916,13 @@ function renderTransaction(transaction, childDocuments = []) {
     document.querySelector("#syncDriveButton"),
     transaction,
     document.querySelector("#driveSyncDocuments"),
+  );
+  renderSheetSyncSection(
+    document.querySelector("#sheetSyncSection"),
+    document.querySelector("#sheetSyncStatus"),
+    document.querySelector("#sheetSyncLink"),
+    document.querySelector("#syncSheetsButton"),
+    transaction,
   );
   renderChecklist(
     document.querySelector("#documentChecklist"),
@@ -933,6 +1004,38 @@ async function syncTransactionDrive() {
   return driveSync;
 }
 
+function validSheetSyncResult(value, transactionNo, transaction) {
+  return value && value.syncStatus === "synced"
+    && value.sourceKey === `workflow_transaction:${transactionNo}`
+    && value.sheetName === transaction.accountingMonth
+    && Number.isInteger(value.rowNumber) && value.rowNumber > 0
+    && !!safeSpreadsheetUrl(value.spreadsheetUrl);
+}
+
+async function syncTransactionSheets() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+  let response;
+  let result = {};
+  try {
+    response = await fetch(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/sync-sheets`, { method: "POST", headers: { "content-type": "application/json" } });
+    result = await response.json();
+  } catch (error) {
+    throw new Error(error.message || "ไม่สามารถซิงก์ Google Sheets ได้");
+  }
+  if (!response.ok) {
+    const error = new Error(result.error || "ไม่สามารถซิงก์ Google Sheets ได้");
+    error.sheetResponse = result;
+    throw error;
+  }
+  const transaction = transactionPageState.transaction || {};
+  if (!validSheetSyncResult(result, transactionNo, transaction)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+  renderTransaction({ ...transaction, sheetSync: result }, transactionPageState.childDocuments || []);
+  return result;
+}
+
 async function startDocument(stepId) {
   const transactionNo = transactionNoFromQuery();
   if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
@@ -953,6 +1056,7 @@ function initTransactionPage() {
   const refreshButton = document.querySelector("#refreshTransactionButton");
   const completeButton = document.querySelector("#completeTransactionButton");
   const syncDriveButton = document.querySelector("#syncDriveButton");
+  const syncSheetsButton = document.querySelector("#syncSheetsButton");
   const statusBox = document.querySelector("#transactionStatus");
 
   if (refreshButton) {
@@ -974,12 +1078,13 @@ function initTransactionPage() {
 
   if (syncDriveButton) {
     syncDriveButton.addEventListener("click", () => {
-      if (syncDriveButton.disabled) return;
+      if (syncDriveButton.disabled || syncDriveButton.hidden || transactionExternalSyncInFlight) return;
       clearStatusBox(statusBox);
       // Disabled while the request runs: a second press would start a second
       // upload of the same files (the server also refuses to run two syncs of
       // one transaction at once).
-      syncDriveButton.disabled = true;
+      transactionExternalSyncInFlight = true;
+      setTransactionSyncButtonsDisabled(true);
       syncTransactionDrive()
         .then((driveSync) => {
           if (driveSync.syncStatus === "sync_failed") {
@@ -989,7 +1094,28 @@ function initTransactionPage() {
           }
         })
         .catch((error) => setStatusBox(statusBox, error.message, "error"))
-        .finally(() => { syncDriveButton.disabled = false; });
+        .finally(() => { transactionExternalSyncInFlight = false; setTransactionSyncButtonsDisabled(false); });
+    });
+  }
+
+  if (syncSheetsButton) {
+    syncSheetsButton.addEventListener("click", () => {
+      if (syncSheetsButton.disabled || syncSheetsButton.hidden || transactionExternalSyncInFlight || !transactionPageState.transaction?.completedAt) return;
+      clearStatusBox(statusBox);
+      transactionExternalSyncInFlight = true;
+      setTransactionSyncButtonsDisabled(true);
+      syncTransactionSheets()
+        .then(() => setStatusBox(statusBox, "ซิงก์ Google Sheets เรียบร้อยแล้ว", "success"))
+        .catch((error) => {
+          const response = error.sheetResponse;
+          if (response?.code === "workflow_child_sheet_rows_exist") {
+            const documentNos = sheetConflictDocumentNos(response.conflicts);
+            setStatusBox(statusBox, `${response.error || error.message}${documentNos.length ? `: ${documentNos.join(", ")}` : ""}`, "error");
+          } else {
+            setStatusBox(statusBox, error.message, "error");
+          }
+        })
+        .finally(() => { transactionExternalSyncInFlight = false; setTransactionSyncButtonsDisabled(false); });
     });
   }
 

@@ -611,6 +611,7 @@ function createTransactionStubFetch({
   onStartDocument,
   onComplete,
   onSyncDrive,
+  onSyncSheets,
 }) {
   let current = transaction;
   return async (url, options = {}) => {
@@ -633,6 +634,9 @@ function createTransactionStubFetch({
     if (url === `/api/workflow-transactions/${transactionNo}/sync-drive` && options.method === "POST") {
       return onSyncDrive();
     }
+    if (url === `/api/workflow-transactions/${transactionNo}/sync-sheets` && options.method === "POST") {
+      return onSyncSheets();
+    }
     throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
   };
 }
@@ -648,6 +652,7 @@ async function setupTransactionPageSandbox({
   onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
   onComplete = () => { throw new Error("complete should not be called in this test"); },
   onSyncDrive = () => { throw new Error("sync-drive should not be called in this test"); },
+  onSyncSheets = () => { throw new Error("sync-sheets should not be called in this test"); },
 }) {
   const realHtml = await readFile(transactionHtmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
@@ -659,6 +664,7 @@ async function setupTransactionPageSandbox({
     onStartDocument,
     onComplete,
     onSyncDrive,
+    onSyncSheets,
   });
   const location = { search: `?transactionNo=${transactionNo}`, href: "" };
   const window = { fetch: stubFetch };
@@ -670,6 +676,7 @@ async function setupTransactionPageSandbox({
     window,
     document: fakeDocument,
     location,
+    URL,
     URLSearchParams,
     fetch: stubFetch,
   });
@@ -712,15 +719,150 @@ test("workflow transaction page shows progress checklist and standalone document
   assert.match(html, /เปิดเอกสาร/);
 });
 
-test("workflow transaction page shows a manual Drive sync button and auto-sync status, and no Sheets sync UI", async () => {
+test("workflow transaction page exposes the separate manual Sheets controls", async () => {
   const html = await readFile(transactionHtmlPath, "utf8");
   assert.match(html, /id="syncDriveButton"/);
   assert.match(html, /id="driveSyncStatus"/);
   assert.match(html, /sync-drive/);
   assert.match(html, /\/complete/);
-  assert.doesNotMatch(html, /id="syncSheetsButton"/);
-  assert.doesNotMatch(html, /id="sheetSyncStatus"/);
-  assert.doesNotMatch(html, /sync-sheets/);
+  assert.match(html, /id="sheetSyncSection"/);
+  assert.match(html, /id="sheetSyncStatus"/);
+  assert.match(html, /id="sheetSyncLink"/);
+  assert.match(html, /id="syncSheetsButton"/);
+  assert.match(html, /sync-sheets/);
+});
+
+test("Sheets is a manual parent action only after persisted completedAt, adopts one safe result, and never affects Drive state", async () => {
+  const readyButOpen = buildFourStepTransaction({
+    status: "completed", currentStepId: null,
+    accountingMonth: "2026-09",
+    steps: buildFourStepTransaction().steps.map((step) => ({ ...step, workflowStatus: "completed" })),
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false },
+    driveSync: { syncStatus: "not_required" },
+  });
+  let sheetCalls = 0;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: readyButOpen,
+    refreshedTransaction: readyButOpen,
+    onSyncSheets: () => {
+      sheetCalls += 1;
+      return { ok: true, json: async () => ({
+        syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001",
+        sourceDocumentNo: "REQ-2026-09-0001", sheetName: "2026-09", rowNumber: 2,
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/safe-sheet/edit",
+      }) };
+    },
+  });
+  assert.equal(elements.sheetSyncSection.hidden, true);
+  elements.syncSheetsButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(sheetCalls, 0);
+
+  readyButOpen.completedAt = "2026-09-20T00:00:00.000Z";
+  elements.refreshTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.sheetSyncSection.hidden, false);
+  assert.equal(elements.syncSheetsButton.hidden, false);
+  assert.equal(elements.sheetSyncLink.hidden, true);
+  elements.syncSheetsButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(sheetCalls, 1);
+  assert.match(elements.sheetSyncStatus.textContent, /สำเร็จ/);
+  assert.match(elements.sheetSyncStatus.textContent, /REQ-2026-09-0001/);
+  assert.equal(elements.sheetSyncLink.hidden, false);
+  assert.equal(elements.sheetSyncLink.href, "https://docs.google.com/spreadsheets/d/safe-sheet/edit");
+  assert.equal(elements.driveSyncStatus.textContent.includes("Google Sheets"), false);
+});
+
+test("Sheets conflict and invalid results retain a prior safe link and concurrent Drive/Sheets clicks make one external action", async () => {
+  const completed = buildCompletedTransaction({
+    accountingMonth: "2026-09",
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: false },
+    sheetSync: { syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentNo: "REQ-OLD", sheetName: "2026-09", rowNumber: 4, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/old/edit" },
+  });
+  let resolveSheets;
+  let sheetCalls = 0;
+  let driveCalls = 0;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed, refreshedTransaction: completed,
+    onSyncDrive: () => { driveCalls += 1; return { ok: true, json: async () => ({ syncStatus: "synced" }) }; },
+    onSyncSheets: () => {
+      sheetCalls += 1;
+      if (sheetCalls === 1) return new Promise((resolve) => { resolveSheets = resolve; });
+      return { ok: false, json: async () => ({ error: "พบแถวเอกสารย่อย", code: "workflow_child_sheet_rows_exist", conflicts: [{ sourceKey: "expense_request:REQ-2026-09-0010", spreadsheetId: "hidden", sheetName: "internal", rowNumber: 9 }] }) };
+    },
+  });
+  elements.syncSheetsButton.dispatch("click");
+  elements.syncSheetsButton.dispatch("click");
+  elements.syncDriveButton.dispatch("click");
+  assert.equal(sheetCalls, 1);
+  assert.equal(driveCalls, 0);
+  assert.equal(elements.syncDriveButton.disabled, true);
+  resolveSheets({ ok: false, json: async () => ({ error: "พบแถวเอกสารย่อย", code: "workflow_child_sheet_rows_exist", conflicts: [{ sourceKey: "expense_request:REQ-2026-09-0010", spreadsheetId: "hidden", sheetName: "internal", rowNumber: 9 }] }) });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(elements.transactionStatus.textContent, /REQ-2026-09-0010/);
+  assert.doesNotMatch(elements.transactionStatus.textContent, /expense_request|hidden|internal|rowNumber/);
+  assert.match(elements.sheetSyncStatus.textContent, /REQ-OLD/);
+  assert.equal(elements.sheetSyncLink.href, "https://docs.google.com/spreadsheets/d/old/edit");
+  assert.equal(elements.syncSheetsButton.disabled, false);
+});
+
+test("malformed 200 Sheet metadata cannot replace a prior success and later resync replaces only valid metadata", async () => {
+  const completed = buildCompletedTransaction({
+    accountingMonth: "2026-09",
+    sheetSync: { syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentNo: "REQ-OLD", sheetName: "2026-09", rowNumber: 4, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/old/edit" },
+  });
+  let calls = 0;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed, refreshedTransaction: completed,
+    onSyncSheets: () => {
+      calls += 1;
+      if (calls === 1) return { ok: true, json: async () => ({ syncStatus: "synced", sourceKey: "wrong", sheetName: "2026-09", rowNumber: 0, spreadsheetUrl: "https://evil.example/sheet" }) };
+      return { ok: true, json: async () => ({ syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentNo: "REQ-NEW", sheetName: "2026-09", rowNumber: 5, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/new/edit" }) };
+    },
+  });
+  elements.syncSheetsButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.sheetSyncLink.href, "https://docs.google.com/spreadsheets/d/old/edit");
+  assert.match(elements.transactionStatus.textContent, /ข้อมูลการซิงก์/);
+  elements.syncSheetsButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.sheetSyncLink.href, "https://docs.google.com/spreadsheets/d/new/edit");
+  assert.match(elements.sheetSyncStatus.textContent, /REQ-NEW/);
+});
+
+test("HTTP 400, rejected fetch, and malformed JSON keep Sheet success and restore retry", async () => {
+  const completed = buildCompletedTransaction({
+    accountingMonth: "2026-09",
+    sheetSync: { syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentNo: "REQ-OLD", sheetName: "2026-09", rowNumber: 4, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/old/edit" },
+  });
+  let calls = 0;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed, refreshedTransaction: completed,
+    onSyncSheets: () => {
+      calls += 1;
+      if (calls === 1) return { ok: false, json: async () => ({ error: "ต้องปิดงานก่อน" }) };
+      if (calls === 2) throw new Error("เครือข่ายขัดข้อง");
+      return { ok: true, json: async () => { throw new Error("bad json"); } };
+    },
+  });
+  for (const expected of [/ต้องปิดงานก่อน/, /เครือข่ายขัดข้อง/, /bad json/]) {
+    elements.syncSheetsButton.dispatch("click");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.match(elements.transactionStatus.textContent, expected);
+    assert.equal(elements.sheetSyncLink.href, "https://docs.google.com/spreadsheets/d/old/edit");
+    assert.equal(elements.syncSheetsButton.disabled, false);
+  }
+});
+
+test("malformed persisted Sheet metadata is unsynced and never exposes its link", async () => {
+  const completed = buildCompletedTransaction({
+    accountingMonth: "2026-09",
+    sheetSync: { syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sheetName: "2026-09", rowNumber: 0, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/untrusted/edit" },
+  });
+  const { elements } = await setupTransactionPageSandbox({ transaction: completed, refreshedTransaction: completed });
+  assert.match(elements.sheetSyncStatus.textContent, /ยังไม่ได้ซิงก์/);
+  assert.equal(elements.sheetSyncLink.hidden, true);
 });
 
 test("workflow-transaction.html loads the shared controller as a classic script", async () => {
