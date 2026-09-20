@@ -100,12 +100,13 @@ Manual sync Sheets ที่ระดับ transaction ต้องใช้ข
 
 2. Cancel ทั้ง workflow ต้องย้อนสต๊อกและลบ Sheets ของทั้ง transaction หรือไม่? หากสต๊อกไม่พอ ห้าม cancel หรืออนุญาตติดลบ?
 
-## การจัดทีมล่าสุด (2026-09-12)
+## การจัดทีมล่าสุด (ปรับตามคำสั่งเจ้าของงานหลังงาน sync Sheets)
 
 เจ้าของงานเปลี่ยนโมเดลสำหรับงานถัดไป โดย PM ยังคงจัดงานและถามเมื่อข้อกำหนดไม่ชัดเจน:
 
 - Architecture & Security review: GPT-5.6 Sol, Medium
-- Senior backend / frontend developer: GPT-5.6 Terra, Medium
+- Senior backend developer: GPT-5.6 Luna, High
+- Senior frontend developer: GPT-5.6 Luna, Medium
 - Junior backend / frontend developer: GPT-5.5 สำหรับงานตาม spec หรืองานง่าย; ไม่ระบุ reasoning จึงใช้ค่าเริ่มต้น Medium
 - งานและผลรีวิวที่เสร็จแล้วคงหลักฐานโมเดลเดิม; งานรีวิวที่ค้างส่งต่อให้ทีมตามการตั้งค่าใหม่นี้
 
