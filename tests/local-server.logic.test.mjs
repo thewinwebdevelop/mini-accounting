@@ -287,6 +287,23 @@ test("workflow-bound REQ approval and retry make zero recorder calls and preserv
   } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
 
+test("workflow-bound SR approval and retry make zero recorder calls and preserve legacy or managed metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sr-approval-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const product = createProduct(rootDir, { productCode: "WS-SR", name: "Workflow SR", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "WS-SR-1", color: "white", size: "M", defaultUnitCost: "100" });
+    const saved = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload({ transactionNo: fixture.transactionNo, workflowStepId: "sr", lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "Workflow SR", quantity: "1", unitCost: "100" }] }), uploads: validSlipUpload() });
+    const file = join(rootDir, saved.folderPath, "data", "substitute-receipt.json"); const payload = JSON.parse(await readFile(file, "utf8"));
+    payload.sheetSync = { syncStatus: "synced", spreadsheetId: "legacy-sheet", sheetName: "2026-09", rowNumber: 9 }; await writeFile(file, JSON.stringify(payload));
+    let calls = 0; const recorder = async () => { calls += 1; throw new Error("must not run"); };
+    await approveSubstituteReceipt({ rootDir, receiptNo: saved.receiptNo, expenseRecorder: recorder });
+    await approveSubstituteReceipt({ rootDir, receiptNo: saved.receiptNo, expenseRecorder: recorder });
+    assert.equal(calls, 0); const reread = JSON.parse(await readFile(file, "utf8"));
+    assert.deepEqual(reread.sheetSync, payload.sheetSync); assert.equal(reread.workflowSheetSync.syncStatus, "managed_by_workflow");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
 function getPythonExecutable() {
   const bundledPython = join(
     homedir(),
