@@ -132,3 +132,8 @@ Manual sync Sheets ที่ระดับ transaction ต้องใช้ข
 
 - `6d1cbf3`: ตัวเลือกข้อมูลรายจ่ายและตัวสร้างแถว Sheets ระดับ workflow ตาม O12 ผ่าน Architecture/Security review; ชุดเต็ม 562 Node + 19 Python ผ่าน ยังไม่มีการเขียน Sheets จากส่วนนี้
 - `90cbd31`: ตัวตรวจแถว REQ/SR เดิมตาม O14 อ่านจากปลายทางปัจจุบันและตำแหน่งเดิมโดยไม่แก้ Sheets; เมื่ออ่านไม่สำเร็จต้องหยุด ผ่าน Architecture/Security review ชุดเฉพาะ 8 และชุดเต็ม 568 Node + 19 Python ผ่าน ส่วน API และปุ่ม sync ระดับ workflow กำลังดำเนินการ
+
+- `7de53e0` ถึง `464c9ed`: API sync Sheets ระดับ workflow ตาม O12–O14 พร้อมตรวจเอกสารและพาธก่อนใช้งาน เก็บสถานะ sync แยกจากข้อมูล workflow และหยุดสร้างแถวลูกเมื่ออนุมัติ REQ/SR ใน workflow; ผ่าน Architecture/Security review หลังแก้สองรอบ ชุดเต็มหลังแก้ production ผ่าน 579 Node + 19 Python และชุด logic หลังเพิ่ม tests ผ่าน 56 รายการ ส่วนปุ่มหน้าเว็บและเงื่อนไข Complete ของ REQ กำลังดำเนินการ
+
+- `7307729`: ปุ่ม manual sync Sheets ระดับ workflow แสดงหลังปิดงานจริง ตรวจผลตอบกลับก่อนแสดงสำเร็จ รักษาผลเดิมเมื่อ retry ล้มเหลว และป้องกันคำสั่ง Sheets/Drive ซ้อนกัน; REQ ใน workflow กด Complete ได้โดยไม่ต้องมีแถวลูก พร้อมรักษาพฤติกรรม standalone ผ่าน Architecture/Security review ไม่มี findings ชุดเต็มหลังแก้ production ผ่าน 587 Node + 19 Python และชุด frontend หลังเพิ่ม tests ผ่าน 81 รายการ
+- งาน sync Sheets ระดับ workflow ตาม O12–O14 ผ่านรีวิวครบทั้ง backend/frontend แล้ว ไม่มีการเรียกแก้ข้อมูล Google จริงระหว่างพัฒนา; Step 4 ยังเหลือ cancel/void, numbered drafts/migration, retrofit ER/SR และนโยบาย Drive ตามประเด็นที่ระบุข้างต้น
