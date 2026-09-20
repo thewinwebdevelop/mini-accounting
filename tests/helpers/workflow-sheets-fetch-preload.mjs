@@ -22,7 +22,7 @@ globalThis.fetch = async (url, options = {}) => {
     }
     const body = JSON.parse(options.body || "{}");
     if (decodeURIComponent(text).includes(":append")) { rows.push(...(body.values || [])); return reply({ updates: { updatedRange: "'2026-09'!A2:N2" } }); }
-    if (body.values?.[0]?.[0] === "Source Key") rows.splice(0, rows.length, ...body.values);
+    if (body.values?.[0]?.[0] === "Source Key") rows[0] = body.values[0];
     else if (body.values?.[0]) rows[1] = body.values[0];
     return reply({ updatedRange: "'2026-09'!A1:N1" });
   }

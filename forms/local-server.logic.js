@@ -2810,6 +2810,31 @@ async function buildWorkflowTransactionRecord(rootDir, folderPath) {
   return { ...transaction, folderPath: transaction.folderPath || folderPath };
 }
 
+// The Sheets sync is a write-capable boundary, so it deliberately does not
+// use the general transaction lookup above: that lookup is allowed to follow
+// an indexed path while repairing index drift.  Prove every component is a
+// real descendant before reading even one byte of its JSON.
+async function getWorkflowTransactionForSheetsStrict(rootDir, transactionNo) {
+  const row = withDocumentIndexDatabase(rootDir, (db) => getDocumentIndexRowByNumber(db, "workflow_transaction", transactionNo));
+  if (!row) return null;
+  try {
+    const rootReal = await realpath(rootDir);
+    const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+    const folderReal = await realpath(folder);
+    assertPathWithinDirectory(rootReal, folderReal, "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+    const dataDir = await realpath(path.join(folderReal, "data"));
+    assertPathWithinDirectory(rootReal, dataDir, "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+    const sourceFile = await realpath(path.join(dataDir, "workflow-transaction.json"));
+    assertPathWithinDirectory(rootReal, sourceFile, "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+    const transaction = JSON.parse(await readFile(sourceFile, "utf8"));
+    if (!transaction || Array.isArray(transaction) || typeof transaction !== "object") throw new Error("invalid");
+    return { ...transaction, folderPath: transaction.folderPath || row.folderPath };
+  } catch (error) {
+    if (error.message === "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง") throw error;
+    throw new Error("ไม่สามารถอ่านข้อมูลธุรกรรมสำหรับซิงก์ Google Sheets ได้");
+  }
+}
+
 // See findSubmittedExpenseRequests above for why this reads the documents
 // index (rows where document_kind='workflow_transaction') instead of
 // walking documents/ recursively.
@@ -3083,14 +3108,17 @@ async function collectWorkflowFinancialChildrenStrict(rootDir, transaction) {
   if (expected.has("substitute_receipt") && !foundKinds.has("substitute_receipt")) throw new Error("ไม่พบหรือไม่สามารถอ่านเอกสาร SR ที่คาดไว้สำหรับ workflow");
   const children = [];
   for (const row of rows) {
-    const rootReal = await realpath(rootDir);
-    const folder = await realpath(assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง"));
-    assertPathWithinDirectory(rootReal, folder, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
-    const fileName = row.documentKind === "expense_request" ? "submission.json" : "substitute-receipt.json";
-    const dataDir = await realpath(path.join(folder, "data"));
-    assertPathWithinDirectory(rootReal, dataDir, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
-    const sourceFile = await realpath(path.join(dataDir, fileName));
-    assertPathWithinDirectory(rootReal, sourceFile, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    let sourceFile;
+    try {
+      const rootReal = await realpath(rootDir);
+      const folder = await realpath(assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง"));
+      assertPathWithinDirectory(rootReal, folder, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+      const fileName = row.documentKind === "expense_request" ? "submission.json" : "substitute-receipt.json";
+      const dataDir = await realpath(path.join(folder, "data"));
+      assertPathWithinDirectory(rootReal, dataDir, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+      sourceFile = await realpath(path.join(dataDir, fileName));
+      assertPathWithinDirectory(rootReal, sourceFile, "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    } catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
     let payload;
     try { payload = JSON.parse(await readFile(sourceFile, "utf8")); }
     catch { throw new Error("ไม่สามารถอ่านเอกสารค่าใช้จ่ายสำหรับซิงก์ Google Sheets ได้"); }
@@ -3144,8 +3172,8 @@ function isSafeWorkflowSpreadsheetUrl(value, spreadsheetId) {
   if (!isSafeWorkflowSheetId(spreadsheetId) || typeof value !== "string") return false;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "docs.google.com"
-      && url.pathname === `/spreadsheets/d/${spreadsheetId}` && !url.search && !url.hash;
+    return url.protocol === "https:" && url.hostname === "docs.google.com" && !url.username && !url.password
+      && (url.pathname === `/spreadsheets/d/${spreadsheetId}` || url.pathname === `/spreadsheets/d/${spreadsheetId}/edit`);
   } catch { return false; }
 }
 
@@ -3183,6 +3211,14 @@ function normalizeWorkflowSheetSyncMetadata(value) {
   } else {
     copyText("code", true); copyText("error", true); copyEmptyTimestamp(); copyText("updatedAt", true);
     if (!["workflow_sheet_preflight_failed", "workflow_sheet_sync_failed"].includes(normalized.code)) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+    const priorFields = ["sourceKey", "sourceDocumentKind", "sourceDocumentNo", "spreadsheetId", "spreadsheetUrl", "sheetName", "rowNumber"];
+    if (priorFields.some((key) => value[key] !== undefined)) {
+      copyText("sourceKey", true); copyText("sourceDocumentKind", true); copyText("sourceDocumentNo", true);
+      copyText("sourceWorkflowStepId"); copyText("spreadsheetId", true); copyText("sheetName", true);
+      if (!isSafeWorkflowSheetId(normalized.spreadsheetId) || !isSafeWorkflowSpreadsheetUrl(value.spreadsheetUrl, normalized.spreadsheetId)
+        || !Number.isInteger(value.rowNumber) || value.rowNumber < 1) throw new Error("ข้อมูลการซิงก์ Google Sheets ไม่ถูกต้อง");
+      normalized.spreadsheetUrl = value.spreadsheetUrl; normalized.rowNumber = value.rowNumber;
+    }
   }
   return normalized;
 }
@@ -3208,7 +3244,7 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
   const key = `${path.resolve(rootDir)}\n${transactionNo}`;
   if (workflowTransactionSheetsSyncsInFlight.has(key)) return workflowTransactionSheetsSyncsInFlight.get(key);
   const run = (async () => {
-    const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+    const transaction = await getWorkflowTransactionForSheetsStrict(rootDir, transactionNo);
     if (!transaction) throw new Error("ไม่พบธุรกรรม");
     if (transaction.transactionNo !== transactionNo) throw new Error("ข้อมูลธุรกรรมไม่ตรงกับเลขที่ที่ร้องขอ");
     await workflowSheetSyncPath(rootDir, transaction, { createDataDirectory: true });

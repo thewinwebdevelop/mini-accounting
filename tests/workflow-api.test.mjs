@@ -1378,7 +1378,8 @@ test("POST workflow Sheets sync uses real loopback fetch, ignores hostile body, 
     assert.equal(second.rowNumber, 2);
     const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(calls.some((call) => call.method === "POST" && call.url.includes(":append")));
-    assert.equal(calls.filter((call) => call.method === "POST" && decodeURIComponent(call.url).includes(":append")).length, 2, "the test double preserves the stable parent key response across retries");
+    assert.equal(calls.filter((call) => call.method === "POST" && decodeURIComponent(call.url).includes(":append")).length, 1, "only the first sync appends the parent row");
+    assert.ok(calls.some((call) => call.method === "PUT" && decodeURIComponent(call.url).includes("A2:N2")), "the resync updates row 2 instead of appending");
   } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
 });
 
@@ -1392,6 +1393,17 @@ test("POST workflow Sheets sync returns 409 without a parent mutation when child
     assert.equal(result.status, 409); assert.equal(result.body.code, "workflow_child_sheet_rows_exist");
     const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(calls.every((call) => call.method === "GET"));
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync rejects pre-completion with zero Google calls", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-precomplete-"));
+  const logPath = join(rootDir, "fetch.log"); const { transactionNo } = await seedSheetsSyncTransaction(rootDir, { completedAt: "" });
+  const child = spawnLocalServer(rootDir, { fetchMode: "success", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const result = await requestJson(`http://127.0.0.1:${port}`, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 400); assert.match(result.body.error, /ต้องปิดงาน Workflow/);
+    assert.equal(existsSync(logPath), false, "the completion guard must run before Google fetch");
   } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
 });
 
