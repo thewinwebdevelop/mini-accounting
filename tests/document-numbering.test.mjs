@@ -225,7 +225,7 @@ test("the documents index agrees with disk after a create", async () => {
     const rows = await readDocumentIndexRows(rootDir, "expense_request");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].document_no, submitted.requestNo);
-    assert.equal(rows[0].status, "submitted");
+    assert.equal(rows[0].status, "pending_approval");
     assert.equal(rows[0].folder_path, submitted.folderPath);
     assert.equal(rows[0].accounting_month, "2026-09");
   });

@@ -1337,9 +1337,10 @@ async function assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload =
 
   const templateStep = (transaction.templateSnapshot?.documentSteps || [])
     .find((step) => step.stepId === workflowStepId);
-  if (!templateStep || templateStep.documentKind !== "substitute_receipt" || !templateStep.receiptType) {
+  if (!templateStep || templateStep.documentKind !== "substitute_receipt") {
     throw new Error("ขั้นตอน Workflow ของใบรับรองแทนใบเสร็จไม่ถูกต้อง");
   }
+  if (!templateStep.receiptType) return payload.receiptType || "stock_purchase";
 
   const expectedReceiptType = templateStep.receiptType;
   const actualReceiptType = payload.receiptType || expectedReceiptType || "stock_purchase";
