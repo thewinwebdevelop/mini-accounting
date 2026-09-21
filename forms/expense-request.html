@@ -1220,6 +1220,8 @@
     }
 
     function addLine() {
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
       lineItems.querySelectorAll(".line-row").forEach((row) => {
         row.open = false;
       });
@@ -1399,7 +1401,7 @@
     }
 
     async function runMutation(work) {
-      if (legacyReadOnly || mutationInFlight) return;
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
       mutationInFlight = true;
       setReadOnlyMode(legacyReadOnly);
       try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
@@ -1660,7 +1662,7 @@
       });
       card.addEventListener("drop", (event) => {
         event.preventDefault();
-        if (legacyReadOnly || mutationInFlight) return;
+        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
         card.classList.remove("dragging");
         setFiles(evidenceKey, event.dataTransfer.files);
       });

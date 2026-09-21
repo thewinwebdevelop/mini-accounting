@@ -169,6 +169,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (state.mutationInFlight || (state.modalOpen && !allowWhileModalOpen)) return;
     state.mutationInFlight = true;
     setMutationControlsDisabled(true);
+    form.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = true; });
     try {
       await work();
     } finally {
