@@ -1221,7 +1221,6 @@
 
     function addLine() {
       if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
-      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
       lineItems.querySelectorAll(".line-row").forEach((row) => {
         row.open = false;
       });
@@ -1491,6 +1490,9 @@
     }
 
     async function loadSubmittedRequest(requestNo) {
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(requestNo || ""))) {
+        throw new Error("เลขใบเบิกจ่ายไม่ถูกต้อง");
+      }
       const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}`);
       const request = await response.json();
       if (!response.ok) {
@@ -1566,7 +1568,6 @@
         return;
       }
 
-      const priorRequestNo = currentRequestNo;
       adoptNumberedResult(result, "draft");
       try { await loadSubmittedRequest(currentRequestNo); } catch (error) { setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       currentStatus = "draft";

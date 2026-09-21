@@ -598,7 +598,14 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
-    await loadReceipt(result.receiptNo);
+    state.receiptNo = result.receiptNo;
+    state.status = "draft";
+    try {
+      await loadReceipt(result.receiptNo);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      return;
+    }
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
     setReceiptState("draft");
@@ -621,7 +628,14 @@ window.addEventListener("DOMContentLoaded", () => {
 
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
-    await loadReceipt(result.receiptNo);
+    state.receiptNo = result.receiptNo;
+    state.status = status;
+    try {
+      await loadReceipt(result.receiptNo);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      return;
+    }
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
     setReceiptState(state.status);
