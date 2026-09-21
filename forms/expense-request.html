@@ -1391,9 +1391,10 @@
 
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
+      const locked = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
       const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
-      controls.forEach((control) => { if (control) control.disabled = legacyReadOnly || mutationInFlight; });
-      lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight; });
+      controls.forEach((control) => { if (control) control.disabled = locked; });
+      lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = locked; });
       form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft"; });
       document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
       document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
@@ -1492,9 +1493,9 @@
       const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}`);
       const request = await response.json();
       if (!response.ok) {
-        setSaveStatus(request.error || "โหลดใบเบิกจ่ายไม่ได้", "error");
-        return;
+        throw new Error(request.error || "โหลดใบเบิกจ่ายไม่ได้");
       }
+      if (request.requestNo !== requestNo || !["draft", "pending_approval", "approved", "completed", "cancelled"].includes(request.status)) throw new Error("ข้อมูลใบเบิกจ่ายไม่ถูกต้อง");
 
       currentDraftId = "";
       legacyReadOnly = false;
@@ -1626,7 +1627,7 @@
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
     document.querySelector("#resetForm").addEventListener("click", () => {
-      if (legacyReadOnly || mutationInFlight) return;
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
       legacyReadOnly = false;
       currentDraftId = "";
       currentRequestNo = "";
@@ -1668,7 +1669,7 @@
     form.addEventListener("change", updatePreview);
     lineItems.addEventListener("click", (event) => {
       if (event.target.matches("[data-remove-line]")) {
-        if (legacyReadOnly || mutationInFlight) return;
+        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
         event.target.closest(".line-row").remove();
         updatePreview();
       }
