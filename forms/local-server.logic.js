@@ -65,6 +65,46 @@ const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense
 const workflowDocumentPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_document_pdf.py");
 const workflowPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_packet_pdf.py");
 const workflowDocumentMutationQueues = new Map();
+const expenseRequestMutationQueues = new Map();
+const substituteReceiptMutationQueues = new Map();
+
+const EXPENSE_NUMBERED_STATUS_LABELS = {
+  draft: "แบบร่าง",
+  pending_approval: "รอตรวจอนุมัติ",
+  submitted: "รอตรวจอนุมัติ",
+  approved: "อนุมัติแล้ว",
+  completed: "เสร็จสิ้น",
+  cancelled: "ยกเลิก",
+};
+const LEGACY_DRAFT_ID_PATTERN = /^DRAFT-\d{4}-(0[1-9]|1[0-2])-[A-Za-z0-9-]+$/;
+const LEGACY_SR_DRAFT_ID_PATTERN = /^SR-DRAFT-\d{4}-(0[1-9]|1[0-2])-[A-Za-z0-9-]+$/;
+const EXPENSE_NUMBER_PATTERN = /^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
+const SUBSTITUTE_RECEIPT_NUMBER_PATTERN = /^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
+
+function withMutationQueue(queue, rootDir, documentNo, work) {
+  const key = `${path.resolve(rootDir)}\u0000${documentNo}`;
+  const previous = queue.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(work);
+  queue.set(key, next);
+  return next.finally(() => {
+    if (queue.get(key) === next) queue.delete(key);
+  });
+}
+
+function withExpenseRequestMutation(rootDir, requestNo, work) {
+  return withMutationQueue(expenseRequestMutationQueues, rootDir, requestNo, work);
+}
+
+function withSubstituteReceiptMutation(rootDir, receiptNo, work) {
+  return withMutationQueue(substituteReceiptMutationQueues, rootDir, receiptNo, work);
+}
+
+function createStateError(code, message, statusCode = 409) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
 
 function withWorkflowDocumentMutation(rootDir, documentKind, documentNo, work) {
   const key = `${path.resolve(rootDir)}\u0000${documentKind}\u0000${documentNo}`;
@@ -542,7 +582,36 @@ async function getExpenseDraft(rootDir, draftId, options = {}) {
   const records = await findDraftRecords(rootDir, options.includeSubmitted);
   const draft = records.find((record) => record.draftId === draftId);
   if (!draft) throw new Error("Draft not found");
-  return draft;
+  const rawFiles = await listLegacyDraftRawFiles(rootDir, draft);
+  for (const file of rawFiles) file.url = `/api/expense-drafts/${encodeURIComponent(draftId)}/files/raw/${encodeURIComponent(file.name)}`;
+  return {
+    ...draft,
+    legacyReadOnly: true,
+    status: "draft",
+    evidenceFiles: draft.evidenceFiles || {},
+    rawFiles,
+  };
+}
+
+async function listLegacyDraftRawFiles(rootDir, draft) {
+  const rawDir = path.join(rootDir, draft.folderPath, "raw");
+  const storedFiles = new Set(flattenEvidenceFiles(draft.evidenceFiles || {}).map((file) => file.storedName));
+  const names = Array.isArray(draft.rawFiles) ? draft.rawFiles : [];
+  const allowed = names.length ? names : [...storedFiles];
+  const files = [];
+  for (const name of allowed) {
+    if (typeof name !== "string" || !name || name.includes("/") || name.includes("\\") || name === "." || name === "..") continue;
+    if (!storedFiles.has(name) && names.length) continue;
+    const absolutePath = path.join(rawDir, name);
+    try {
+      const info = await stat(absolutePath);
+      if (!info.isFile()) continue;
+      files.push({ name, storedName: name, path: `raw/${name}`, absolutePath, size: info.size, type: "application/octet-stream", url: "" });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return files.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function listExpenseDrafts(rootDir) {
@@ -710,15 +779,17 @@ async function writeDriveSyncMetadata(rootDir, folderPath, metadata) {
 }
 
 function normalizeExpenseRequestStatus(status) {
-  const normalized = String(status || "submitted").trim();
-  if (!["submitted", "approved", "completed", "cancelled"].includes(normalized)) {
+  const raw = String(status || "pending_approval").trim();
+  const normalized = raw === "submitted" ? "pending_approval" : raw;
+  if (!["draft", "pending_approval", "approved", "completed", "cancelled"].includes(normalized)) {
     throw new Error(`Invalid expense request status: ${normalized}`);
   }
   return normalized;
 }
 
 function getExpenseRequestNextAction(status) {
-  if (status === "submitted") return "อนุมัติ";
+  if (status === "pending_approval" || status === "submitted") return "อนุมัติ";
+  if (status === "draft") return "แก้ไขแบบร่าง";
   if (status === "approved") return "บันทึกรายจ่ายแล้ว";
   if (status === "completed") return "เสร็จสิ้น";
   if (status === "cancelled") return "ยกเลิกแล้ว";
@@ -939,17 +1010,17 @@ async function buildSubmittedExpenseRequestRecord(rootDir, folderPath) {
   const payload = JSON.parse(await readFile(absolutePath, "utf8"));
   const resolvedFolderPath = payload.folderPath || folderPath;
   const syncMetadata = await readDriveSyncMetadata(rootDir, resolvedFolderPath);
-  const status = normalizeExpenseRequestStatus(payload.status || "submitted");
+  const status = normalizeExpenseRequestStatus(payload.status || "pending_approval");
 
   return {
     id: payload.requestNo,
     status,
-    statusLabel: payload.statusLabel || EXPENSE_REQUEST_STATUS_LABELS[status],
+    statusLabel: EXPENSE_NUMBERED_STATUS_LABELS[status] || payload.statusLabel || status,
     requestNo: payload.requestNo,
     requestTitle: getRequestTitleFromFolderPath(resolvedFolderPath, payload.requestNo),
     requesterName: payload.requesterName || "",
     accountingMonth: getAccountingMonthFromRequestNo(payload.requestNo),
-    updatedAt: payload.createdAt || "",
+    updatedAt: payload.updatedAt || payload.createdAt || "",
     netPayment: payload.totals?.netPayment || "0.00",
     rawFileCount: Array.isArray(payload.rawFiles) ? payload.rawFiles.length : 0,
     rawFiles: await listRawFiles(rootDir, resolvedFolderPath),
@@ -970,6 +1041,7 @@ async function buildSubmittedExpenseRequestRecord(rootDir, folderPath) {
     sheetSyncedAt: payload.sheetSync?.syncedAt || "",
     sheetSyncError: payload.sheetSync?.error || "",
     nextAction: getExpenseRequestNextAction(status),
+    legacyReadOnly: false,
     transactionNo: payload.transactionNo || "",
     workflowTemplateId: payload.workflowTemplateId || "",
     workflowStepId: payload.workflowStepId || "",
@@ -1084,6 +1156,7 @@ async function getSubmittedExpenseRequestRecord(rootDir, requestNo) {
 
 async function getSubmittedExpenseRequest(rootDir, requestNo) {
   if (!requestNo) throw new Error("Missing expense request number");
+  if (!EXPENSE_NUMBER_PATTERN.test(String(requestNo))) throw createStateError("INVALID_DOCUMENT_NUMBER", "เลขที่ใบเบิกจ่ายไม่ถูกต้อง", 400);
 
   const request = await getSubmittedExpenseRequestRecord(rootDir, requestNo);
   if (!request) throw new Error("Expense request not found");
@@ -1104,6 +1177,7 @@ async function getSubmittedExpenseRequest(rootDir, requestNo) {
     },
     evidenceFiles,
     rawFiles,
+    legacyReadOnly: false,
     editUrl: `/expense-request?requestNo=${encodeURIComponent(request.requestNo)}`,
   };
 }
@@ -1124,6 +1198,8 @@ async function listExpenseRequests(rootDir) {
     folderPath: "",
     pdfFiles: [],
     editUrl: `/expense-request?draftId=${encodeURIComponent(draft.draftId)}`,
+    legacyReadOnly: true,
+    nextAction: "ดูแบบร่างเก่า",
   }));
   const submittedRecords = await findSubmittedExpenseRequests(rootDir);
 
@@ -1185,7 +1261,15 @@ async function getSubstituteReceiptDraft(rootDir, draftId, options = {}) {
   const records = await findSubstituteReceiptDraftRecords(rootDir, options.includeSubmitted);
   const draft = records.find((record) => record.draftId === draftId);
   if (!draft) throw new Error("Substitute receipt draft not found");
-  return draft;
+  const rawFiles = await listLegacyDraftRawFiles(rootDir, draft);
+  for (const file of rawFiles) file.url = `/api/substitute-receipt-drafts/${encodeURIComponent(draftId)}/files/raw/${encodeURIComponent(file.name)}`;
+  return {
+    ...draft,
+    legacyReadOnly: true,
+    status: "draft",
+    evidenceFiles: draft.evidenceFiles || {},
+    rawFiles,
+  };
 }
 
 const SUBSTITUTE_RECEIPT_TEMPLATE_TYPE_LABELS = {
@@ -1210,14 +1294,23 @@ const SUBSTITUTE_RECEIPT_TEMPLATE_TYPE_LABELS = {
 async function assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload = {}) {
   const transactionNo = payload.transactionNo;
   const workflowStepId = payload.workflowStepId;
-  if (!transactionNo || !workflowStepId) return;
+  const workflowTemplateId = payload.workflowTemplateId;
+  const hasRelation = transactionNo || workflowTemplateId || workflowStepId;
+  if (!hasRelation) return;
+  if (!transactionNo || !workflowTemplateId || !workflowStepId || !/^TXN-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(transactionNo)) {
+    throw new Error("ข้อมูล Workflow ของใบรับรองแทนใบเสร็จไม่ครบถ้วน");
+  }
 
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
-  if (!transaction) return;
+  if (!transaction || transaction.workflowTemplateId !== workflowTemplateId) {
+    throw new Error("ไม่พบ Workflow ที่ผูกกับใบรับรองแทนใบเสร็จ");
+  }
 
   const templateStep = (transaction.templateSnapshot?.documentSteps || [])
     .find((step) => step.stepId === workflowStepId);
-  if (!templateStep || templateStep.documentKind !== "substitute_receipt" || !templateStep.receiptType) return;
+  if (!templateStep || templateStep.documentKind !== "substitute_receipt" || !templateStep.receiptType) {
+    throw new Error("ขั้นตอน Workflow ของใบรับรองแทนใบเสร็จไม่ถูกต้อง");
+  }
 
   const expectedReceiptType = templateStep.receiptType;
   const actualReceiptType = payload.receiptType || "stock_purchase";
@@ -1225,6 +1318,27 @@ async function assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload =
     const expectedLabel = SUBSTITUTE_RECEIPT_TEMPLATE_TYPE_LABELS[expectedReceiptType] || expectedReceiptType;
     throw new Error(`ขั้นตอนนี้ใน Workflow กำหนดประเภทใบรับรองแทนใบเสร็จไว้เป็น "${expectedLabel}" เท่านั้น ไม่สามารถบันทึกเป็นประเภทอื่นได้`);
   }
+}
+
+async function validateWorkflowRelation(rootDir, payload = {}, documentKind) {
+  const fields = [payload.transactionNo, payload.workflowTemplateId, payload.workflowStepId];
+  if (!fields.some(Boolean)) return { transactionNo: "", workflowTemplateId: "", workflowStepId: "" };
+  if (fields.some((value) => !value) || !/^TXN-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(payload.transactionNo))) {
+    throw new Error("ข้อมูล Workflow ของเอกสารไม่ครบถ้วน");
+  }
+  const transaction = await getWorkflowTransaction(rootDir, payload.transactionNo);
+  if (!transaction || transaction.workflowTemplateId !== payload.workflowTemplateId) {
+    throw new Error("ไม่พบ Workflow ที่ผูกกับเอกสาร");
+  }
+  const step = (transaction.templateSnapshot?.documentSteps || []).find((candidate) => candidate.stepId === payload.workflowStepId);
+  if (!step || step.documentKind !== documentKind) {
+    throw new Error("ขั้นตอน Workflow ไม่ตรงกับชนิดเอกสาร");
+  }
+  return {
+    transactionNo: transaction.transactionNo,
+    workflowTemplateId: transaction.workflowTemplateId,
+    workflowStepId: step.stepId,
+  };
 }
 
 async function writeSubstituteReceiptDraftRecord(rootDir, record) {
@@ -1237,105 +1351,92 @@ async function writeSubstituteReceiptDraftRecord(rootDir, record) {
   );
 }
 
-async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
-  const accountingMonth = payload.accountingMonth;
-  getMonthParts(accountingMonth);
-  await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, payload);
-
-  let existingDraft = null;
-  if (payload.draftId) {
-    existingDraft = await getSubstituteReceiptDraft(rootDir, payload.draftId, { includeSubmitted: true });
-    if (existingDraft.status === "submitted") {
-      throw new Error("Submitted substitute receipt drafts cannot be edited");
-    }
-  }
-
-  const draftId = existingDraft?.draftId || createSubstituteReceiptDraftId(accountingMonth);
-  const folderPath = existingDraft?.folderPath || getSubstituteReceiptDraftFolderPath(accountingMonth, draftId);
-  const absoluteFolderPath = path.join(rootDir, folderPath);
+async function writeNumberedDraftFiles(rootDir, payload, fileName, rawFiles) {
+  const absoluteFolderPath = assertPathWithinDirectory(rootDir, path.join(rootDir, payload.folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
   const rawDir = path.join(absoluteFolderPath, "raw");
-  const existingEvidenceFiles = existingDraft?.evidenceFiles ?? {};
-  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
-  const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
-  const now = new Date().toISOString();
-  const record = {
-    draftId,
-    status: "draft",
-    folderPath,
-    payload: {
-      ...payload,
-      draftId,
-      status: "draft",
-      evidenceFiles,
-    },
-    evidenceFiles,
-    rawFiles: flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName),
-    createdAt: existingDraft?.createdAt || now,
-    updatedAt: now,
-  };
-
+  const dataDir = path.join(absoluteFolderPath, "data");
   await mkdir(rawDir, { recursive: true });
-  for (const write of preparedUploads.writes) {
-    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
+  await mkdir(dataDir, { recursive: true });
+  for (const write of rawFiles) {
+    await writeFile(assertPathWithinDirectory(rawDir, path.join(rawDir, write.fileRecord.storedName), "ชื่อไฟล์แนบไม่ถูกต้อง"), write.buffer);
   }
-  await writeSubstituteReceiptDraftRecord(rootDir, record);
+  await writeFile(path.join(dataDir, fileName), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  if (fileName === "submission.json") indexExpenseRequest(rootDir, payload);
+  else indexSubstituteReceipt(rootDir, payload);
+  return { absoluteFolderPath };
+}
 
-  return {
-    draftId,
-    folderPath,
-    absoluteFolderPath,
-    rawFiles: flattenEvidenceFiles(evidenceFiles),
-    updatedAt: record.updatedAt,
+function assertLegacyDraftWriteId(id, kind) {
+  const pattern = kind === "substitute_receipt" ? LEGACY_SR_DRAFT_ID_PATTERN : LEGACY_DRAFT_ID_PATTERN;
+  if (!id) return;
+  if (pattern.test(String(id))) throw createStateError("LEGACY_DRAFT_READ_ONLY", "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว");
+  throw createStateError("INVALID_DRAFT_ID", "รหัสแบบร่างไม่ถูกต้อง", 400);
+}
+
+async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
+  assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
+  getMonthParts(payload.accountingMonth);
+  const requestedNo = String(payload.receiptNo || "");
+  if (requestedNo && !SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(requestedNo)) throw new Error("เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง");
+  const relation = await validateWorkflowRelation(rootDir, payload, "substitute_receipt");
+  await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, { ...payload, ...relation });
+  const perform = async () => {
+    const existing = requestedNo ? await getSubmittedSubstituteReceipt(rootDir, requestedNo).catch((error) => {
+      if (error.message === "Substitute receipt not found") return null;
+      throw error;
+    }) : null;
+    if (requestedNo && !existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
+    if (existing && existing.status !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
+    const allocation = existing ? { receiptNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateSubstituteReceiptNumber(rootDir, payload.accountingMonth);
+    const existingPayload = existing?.payload || {};
+    const authoritativeRelation = existing ? { transactionNo: existingPayload.transactionNo || "", workflowTemplateId: existingPayload.workflowTemplateId || "", workflowStepId: existingPayload.workflowStepId || "" } : relation;
+    const base = existing ? { ...existingPayload, ...payload, ...authoritativeRelation, receiptNo: allocation.receiptNo, folderPath: existing.folderPath } : { ...payload, ...relation, receiptNo: allocation.receiptNo, folderPath: "", createdAt: undefined, rawFiles: [] };
+    await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, base);
+    const existingEvidenceFiles = existing?.evidenceFiles || {};
+    const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
+    const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+    const company = await getCompanySettings(rootDir);
+    const now = new Date().toISOString();
+    const draftPayload = buildSubstituteReceiptPayload({ ...base, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
+    draftPayload.status = "draft";
+    draftPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.draft;
+    draftPayload.statusHistory = Array.isArray(existingPayload.statusHistory) ? existingPayload.statusHistory : [];
+    const result = await writeNumberedDraftFiles(rootDir, draftPayload, "substitute-receipt.json", preparedUploads.writes);
+    return { receiptNo: draftPayload.receiptNo, status: "draft", statusLabel: draftPayload.statusLabel, folderPath: draftPayload.folderPath, absoluteFolderPath: result.absoluteFolderPath, updatedAt: draftPayload.updatedAt, evidenceFiles, rawFiles: flattenEvidenceFiles(evidenceFiles) };
   };
+  return requestedNo ? withSubstituteReceiptMutation(rootDir, requestedNo, perform) : perform();
 }
 
 async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
-  const accountingMonth = payload.accountingMonth;
-  getMonthParts(accountingMonth);
-
-  let existingDraft = null;
-  if (payload.draftId) {
-    existingDraft = await getExpenseDraft(rootDir, payload.draftId, { includeSubmitted: true });
-    if (existingDraft.status === "submitted") {
-      throw new Error("Submitted drafts cannot be edited");
-    }
-  }
-
-  const draftId = existingDraft?.draftId || createDraftId(accountingMonth);
-  const folderPath = existingDraft?.folderPath || getDraftFolderPath(accountingMonth, draftId);
-  const absoluteFolderPath = path.join(rootDir, folderPath);
-  const rawDir = path.join(absoluteFolderPath, "raw");
-  const existingEvidenceFiles = existingDraft?.evidenceFiles ?? {};
-  const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
-  const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
-  const now = new Date().toISOString();
-  const record = {
-    draftId,
-    status: "draft",
-    folderPath,
-    payload: {
-      ...payload,
-      draftId,
-    },
-    evidenceFiles,
-    rawFiles: flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName),
-    createdAt: existingDraft?.createdAt || now,
-    updatedAt: now,
+  assertLegacyDraftWriteId(payload.draftId, "expense_request");
+  getMonthParts(payload.accountingMonth);
+  const requestedNo = String(payload.requestNo || "");
+  if (requestedNo && !EXPENSE_NUMBER_PATTERN.test(requestedNo)) throw new Error("เลขที่ใบเบิกจ่ายไม่ถูกต้อง");
+  const relation = await validateWorkflowRelation(rootDir, payload, "expense_request");
+  const perform = async () => {
+    const existing = requestedNo ? await getSubmittedExpenseRequest(rootDir, requestedNo).catch((error) => {
+      if (error.message === "Expense request not found") return null;
+      throw error;
+    }) : null;
+    if (requestedNo && !existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
+    if (existing && existing.status !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
+    const allocation = existing ? { requestNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateExpenseRequestNumber(rootDir, payload.accountingMonth);
+    const existingPayload = existing?.payload || {};
+    const authoritativeRelation = existing ? { transactionNo: existingPayload.transactionNo || "", workflowTemplateId: existingPayload.workflowTemplateId || "", workflowStepId: existingPayload.workflowStepId || "" } : relation;
+    const base = existing ? { ...existingPayload, ...payload, ...authoritativeRelation, requestNo: allocation.requestNo, folderPath: existing.folderPath } : { ...payload, ...relation, requestNo: allocation.requestNo, folderPath: "", createdAt: undefined, rawFiles: [] };
+    const existingEvidenceFiles = existing?.evidenceFiles || {};
+    const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
+    const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+    const company = await getCompanySettings(rootDir);
+    const now = new Date().toISOString();
+    const draftPayload = buildExpensePayload({ ...base, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
+    draftPayload.status = "draft";
+    draftPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.draft;
+    draftPayload.statusHistory = Array.isArray(existingPayload.statusHistory) ? existingPayload.statusHistory : [];
+    const result = await writeNumberedDraftFiles(rootDir, draftPayload, "submission.json", preparedUploads.writes);
+    return { requestNo: draftPayload.requestNo, status: "draft", statusLabel: draftPayload.statusLabel, folderPath: draftPayload.folderPath, absoluteFolderPath: result.absoluteFolderPath, updatedAt: draftPayload.updatedAt, evidenceFiles, rawFiles: flattenEvidenceFiles(evidenceFiles) };
   };
-
-  await mkdir(rawDir, { recursive: true });
-  for (const write of preparedUploads.writes) {
-    await writeFile(path.join(rawDir, write.fileRecord.storedName), write.buffer);
-  }
-  await writeDraftRecord(rootDir, record);
-
-  return {
-    draftId,
-    folderPath,
-    absoluteFolderPath,
-    rawFiles: flattenEvidenceFiles(evidenceFiles),
-    updatedAt: record.updatedAt,
-  };
+  return requestedNo ? withExpenseRequestMutation(rootDir, requestedNo, perform) : perform();
 }
 
 // Keeps the `documents` index row for one expense request in step with
@@ -1396,7 +1497,7 @@ async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   };
 }
 
-async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
+async function saveExpenseSubmissionLegacy({ rootDir, payload, uploads = [] }) {
   let draft = null;
   if (payload.draftId) {
     draft = await getExpenseDraft(rootDir, payload.draftId, { includeSubmitted: true });
@@ -1505,7 +1606,7 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
   };
 }
 
-async function saveSubstituteReceiptSubmission({
+async function saveSubstituteReceiptSubmissionLegacy({
   rootDir,
   payload,
   uploads = [],
@@ -1617,6 +1718,140 @@ async function saveSubstituteReceiptSubmission({
   };
 }
 
+async function loadNumberedExpense(rootDir, requestNo) {
+  if (!EXPENSE_NUMBER_PATTERN.test(String(requestNo || ""))) throw new Error("เลขที่ใบเบิกจ่ายไม่ถูกต้อง");
+  return getSubmittedExpenseRequest(rootDir, requestNo).catch((error) => {
+    if (error.message === "Expense request not found") return null;
+    throw error;
+  });
+}
+
+async function loadNumberedReceipt(rootDir, receiptNo) {
+  if (!SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(String(receiptNo || ""))) throw new Error("เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง");
+  return getSubmittedSubstituteReceipt(rootDir, receiptNo).catch((error) => {
+    if (error.message === "Substitute receipt not found") return null;
+    throw error;
+  });
+}
+
+function numberedSubmissionResult(payload, pdfFiles, rawFiles) {
+  return {
+    requestNo: payload.requestNo,
+    receiptNo: payload.receiptNo,
+    status: payload.status,
+    statusLabel: payload.statusLabel,
+    statusHistory: payload.statusHistory || [],
+    folderPath: payload.folderPath,
+    absoluteFolderPath: path.join(payload.__rootDir || "", payload.folderPath),
+    pdfFiles,
+    rawFiles,
+    evidenceFiles: payload.evidenceFiles || {},
+    stockMovements: [],
+  };
+}
+
+async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
+  assertLegacyDraftWriteId(payload.draftId, "expense_request");
+  if (payload.requestNo && !EXPENSE_NUMBER_PATTERN.test(String(payload.requestNo))) throw new Error("เลขที่ใบเบิกจ่ายไม่ถูกต้อง");
+  if (!payload.requestNo) {
+    const draft = await saveExpenseDraft({ rootDir, payload, uploads });
+    return saveExpenseSubmission({ rootDir, payload: { requestNo: draft.requestNo }, uploads: [] });
+  }
+  return withExpenseRequestMutation(rootDir, payload.requestNo, async () => {
+    const existing = await loadNumberedExpense(rootDir, payload.requestNo);
+    if (!existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
+    const stored = existing.payload || {};
+    const currentStatus = normalizeExpenseRequestStatus(stored.status || "pending_approval");
+    if (currentStatus === "pending_approval") {
+      if (uploads.length) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ส่งตรวจอนุมัติแล้ว ไม่สามารถแก้ไขในขั้นตอนนี้ได้");
+      return numberedSubmissionResult({ ...stored, status: currentStatus, statusLabel: EXPENSE_NUMBERED_STATUS_LABELS[currentStatus], __rootDir: rootDir }, existing.pdfFiles, existing.rawFiles);
+    }
+    if (currentStatus !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
+    const existingEvidenceFiles = existing.evidenceFiles || {};
+    const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
+    const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+    const company = await getCompanySettings(rootDir);
+    const now = new Date().toISOString();
+    const nextPayload = buildExpensePayload({ ...stored, ...payload, transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "", company, requestNo: existing.requestNo, folderPath: existing.folderPath, sequence: existing.requestNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval", statusHistory: stored.statusHistory || [] });
+    nextPayload.status = "pending_approval";
+    nextPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.pending_approval;
+    nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
+    nextPayload.updatedAt = now;
+    const absoluteFolderPath = assertPathWithinDirectory(rootDir, path.join(rootDir, existing.folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    const rawDir = path.join(absoluteFolderPath, "raw");
+    await mkdir(rawDir, { recursive: true });
+    for (const fileRecord of flattenEvidenceFiles(existingEvidenceFiles)) {
+      if (!existsSync(path.join(rawDir, fileRecord.storedName))) throw new Error("ไม่พบไฟล์แนบเดิม");
+    }
+    for (const write of preparedUploads.writes) await writeFile(assertPathWithinDirectory(rawDir, path.join(rawDir, write.fileRecord.storedName), "ชื่อไฟล์แนบไม่ถูกต้อง"), write.buffer);
+    const dataPath = path.join(absoluteFolderPath, "data", "submission.json");
+    await mkdir(path.dirname(dataPath), { recursive: true });
+    await writeFile(dataPath, `${JSON.stringify(nextPayload, null, 2)}\n`, "utf8");
+    indexExpenseRequest(rootDir, nextPayload);
+    const workingMdDir = path.join(absoluteFolderPath, "working-md");
+    const pdfDir = path.join(absoluteFolderPath, "pdf");
+    await mkdir(workingMdDir, { recursive: true });
+    await mkdir(pdfDir, { recursive: true });
+    await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(nextPayload), "utf8");
+    const pdfFiles = await generateExpensePdfs({ payloadPath: dataPath, outputDir: pdfDir, rawDir });
+    const rawFiles = await listRawFiles(rootDir, existing.folderPath);
+    return numberedSubmissionResult({ ...nextPayload, __rootDir: rootDir }, pdfFiles, rawFiles);
+  });
+}
+
+async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [], createStockMovements = true }) {
+  assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
+  if (payload.receiptNo && !SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(String(payload.receiptNo))) throw new Error("เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง");
+  if (!payload.receiptNo) {
+    const draft = await saveSubstituteReceiptDraft({ rootDir, payload, uploads });
+    return saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: draft.receiptNo }, uploads: [], createStockMovements });
+  }
+  return withSubstituteReceiptMutation(rootDir, payload.receiptNo, async () => {
+    const existing = await loadNumberedReceipt(rootDir, payload.receiptNo);
+    if (!existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
+    const stored = existing.payload || {};
+    const currentStatus = normalizeSubstituteReceiptStatus(stored.status || "pending_approval");
+    if (currentStatus === "pending_approval") {
+      if (uploads.length) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ส่งตรวจอนุมัติแล้ว ไม่สามารถแก้ไขในขั้นตอนนี้ได้");
+      return numberedSubmissionResult({ ...stored, status: currentStatus, statusLabel: SUBSTITUTE_RECEIPT_STATUS_LABELS[currentStatus], __rootDir: rootDir }, existing.pdfFiles, existing.rawFiles);
+    }
+    if (currentStatus !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
+    const authoritative = { transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "" };
+    const candidate = { ...stored, ...payload, ...authoritative };
+    await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, candidate);
+    const existingEvidenceFiles = existing.evidenceFiles || {};
+    const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
+    const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
+    const errors = validateSubstituteReceipt({ ...stored, evidenceFiles });
+    if (errors.length) throw new Error(errors.join(", "));
+    const company = await getCompanySettings(rootDir);
+    const now = new Date().toISOString();
+    const nextPayload = buildSubstituteReceiptPayload({ ...stored, ...payload, ...authoritative, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
+    nextPayload.status = "pending_approval";
+    nextPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.pending_approval;
+    nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
+    nextPayload.stockReceipt = stored.stockReceipt || null;
+    nextPayload.revisions = Array.isArray(stored.revisions) ? stored.revisions : [];
+    nextPayload.updatedAt = now;
+    const absoluteFolderPath = assertPathWithinDirectory(rootDir, path.join(rootDir, existing.folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+    const rawDir = path.join(absoluteFolderPath, "raw");
+    await mkdir(rawDir, { recursive: true });
+    for (const write of preparedUploads.writes) await writeFile(assertPathWithinDirectory(rawDir, path.join(rawDir, write.fileRecord.storedName), "ชื่อไฟล์แนบไม่ถูกต้อง"), write.buffer);
+    const dataPath = path.join(absoluteFolderPath, "data", "substitute-receipt.json");
+    await mkdir(path.dirname(dataPath), { recursive: true });
+    await writeFile(dataPath, `${JSON.stringify(nextPayload, null, 2)}\n`, "utf8");
+    indexSubstituteReceipt(rootDir, nextPayload);
+    const workingMdDir = path.join(absoluteFolderPath, "working-md");
+    const pdfDir = path.join(absoluteFolderPath, "pdf");
+    await mkdir(workingMdDir, { recursive: true });
+    await mkdir(pdfDir, { recursive: true });
+    await writeFile(path.join(workingMdDir, "substitute-receipt.md"), formatSubstituteReceiptMarkdown(nextPayload), "utf8");
+    const pdfFiles = await generateSubstituteReceiptPdfs({ payloadPath: dataPath, outputDir: pdfDir, rawDir });
+    const rawFiles = await listSubstituteReceiptRawFiles(rootDir, existing.folderPath, existing.receiptNo);
+    return numberedSubmissionResult({ ...nextPayload, __rootDir: rootDir }, pdfFiles, rawFiles);
+  });
+}
+
 // Same write-through contract as indexExpenseRequest above: called only
 // after substitute-receipt.json has actually been written.
 function indexSubstituteReceipt(rootDir, receiptPayload) {
@@ -1712,6 +1947,7 @@ async function buildSubmittedSubstituteReceiptRecord(rootDir, folderPath) {
       statusLabel: payload.statusLabel || SUBSTITUTE_RECEIPT_STATUS_LABELS[status],
       folderPath: payload.folderPath || resolvedFolderPath,
     },
+    evidenceFiles: payload.evidenceFiles || {},
   };
 }
 
@@ -1772,6 +2008,7 @@ async function listSubstituteReceipts(rootDir) {
       uploadedFileCount: 0,
       syncedAt: "",
       syncError: "",
+      legacyReadOnly: true,
     };
   });
   const submittedRecords = await findSubmittedSubstituteReceipts(rootDir);
@@ -1794,6 +2031,7 @@ async function listSubstituteReceipts(rootDir) {
       folderPath: receipt.folderPath,
       pdfFiles: receipt.pdfFiles,
       editUrl: `/substitute-receipt?receiptNo=${encodeURIComponent(receipt.receiptNo)}`,
+      legacyReadOnly: false,
       nextAction: getSubstituteReceiptNextAction(receipt.status),
       syncStatus: receipt.syncStatus,
       driveFolderUrl: receipt.driveFolderUrl,
@@ -1841,6 +2079,7 @@ async function getSubmittedSubstituteReceiptRecord(rootDir, receiptNo) {
 
 async function getSubmittedSubstituteReceipt(rootDir, receiptNo) {
   if (!receiptNo) throw new Error("Missing substitute receipt number");
+  if (!SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(String(receiptNo))) throw createStateError("INVALID_DOCUMENT_NUMBER", "เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง", 400);
   const receipt = await getSubmittedSubstituteReceiptRecord(rootDir, receiptNo);
   if (!receipt) throw new Error("Substitute receipt not found");
   return receipt;
@@ -1904,7 +2143,7 @@ function appendExpenseRequestStatus(payload, toStatus, note, actor, now = () => 
   }
   const changedAt = now();
   payload.status = targetStatus;
-  payload.statusLabel = EXPENSE_REQUEST_STATUS_LABELS[targetStatus];
+  payload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS[targetStatus] || targetStatus;
   payload.updatedAt = changedAt;
   payload.statusHistory = [
     ...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []),
@@ -2651,6 +2890,34 @@ async function getExpenseRequestFile({ rootDir, requestNo, section, fileName }) 
     fileName,
     section,
   };
+}
+
+async function getLegacyDraftFile({ rootDir, draftId, kind, fileName }) {
+  const pattern = kind === "substitute_receipt" ? LEGACY_SR_DRAFT_ID_PATTERN : LEGACY_DRAFT_ID_PATTERN;
+  if (!pattern.test(String(draftId || ""))) throw new Error("ไม่พบแบบร่างเก่า");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") throw new Error("ชื่อไฟล์ไม่ถูกต้อง");
+  const draft = kind === "substitute_receipt" ? await getSubstituteReceiptDraft(rootDir, draftId) : await getExpenseDraft(rootDir, draftId);
+  const allowed = new Set((draft.rawFiles || []).map((file) => file.storedName || file.name));
+  if (!allowed.has(fileName)) throw new Error("ไม่พบไฟล์แนบ");
+  const baseDir = path.resolve(rootDir, draft.folderPath, "raw");
+  const absolutePath = path.resolve(baseDir, fileName);
+  if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) throw new Error("ชื่อไฟล์ไม่ถูกต้อง");
+  const rootReal = await realpath(rootDir);
+  const baseReal = await realpath(baseDir);
+  const fileReal = await realpath(absolutePath);
+  assertPathWithinDirectory(rootReal, baseReal, "ที่อยู่ไฟล์ไม่ถูกต้อง");
+  assertPathWithinDirectory(baseReal, fileReal, "ที่อยู่ไฟล์ไม่ถูกต้อง");
+  const info = await stat(fileReal);
+  if (!info.isFile()) throw new Error("ไม่พบไฟล์แนบ");
+  return { absolutePath: fileReal, fileName, section: "raw" };
+}
+
+async function getLegacyExpenseDraftFile(options) {
+  return getLegacyDraftFile({ ...options, kind: "expense_request" });
+}
+
+async function getLegacySubstituteReceiptDraftFile(options) {
+  return getLegacyDraftFile({ ...options, kind: "substitute_receipt" });
 }
 
 function listWorkflowDocumentTypes() {
@@ -4024,6 +4291,7 @@ module.exports = {
   findWorkflowChildDocuments,
   readExpenseRequestChildDocument,
   getExpenseDraft,
+  getLegacyExpenseDraftFile,
   getExpenseRequestFile,
   getSubstituteReceiptFile,
   getSubmittedExpenseRequest,
@@ -4032,6 +4300,7 @@ module.exports = {
   getNextWorkflowDocumentInfo,
   getNextWorkflowTransactionInfo,
   getSubstituteReceiptDraft,
+  getLegacySubstituteReceiptDraftFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
   getWorkflowDocumentFile,

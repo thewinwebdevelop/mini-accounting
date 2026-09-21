@@ -28,8 +28,10 @@ const {
   getNextWorkflowDocumentInfo,
   getNextWorkflowTransactionInfo,
   getExpenseDraft,
+  getLegacyExpenseDraftFile,
   getExpenseRequestFile,
   getSubstituteReceiptDraft,
+  getLegacySubstituteReceiptDraftFile,
   getSubstituteReceiptFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
@@ -149,6 +151,13 @@ function sendJson(response, statusCode, data) {
   )));
 }
 
+function sendOperationError(response, error, fallback) {
+  sendJson(response, error.statusCode || (error.code === "LEGACY_DRAFT_READ_ONLY" || error.code === "DOCUMENT_NOT_DRAFT" ? 409 : 400), {
+    ...(error.code ? { code: error.code } : {}),
+    error: error.code === "LEGACY_DRAFT_READ_ONLY" ? "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" : (error.message || fallback),
+  });
+}
+
 function safeStaticPath(urlPath) {
   const routeMap = {
     "/": "/index.html",
@@ -252,6 +261,13 @@ function parseExpenseRequestFileRoute(urlPath) {
   };
 }
 
+function parseLegacyDraftFileRoute(urlPath, prefix) {
+  if (!urlPath.startsWith(prefix)) return null;
+  const segments = urlPath.slice(prefix.length).split("/");
+  if (segments.length !== 4 || segments[1] !== "files" || segments[2] !== "raw" || !segments[0] || !segments[3]) return null;
+  return { draftId: decodeURIComponent(segments[0]), section: segments[2], fileName: decodeURIComponent(segments[3]) };
+}
+
 function parseWorkflowDocumentFileRoute(urlPath) {
   const prefix = "/workflow-documents/";
   if (!urlPath.startsWith(prefix)) return null;
@@ -325,9 +341,7 @@ async function handleExpenseSubmission(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save expense request",
-    });
+    sendOperationError(response, error, "Cannot save expense request");
   }
 }
 
@@ -344,9 +358,7 @@ async function handleSubstituteReceiptSubmission(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save substitute receipt",
-    });
+    sendOperationError(response, error, "Cannot save substitute receipt");
   }
 }
 
@@ -363,9 +375,7 @@ async function handleSubstituteReceiptDraftSave(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save substitute receipt draft",
-    });
+    sendOperationError(response, error, "Cannot save substitute receipt draft");
   }
 }
 
@@ -1130,9 +1140,7 @@ async function handleDraftSave(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save draft",
-    });
+    sendOperationError(response, error, "Cannot save draft");
   }
 }
 
@@ -1174,9 +1182,7 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
     const result = await getSubmittedExpenseRequest(rootDir, requestNo);
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "Cannot load expense request",
-    });
+    sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load expense request" });
   }
 }
 
@@ -1185,9 +1191,7 @@ async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
     const result = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "Cannot load substitute receipt",
-    });
+    sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load substitute receipt" });
   }
 }
 
@@ -1210,6 +1214,19 @@ async function handleSubstituteReceiptDraftGet(draftId, response) {
     sendJson(response, 404, {
       error: error.message || "Cannot load substitute receipt draft",
     });
+  }
+}
+
+async function handleLegacyDraftFile(file, response, kind) {
+  try {
+    const resolver = kind === "substitute_receipt" ? getLegacySubstituteReceiptDraftFile : getLegacyExpenseDraftFile;
+    const result = await resolver(file);
+    const body = await readFile(result.absolutePath);
+    const contentType = mimeTypes[path.extname(result.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 404, { error: error.message || "Cannot open legacy draft file" });
   }
 }
 
@@ -2055,6 +2072,12 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const legacyExpenseFile = parseLegacyDraftFileRoute(url.pathname, "/api/expense-drafts/");
+    if (legacyExpenseFile) {
+      await handleLegacyDraftFile({ rootDir, ...legacyExpenseFile }, response, "expense_request");
+      return;
+    }
+
     if (url.pathname.startsWith("/api/expense-drafts/")) {
       const draftId = decodeURIComponent(url.pathname.replace("/api/expense-drafts/", ""));
       await handleDraftGet(draftId, response);
@@ -2062,6 +2085,11 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname.startsWith("/api/substitute-receipt-drafts/")) {
+      const legacySubstituteFile = parseLegacyDraftFileRoute(url.pathname, "/api/substitute-receipt-drafts/");
+      if (legacySubstituteFile) {
+        await handleLegacyDraftFile({ rootDir, ...legacySubstituteFile }, response, "substitute_receipt");
+        return;
+      }
       const draftId = decodeURIComponent(url.pathname.replace("/api/substitute-receipt-drafts/", ""));
       await handleSubstituteReceiptDraftGet(draftId, response);
       return;

@@ -25,10 +25,12 @@ const {
   completeExpenseRequest,
   completeSubstituteReceipt,
   getExpenseDraft,
+  getLegacyExpenseDraftFile,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getSubstituteReceiptDraft,
+  getLegacySubstituteReceiptDraftFile,
   getSubmittedSubstituteReceipt,
   getSubmittedExpenseRequest,
   listExpenseRequests,
@@ -109,8 +111,8 @@ async function seedWorkflowSheetsFixture(rootDir, { includeSr = false } = {}) {
   await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
   await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
   if (includeSr) await mkdir(join(rootDir, receiptFolder, "data"), { recursive: true });
-  const steps = [{ stepId: "req", documentKind: "expense_request" }, ...(includeSr ? [{ stepId: "sr", documentKind: "substitute_receipt" }] : [])];
-  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt: "2026-09-10T00:00:00.000Z", steps }));
+  const steps = [{ stepId: "req", documentKind: "expense_request" }, ...(includeSr ? [{ stepId: "sr", documentKind: "substitute_receipt", receiptType: "stock_purchase" }] : [])];
+  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, workflowTemplateId: "fixture-template", templateSnapshot: { templateId: "fixture-template", documentSteps: steps }, completedAt: "2026-09-10T00:00:00.000Z", steps }));
   await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({ requestNo: "REQ-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder, requestTitle: "ค่าใช้จ่าย", paymentTargetName: "ร้านค้า", workflowStepId: "req", totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" } }));
   if (includeSr) await writeFile(join(rootDir, receiptFolder, "data", "substitute-receipt.json"), JSON.stringify({ receiptNo: "SR-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: receiptFolder, receiptTitle: "ใบรับรอง", payeeName: "ร้านค้า", workflowStepId: "sr", totals: { totalAmount: "100.00" } }));
   const indexLogic = await import("../forms/document-index.logic.js");
@@ -276,7 +278,7 @@ test("workflow-bound REQ approval and retry make zero recorder calls and preserv
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-req-approval-"));
   try {
     const fixture = await seedWorkflowSheetsFixture(rootDir);
-    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload({ accountingMonth: "2026-09", transactionNo: fixture.transactionNo, workflowStepId: "req" }) });
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload({ accountingMonth: "2026-09", transactionNo: fixture.transactionNo, workflowTemplateId: "fixture-template", workflowStepId: "req" }) });
     const file = join(rootDir, saved.folderPath, "data", "submission.json"); const payload = JSON.parse(await readFile(file, "utf8"));
     payload.sheetSync = { syncStatus: "synced", spreadsheetId: "legacy-sheet", sheetName: "2026-09", rowNumber: 9 }; await writeFile(file, JSON.stringify(payload));
     let calls = 0; const recorder = async () => { calls += 1; throw new Error("must not run"); };
@@ -293,7 +295,7 @@ test("workflow-bound SR approval and retry make zero recorder calls and preserve
     const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
     const product = createProduct(rootDir, { productCode: "WS-SR", name: "Workflow SR", category: "เสื้อ" });
     const sku = createStockSku(rootDir, { productId: product.id, sku: "WS-SR-1", color: "white", size: "M", defaultUnitCost: "100" });
-    const saved = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload({ transactionNo: fixture.transactionNo, workflowStepId: "sr", lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "Workflow SR", quantity: "1", unitCost: "100" }] }), uploads: validSlipUpload() });
+    const saved = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload({ transactionNo: fixture.transactionNo, workflowTemplateId: "fixture-template", workflowStepId: "sr", lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "Workflow SR", quantity: "1", unitCost: "100" }] }), uploads: validSlipUpload() });
     const file = join(rootDir, saved.folderPath, "data", "substitute-receipt.json"); const payload = JSON.parse(await readFile(file, "utf8"));
     payload.sheetSync = { syncStatus: "synced", spreadsheetId: "legacy-sheet", sheetName: "2026-09", rowNumber: 9 }; await writeFile(file, JSON.stringify(payload));
     let calls = 0; const recorder = async () => { calls += 1; throw new Error("must not run"); };
@@ -586,6 +588,106 @@ test("parseMultipartForm extracts payload fields and uploaded evidence files", (
   assert.equal(result.files[0].buffer.toString("utf8"), "invoice-content");
 });
 
+test("numbered REQ draft save allocates once and submit transitions the same record", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-req-red-"));
+  try {
+    const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+    assert.match(saved.requestNo, /^REQ-2026-09-0001$/);
+    assert.equal(saved.status, "draft");
+    const loaded = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loaded.status, "draft");
+    assert.equal(loaded.payload.status, "draft");
+    assert.equal(loaded.legacyReadOnly, false);
+    const submitted = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+    assert.equal(submitted.requestNo, saved.requestNo);
+    assert.equal(submitted.status, "pending_approval");
+    const after = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(after.payload.status, "pending_approval");
+    assert.equal(after.payload.statusHistory.length, 1);
+    assert.equal(after.payload.statusHistory[0].fromStatus, "draft");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered SR draft save and submit preserve the same record and D12 relation", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-sr-red-"));
+  try {
+    const saved = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+    assert.match(saved.receiptNo, /^SR-2026-09-0001$/);
+    assert.equal(saved.status, "draft");
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo }, uploads: [] });
+    assert.equal(submitted.receiptNo, saved.receiptNo);
+    assert.equal(submitted.status, "pending_approval");
+    const after = await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo);
+    assert.equal(after.payload.status, "pending_approval");
+    assert.equal(after.payload.transactionNo, "");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered submit is idempotent and preserves canonical bytes on repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-repeat-"));
+  try {
+    const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+    const first = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+    const before = await readFile(join(rootDir, first.folderPath, "data", "submission.json"));
+    const second = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo, status: "draft", folderPath: "../../outside" }, uploads: [] });
+    const after = await readFile(join(rootDir, first.folderPath, "data", "submission.json"));
+    assert.deepEqual(after, before);
+    assert.deepEqual(second.statusHistory, first.statusHistory);
+    assert.equal(second.folderPath, first.folderPath);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("O15 legacy drafts stay readable with contained attachments and reject writes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-legacy-readonly-"));
+  try {
+    const expenseId = "DRAFT-2026-09-legacy-1";
+    const expenseFolder = `drafts/2026/09/${expenseId}`;
+    await mkdir(join(rootDir, expenseFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, expenseFolder, "raw"), { recursive: true });
+    await writeFile(join(rootDir, expenseFolder, "raw", "A1_receipt_001.jpg"), "legacy-receipt");
+    await writeFile(join(rootDir, expenseFolder, "data", "draft.json"), JSON.stringify({
+      draftId: expenseId, status: "draft", folderPath: expenseFolder,
+      payload: { requestTitle: "แบบร่างเก่า" },
+      evidenceFiles: { receipt: [{ storedName: "A1_receipt_001.jpg" }] },
+      rawFiles: ["A1_receipt_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
+    }));
+    const expense = await getExpenseDraft(rootDir, expenseId);
+    assert.equal(expense.legacyReadOnly, true);
+    assert.equal(expense.status, "draft");
+    assert.equal(expense.rawFiles[0].url, `/api/expense-drafts/${expenseId}/files/raw/A1_receipt_001.jpg`);
+    assert.equal((await readFile((await getLegacyExpenseDraftFile({ rootDir, draftId: expenseId, fileName: "A1_receipt_001.jpg" })).absolutePath)).toString(), "legacy-receipt");
+    await assert.rejects(() => saveExpenseDraft({ rootDir, payload: { draftId: expenseId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+
+    const receiptId = "SR-DRAFT-2026-09-legacy-2";
+    const receiptFolder = `drafts/2026/09/substitute-receipts/${receiptId}`;
+    await mkdir(join(rootDir, receiptFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, receiptFolder, "raw"), { recursive: true });
+    await writeFile(join(rootDir, receiptFolder, "raw", "B1_payment-slip_001.jpg"), "legacy-slip");
+    await writeFile(join(rootDir, receiptFolder, "data", "draft.json"), JSON.stringify({
+      draftId: receiptId, status: "draft", folderPath: receiptFolder,
+      payload: { receiptTitle: "ใบรับรองเก่า" },
+      evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
+      rawFiles: ["B1_payment-slip_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
+    }));
+    const receipt = await getSubstituteReceiptDraft(rootDir, receiptId);
+    assert.equal(receipt.legacyReadOnly, true);
+    assert.equal((await readFile((await getLegacySubstituteReceiptDraftFile({ rootDir, draftId: receiptId, fileName: "B1_payment-slip_001.jpg" })).absolutePath)).toString(), "legacy-slip");
+    await assert.rejects(() => saveSubstituteReceiptDraft({ rootDir, payload: { draftId: receiptId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // getNextExpenseRequestInfo used to scan documents/YYYY/MM/.../REQ-... folder
 // names on disk for the highest sequence in use. That made it a second,
 // independent source of truth from allocateExpenseRequestNumber (the real
@@ -674,10 +776,10 @@ test("getNextSubstituteReceiptInfo previews the exact number the next real alloc
       uploads: [],
     });
 
-    // Drafts never consume a real SR number -- the peek must still say "1".
+    // Numbered drafts consume their canonical sequence on first save.
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
-      sequence: "1",
-      receiptNo: "SR-2026-09-0001",
+      sequence: "2",
+      receiptNo: "SR-2026-09-0002",
     });
 
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-11"), {
@@ -685,13 +787,13 @@ test("getNextSubstituteReceiptInfo previews the exact number the next real alloc
       receiptNo: "SR-2026-11-0001",
     });
 
-    assert.equal(draft.draftId.startsWith("SR-DRAFT-2026-09-"), true);
+    assert.equal(draft.receiptNo, "SR-2026-09-0001");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("saveExpenseDraft writes editable drafts without consuming a real request number", async () => {
+test("saveExpenseDraft writes editable numbered drafts and consumes a request number", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -714,20 +816,20 @@ test("saveExpenseDraft writes editable drafts without consuming a real request n
       ],
     });
 
-    assert.match(result.draftId, /^DRAFT-2026-09-/);
-    assert.match(result.folderPath, /^drafts\/2026\/09\/DRAFT-2026-09-/);
+    assert.equal(result.requestNo, "REQ-2026-09-0001");
+    assert.match(result.folderPath, /^documents\/2026\/09\//);
     assert.equal(result.rawFiles[0].storedName, "A1_receipt_001.jpg");
 
     const next = await getNextExpenseRequestInfo(rootDir, "2026-09");
-    assert.equal(next.requestNo, "REQ-2026-09-0001");
+    assert.equal(next.requestNo, "REQ-2026-09-0002");
 
-    const loaded = await getExpenseDraft(rootDir, result.draftId);
-    assert.equal(loaded.draftId, result.draftId);
+    const loaded = await getSubmittedExpenseRequest(rootDir, result.requestNo);
+    assert.equal(loaded.requestNo, result.requestNo);
+    assert.equal(loaded.status, "draft");
     assert.equal(loaded.payload.requesterName, "คุณร่าง");
     assert.deepEqual(loaded.evidenceFiles.receipt.map((file) => file.storedName), ["A1_receipt_001.jpg"]);
 
-    const drafts = await listExpenseDrafts(rootDir);
-    assert.deepEqual(drafts.map((draft) => draft.draftId), [result.draftId]);
+    assert.deepEqual(await listExpenseDrafts(rootDir), []);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -757,7 +859,7 @@ test("saveExpenseDraft updates an existing draft and keeps previous raw files", 
     const updated = await saveExpenseDraft({
       rootDir,
       payload: {
-        draftId: first.draftId,
+        requestNo: first.requestNo,
         accountingMonth: "2026-09",
         requestTitle: "ร่างค่าแพ็คสินค้าแก้ไข",
         requestType: "reimbursement",
@@ -772,7 +874,7 @@ test("saveExpenseDraft updates an existing draft and keeps previous raw files", 
       ],
     });
 
-    assert.equal(updated.draftId, first.draftId);
+    assert.equal(updated.requestNo, first.requestNo);
     assert.deepEqual(updated.rawFiles.map((file) => file.storedName), [
       "A1_receipt_001.jpg",
       "A1_receipt_002.jpg",
@@ -802,12 +904,12 @@ test("saveSubstituteReceiptDraft writes editable drafts without consuming SR num
       uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
     });
 
-    assert.match(draft.draftId, /^SR-DRAFT-2026-09-/);
-    assert.match(draft.folderPath, /^drafts\/2026\/09\/substitute-receipts\//);
-    assert.equal((await getNextSubstituteReceiptInfo(rootDir, "2026-09")).receiptNo, "SR-2026-09-0001");
+    assert.equal(draft.receiptNo, "SR-2026-09-0001");
+    assert.match(draft.folderPath, /^documents\/2026\/09\//);
+    assert.equal((await getNextSubstituteReceiptInfo(rootDir, "2026-09")).receiptNo, "SR-2026-09-0002");
     assert.deepEqual(draft.rawFiles.map((file) => file.storedName), ["B1_payment-slip_001.jpg"]);
 
-    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId);
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, draft.receiptNo);
     assert.equal(loaded.status, "draft");
     assert.equal(loaded.payload.receiptTitle, "รอของจากผู้ขาย");
   } finally {
@@ -997,11 +1099,8 @@ test("saveSubstituteReceiptSubmission submits stock purchases without receiving 
             unitCost: "125.50",
           },
         ],
-        evidenceFiles: {
-          paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }],
-        },
       },
-      uploads: [],
+      uploads: validSlipUpload(),
     });
 
     assert.equal(result.status, "pending_approval");
@@ -1027,15 +1126,14 @@ test("saveSubstituteReceiptSubmission submits a draft into pending approval", as
     });
     const result = await saveSubstituteReceiptSubmission({
       rootDir,
-      payload: { draftId: draft.draftId },
+      payload: { receiptNo: draft.receiptNo },
     });
 
     assert.equal(result.receiptNo, "SR-2026-09-0001");
     assert.equal(result.status, "pending_approval");
     assert.equal(result.stockMovements.length, 0);
-    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId, { includeSubmitted: true });
-    assert.equal(loaded.status, "submitted");
-    assert.equal(loaded.submittedReceiptNo, "SR-2026-09-0001");
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, draft.receiptNo);
+    assert.equal(loaded.status, "pending_approval");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -1059,7 +1157,7 @@ test("listSubstituteReceipts combines drafts and submitted state records", async
     const records = await listSubstituteReceipts(rootDir);
 
     assert.deepEqual(records.map((record) => record.status).sort(), ["draft", "pending_approval"]);
-    assert.equal(records.some((record) => record.draftId === draft.draftId), true);
+    assert.equal(records.some((record) => record.receiptNo === draft.receiptNo && record.legacyReadOnly === false), true);
     assert.equal(records.some((record) => record.receiptNo === submitted.receiptNo), true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1717,7 +1815,7 @@ test("completeExpenseRequest refuses to complete a request that was never approv
 
     await assert.rejects(
       completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" }),
-      /Invalid expense request status transition: submitted -> completed/,
+    /Invalid expense request status transition: pending_approval -> completed/,
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1940,35 +2038,18 @@ test("saveExpenseSubmission copies draft raw files into the final request folder
     const final = await saveExpenseSubmission({
       rootDir,
       payload: {
-        draftId: draft.draftId,
-        accountingMonth: "2026-09",
-        requestTitle: "ร่างค่าส่ง",
-        requestType: "reimbursement",
-        requesterName: "คุณร่าง",
-        businessPurpose: "ค่าส่งสินค้า",
-        paymentTargetName: "คุณร่าง",
-        expenseLines: [
-          {
-            date: "2026-09-05",
-            category: "ค่าส่ง/ขนส่ง",
-            description: "ค่าส่งสินค้า",
-            vendor: "ขนส่งตัวอย่าง",
-            amountBeforeVat: "100",
-            vatAmount: "7",
-            withholdingTax: "0",
-          },
-        ],
+        requestNo: draft.requestNo,
       },
       uploads: [],
     });
 
-    assert.equal(final.requestNo, "REQ-2026-09-0001");
+    assert.equal(final.requestNo, draft.requestNo);
     assert.deepEqual(final.rawFiles.map((file) => file.storedName), ["A3_vendor-payment-slip_001.jpg"]);
     assert.equal(await readFile(join(final.absoluteFolderPath, "raw", "A3_vendor-payment-slip_001.jpg"), "utf8"), "draft slip");
 
-    const submittedDraft = await getExpenseDraft(rootDir, draft.draftId, { includeSubmitted: true });
-    assert.equal(submittedDraft.status, "submitted");
-    assert.equal(submittedDraft.submittedRequestNo, "REQ-2026-09-0001");
+    const submitted = await getSubmittedExpenseRequest(rootDir, draft.requestNo);
+    assert.equal(submitted.status, "pending_approval");
+    assert.equal(submitted.payload.requestNo, draft.requestNo);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -2026,7 +2107,7 @@ test("getSubmittedExpenseRequest returns editable saved request data with raw ev
   }
 });
 
-test("saveExpenseSubmission updates an existing synced request in place and marks it for resync", async () => {
+test("saveExpenseSubmission rejects edits after submission", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -2079,59 +2160,20 @@ test("saveExpenseSubmission updates an existing synced request in place and mark
       }),
     });
 
-    const updated = await saveExpenseSubmission({
+    const repeated = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        requestNo: submitted.requestNo,
-        accountingMonth: "2026-09",
-        requestTitle: "ค่าส่งพัสดุแก้ไข",
-        requestType: "reimbursement",
-        requesterName: "คุณส่งแก้ไข",
-        requesterRole: "marketing",
-        requesterContact: "Line shop",
-        expenseDate: "2026-09-06",
-        businessPurpose: "ค่าส่งสินค้าเพิ่มเติม",
-        paymentTargetName: "คุณส่ง",
-        paymentBankName: "กสิกรไทย",
-        paymentAccountNo: "123-4-56789-0",
-        expenseLines: [
-          {
-            date: "2026-09-06",
-            category: "ค่าส่ง/ขนส่ง",
-            description: "ค่าส่งสินค้าเพิ่มเติม",
-            vendor: "ขนส่งตัวอย่าง",
-            amountBeforeVat: "200",
-            vatAmount: "14",
-            withholdingTax: "0",
-          },
-        ],
-      },
-      uploads: [
-        {
-          evidenceKey: "businessEvidence",
-          originalName: "usage.png",
-          type: "image/png",
-          buffer: Buffer.from("usage image"),
-        },
-      ],
+      payload: { requestNo: submitted.requestNo, requestTitle: "แก้ไขหลังส่ง" },
+      uploads: [],
     });
+    assert.equal(repeated.requestNo, submitted.requestNo);
+    assert.equal(repeated.status, "pending_approval");
 
-    assert.equal(updated.requestNo, submitted.requestNo);
-    assert.equal(updated.folderPath, submitted.folderPath);
-    assert.deepEqual(updated.rawFiles.map((file) => file.storedName), [
-      "A1_receipt_001.jpg",
-      "A5_business-evidence_001.png",
-    ]);
-
-    const savedJson = JSON.parse(await readFile(join(updated.absoluteFolderPath, "data", "submission.json"), "utf8"));
-    assert.equal(savedJson.requesterName, "คุณส่งแก้ไข");
-    assert.equal(savedJson.totals.netPayment, "214.00");
-    assert.deepEqual(savedJson.rawFiles, ["A1_receipt_001.jpg", "A5_business-evidence_001.png"]);
-
+    const saved = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.equal(saved.payload.requesterName, "คุณส่ง");
     const requests = await listExpenseRequests(rootDir);
-    assert.equal(requests.filter((request) => request.status === "submitted").length, 1);
+    assert.equal(requests.filter((request) => request.status === "pending_approval").length, 1);
     const submittedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
-    assert.equal(submittedRecord.syncStatus, "needs_resync");
+    assert.equal(submittedRecord.syncStatus, "synced");
     assert.equal(submittedRecord.driveFolderUrl, "https://drive.google.com/drive/folders/drive-folder-123");
     assert.equal(submittedRecord.editUrl, "/expense-request?requestNo=REQ-2026-09-0001");
   } finally {
@@ -2197,18 +2239,18 @@ test("listExpenseRequests combines submitted requests and editable drafts", asyn
 
     const requests = await listExpenseRequests(rootDir);
     assert.equal(requests.length, 2);
-    assert.deepEqual(requests.map((request) => request.status).sort(), ["draft", "submitted"]);
+    assert.deepEqual(requests.map((request) => request.status).sort(), ["draft", "pending_approval"]);
 
     const draftRecord = requests.find((request) => request.status === "draft");
-    assert.equal(draftRecord.draftId, draft.draftId);
-    assert.equal(draftRecord.editUrl, `/expense-request?draftId=${encodeURIComponent(draft.draftId)}`);
+    assert.equal(draftRecord.requestNo, draft.requestNo);
+    assert.equal(draftRecord.editUrl, `/expense-request?requestNo=${encodeURIComponent(draft.requestNo)}`);
 
-    const submittedRecord = requests.find((request) => request.status === "submitted");
+    const submittedRecord = requests.find((request) => request.status === "pending_approval");
     assert.equal(submittedRecord.requestNo, submitted.requestNo);
     assert.equal(submittedRecord.pdfFiles.length, 2);
     assert.equal(submittedRecord.rawFiles.length, 1);
-    assert.match(submittedRecord.pdfFiles[0].url, /^\/api\/expense-requests\/REQ-2026-09-0001\/files\/pdf\//);
-    assert.equal(submittedRecord.rawFiles[0].url, "/api/expense-requests/REQ-2026-09-0001/files/raw/A1_receipt_001.jpg");
+    assert.match(submittedRecord.pdfFiles[0].url, new RegExp(`^/api/expense-requests/${submitted.requestNo}/files/pdf/`));
+    assert.equal(submittedRecord.rawFiles[0].url, `/api/expense-requests/${submitted.requestNo}/files/raw/A1_receipt_001.jpg`);
     assert.match(submittedRecord.folderPath, /documents\/2026\/09\/เบิกจ่าย/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
