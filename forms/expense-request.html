@@ -1196,8 +1196,9 @@
         nextRequestInfo = { sequence: currentRequestNo.split("-").at(-1), requestNo: currentRequestNo };
         document.querySelector("#requestNoPreview").value = currentRequestNo;
         updatePreview();
-        return;
+        throw new Error(request.error || "โหลดใบเบิกจ่ายไม่ได้");
       }
+      if (request.requestNo !== requestNo || !["draft", "pending_approval", "approved", "completed", "cancelled"].includes(request.status)) throw new Error("ข้อมูลใบเบิกจ่ายไม่ถูกต้อง");
 
       const accountingMonth = form.elements.accountingMonth.value;
       if (!accountingMonth || location.protocol === "file:") {
