@@ -1565,17 +1565,12 @@
         return;
       }
 
+      const priorRequestNo = currentRequestNo;
       adoptNumberedResult(result, "draft");
+      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { currentRequestNo = priorRequestNo; throw error; }
       currentStatus = "draft";
       currentDraftId = "";
-      currentFolderPath = result.folderPath || currentFolderPath;
-      currentCreatedAt = result.createdAt || currentCreatedAt;
-      for (const key of Object.keys(uploadedFileState)) {
-        uploadedFileState[key] = [];
-        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
-      }
       replaceNumberedUrl(currentRequestNo);
-      await loadSubmittedRequest(currentRequestNo);
       setSaveStatus(`บันทึกแบบร่างแล้ว: ${currentRequestNo}`, "success");
     }
 
@@ -1612,6 +1607,7 @@
       const pdfCount = result.pdfFiles?.length || 0;
       setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
       output.value = JSON.stringify(result, null, 2);
+      await loadSubmittedRequest(currentRequestNo);
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
