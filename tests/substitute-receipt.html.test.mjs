@@ -81,6 +81,15 @@ test("substitute receipt controller uses numbered draft responses and locks lega
   assert.match(browserLogic, /pending_approval/);
 });
 
+test("substitute receipt controller validates canonical identity and legacy attachment links", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /SR-\\d\{4\}-\\d\{2\}-\\d\{4\}/);
+  assert.match(browserLogic, /state\.status !== "draft"/);
+  assert.match(browserLogic, /legacyEvidenceLinks/);
+  assert.match(browserLogic, /target="_blank" rel="noreferrer"/);
+  assert.match(browserLogic, /workflowTemplateId/);
+});
+
 test("substitute receipt browser controller updates stock line summaries", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
 

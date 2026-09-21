@@ -1159,6 +1159,7 @@
     let nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
     let legacyReadOnly = false;
     let mutationInFlight = false;
+    let currentStatus = "draft";
     const moneyIds = {
       amountBeforeVat: document.querySelector("#sumBeforeVat"),
       vatAmount: document.querySelector("#sumVat"),
@@ -1389,9 +1390,11 @@
 
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
-      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), ...document.querySelectorAll(".file-input")];
+      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input")];
       controls.forEach((control) => { if (control) control.disabled = legacyReadOnly || mutationInFlight; });
       lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight; });
+      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
     }
 
     async function runMutation(work) {
@@ -1401,13 +1404,17 @@
     }
 
     function adoptNumberedResult(result, expectedStatus) {
-      if (!result?.requestNo || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      if (!/^REQ-\d{4}-\d{2}-\d{4}$/.test(String(result?.requestNo || "")) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
       currentRequestNo = result.requestNo;
       return result.requestNo;
     }
 
     function replaceNumberedUrl(requestNo) {
-      if (window.history?.replaceState) window.history.replaceState({}, "", `?requestNo=${encodeURIComponent(requestNo)}`);
+      if (window.history?.replaceState) {
+        const params = new URLSearchParams({ requestNo });
+        for (const key of ["transactionNo", "workflowTemplateId", "workflowStepId", "returnTo"]) if (workflowContext[key]) params.set(key, workflowContext[key]);
+        window.history.replaceState({}, "", `?${params}`);
+      }
     }
 
     function appendUploadsToFormData(formData) {
@@ -1433,6 +1440,7 @@
 
       currentDraftId = draft.draftId;
       legacyReadOnly = true;
+      currentStatus = "draft";
       currentRequestNo = "";
       currentFolderPath = "";
       currentCreatedAt = "";
@@ -1485,6 +1493,7 @@
       currentDraftId = "";
       legacyReadOnly = false;
       currentRequestNo = request.requestNo;
+      currentStatus = request.status || request.payload?.status || "pending_approval";
       currentFolderPath = request.folderPath || request.payload?.folderPath || "";
       currentCreatedAt = request.payload?.createdAt || "";
       const payload = request.payload ?? {};
@@ -1518,6 +1527,7 @@
       }
       uploadCards.forEach(renderUploadCard);
       await updateNextRequestNo();
+      setReadOnlyMode(false);
       updatePreview();
       setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
     }
@@ -1549,6 +1559,7 @@
       }
 
       adoptNumberedResult(result, "draft");
+      currentStatus = "draft";
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
@@ -1557,7 +1568,7 @@
         savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
       }
       replaceNumberedUrl(currentRequestNo);
-      updatePreview();
+      await loadSubmittedRequest(currentRequestNo);
       setSaveStatus(`บันทึกแบบร่างแล้ว: ${currentRequestNo}`, "success");
     }
 
@@ -1590,6 +1601,7 @@
       }
 
       adoptNumberedResult(result, "pending_approval");
+      currentStatus = "pending_approval";
       const pdfCount = result.pdfFiles?.length || 0;
       setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
       output.value = JSON.stringify(result, null, 2);
@@ -1643,6 +1655,7 @@
       });
       card.addEventListener("drop", (event) => {
         event.preventDefault();
+        if (legacyReadOnly || mutationInFlight) return;
         card.classList.remove("dragging");
         setFiles(evidenceKey, event.dataTransfer.files);
       });

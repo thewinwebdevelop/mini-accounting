@@ -107,6 +107,15 @@ test("expense form controller adopts numbered draft responses and never posts le
   assert.match(html, /requestNo: currentRequestNo/);
 });
 
+test("expense form validates canonical identity, authoritative status, and preserves workflow history", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /REQ-\\d\{4\}-\\d\{2\}-\\d\{4\}/);
+  assert.match(html, /currentStatus !== "draft"/);
+  assert.match(html, /workflowTemplateId/);
+  assert.match(html, /legacyReadOnly \|\| mutationInFlight/);
+  assert.match(html, /target="_blank" rel="noreferrer"/);
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {

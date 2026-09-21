@@ -19,6 +19,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const queryReceiptNo = new URLSearchParams(location.search).get("receiptNo");
   const form = document.querySelector("#substituteReceiptForm");
   const statusBox = document.querySelector("#substituteReceiptStatus");
+  const legacyEvidenceLinks = document.querySelector("#legacyEvidenceLinks");
   const lineItems = document.querySelector("#stockLineItems");
   const lineTemplate = document.querySelector("#stockLineTemplate");
   const addLineButton = document.querySelector("#addStockLine");
@@ -108,6 +109,15 @@ window.addEventListener("DOMContentLoaded", () => {
     statusBox.textContent = "";
   }
 
+  function renderLegacyEvidence(filesByKey = {}) {
+    if (!legacyEvidenceLinks) return;
+    const files = Object.values(filesByKey).flat().filter((file) => file && file.url);
+    legacyEvidenceLinks.hidden = !files.length;
+    legacyEvidenceLinks.innerHTML = files.length
+      ? `ไฟล์แนบแบบร่างเก่า: ${files.map((file) => `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName || file.originalName || "ดาวน์โหลด")}</a>`).join(" · ")}`
+      : "";
+  }
+
   async function api(route, options = {}) {
     const response = await fetch(route, options);
     const result = await response.json();
@@ -142,7 +152,11 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function replaceReceiptUrl(receiptNo) {
-    if (window.history?.replaceState) window.history.replaceState({}, "", `?receiptNo=${encodeURIComponent(receiptNo)}`);
+    if (window.history?.replaceState) {
+      const params = new URLSearchParams({ receiptNo });
+      for (const key of ["transactionNo", "workflowTemplateId", "workflowStepId", "returnTo"]) if (workflowContext[key]) params.set(key, workflowContext[key]);
+      window.history.replaceState({}, "", `?${params}`);
+    }
   }
 
   async function runMutation(work, { allowWhileModalOpen = false } = {}) {
@@ -537,6 +551,7 @@ window.addEventListener("DOMContentLoaded", () => {
       status: "draft",
       evidenceFiles: draft.evidenceFiles || draft.payload?.evidenceFiles || {},
     });
+    renderLegacyEvidence(draft.evidenceFiles || draft.payload?.evidenceFiles || {});
     setLegacyReadOnly(true);
     setStatus(`โหลดแบบร่าง ${escapeHtml(draft.draftId)} แล้ว`, "success");
   }
@@ -565,6 +580,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function saveDraft() {
+    if (state.legacyReadOnly || state.status !== "draft") throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     clearStatus();
     const payload = collectPayload();
     delete payload.draftId;
@@ -572,7 +588,7 @@ window.addEventListener("DOMContentLoaded", () => {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
-    if (!result.receiptNo || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+    if (!/^SR-\d{4}-\d{2}-\d{4}$/.test(String(result.receiptNo || "")) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     state.draftId = "";
     state.receiptNo = result.receiptNo;
     state.status = "draft";
@@ -580,11 +596,13 @@ window.addEventListener("DOMContentLoaded", () => {
     state.existingEvidenceFiles = result.evidenceFiles || collectEvidenceFilesForValidation();
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
+    await loadReceipt(state.receiptNo);
     setReceiptState("draft");
     setStatus(`บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, "success");
   }
 
   async function submitForApproval() {
+    if (state.legacyReadOnly || state.status !== "draft") throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     clearStatus();
     const payload = collectPayload();
     delete payload.draftId;
@@ -597,7 +615,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const status = adoptExpectedStatus(result, "pending_approval");
 
-    if (result.receiptNo !== state.receiptNo && state.receiptNo) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
+    if (!/^SR-\d{4}-\d{2}-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     state.draftId = "";
     state.receiptNo = result.receiptNo;
     state.status = status;
