@@ -109,9 +109,9 @@ window.addEventListener("DOMContentLoaded", () => {
     statusBox.textContent = "";
   }
 
-  function renderLegacyEvidence(filesByKey = {}) {
+  function renderLegacyEvidence(filesByKey = {}, rawFiles = []) {
     if (!legacyEvidenceLinks) return;
-    const files = Object.values(filesByKey).flat().filter((file) => file && file.url);
+    const files = [...Object.values(filesByKey).flat(), ...(Array.isArray(rawFiles) ? rawFiles : [])].filter((file) => file && file.url);
     legacyEvidenceLinks.hidden = !files.length;
     legacyEvidenceLinks.innerHTML = files.length
       ? `ไฟล์แนบแบบร่างเก่า: ${files.map((file) => `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName || file.originalName || "ดาวน์โหลด")}</a>`).join(" · ")}`
@@ -558,7 +558,7 @@ window.addEventListener("DOMContentLoaded", () => {
       status: "draft",
       evidenceFiles: draft.evidenceFiles || draft.payload?.evidenceFiles || {},
     });
-    renderLegacyEvidence(draft.evidenceFiles || draft.payload?.evidenceFiles || {});
+    renderLegacyEvidence(draft.evidenceFiles || draft.payload?.evidenceFiles || {}, draft.rawFiles || []);
     setLegacyReadOnly(true);
     setStatus(`โหลดแบบร่าง ${escapeHtml(draft.draftId)} แล้ว`, "success");
   }

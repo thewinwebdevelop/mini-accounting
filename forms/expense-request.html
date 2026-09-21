@@ -1393,6 +1393,7 @@
       const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
       controls.forEach((control) => { if (control) control.disabled = legacyReadOnly || mutationInFlight; });
       lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight; });
+      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft"; });
       document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
       document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
     }
@@ -1400,6 +1401,7 @@
     async function runMutation(work) {
       if (legacyReadOnly || mutationInFlight) return;
       mutationInFlight = true;
+      setReadOnlyMode(legacyReadOnly);
       try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
     }
 
@@ -1476,6 +1478,7 @@
       for (const key of Object.keys(uploadedFileState)) {
         uploadedFileState[key] = [];
         savedEvidenceFileState[key] = draft.evidenceFiles?.[key] ?? [];
+        if (key === "otherEvidence" && Array.isArray(draft.rawFiles)) savedEvidenceFileState[key] = [...savedEvidenceFileState[key], ...draft.rawFiles];
       }
       uploadCards.forEach(renderUploadCard);
       setReadOnlyMode(true);
