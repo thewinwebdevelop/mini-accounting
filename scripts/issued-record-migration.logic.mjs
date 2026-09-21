@@ -15,7 +15,9 @@ export const MARKER_ACTOR = "system:migration";
 const REQ_STATUSES = new Set(["draft", "submitted", "pending_approval", "approved", "completed", "cancelled"]);
 const SR_STATUSES = new Set(["draft", "pending_approval", "approved", "received", "completed", "cancelled", "voided"]);
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
-const SAFE_NUMBER = /^(REQ|SR)-\d{4}-(?:0[1-9]|1[0-2])-(?:0{0,3}[1-9]\d{0,2}|[1-9]\d{4,})$/;
+// Allocator output is a four-digit, zero-padded positive sequence through
+// 9999, then an unpadded positive sequence once it reaches five digits.
+const SAFE_NUMBER = /^(REQ|SR)-\d{4}-(?:0[1-9]|1[0-2])-(?!0000)(?:\d{4}|[1-9]\d{4,})$/;
 
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -303,7 +305,9 @@ async function makePlan({ rootDir, at }) {
     const expectedRetryMarker = kind === "expense_request"
       ? markerFor("submitted", "pending_approval", at)
       : markerFor(status, status, at);
-    const existingAppliedMarker = exactMarkers.length === 1 && !statusMissing && isExactMarker(exactMarkers[0], expectedRetryMarker)
+    const existingAppliedMarker = exactMarkers.length === 1 && !statusMissing
+      && ((kind === "expense_request" && status === "pending_approval") || kind === "substitute_receipt")
+      && isExactMarker(exactMarkers[0], expectedRetryMarker)
       ? exactMarkers[0]
       : null;
     if (exactMarkers.length && !existingAppliedMarker) {

@@ -226,16 +226,41 @@ test("contradictory evidence, unsupported status, malformed JSON, duplicate, hos
 
 test("mixed valid and ambiguous fixtures block the entire plan before any write", async () => {
   const rootDir = await makeRoot();
+  const planDir = await makeRoot("sweet-house-plan-");
   try {
+    await seedEmptyDatabase(rootDir);
     const valid = await writeIssued(rootDir, "expense_request", "REQ-2026-09-0020", { requestNo: "REQ-2026-09-0020", documentKind: "expense_request", accountingMonth: "2026-09" }, "mixed-valid");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-0021", { requestNo: "REQ-2026-09-0021", documentKind: "expense_request", accountingMonth: "2026-09", status: "legacy" }, "mixed-ambiguous");
+    await seedIndex(rootDir, {
+      documentKind: "expense_request", documentNo: "REQ-2026-09-0998", status: "approved",
+      folderPath: "documents/2026/09/unrelated-index/REQ-2026-09-0998_fixture", createdAt: AT, updatedAt: AT,
+    });
     const before = await readFile(valid.filePath);
-    const { report } = await runMigration({ rootDir, at: AT });
+    const beforeIndex = (() => {
+      const db = openInventoryDatabase(rootDir);
+      const rows = db.prepare("SELECT * FROM documents ORDER BY document_kind, document_no").all();
+      db.close();
+      return rows;
+    })();
+    const planPath = join(planDir, "plan.json");
+    const { report } = await runMigration({ rootDir, at: AT, reportPath: planPath });
     assert.equal(report.ok, undefined);
     assert.ok(report.errors.length > 0);
     assert.deepEqual(await readFile(valid.filePath), before);
+    const backupRoot = await snapshotRoot(rootDir);
+    const apply = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
+    assert.equal(apply.ok, false);
+    assert.deepEqual(await readFile(valid.filePath), before);
+    const afterIndex = (() => {
+      const db = openInventoryDatabase(rootDir);
+      const rows = db.prepare("SELECT * FROM documents ORDER BY document_kind, document_no").all();
+      db.close();
+      return rows;
+    })();
+    assert.deepEqual(afterIndex, beforeIndex);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
+    await rm(planDir, { recursive: true, force: true });
   }
 });
 
@@ -283,6 +308,25 @@ test("valid apply writes planned JSON and index rows, preserving unrelated files
     await seedEmptyDatabase(rootDir);
     const req = await writeIssued(rootDir, "expense_request", "REQ-2026-09-0040", { requestNo: "REQ-2026-09-0040", documentKind: "expense_request", accountingMonth: "2026-09" }, "apply-req");
     const sr = await writeIssued(rootDir, "substitute_receipt", "SR-2026-09-0040", { receiptNo: "SR-2026-09-0040", documentKind: "substitute_receipt", accountingMonth: "2026-09", receiptType: "stock_purchase" }, "apply-sr");
+    await writeFile(join(rootDir, req.folderPath, "evidence.pdf"), "req-pdf");
+    await writeFile(join(rootDir, sr.folderPath, "receipt.md"), "sr-markdown");
+    seedMovement(rootDir, "SR-2026-09-unrelated");
+    await seedIndex(rootDir, {
+      documentKind: "expense_request", documentNo: "REQ-2026-09-0999", status: "approved",
+      folderPath: "documents/2026/09/unrelated-index/REQ-2026-09-0999_fixture", createdAt: AT, updatedAt: AT,
+    });
+    const beforeStock = (() => {
+      const db = openInventoryDatabase(rootDir);
+      const rows = db.prepare("SELECT * FROM stock_movements ORDER BY id").all();
+      db.close();
+      return rows;
+    })();
+    const beforeUnrelatedIndex = (() => {
+      const db = openInventoryDatabase(rootDir);
+      const row = db.prepare("SELECT * FROM documents WHERE document_no = ?").get("REQ-2026-09-0999");
+      db.close();
+      return row;
+    })();
     await mkdir(join(rootDir, "drafts/2026/09/DRAFT-untouched"), { recursive: true });
     await writeFile(join(rootDir, "drafts/2026/09/DRAFT-untouched", "note.md"), "draft");
     await writeFile(join(rootDir, "unrelated.md"), "unrelated");
@@ -300,13 +344,20 @@ test("valid apply writes planned JSON and index rows, preserving unrelated files
     assert.equal(srAfter.statusHistory.length, 1);
     assert.equal(await readFile(join(rootDir, "unrelated.md"), "utf8"), "unrelated");
     assert.equal(await readFile(join(rootDir, "drafts/2026/09/DRAFT-untouched/note.md"), "utf8"), "draft");
+    assert.equal(await readFile(join(rootDir, req.folderPath, "evidence.pdf"), "utf8"), "req-pdf");
+    assert.equal(await readFile(join(rootDir, sr.folderPath, "receipt.md"), "utf8"), "sr-markdown");
     const db = openInventoryDatabase(rootDir);
     const rows = db.prepare("SELECT document_kind, document_no, status FROM documents ORDER BY document_kind, document_no").all().map((row) => ({ ...row }));
+    const afterStock = db.prepare("SELECT * FROM stock_movements ORDER BY id").all();
+    const afterUnrelatedIndex = db.prepare("SELECT * FROM documents WHERE document_no = ?").get("REQ-2026-09-0999");
     db.close();
     assert.deepEqual(rows, [
       { document_kind: "expense_request", document_no: "REQ-2026-09-0040", status: "pending_approval" },
+      { document_kind: "expense_request", document_no: "REQ-2026-09-0999", status: "approved" },
       { document_kind: "substitute_receipt", document_no: "SR-2026-09-0040", status: "pending_approval" },
     ]);
+    assert.deepEqual(afterStock, beforeStock);
+    assert.deepEqual(afterUnrelatedIndex, beforeUnrelatedIndex);
     assert.equal(dry.changes.length, 2);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -392,6 +443,16 @@ test("apply stops after the first of two records and reports deterministic appli
     assert.deepEqual(result.report.appliedBeforeFailure, ["REQ-2026-09-0070"], JSON.stringify(result.report));
     assert.equal(JSON.parse(await readFile(first.filePath, "utf8")).status, "pending_approval");
     assert.equal(Object.hasOwn(JSON.parse(await readFile(second.filePath, "utf8")), "status"), false);
+    const retry = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
+    assert.equal(retry.ok, true, JSON.stringify(retry.report));
+    assert.equal(retry.report.counts.applied, 1);
+    assert.equal(retry.report.counts.indexReconciliations, 2);
+    assert.equal(JSON.parse(await readFile(second.filePath, "utf8")).status, "pending_approval");
+    const finalRetry = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
+    assert.equal(finalRetry.ok, true, JSON.stringify(finalRetry.report));
+    assert.equal(finalRetry.report.counts.applied, 0);
+    assert.equal(JSON.parse(await readFile(first.filePath, "utf8")).statusHistory.length, 1);
+    assert.equal(JSON.parse(await readFile(second.filePath, "utf8")).statusHistory.length, 1);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
     await rm(planDir, { recursive: true, force: true });
@@ -446,6 +507,10 @@ test("empty status, malformed v1 marker, invalid month/sequence fail closed whil
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-0093", { requestNo: "REQ-2026-09-0093", documentKind: "expense_request", accountingMonth: "2026-09", status: "pending_approval", statusHistory: [{ fromStatus: "submitted", toStatus: "pending_approval", changedAt: AT, note: "migration:issued-record-status-v1", actor: "other" }] }, "bad-marker");
     await writeIssued(rootDir, "expense_request", "REQ-2026-99-0001", { requestNo: "REQ-2026-99-0001", documentKind: "expense_request", accountingMonth: "2026-99" }, "bad-month");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-0000", { requestNo: "REQ-2026-09-0000", documentKind: "expense_request", accountingMonth: "2026-09" }, "zero-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-1", { requestNo: "REQ-2026-09-1", documentKind: "expense_request", accountingMonth: "2026-09" }, "short-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-1/01/001", { requestNo: "REQ-2026-09-1/01/001", documentKind: "expense_request", accountingMonth: "2026-09" }, "slash-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-1000", { requestNo: "REQ-2026-09-1000", documentKind: "expense_request", accountingMonth: "2026-09" }, "four-digit-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-9999", { requestNo: "REQ-2026-09-9999", documentKind: "expense_request", accountingMonth: "2026-09" }, "max-padded-seq");
     const valid = await writeIssued(rootDir, "expense_request", "REQ-2026-09-10000", { requestNo: "REQ-2026-09-10000", documentKind: "expense_request", accountingMonth: "2026-09" }, "large-seq");
     const { report } = await runMigration({ rootDir, at: AT });
     const codes = new Set(report.errors.map((error) => error.code));
@@ -457,6 +522,44 @@ test("empty status, malformed v1 marker, invalid month/sequence fail closed whil
     assert.equal(Object.hasOwn(JSON.parse(await readFile(valid.filePath, "utf8")), "status"), false);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("a submitted REQ carrying the exact target marker is not accepted as already applied", async () => {
+  const rootDir = await makeRoot();
+  try {
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0096", {
+      requestNo: "REQ-2026-09-0096", documentKind: "expense_request", accountingMonth: "2026-09", status: "submitted",
+      statusHistory: [{ fromStatus: "submitted", toStatus: "pending_approval", changedAt: AT, note: "migration:issued-record-status-v1", actor: "system:migration" }],
+    }, "submitted-target-marker");
+    const { report } = await runMigration({ rootDir, at: AT });
+    assert.ok(report.errors.some((error) => error.code === "conflicting_migration_marker"));
+    assert.equal(report.changes.length, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("inventory failures and general-expense movement conflicts fail closed", async () => {
+  const missingInventory = await makeRoot();
+  const conflicting = await makeRoot();
+  try {
+    await writeIssued(missingInventory, "substitute_receipt", "SR-2026-09-0097", {
+      receiptNo: "SR-2026-09-0097", documentKind: "substitute_receipt", accountingMonth: "2026-09", receiptType: "stock_purchase",
+    }, "inventory-read-failed");
+    const missingReport = (await runMigration({ rootDir: missingInventory, at: AT })).report;
+    assert.ok(missingReport.errors.some((error) => error.code === "inventory_read_failed"));
+
+    await seedEmptyDatabase(conflicting);
+    await writeIssued(conflicting, "substitute_receipt", "SR-2026-09-0098", {
+      receiptNo: "SR-2026-09-0098", documentKind: "substitute_receipt", accountingMonth: "2026-09", receiptType: "general_expense",
+    }, "general-expense-movement");
+    seedMovement(conflicting, "SR-2026-09-0098");
+    const conflictReport = (await runMigration({ rootDir: conflicting, at: AT })).report;
+    assert.ok(conflictReport.errors.some((error) => error.code === "contradictory_stock_evidence"));
+  } finally {
+    await rm(missingInventory, { recursive: true, force: true });
+    await rm(conflicting, { recursive: true, force: true });
   }
 });
 
