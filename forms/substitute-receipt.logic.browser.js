@@ -151,6 +151,12 @@ window.addEventListener("DOMContentLoaded", () => {
     controls.forEach((control) => { if (control) control.disabled = state.legacyReadOnly || state.mutationInFlight; });
   }
 
+  function applyRecordFieldLock() {
+    const locked = state.legacyReadOnly || state.status !== "draft" || state.mutationInFlight;
+    form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = locked; });
+    addLineButton.disabled = locked;
+  }
+
   function replaceReceiptUrl(receiptNo) {
     if (window.history?.replaceState) {
       const params = new URLSearchParams({ receiptNo });
@@ -288,6 +294,7 @@ window.addEventListener("DOMContentLoaded", () => {
     receiveStockButton.hidden = !actions.includes("receive_stock");
     completeReceiptButton.hidden = !actions.includes("complete");
     setMutationControlsDisabled(state.mutationInFlight || state.legacyReadOnly);
+    applyRecordFieldLock();
     receiptNoPreview.textContent = state.receiptNo || state.nextReceipt?.receiptNo || "-";
     applyReceiptTypeState();
   }
