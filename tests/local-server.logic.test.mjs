@@ -647,6 +647,55 @@ test("numbered submit is idempotent and preserves canonical bytes on repeat", as
   }
 });
 
+test("numbered draft updates keep server-owned identity and sync metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-owned-fields-"));
+  try {
+    const saved = await saveExpenseDraft({
+      rootDir,
+      payload: validExpensePayload({
+        folderPath: "../../hostile-folder",
+        createdAt: "1999-01-01T00:00:00.000Z",
+        status: "approved",
+        statusHistory: [{ fromStatus: "draft", toStatus: "approved" }],
+        sheetSync: { syncStatus: "synced", spreadsheetId: "hostile" },
+        completedAt: "1999-01-01T00:00:00.000Z",
+      }),
+      uploads: validSlipUpload(),
+    });
+    const first = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(first.payload.folderPath, saved.folderPath);
+    assert.notEqual(first.payload.createdAt, "1999-01-01T00:00:00.000Z");
+    assert.equal(first.payload.status, "draft");
+    assert.deepEqual(first.payload.statusHistory, []);
+    assert.equal(first.payload.sheetSync, undefined);
+    assert.equal(first.payload.completedAt, undefined);
+
+    const updated = await saveExpenseDraft({
+      rootDir,
+      payload: {
+        requestNo: saved.requestNo,
+        ...validExpensePayload({
+          requestNo: saved.requestNo,
+          requestTitle: "แก้ชื่อแบบร่าง",
+          folderPath: "../../another-hostile-folder",
+          createdAt: "2000-01-01T00:00:00.000Z",
+          sheetSync: { syncStatus: "synced", spreadsheetId: "hostile-2" },
+        }),
+      },
+      uploads: [],
+    });
+    assert.equal(updated.requestNo, saved.requestNo);
+    assert.equal(updated.folderPath, saved.folderPath);
+    const after = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(after.payload.folderPath, saved.folderPath);
+    assert.equal(after.payload.createdAt, first.payload.createdAt);
+    assert.equal(after.payload.sheetSync, undefined);
+    assert.deepEqual(after.payload.statusHistory, []);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("O15 legacy drafts stay readable with contained attachments and reject writes", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-legacy-readonly-"));
   try {
