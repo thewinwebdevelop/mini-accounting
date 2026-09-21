@@ -1202,9 +1202,8 @@
       if (!accountingMonth || location.protocol === "file:") {
         nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
         document.querySelector("#requestNoPreview").value = "เปิดผ่าน local server เพื่อคำนวณ";
-        throw new Error(request.error || "โหลดใบเบิกจ่ายไม่ได้");
+        return;
       }
-      if (request.requestNo !== requestNo || !["draft", "pending_approval", "approved", "completed", "cancelled"].includes(request.status)) throw new Error("ข้อมูลใบเบิกจ่ายไม่ถูกต้อง");
 
       document.querySelector("#requestNoPreview").value = "กำลังคำนวณ...";
       const response = await fetch(`/api/expense-requests/next?accountingMonth=${encodeURIComponent(accountingMonth)}`);
