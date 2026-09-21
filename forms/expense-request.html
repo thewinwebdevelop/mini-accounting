@@ -1010,6 +1010,7 @@
           </div>
           <div class="errors" id="errors"></div>
           <div class="status-box" id="saveStatus"></div>
+          <button class="button secondary" type="button" id="reloadSavedRequest" hidden>โหลดรายละเอียดซ้ำ</button>
           <div class="hint">เปิดผ่าน http://localhost:8787/expense-request แล้วกด บันทึกใบเบิกจ่าย เพื่อเก็บข้อมูล PDF และ raw files ลงโฟลเดอร์มาตรฐาน ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น</div>
         </div>
       </aside>
@@ -1091,6 +1092,7 @@
     const output = document.querySelector("#output");
     const errorsBox = document.querySelector("#errors");
     const saveStatus = document.querySelector("#saveStatus");
+    const reloadSavedRequestButton = document.querySelector("#reloadSavedRequest");
 
     // --- Workflow context (Task 9) -----------------------------------
     // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as
@@ -1389,6 +1391,24 @@
       saveStatus.textContent = message;
     }
 
+    function showReloadSavedRequest(show) {
+      if (reloadSavedRequestButton) reloadSavedRequestButton.hidden = !show;
+    }
+
+    async function reloadSavedRequest() {
+      if (!currentRequestNo || !reloadSavedRequestButton) return;
+      reloadSavedRequestButton.disabled = true;
+      try {
+        await loadSubmittedRequest(currentRequestNo);
+        showReloadSavedRequest(false);
+      } catch (error) {
+        setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+        showReloadSavedRequest(true);
+      } finally {
+        reloadSavedRequestButton.disabled = false;
+      }
+    }
+
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
       const locked = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
@@ -1538,6 +1558,7 @@
       uploadCards.forEach(renderUploadCard);
       await updateNextRequestNo();
       setReadOnlyMode(false);
+      showReloadSavedRequest(false);
       updatePreview();
       setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
     }
@@ -1569,10 +1590,18 @@
       }
 
       adoptNumberedResult(result, "draft");
-      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       currentStatus = "draft";
       currentDraftId = "";
+      currentFolderPath = result.folderPath || currentFolderPath;
+      currentCreatedAt = result.createdAt || currentCreatedAt;
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
+      }
+      uploadCards.forEach(renderUploadCard);
       replaceNumberedUrl(currentRequestNo);
+      setReadOnlyMode(false);
+      try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       setSaveStatus(`บันทึกแบบร่างแล้ว: ${currentRequestNo}`, "success");
     }
 
@@ -1606,10 +1635,6 @@
 
       adoptNumberedResult(result, "pending_approval");
       currentStatus = "pending_approval";
-      const pdfCount = result.pdfFiles?.length || 0;
-      setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
-      output.value = JSON.stringify(result, null, 2);
-      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
@@ -1617,7 +1642,13 @@
         uploadedFileState[key] = [];
         savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
       }
+      uploadCards.forEach(renderUploadCard);
       replaceNumberedUrl(currentRequestNo);
+      setReadOnlyMode(false);
+      const pdfCount = result.pdfFiles?.length || 0;
+      setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
+      output.value = JSON.stringify(result, null, 2);
+      try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       updatePreview();
     }
 
@@ -1626,6 +1657,7 @@
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
     document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
     document.querySelector("#submitRequest").addEventListener("click", () => runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error")));
+    reloadSavedRequestButton?.addEventListener("click", reloadSavedRequest);
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
     document.querySelector("#resetForm").addEventListener("click", () => {

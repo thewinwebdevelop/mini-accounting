@@ -19,6 +19,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const queryReceiptNo = new URLSearchParams(location.search).get("receiptNo");
   const form = document.querySelector("#substituteReceiptForm");
   const statusBox = document.querySelector("#substituteReceiptStatus");
+  const reloadSavedReceiptButton = document.querySelector("#reloadSavedReceipt");
   const legacyEvidenceLinks = document.querySelector("#legacyEvidenceLinks");
   const lineItems = document.querySelector("#stockLineItems");
   const lineTemplate = document.querySelector("#stockLineTemplate");
@@ -107,6 +108,24 @@ window.addEventListener("DOMContentLoaded", () => {
   function clearStatus() {
     statusBox.className = "status-box";
     statusBox.textContent = "";
+  }
+
+  function showReloadSavedReceipt(show) {
+    if (reloadSavedReceiptButton) reloadSavedReceiptButton.hidden = !show;
+  }
+
+  async function reloadSavedReceipt() {
+    if (!state.receiptNo || !reloadSavedReceiptButton) return;
+    reloadSavedReceiptButton.disabled = true;
+    try {
+      await loadReceipt(state.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+    } finally {
+      reloadSavedReceiptButton.disabled = false;
+    }
   }
 
   function renderLegacyEvidence(filesByKey = {}, rawFiles = []) {
@@ -600,14 +619,18 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
     state.status = "draft";
-    try {
-      await loadReceipt(result.receiptNo);
-    } catch (error) {
-      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
-      return;
-    }
+    state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
+    setReceiptState(state.status);
+    try {
+      await loadReceipt(result.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+      return;
+    }
     setReceiptState("draft");
     setStatus(`บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, "success");
   }
@@ -630,14 +653,18 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
     state.status = status;
-    try {
-      await loadReceipt(result.receiptNo);
-    } catch (error) {
-      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
-      return;
-    }
+    state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
+    setReceiptState(state.status);
+    try {
+      await loadReceipt(result.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+      return;
+    }
     setReceiptState(state.status);
     setStatus(`ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, "success");
   }
@@ -697,6 +724,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   addLineButton.addEventListener("click", () => { if (!state.legacyReadOnly && state.status === "draft" && !state.mutationInFlight) addStockLine(); });
   saveDraftButton.addEventListener("click", () => runMutation(saveDraft).catch((error) => setStatus(error.message, "error")));
+  reloadSavedReceiptButton?.addEventListener("click", reloadSavedReceipt);
   approveReceiptButton.addEventListener("click", () => runMutation(approveReceipt).catch((error) => setStatus(error.message, "error")));
   receiveStockButton.addEventListener("click", () => runMutation(receiveStock).catch((error) => setStatus(error.message, "error")));
   completeReceiptButton.addEventListener("click", () => {

@@ -228,6 +228,24 @@ test("draft save adopts the numbered response and reuses its receipt identity", 
   assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 });
 
+test("SR POST success keeps committed identity when detail GET fails, then reloads with GET only", async () => {
+  const { elements, fetchCalls } = await setupSubstituteReceiptSandbox({
+    draftResponse: { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [] },
+    detailFailureCount: 1,
+    receiptResponse: { receiptNo: "SR-2026-09-0001", status: "draft", payload: { lines: [] }, evidenceFiles: {} },
+  });
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedReceipt.hidden, false);
+  assert.equal(elements.receiptNoPreview.textContent, "SR-2026-09-0001");
+  assert.equal(fetchCalls.filter((call) => call.options.method === "POST").length, 1);
+
+  elements.reloadSavedReceipt.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedReceipt.hidden, true);
+  assert.equal(fetchCalls.filter((call) => call.options.method === "POST").length, 1, "reload must not repost");
+});
+
 test("stock dialog cycles Tab forward and Shift+Tab backward across both decisions", async () => {
   const { elements, document } = await setupSubstituteReceiptSandbox({
     search: "?receiptNo=RCT-1",
@@ -373,6 +391,7 @@ async function setupSubstituteReceiptSandbox({
   mutationResponses = [],
   promptResult = "2026-09-13",
   draftResponse = { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [], updatedAt: "2026-09-13T00:00:00.000Z" },
+  detailFailureCount = 0,
   holdMutations = false,
 } = {}) {
   const realHtml = await readFile(htmlPath, "utf8");
@@ -407,6 +426,10 @@ async function setupSubstituteReceiptSandbox({
       return { ok: true, json: async () => ({ sequence: "1", receiptNo: nextReceiptNo }) };
     }
     if (url.includes("/api/substitute-receipts/") && !url.includes("/approve") && !url.includes("/complete") && !url.includes("/receive-stock")) {
+      if (detailFailureCount > 0) {
+        detailFailureCount -= 1;
+        return { ok: false, json: async () => ({ error: "detail unavailable" }) };
+      }
       return { ok: true, json: async () => receiptResponse ?? {} };
     }
     if (options.method === "POST" && (url.includes("/approve") || url.includes("/complete") || url.includes("/receive-stock"))) {

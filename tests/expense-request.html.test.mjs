@@ -189,7 +189,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001" } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0 } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -223,6 +223,16 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     }
     if (url.includes("/api/expense-requests/next")) {
       return { ok: true, json: async () => ({ sequence: "1", requestNo: nextRequestNo }) };
+    }
+    if (url.includes("/api/expense-requests/REQ-")) {
+      if (detailFailureCount > 0) {
+        detailFailureCount -= 1;
+        return { ok: false, json: async () => ({ error: "detail unavailable" }) };
+      }
+      return { ok: true, json: async () => saveResponse ?? {} };
+    }
+    if (url.includes("/api/expense-drafts")) {
+      return { ok: true, json: async () => saveResponse ?? {} };
     }
     return { ok: true, json: async () => ({}) };
   };
@@ -384,4 +394,22 @@ test("collectData includes the workflow context fields in the saved payload shap
   assert.match(collectDataBody, /transactionNo: fields\.transactionNo\.value/);
   assert.match(collectDataBody, /workflowTemplateId: fields\.workflowTemplateId\.value/);
   assert.match(collectDataBody, /workflowStepId: fields\.workflowStepId\.value/);
+});
+
+test("REQ POST success keeps committed identity when detail GET fails, then reloads with GET only", async () => {
+  const saved = { requestNo: "REQ-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [], payload: {} };
+  const { elements, fetchLog } = await setupExpenseRequestSandbox({
+    saveResponse: saved,
+    detailFailureCount: 1,
+  });
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedRequest.hidden, false);
+  assert.equal(elements.requestNoPreview.value, "REQ-2026-09-0001");
+  assert.equal(fetchLog.filter((url) => url.includes("/api/expense-drafts")).length, 1);
+
+  elements.reloadSavedRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedRequest.hidden, true);
+  assert.equal(fetchLog.filter((url) => url.includes("/api/expense-drafts")).length, 1, "reload must not repost");
 });
