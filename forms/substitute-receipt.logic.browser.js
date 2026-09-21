@@ -141,7 +141,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function setMutationControlsDisabled(disabled) {
-    [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton, form.querySelector("button[type=reset]")]
+    [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton, declineReceiveBeforeCompleteButton, form.querySelector("button[type=reset]")]
       .forEach((button) => { if (button) button.disabled = disabled; });
   }
 
