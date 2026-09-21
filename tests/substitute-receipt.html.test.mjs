@@ -83,7 +83,7 @@ test("substitute receipt controller uses numbered draft responses and locks lega
 
 test("substitute receipt controller validates canonical identity and legacy attachment links", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
-  assert.match(browserLogic, /SR-\\d\{4\}.*\\d\{5\}/);
+  assert.match(browserLogic, /SR-\\d\{4\}.*\\d\{4\}/);
   assert.match(browserLogic, /state\.status !== "draft"/);
   assert.match(browserLogic, /legacyEvidenceLinks/);
   assert.match(browserLogic, /target="_blank" rel="noreferrer"/);
@@ -215,17 +215,17 @@ test("stock modal prompt cancellation and malformed receive status retain approv
 
 test("draft save adopts the numbered response and reuses its receipt identity", async () => {
   const { elements, capturedPost } = await setupSubstituteReceiptSandbox({
-    draftResponse: { receiptNo: "SR-2026-09-00001", status: "draft", evidenceFiles: {}, rawFiles: [] },
+    draftResponse: { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [] },
   });
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(elements.receiptStatus.textContent, "แบบร่าง");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-00001 แล้ว/);
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(capturedPost.payloads[1].receiptNo, "SR-2026-09-00001");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-00001 แล้ว/);
+  assert.equal(capturedPost.payloads[1].receiptNo, "SR-2026-09-0001");
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 });
 
 test("stock dialog cycles Tab forward and Shift+Tab backward across both decisions", async () => {

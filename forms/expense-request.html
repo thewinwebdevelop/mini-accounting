@@ -1405,7 +1405,7 @@
 
     function adoptNumberedResult(result, expectedStatus) {
       const requestNo = String(result?.requestNo || "");
-      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{5}$/.test(requestNo) || (currentRequestNo && requestNo !== currentRequestNo) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(requestNo) || (currentRequestNo && requestNo !== currentRequestNo) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
       if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
       currentRequestNo = result.requestNo;
       return result.requestNo;

@@ -109,7 +109,7 @@ test("expense form controller adopts numbered draft responses and never posts le
 
 test("expense form validates canonical identity, authoritative status, and preserves workflow history", async () => {
   const html = await readFile(htmlPath, "utf8");
-  assert.match(html, /REQ-\\d\{4\}.*\\d\{5\}/);
+  assert.match(html, /REQ-\\d\{4\}.*\\d\{4\}/);
   assert.match(html, /currentStatus !== "draft"/);
   assert.match(html, /workflowTemplateId/);
   assert.match(html, /legacyReadOnly \|\| mutationInFlight/);

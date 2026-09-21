@@ -237,7 +237,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function stockLinesLocked() {
-    return ["approved", "received"].includes(state.status);
+    return state.legacyReadOnly || state.mutationInFlight || state.status !== "draft";
   }
 
   function applyStockLineLock() {
@@ -595,7 +595,7 @@ window.addEventListener("DOMContentLoaded", () => {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
-    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{5}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.draftId = "";
     state.receiptNo = result.receiptNo;
@@ -623,7 +623,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const status = adoptExpectedStatus(result, "pending_approval");
 
-    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{5}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
+    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.draftId = "";
     state.receiptNo = result.receiptNo;
@@ -689,7 +689,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearStatus();
   }
 
-  addLineButton.addEventListener("click", () => addStockLine());
+  addLineButton.addEventListener("click", () => { if (!state.legacyReadOnly && state.status === "draft" && !state.mutationInFlight) addStockLine(); });
   saveDraftButton.addEventListener("click", () => runMutation(saveDraft).catch((error) => setStatus(error.message, "error")));
   approveReceiptButton.addEventListener("click", () => runMutation(approveReceipt).catch((error) => setStatus(error.message, "error")));
   receiveStockButton.addEventListener("click", () => runMutation(receiveStock).catch((error) => setStatus(error.message, "error")));
@@ -736,7 +736,7 @@ window.addEventListener("DOMContentLoaded", () => {
     runMutation(submitForApproval).catch((error) => setStatus(error.message, "error"));
   });
   form.addEventListener("reset", (event) => {
-    if (state.modalOpen || state.mutationInFlight) {
+    if (state.modalOpen || state.mutationInFlight || state.legacyReadOnly || state.status !== "draft") {
       event.preventDefault();
       return;
     }
