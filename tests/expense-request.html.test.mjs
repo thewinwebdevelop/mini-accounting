@@ -97,6 +97,16 @@ test("expense form submit status reports generated PDF files", async () => {
   assert.match(html, /สร้าง PDF/);
 });
 
+test("expense form controller adopts numbered draft responses and never posts legacy draft ids", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /legacyReadOnly/);
+  assert.match(html, /result\.requestNo/);
+  assert.match(html, /result\.status/);
+  assert.match(html, /history\.replaceState/);
+  assert.match(html, /pending_approval/);
+  assert.match(html, /requestNo: currentRequestNo/);
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {

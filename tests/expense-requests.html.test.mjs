@@ -40,7 +40,7 @@ test("expense request list page supports filtering and creating a new request", 
   assert.match(html, /needs_resync/);
   assert.match(html, /href="\/google-drive"/);
   assert.match(html, /href="\/company-settings"/);
-  assert.match(html, /\?draftId=\$\{encodeURIComponent\(request\.draftId\)\}/);
+  assert.match(html, /\?draftId=\$\{encodeURIComponent\(request\.draftId \|\| ""\)\}/);
   assert.match(html, /\?requestNo=\$\{encodeURIComponent\(requestNo\)\}/);
   assert.match(topbar.trim(), /^<details class="app-menu">/);
   assert.match(html, /\.menu-panel \{[\s\S]*?left: 0;/);
@@ -97,4 +97,14 @@ test("inline workflow request rendering escapes hostile transaction, error, and 
   assert.match(actions, /&lt;img/);
   assert.doesNotMatch(status, /<img/);
   assert.match(status, /Sheet ไม่สำเร็จ/);
+});
+
+test("expense list treats legacy rows as read-only and labels pending drafts", async () => {
+  const { api } = await expenseControllerHarness();
+  const legacy = { draftId: "DRAFT-2026-09-0001", legacyReadOnly: true, status: "draft", requestTitle: "เก่า" };
+  const numbered = { requestNo: "REQ-2026-09-0001", legacyReadOnly: false, status: "draft", requestTitle: "ใหม่" };
+  assert.match(api.actionHtml(legacy), /ดูแบบร่างเก่า/);
+  assert.doesNotMatch(api.actionHtml(legacy), /แก้ไขต่อ|data-approve|data-complete|sync-drive/);
+  assert.match(api.actionHtml(numbered), /\?requestNo=REQ-2026-09-0001/);
+  assert.match(api.statusHtml({ status: "pending_approval" }), /รอตรวจอนุมัติ/);
 });

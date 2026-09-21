@@ -72,6 +72,15 @@ test("substitute receipt browser controller loads draft and submitted receipt qu
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/receive-stock/);
 });
 
+test("substitute receipt controller uses numbered draft responses and locks legacy reads", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /legacyReadOnly/);
+  assert.match(browserLogic, /result\.receiptNo/);
+  assert.match(browserLogic, /result\.status/);
+  assert.match(browserLogic, /history\.replaceState/);
+  assert.match(browserLogic, /pending_approval/);
+});
+
 test("substitute receipt browser controller updates stock line summaries", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
 
@@ -195,17 +204,19 @@ test("stock modal prompt cancellation and malformed receive status retain approv
   assert.equal(malformed.fetchCalls.filter((call) => call.url.endsWith("/complete")).length, 0);
 });
 
-test("draft save adopts the established no-status response and reuses its draft identity", async () => {
-  const { elements, capturedPost } = await setupSubstituteReceiptSandbox();
+test("draft save adopts the numbered response and reuses its receipt identity", async () => {
+  const { elements, capturedPost } = await setupSubstituteReceiptSandbox({
+    draftResponse: { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [] },
+  });
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(elements.receiptStatus.textContent, "แบบร่าง");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง DRAFT-TEST แล้ว/);
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(capturedPost.payloads[1].draftId, "DRAFT-TEST");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง DRAFT-TEST แล้ว/);
+  assert.equal(capturedPost.payloads[1].receiptNo, "SR-2026-09-0001");
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 });
 
 test("stock dialog cycles Tab forward and Shift+Tab backward across both decisions", async () => {

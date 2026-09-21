@@ -1157,6 +1157,8 @@
     let currentFolderPath = "";
     let currentCreatedAt = "";
     let nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
+    let legacyReadOnly = false;
+    let mutationInFlight = false;
     const moneyIds = {
       amountBeforeVat: document.querySelector("#sumBeforeVat"),
       vatAmount: document.querySelector("#sumVat"),
@@ -1171,6 +1173,12 @@
       const month = String(now.getMonth() + 1).padStart(2, "0");
       const day = String(now.getDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>\"']/g, (character) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+      })[character]);
     }
 
     function currentMonthInputValue() {
@@ -1245,7 +1253,7 @@
       card.querySelector("[data-upload-count]").textContent = `${savedFiles.length + files.length} ไฟล์`;
       const fileList = card.querySelector("[data-file-list]");
       const savedHtml = savedFiles.map((file) => (
-        `<div class="file-pill"><div class="file-icon">RAW</div><div><div class="file-name" title="${file.originalName || file.storedName}">${file.storedName}</div><div class="file-meta">บันทึกในแบบร่างแล้ว</div></div></div>`
+        `<div class="file-pill"><div class="file-icon">RAW</div><div><div class="file-name" title="${escapeHtml(file.originalName || file.storedName)}">${file.url ? `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName)}</a>` : escapeHtml(file.storedName)}</div><div class="file-meta">บันทึกในแบบร่างแล้ว</div></div></div>`
       )).join("");
       const pendingHtml = files.map((file, index) => {
         const storedName = buildRawFileName(evidenceKey, file.name, savedFiles.length + index);
@@ -1379,6 +1387,29 @@
       saveStatus.textContent = message;
     }
 
+    function setReadOnlyMode(readOnly) {
+      legacyReadOnly = !!readOnly;
+      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), ...document.querySelectorAll(".file-input")];
+      controls.forEach((control) => { if (control) control.disabled = legacyReadOnly || mutationInFlight; });
+      lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight; });
+    }
+
+    async function runMutation(work) {
+      if (legacyReadOnly || mutationInFlight) return;
+      mutationInFlight = true;
+      try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
+    }
+
+    function adoptNumberedResult(result, expectedStatus) {
+      if (!result?.requestNo || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      currentRequestNo = result.requestNo;
+      return result.requestNo;
+    }
+
+    function replaceNumberedUrl(requestNo) {
+      if (window.history?.replaceState) window.history.replaceState({}, "", `?requestNo=${encodeURIComponent(requestNo)}`);
+    }
+
     function appendUploadsToFormData(formData) {
       for (const [evidenceKey, files] of Object.entries(uploadedFileState)) {
         for (const file of files) {
@@ -1395,7 +1426,13 @@
         return;
       }
 
+      if (draft.legacyReadOnly !== true) {
+        setSaveStatus("ข้อมูลแบบร่างเก่าไม่ครบถ้วน", "error");
+        return;
+      }
+
       currentDraftId = draft.draftId;
+      legacyReadOnly = true;
       currentRequestNo = "";
       currentFolderPath = "";
       currentCreatedAt = "";
@@ -1431,9 +1468,10 @@
         savedEvidenceFileState[key] = draft.evidenceFiles?.[key] ?? [];
       }
       uploadCards.forEach(renderUploadCard);
+      setReadOnlyMode(true);
       await updateNextRequestNo();
       updatePreview();
-      setSaveStatus(`โหลดแบบร่างแล้ว: ${draft.draftId}`, "success");
+      setSaveStatus(`แบบร่างเก่า ${draft.draftId} เปิดอ่านได้อย่างเดียว`, "success");
     }
 
     async function loadSubmittedRequest(requestNo) {
@@ -1445,6 +1483,7 @@
       }
 
       currentDraftId = "";
+      legacyReadOnly = false;
       currentRequestNo = request.requestNo;
       currentFolderPath = request.folderPath || request.payload?.folderPath || "";
       currentCreatedAt = request.payload?.createdAt || "";
@@ -1509,8 +1548,17 @@
         return;
       }
 
-      await loadDraft(result.draftId);
-      setSaveStatus(`บันทึกแบบร่างแล้ว: ${result.draftId}`, "success");
+      adoptNumberedResult(result, "draft");
+      currentDraftId = "";
+      currentFolderPath = result.folderPath || currentFolderPath;
+      currentCreatedAt = result.createdAt || currentCreatedAt;
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
+      }
+      replaceNumberedUrl(currentRequestNo);
+      updatePreview();
+      setSaveStatus(`บันทึกแบบร่างแล้ว: ${currentRequestNo}`, "success");
     }
 
     async function submitRequest() {
@@ -1541,33 +1589,31 @@
         return;
       }
 
+      adoptNumberedResult(result, "pending_approval");
       const pdfCount = result.pdfFiles?.length || 0;
-      setSaveStatus(`บันทึกแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์ และเก็บ raw files ${result.rawFiles.length} ไฟล์`, "success");
+      setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
       output.value = JSON.stringify(result, null, 2);
-      if (currentRequestNo) {
-        await loadSubmittedRequest(result.requestNo);
-        return;
-      }
-
       currentDraftId = "";
-      currentRequestNo = "";
-      currentFolderPath = "";
-      currentCreatedAt = "";
+      currentFolderPath = result.folderPath || currentFolderPath;
+      currentCreatedAt = result.createdAt || currentCreatedAt;
       for (const key of Object.keys(uploadedFileState)) {
         uploadedFileState[key] = [];
-        savedEvidenceFileState[key] = [];
+        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
       }
-      await updateNextRequestNo();
+      replaceNumberedUrl(currentRequestNo);
+      updatePreview();
     }
 
     document.querySelector("#addLine").addEventListener("click", addLine);
     document.querySelector("#copyMarkdown").addEventListener("click", () => copyOutput("markdown"));
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
-    document.querySelector("#saveDraft").addEventListener("click", saveDraft);
-    document.querySelector("#submitRequest").addEventListener("click", submitRequest);
+    document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
+    document.querySelector("#submitRequest").addEventListener("click", () => runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error")));
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
     document.querySelector("#resetForm").addEventListener("click", () => {
+      if (legacyReadOnly || mutationInFlight) return;
+      legacyReadOnly = false;
       currentDraftId = "";
       currentRequestNo = "";
       currentFolderPath = "";
@@ -1587,7 +1633,7 @@
     uploadCards.forEach((card) => {
       const evidenceKey = card.dataset.evidenceCard;
       const input = card.querySelector(".file-input");
-      input.addEventListener("change", () => setFiles(evidenceKey, input.files));
+      input.addEventListener("change", () => { if (!legacyReadOnly && !mutationInFlight) setFiles(evidenceKey, input.files); });
       card.addEventListener("dragover", (event) => {
         event.preventDefault();
         card.classList.add("dragging");
@@ -1607,6 +1653,7 @@
     form.addEventListener("change", updatePreview);
     lineItems.addEventListener("click", (event) => {
       if (event.target.matches("[data-remove-line]")) {
+        if (legacyReadOnly || mutationInFlight) return;
         event.target.closest(".line-row").remove();
         updatePreview();
       }

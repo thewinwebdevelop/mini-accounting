@@ -12,6 +12,7 @@ window.addEventListener("DOMContentLoaded", () => {
     existingEvidenceFiles: {},
     mutationInFlight: false,
     modalOpen: false,
+    legacyReadOnly: false,
   };
 
   const queryDraftId = new URLSearchParams(location.search).get("draftId");
@@ -132,6 +133,16 @@ window.addEventListener("DOMContentLoaded", () => {
   function setMutationControlsDisabled(disabled) {
     [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton]
       .forEach((button) => { button.disabled = disabled; });
+  }
+
+  function setLegacyReadOnly(readOnly) {
+    state.legacyReadOnly = !!readOnly;
+    const controls = [addLineButton, saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton, ...form.querySelectorAll("input, select, textarea")];
+    controls.forEach((control) => { if (control) control.disabled = state.legacyReadOnly || state.mutationInFlight; });
+  }
+
+  function replaceReceiptUrl(receiptNo) {
+    if (window.history?.replaceState) window.history.replaceState({}, "", `?receiptNo=${encodeURIComponent(receiptNo)}`);
   }
 
   async function runMutation(work, { allowWhileModalOpen = false } = {}) {
@@ -257,12 +268,12 @@ window.addEventListener("DOMContentLoaded", () => {
     state.status = lifecycleLogic.normalizeDocumentStatus("substitute_receipt", status || "draft");
     const actions = availableActions();
     receiptStatus.textContent = lifecycleLogic.DOCUMENT_STATUS_LABELS[state.status];
-    saveDraftButton.hidden = state.status !== "draft";
-    submitForApprovalButton.hidden = !actions.includes("submit");
+    saveDraftButton.hidden = state.status !== "draft" || state.legacyReadOnly;
+    submitForApprovalButton.hidden = state.legacyReadOnly || !actions.includes("submit");
     approveReceiptButton.hidden = !actions.includes("approve");
     receiveStockButton.hidden = !actions.includes("receive_stock");
     completeReceiptButton.hidden = !actions.includes("complete");
-    setMutationControlsDisabled(state.mutationInFlight);
+    setMutationControlsDisabled(state.mutationInFlight || state.legacyReadOnly);
     receiptNoPreview.textContent = state.receiptNo || state.nextReceipt?.receiptNo || "-";
     applyReceiptTypeState();
   }
@@ -516,7 +527,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   async function loadDraft(draftId) {
     const draft = await api(`/api/substitute-receipt-drafts/${encodeURIComponent(draftId)}`);
+    if (draft.legacyReadOnly !== true) throw new Error("ข้อมูลแบบร่างเก่าไม่ครบถ้วน");
     state.draftId = draft.draftId;
+    state.legacyReadOnly = true;
     state.receiptNo = "";
     state.status = "draft";
     fillForm({
@@ -524,6 +537,7 @@ window.addEventListener("DOMContentLoaded", () => {
       status: "draft",
       evidenceFiles: draft.evidenceFiles || draft.payload?.evidenceFiles || {},
     });
+    setLegacyReadOnly(true);
     setStatus(`โหลดแบบร่าง ${escapeHtml(draft.draftId)} แล้ว`, "success");
   }
 
@@ -531,6 +545,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const receipt = await api(`/api/substitute-receipts/${encodeURIComponent(receiptNo)}`);
     const payload = receipt.payload || {};
     state.draftId = "";
+    state.legacyReadOnly = false;
     state.receiptNo = receipt.receiptNo || payload.receiptNo || receiptNo;
     state.status = receipt.status || payload.status || "pending_approval";
     fillForm({
@@ -552,23 +567,27 @@ window.addEventListener("DOMContentLoaded", () => {
   async function saveDraft() {
     clearStatus();
     const payload = collectPayload();
-    delete payload.receiptNo;
+    delete payload.draftId;
     const result = await api("/api/substitute-receipt-drafts", {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
-    state.draftId = result.draftId;
-    state.receiptNo = "";
+    if (!result.receiptNo || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+    state.draftId = "";
+    state.receiptNo = result.receiptNo;
     state.status = "draft";
-    state.existingEvidenceFiles = collectEvidenceFilesForValidation();
+    state.legacyReadOnly = false;
+    state.existingEvidenceFiles = result.evidenceFiles || collectEvidenceFilesForValidation();
+    for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
+    replaceReceiptUrl(state.receiptNo);
     setReceiptState("draft");
-    setStatus(`บันทึกแบบร่าง ${escapeHtml(result.draftId)} แล้ว`, "success");
+    setStatus(`บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, "success");
   }
 
   async function submitForApproval() {
     clearStatus();
     const payload = collectPayload();
-    delete payload.receiptNo;
+    delete payload.draftId;
     const errors = logic.validateSubstituteReceipt(payload);
     if (errors.length) throw new Error(errors.join("\n"));
 
@@ -578,10 +597,14 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const status = adoptExpectedStatus(result, "pending_approval");
 
+    if (result.receiptNo !== state.receiptNo && state.receiptNo) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     state.draftId = "";
     state.receiptNo = result.receiptNo;
     state.status = status;
-    state.existingEvidenceFiles = collectEvidenceFilesForValidation();
+    state.legacyReadOnly = false;
+    state.existingEvidenceFiles = result.evidenceFiles || collectEvidenceFilesForValidation();
+    for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
+    replaceReceiptUrl(state.receiptNo);
     setReceiptState(state.status);
     setStatus(`ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, "success");
   }
