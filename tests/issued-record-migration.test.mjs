@@ -509,6 +509,9 @@ test("empty status, malformed v1 marker, invalid month/sequence fail closed whil
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-0000", { requestNo: "REQ-2026-09-0000", documentKind: "expense_request", accountingMonth: "2026-09" }, "zero-seq");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-1", { requestNo: "REQ-2026-09-1", documentKind: "expense_request", accountingMonth: "2026-09" }, "short-seq");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-1/01/001", { requestNo: "REQ-2026-09-1/01/001", documentKind: "expense_request", accountingMonth: "2026-09" }, "slash-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-00001", { requestNo: "REQ-2026-09-00001", documentKind: "expense_request", accountingMonth: "2026-09" }, "leading-zero-seq");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0001", { requestNo: "REQ-2026-09-0001", documentKind: "expense_request", accountingMonth: "2026-09" }, "canonical-one");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0999", { requestNo: "REQ-2026-09-0999", documentKind: "expense_request", accountingMonth: "2026-09" }, "canonical-999");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-1000", { requestNo: "REQ-2026-09-1000", documentKind: "expense_request", accountingMonth: "2026-09" }, "four-digit-seq");
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-9999", { requestNo: "REQ-2026-09-9999", documentKind: "expense_request", accountingMonth: "2026-09" }, "max-padded-seq");
     const valid = await writeIssued(rootDir, "expense_request", "REQ-2026-09-10000", { requestNo: "REQ-2026-09-10000", documentKind: "expense_request", accountingMonth: "2026-09" }, "large-seq");
@@ -517,7 +520,15 @@ test("empty status, malformed v1 marker, invalid month/sequence fail closed whil
     assert.ok(codes.has("unsupported_status"));
     assert.ok(codes.has("conflicting_migration_marker"));
     assert.ok(codes.has("invalid_document_number"));
-    assert.equal(report.changes.some((change) => change.documentNo === "REQ-2026-09-10000"), true);
+    const changedNumbers = new Set(report.changes.map((change) => change.documentNo));
+    for (const sequence of ["0001", "0999", "1000", "9999", "10000"]) {
+      assert.equal(changedNumbers.has(`REQ-2026-09-${sequence}`), true, `sequence ${sequence} must be accepted`);
+    }
+    for (const documentNo of ["REQ-2026-99-0001", "REQ-2026-09-0000", "REQ-2026-09-1", "REQ-2026-09-1/01/001", "REQ-2026-09-00001"]) {
+      assert.ok(report.errors.some((error) => error.code === "invalid_document_number" && error.documentNo === documentNo), `${documentNo} must be rejected individually`);
+    }
+    assert.ok(report.errors.some((error) => error.code === "unsupported_status" && error.documentNo === "REQ-2026-09-0092"));
+    assert.ok(report.errors.some((error) => error.code === "conflicting_migration_marker" && error.documentNo === "REQ-2026-09-0093"));
     assert.equal(Object.hasOwn(JSON.parse(await readFile(empty.filePath, "utf8")), "status"), true);
     assert.equal(Object.hasOwn(JSON.parse(await readFile(valid.filePath, "utf8")), "status"), false);
   } finally {
