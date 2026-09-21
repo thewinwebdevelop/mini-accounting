@@ -1390,7 +1390,7 @@
 
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
-      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input")];
+      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
       controls.forEach((control) => { if (control) control.disabled = legacyReadOnly || mutationInFlight; });
       lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight; });
       document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
@@ -1404,7 +1404,9 @@
     }
 
     function adoptNumberedResult(result, expectedStatus) {
-      if (!/^REQ-\d{4}-\d{2}-\d{4}$/.test(String(result?.requestNo || "")) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      const requestNo = String(result?.requestNo || "");
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{5}$/.test(requestNo) || (currentRequestNo && requestNo !== currentRequestNo) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
       currentRequestNo = result.requestNo;
       return result.requestNo;
     }
