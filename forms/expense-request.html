@@ -1568,7 +1568,7 @@
 
       const priorRequestNo = currentRequestNo;
       adoptNumberedResult(result, "draft");
-      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { currentRequestNo = priorRequestNo; throw error; }
+      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       currentStatus = "draft";
       currentDraftId = "";
       replaceNumberedUrl(currentRequestNo);
@@ -1608,7 +1608,7 @@
       const pdfCount = result.pdfFiles?.length || 0;
       setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
       output.value = JSON.stringify(result, null, 2);
-      await loadSubmittedRequest(currentRequestNo);
+      try { await loadSubmittedRequest(currentRequestNo); } catch (error) { setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
