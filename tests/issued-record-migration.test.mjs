@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { openInventoryDatabase, ensureInventorySchema } from "../forms/inventory-db.logic.js";
+import documentIndex from "../forms/document-index.logic.js";
 import { runMigration } from "../scripts/issued-record-migration.logic.mjs";
 
 const AT = "2026-09-20T12:00:00.000Z";
@@ -34,6 +35,7 @@ async function snapshotRoot(sourceRoot) {
 async function seedEmptyDatabase(rootDir) {
   const db = openInventoryDatabase(rootDir);
   ensureInventorySchema(db);
+  documentIndex.ensureDocumentIndexSchema(db);
   db.close();
 }
 
@@ -359,7 +361,7 @@ test("second apply is idempotent and repairs an interrupted index reconciliation
     let interrupted = true;
     const first = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot, hooks: { beforeIndexUpsert: () => { if (interrupted) { interrupted = false; throw new Error("simulated index interruption"); } } } });
     assert.equal(first.ok, false);
-    assert.deepEqual(first.report.appliedBeforeFailure, [], JSON.stringify(first.report));
+    assert.deepEqual(first.report.appliedBeforeFailure, ["REQ-2026-09-0060"], JSON.stringify(first.report));
     assert.equal(JSON.parse(await readFile(item.filePath, "utf8")).statusHistory.length, 1);
     const retry = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
     assert.equal(retry.ok, true);
@@ -411,5 +413,109 @@ test("CLI enforces gates, redacts paths, emits JSON, and returns exact exit stat
     assert.equal(dry.stderr, "");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("apply rejects byte drift in a reviewed unchanged candidate before writing planned records", async () => {
+  const rootDir = await makeRoot();
+  const planDir = await makeRoot("sweet-house-plan-");
+  try {
+    await seedEmptyDatabase(rootDir);
+    const unchanged = await writeIssued(rootDir, "expense_request", "REQ-2026-09-0090", { requestNo: "REQ-2026-09-0090", documentKind: "expense_request", accountingMonth: "2026-09", status: "approved", statusLabel: "อนุมัติแล้ว", statusHistory: [] }, "unchanged");
+    const planned = await writeIssued(rootDir, "expense_request", "REQ-2026-09-0091", { requestNo: "REQ-2026-09-0091", documentKind: "expense_request", accountingMonth: "2026-09" }, "planned");
+    const planPath = join(planDir, "plan.json");
+    await runMigration({ rootDir, at: AT, reportPath: planPath });
+    const backupRoot = await snapshotRoot(rootDir);
+    const drifted = JSON.parse(await readFile(unchanged.filePath, "utf8"));
+    drifted.updatedAt = "2026-09-20T12:01:00.000Z";
+    await writeFile(unchanged.filePath, JSON.stringify(drifted, null, 2) + "\n");
+    const result = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
+    assert.equal(result.ok, false);
+    assert.ok(result.report.errors.some((error) => error.code === "stale_reviewed_plan"));
+    assert.equal(Object.hasOwn(JSON.parse(await readFile(planned.filePath, "utf8")), "status"), false);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(planDir, { recursive: true, force: true });
+  }
+});
+
+test("empty status, malformed v1 marker, invalid month/sequence fail closed while allocator-sized sequence is valid", async () => {
+  const rootDir = await makeRoot();
+  try {
+    const empty = await writeIssued(rootDir, "expense_request", "REQ-2026-09-0092", { requestNo: "REQ-2026-09-0092", documentKind: "expense_request", accountingMonth: "2026-09", status: "" }, "empty-status");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0093", { requestNo: "REQ-2026-09-0093", documentKind: "expense_request", accountingMonth: "2026-09", status: "pending_approval", statusHistory: [{ fromStatus: "submitted", toStatus: "pending_approval", changedAt: AT, note: "migration:issued-record-status-v1", actor: "other" }] }, "bad-marker");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-99-0001", { requestNo: "REQ-2026-99-0001", documentKind: "expense_request", accountingMonth: "2026-99" }, "bad-month");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0000", { requestNo: "REQ-2026-09-0000", documentKind: "expense_request", accountingMonth: "2026-09" }, "zero-seq");
+    const valid = await writeIssued(rootDir, "expense_request", "REQ-2026-09-10000", { requestNo: "REQ-2026-09-10000", documentKind: "expense_request", accountingMonth: "2026-09" }, "large-seq");
+    const { report } = await runMigration({ rootDir, at: AT });
+    const codes = new Set(report.errors.map((error) => error.code));
+    assert.ok(codes.has("unsupported_status"));
+    assert.ok(codes.has("conflicting_migration_marker"));
+    assert.ok(codes.has("invalid_document_number"));
+    assert.equal(report.changes.some((change) => change.documentNo === "REQ-2026-09-10000"), true);
+    assert.equal(Object.hasOwn(JSON.parse(await readFile(empty.filePath, "utf8")), "status"), true);
+    assert.equal(Object.hasOwn(JSON.parse(await readFile(valid.filePath, "utf8")), "status"), false);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("physical source or backup aliases and a backup without index schema fail closed", async () => {
+  const rootDir = await makeRoot();
+  const planDir = await makeRoot("sweet-house-plan-");
+  const aliasDir = await makeRoot("sweet-house-alias-");
+  try {
+    await seedEmptyDatabase(rootDir);
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0094", { requestNo: "REQ-2026-09-0094", documentKind: "expense_request", accountingMonth: "2026-09" }, "physical");
+    const planPath = join(planDir, "plan.json");
+    await runMigration({ rootDir, at: AT, reportPath: planPath });
+    const backupRoot = await snapshotRoot(rootDir);
+    const backupDb = openInventoryDatabase(backupRoot);
+    backupDb.exec("DROP TABLE documents");
+    backupDb.close();
+    const schemaResult = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot });
+    assert.equal(schemaResult.ok, false);
+    assert.ok(schemaResult.report.errors.some((error) => error.code === "backup_invalid"));
+    const sourceAlias = join(aliasDir, "source-alias");
+    await symlink(rootDir, sourceAlias);
+    const aliasResult = await runMigration({ rootDir: sourceAlias, at: AT });
+    assert.equal(aliasResult.ok, false);
+    assert.ok(aliasResult.report.errors.some((error) => error.code === "source_root_invalid"));
+    const backupAlias = join(aliasDir, "backup-alias");
+    await symlink(backupRoot, backupAlias);
+    const backupAliasResult = await runMigration({ rootDir, at: AT, mode: "apply", reviewedPlanPath: planPath, backupRoot: backupAlias });
+    assert.equal(backupAliasResult.ok, false);
+    assert.ok(backupAliasResult.report.errors.some((error) => error.code === "backup_invalid"));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(planDir, { recursive: true, force: true });
+    await rm(aliasDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy symlink inventory blocks apply planning and CLI report-write errors redact paths", async () => {
+  const rootDir = await makeRoot();
+  const outside = await makeRoot("sweet-house-legacy-outside-");
+  try {
+    await mkdir(join(rootDir, "drafts/2026"), { recursive: true });
+    await symlink(outside, join(rootDir, "drafts/2026/09"));
+    const { report } = await runMigration({ rootDir, at: AT });
+    assert.ok(report.errors.some((error) => error.code === "legacy_symlink"));
+    const cli = join(process.cwd(), "scripts", "migrate-issued-record-statuses.mjs");
+    const reportPath = join(rootDir, "missing", "report.json");
+    await writeIssued(rootDir, "expense_request", "REQ-2026-09-0095", { requestNo: "REQ-2026-09-0095", documentKind: "expense_request", accountingMonth: "2026-09" }, "cli-error");
+    await assert.rejects(async () => {
+      try {
+        await execFileAsync(process.execPath, [cli, "--root", rootDir, "--at", AT, "--report", reportPath], { encoding: "utf8" });
+      } catch (error) {
+        assert.equal(error.stdout, "");
+        assert.equal(error.stderr.includes(reportPath), false);
+        assert.equal(error.stderr.includes(rootDir), false);
+        throw error;
+      }
+    });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

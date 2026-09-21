@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { lstat, open, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { lstat, open, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -15,7 +15,7 @@ export const MARKER_ACTOR = "system:migration";
 const REQ_STATUSES = new Set(["draft", "submitted", "pending_approval", "approved", "completed", "cancelled"]);
 const SR_STATUSES = new Set(["draft", "pending_approval", "approved", "received", "completed", "cancelled", "voided"]);
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
-const SAFE_NUMBER = /^(REQ|SR)-\d{4}-\d{2}-\d{4}$/;
+const SAFE_NUMBER = /^(REQ|SR)-\d{4}-(?:0[1-9]|1[0-2])-(?:0{0,3}[1-9]\d{0,2}|[1-9]\d{4,})$/;
 
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -71,6 +71,18 @@ function numberField(kind) {
 
 function dbPath(rootDir) {
   return path.join(rootDir, "data", "sweet-house.sqlite");
+}
+
+async function resolvePhysicalRoot(rootDir, label) {
+  const absolute = path.resolve(rootDir);
+  try {
+    const info = await lstat(absolute);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("not a real directory");
+    const physical = await realpath(absolute);
+    return physical;
+  } catch {
+    throw new Error(label + " is unavailable");
+  }
 }
 
 async function regularPath(rootDir, target, label) {
@@ -151,16 +163,34 @@ async function walkDocuments(rootDir, dir, found, errors) {
 async function discoverLegacyDrafts(rootDir) {
   const result = [];
   const malformed = [];
+  const errors = [];
   const draftsRoot = path.join(rootDir, "drafts");
-  if (!existsSync(draftsRoot)) return { result, malformed };
-  const years = (await readdir(draftsRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+  if (!existsSync(draftsRoot)) return { result, malformed, errors };
+  let rootInfo;
+  try { rootInfo = await lstat(draftsRoot); } catch { errors.push(errorItem("legacy_inventory_failed", "", "", "legacy drafts tree is unreadable")); return { result, malformed, errors }; }
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    errors.push(errorItem("legacy_inventory_failed", "", "", "legacy drafts tree is not a real directory"));
+    return { result, malformed, errors };
+  }
+  let years;
+  try { years = (await readdir(draftsRoot, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)); }
+  catch { errors.push(errorItem("legacy_inventory_failed", "", "", "legacy drafts tree is unreadable")); return { result, malformed, errors }; }
   for (const year of years) {
+    if (year.isSymbolicLink()) { errors.push(errorItem("legacy_symlink", "", "", "legacy drafts year is a symlink")); continue; }
+    if (!year.isDirectory()) { malformed.push({ relativePath: asRelative(rootDir, path.join(draftsRoot, year.name)), reason: "legacy year is not a directory" }); continue; }
     const yearPath = path.join(draftsRoot, year.name);
-    const months = (await readdir(yearPath, { withFileTypes: true })).filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+    let months;
+    try { months = (await readdir(yearPath, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)); }
+    catch { errors.push(errorItem("legacy_inventory_failed", "", "", "legacy year is unreadable")); continue; }
     for (const month of months) {
+      if (month.isSymbolicLink()) { errors.push(errorItem("legacy_symlink", "", "", "legacy drafts month is a symlink")); continue; }
+      if (!month.isDirectory()) { malformed.push({ relativePath: asRelative(rootDir, path.join(yearPath, month.name)), reason: "legacy month is not a directory" }); continue; }
       const monthPath = path.join(yearPath, month.name);
-      const records = (await readdir(monthPath, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+      let records;
+      try { records = (await readdir(monthPath, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)); }
+      catch { errors.push(errorItem("legacy_inventory_failed", "", "", "legacy month is unreadable")); continue; }
       for (const record of records) {
+        if (record.isSymbolicLink()) { errors.push(errorItem("legacy_symlink", "", "", "legacy record is a symlink")); continue; }
         if (!record.isDirectory()) {
           malformed.push({ relativePath: asRelative(rootDir, path.join(monthPath, record.name)), reason: "legacy record is not a directory" });
           continue;
@@ -171,7 +201,7 @@ async function discoverLegacyDrafts(rootDir) {
       }
     }
   }
-  return { result, malformed };
+  return { result, malformed, errors };
 }
 
 function validateAt(at) {
@@ -203,7 +233,7 @@ async function readCandidate(rootDir, candidate) {
   const expectedPrefix = kind === "expense_request" ? "REQ" : "SR";
   if (!SAFE_NUMBER.test(documentNo) || !documentNo.startsWith(`${expectedPrefix}-`)) errors.push(errorItem("invalid_document_number", kind, documentNo, "document number format is invalid"));
   if (payload.documentKind && payload.documentKind !== kind) errors.push(errorItem("cross_kind_document", kind, documentNo, "document kind does not match candidate file"));
-  const month = documentNo.match(/^[A-Z]+-(\d{4}-\d{2})-\d{4}$/)?.[1] || "";
+  const month = documentNo.match(/^[A-Z]+-(\d{4}-\d{2})-/)?.[1] || "";
   if (payload.accountingMonth && payload.accountingMonth !== month) errors.push(errorItem("accounting_month_mismatch", kind, documentNo, "accounting month does not match document number"));
   const folderPath = typeof payload.folderPath === "string" ? payload.folderPath.replace(/\\/g, "/") : "";
   const expectedFolder = asRelative(rootDir, path.dirname(path.dirname(absolute)));
@@ -239,7 +269,7 @@ async function makePlan({ rootDir, at }) {
   for (const record of discovered) {
     if (record.errors.length) continue;
     const { kind, payload, documentNo } = record;
-    const statusMissing = !Object.prototype.hasOwnProperty.call(payload, "status") || payload.status === "";
+    const statusMissing = !Object.prototype.hasOwnProperty.call(payload, "status");
     const status = statusMissing ? "" : payload.status;
     const allowed = kind === "expense_request" ? REQ_STATUSES : SR_STATUSES;
     let effectiveStatus = status;
@@ -270,29 +300,21 @@ async function makePlan({ rootDir, at }) {
     const marker = markerFor(effectiveStatus, expectedTarget, at);
     const history = Array.isArray(payload.statusHistory) ? payload.statusHistory : [];
     const exactMarkers = history.filter((entry) => entry && entry.note === MARKER_NOTE);
-    const existingAppliedMarker = exactMarkers.length === 1 && exactMarkers[0].toStatus === status && exactMarkers[0].changedAt === at
+    const expectedRetryMarker = kind === "expense_request"
+      ? markerFor("submitted", "pending_approval", at)
+      : markerFor(status, status, at);
+    const existingAppliedMarker = exactMarkers.length === 1 && !statusMissing && isExactMarker(exactMarkers[0], expectedRetryMarker)
       ? exactMarkers[0]
       : null;
+    if (exactMarkers.length && !existingAppliedMarker) {
+      errors.push(errorItem("conflicting_migration_marker", kind, documentNo, "conflicting v1 migration marker"));
+      continue;
+    }
     if (existingAppliedMarker && status && !statusMissing) {
       changes.push({
         documentKind: kind, documentNo, relativeFile: record.relativeFile, statusWasMissing: false,
         beforeStatus: status, effectiveSourceStatus: existingAppliedMarker.fromStatus, afterStatus: status,
         beforeHistoryLength: history.length, afterHistoryLength: history.length, migrationMarker: existingAppliedMarker,
-        fileHashBefore: record.beforeHash, fileHashAfter: record.beforeHash, movementEvidenceHash: evidenceHash,
-        alreadyApplied: true, payload, absolute: record.absolute,
-      });
-      continue;
-    }
-    if (exactMarkers.length && !exactMarkers.some((entry) => isExactMarker(entry, marker))) {
-      errors.push(errorItem("conflicting_migration_marker", kind, documentNo, "conflicting v1 migration marker"));
-      continue;
-    }
-    const alreadyApplied = expectedTarget === payload.status && exactMarkers.some((entry) => isExactMarker(entry, marker));
-    if (alreadyApplied) {
-      changes.push({
-        documentKind: kind, documentNo, relativeFile: record.relativeFile, statusWasMissing: statusMissing,
-        beforeStatus: effectiveStatus, effectiveSourceStatus: effectiveStatus, afterStatus: expectedTarget,
-        beforeHistoryLength: history.length, afterHistoryLength: history.length, migrationMarker: marker,
         fileHashBefore: record.beforeHash, fileHashAfter: record.beforeHash, movementEvidenceHash: evidenceHash,
         alreadyApplied: true, payload, absolute: record.absolute,
       });
@@ -314,8 +336,9 @@ async function makePlan({ rootDir, at }) {
       movementEvidenceHash: evidenceHash, alreadyApplied: false, payload, nextPayload, nextBytes, absolute: record.absolute,
     });
   }
-  const legacy = await discoverLegacyDrafts(rootDir).catch(() => ({ result: [], malformed: [] }));
+  const legacy = await discoverLegacyDrafts(rootDir);
   for (const item of legacy.malformed) errors.push(errorItem("legacy_unexpected_entry", "", "", item.reason));
+  errors.push(...legacy.errors);
   changes.sort((a, b) => `${a.documentKind}:${a.documentNo}:${a.relativeFile}`.localeCompare(`${b.documentKind}:${b.documentNo}:${b.relativeFile}`));
   unchanged.sort((a, b) => `${a.documentKind}:${a.documentNo}:${a.relativeFile}`.localeCompare(`${b.documentKind}:${b.documentNo}:${b.relativeFile}`));
   errors.sort((a, b) => stable(a).localeCompare(stable(b)));
@@ -380,10 +403,9 @@ function comparableChange(change) {
 async function validateBackup({ rootDir, backupRoot, reviewedChanges }) {
   const result = { valid: false, checkedFiles: 0, checkedMovements: 0 };
   try {
-    const source = path.resolve(rootDir);
-    const backup = path.resolve(backupRoot || "");
-    if (!backupRoot || source === backup || inside(source, backup) || inside(backup, source)) throw new Error("backup root overlaps source root");
-    await directoryPath(path.dirname(backup), backup, "backup root");
+    const source = await resolvePhysicalRoot(rootDir, "source root");
+    const backup = await resolvePhysicalRoot(backupRoot || "", "backup root");
+    if (source === backup || inside(source, backup) || inside(backup, source)) throw new Error("backup root overlaps source root");
     for (const change of reviewedChanges) {
       const file = path.join(backup, change.relativeFile);
       await regularPath(backup, file, "backup candidate");
@@ -395,6 +417,10 @@ async function validateBackup({ rootDir, backupRoot, reviewedChanges }) {
     await regularPath(backup, backupDb, "backup inventory database");
     const db = new DatabaseSync(backupDb, { readOnly: true });
     try {
+      const integrity = db.prepare("PRAGMA integrity_check").get();
+      if (!integrity || Object.values(integrity)[0] !== "ok") throw new Error("backup database integrity failed");
+      const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+      if (!tables.has("documents") || !tables.has("document_index_schema_migrations")) throw new Error("backup database index schema is missing");
       for (const change of reviewedChanges.filter((item) => item.documentKind === "substitute_receipt")) {
         const rows = db.prepare(`SELECT * FROM stock_movements WHERE reference_type = ? AND reference_no = ? ORDER BY movement_date ASC, id ASC`).all("substitute_receipt", change.documentNo);
         if (movementHash(rows) !== (change.movementEvidenceHash || movementHash([]))) throw new Error("backup movement evidence does not match reviewed plan");
@@ -437,11 +463,16 @@ function indexRecordFromPayload(change, payload) {
 }
 
 export async function runMigration(options = {}) {
-  const rootDir = path.resolve(String(options.rootDir || ""));
+  let rootDir = path.resolve(String(options.rootDir || ""));
   const at = options.at;
   const mode = options.mode === "apply" || options.apply ? "apply" : "dry-run";
   if (!rootDir || !validateAt(at)) {
     return { ok: false, report: { schemaVersion: SCHEMA_VERSION, mode, at: at || "", rootLabel: ".", counts: {}, changes: [], unchanged: [], legacyDrafts: [], errors: [errorItem("invalid_timestamp", "", "", "at must be a canonical ISO-8601 timestamp")] } };
+  }
+  try {
+    rootDir = await resolvePhysicalRoot(rootDir, "source root");
+  } catch {
+    return { ok: false, report: { schemaVersion: SCHEMA_VERSION, mode, at, rootLabel: ".", counts: {}, changes: [], unchanged: [], legacyDrafts: [], errors: [errorItem("source_root_invalid", "", "", "source root is unavailable")] } };
   }
   const plan = await makePlan({ rootDir, at });
   if (mode === "dry-run") {
@@ -476,6 +507,11 @@ export async function runMigration(options = {}) {
     ...plan.unchanged.map((change) => `${change.documentKind}:${change.documentNo}`),
   ]);
   if (stable([...reviewedKeys].sort()) !== stable([...currentKeys].sort())) report.errors.push(errorItem("stale_reviewed_plan", "", "", "candidate set differs from reviewed plan"));
+  const reviewUnchangedByKey = new Map((Array.isArray(reviewed.unchanged) ? reviewed.unchanged : []).map((change) => [String(change.documentKind) + ":" + String(change.documentNo), change]));
+  for (const unchanged of plan.unchanged) {
+    const reviewedUnchanged = reviewUnchangedByKey.get(String(unchanged.documentKind) + ":" + String(unchanged.documentNo));
+    if (!reviewedUnchanged || stable(unchanged) !== stable(reviewedUnchanged)) report.errors.push(errorItem("stale_reviewed_plan", unchanged.documentKind, unchanged.documentNo, "unchanged candidate differs from reviewed plan"));
+  }
   for (const change of plan.changes) {
     const reviewedChange = reviewByKey.get(`${change.documentKind}:${change.documentNo}`);
     const retryMatches = change.alreadyApplied && reviewedChange && change.fileHashBefore === reviewedChange.fileHashAfter
@@ -499,11 +535,11 @@ export async function runMigration(options = {}) {
       if (!change.alreadyApplied) {
         if (options.hooks?.beforeJsonWrite) await options.hooks.beforeJsonWrite(change);
         await durableReplace(change.absolute, change.nextBytes);
+        appliedBeforeFailure.push(change.documentNo);
       }
       if (options.hooks?.afterJsonWrite) await options.hooks.afterJsonWrite(change);
       if (options.hooks?.beforeIndexUpsert) await options.hooks.beforeIndexUpsert(change);
       indexDocument(rootDir, indexRecordFromPayload(change, change.alreadyApplied ? change.payload : change.nextPayload));
-      appliedBeforeFailure.push(change.documentNo);
       report.counts.indexReconciliations += 1;
       if (!change.alreadyApplied) report.counts.applied += 1;
     }

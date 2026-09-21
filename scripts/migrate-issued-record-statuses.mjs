@@ -39,5 +39,8 @@ try {
   process.stdout.write(`${JSON.stringify(result.report)}\n`);
   if (!result.ok) process.exitCode = 1;
 } catch (error) {
-  usageError(error instanceof Error ? error.message : "invalid arguments");
+  const message = error instanceof Error && /^unknown argument|requires a value|was supplied more than once|--root is required|--at is required|--apply and --dry-run|--reviewed-plan and --backup-root|--apply requires/.test(error.message)
+    ? error.message
+    : "operational failure";
+  usageError(message);
 }
