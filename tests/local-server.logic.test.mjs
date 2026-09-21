@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -336,6 +336,40 @@ async function extractPdfText(pdfPath) {
   return stdout;
 }
 
+async function startLoopbackServer(rootDir) {
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: "0", SWEET_HOUSE_ROOT_DIR: rootDir, SWEET_HOUSE_ALLOW_NETWORK: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const port = await new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => reject(new Error(`local server did not start: ${output}`)), 5000);
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+      const match = output.match(/Expense request local web app: http:\/\/localhost:(\d+)\//);
+      if (match) {
+        clearTimeout(timer);
+        resolve(Number(match[1]));
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`local server exited early: ${code}; ${output}`));
+    });
+  });
+  return { child, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+async function stopLoopbackServer(child) {
+  child.kill();
+  await new Promise((resolve) => child.once("exit", resolve));
+}
+
 function validSubstituteReceiptPayload(overrides = {}) {
   return {
     accountingMonth: "2026-09",
@@ -631,6 +665,68 @@ test("numbered SR draft save and submit preserve the same record and D12 relatio
   }
 });
 
+test("D12 SR drafts derive and retain the snapshotted workflow receipt type", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-d12-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const payload = validSubstituteReceiptPayload({
+      transactionNo: fixture.transactionNo,
+      workflowTemplateId: "fixture-template",
+      workflowStepId: "sr",
+    });
+    delete payload.receiptType;
+    const saved = await saveSubstituteReceiptDraft({ rootDir, payload, uploads: validSlipUpload() });
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo);
+    assert.equal(loaded.payload.receiptType, "stock_purchase");
+    assert.equal(loaded.payload.transactionNo, fixture.transactionNo);
+    assert.equal(loaded.payload.workflowTemplateId, "fixture-template");
+    assert.equal(loaded.payload.workflowStepId, "sr");
+
+    await assert.rejects(
+      () => saveSubstituteReceiptDraft({ rootDir, payload: { receiptNo: saved.receiptNo, accountingMonth: "2026-09", receiptType: "general_expense" }, uploads: [] }),
+      /กำหนดประเภทใบรับรอง/,
+    );
+    await assert.rejects(
+      () => saveSubstituteReceiptDraft({ rootDir, payload: { receiptNo: saved.receiptNo, accountingMonth: "2026-09", transactionNo: "TXN-2026-09-9999", workflowTemplateId: "foreign", workflowStepId: "sr" }, uploads: [] }),
+      /ไม่พบ Workflow/,
+    );
+
+    const before = await readFile(join(rootDir, loaded.folderPath, "data", "substitute-receipt.json"));
+    await assert.rejects(
+      () => saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo, lines: [] }, uploads: [] }),
+      /เพิ่มรายการ/,
+    );
+    assert.deepEqual(await readFile(join(rootDir, loaded.folderPath, "data", "substitute-receipt.json")), before);
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo }, uploads: [] });
+    assert.equal(submitted.status, "pending_approval");
+    assert.equal((await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo)).payload.receiptType, "stock_purchase");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered REQ save and submit races serialize without rewinding status", async () => {
+  const saveFirstRoot = await mkdtemp(join(tmpdir(), "sweet-house-race-save-first-"));
+  const submitFirstRoot = await mkdtemp(join(tmpdir(), "sweet-house-race-submit-first-"));
+  try {
+    for (const [rootDir, submitFirst] of [[saveFirstRoot, false], [submitFirstRoot, true]]) {
+      const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+      const save = () => saveExpenseDraft({ rootDir, payload: { ...validExpensePayload({ requestNo: saved.requestNo, requestTitle: "עדכון מתוזמן" }) }, uploads: validSlipUpload() });
+      const submit = () => saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+      const results = submitFirst ? await Promise.allSettled([submit(), save()]) : await Promise.allSettled([save(), submit()]);
+      assert.equal(results[submitFirst ? 0 : 1].status, "fulfilled");
+      assert.equal(results[submitFirst ? 1 : 0].status, submitFirst ? "rejected" : "fulfilled");
+      const final = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+      assert.equal(final.status, "pending_approval");
+      assert.equal(final.payload.statusHistory.length, 1);
+      assert.equal(final.rawFiles.length, submitFirst ? 1 : 2);
+    }
+  } finally {
+    await rm(saveFirstRoot, { recursive: true, force: true });
+    await rm(submitFirstRoot, { recursive: true, force: true });
+  }
+});
+
 test("numbered submit is idempotent and preserves canonical bytes on repeat", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-repeat-"));
   try {
@@ -705,7 +801,7 @@ test("O15 legacy drafts stay readable with contained attachments and reject writ
     await mkdir(join(rootDir, expenseFolder, "raw"), { recursive: true });
     await writeFile(join(rootDir, expenseFolder, "raw", "A1_receipt_001.jpg"), "legacy-receipt");
     await writeFile(join(rootDir, expenseFolder, "data", "draft.json"), JSON.stringify({
-      draftId: expenseId, status: "draft", folderPath: expenseFolder,
+      draftId: expenseId, status: "submitted", folderPath: expenseFolder,
       payload: { requestTitle: "แบบร่างเก่า" },
       evidenceFiles: { receipt: [{ storedName: "A1_receipt_001.jpg" }] },
       rawFiles: ["A1_receipt_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
@@ -715,7 +811,10 @@ test("O15 legacy drafts stay readable with contained attachments and reject writ
     assert.equal(expense.status, "draft");
     assert.equal(expense.rawFiles[0].url, `/api/expense-drafts/${expenseId}/files/raw/A1_receipt_001.jpg`);
     assert.equal((await readFile((await getLegacyExpenseDraftFile({ rootDir, draftId: expenseId, fileName: "A1_receipt_001.jpg" })).absolutePath)).toString(), "legacy-receipt");
+    const expenseBefore = await readFile(join(rootDir, expenseFolder, "data", "draft.json"));
     await assert.rejects(() => saveExpenseDraft({ rootDir, payload: { draftId: expenseId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    await assert.rejects(() => saveExpenseSubmission({ rootDir, payload: { draftId: expenseId, requestNo: "REQ-2026-09-0001" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    assert.deepEqual(await readFile(join(rootDir, expenseFolder, "data", "draft.json")), expenseBefore);
 
     const receiptId = "SR-DRAFT-2026-09-legacy-2";
     const receiptFolder = `drafts/2026/09/substitute-receipts/${receiptId}`;
@@ -723,7 +822,7 @@ test("O15 legacy drafts stay readable with contained attachments and reject writ
     await mkdir(join(rootDir, receiptFolder, "raw"), { recursive: true });
     await writeFile(join(rootDir, receiptFolder, "raw", "B1_payment-slip_001.jpg"), "legacy-slip");
     await writeFile(join(rootDir, receiptFolder, "data", "draft.json"), JSON.stringify({
-      draftId: receiptId, status: "draft", folderPath: receiptFolder,
+      draftId: receiptId, status: "submitted", folderPath: receiptFolder,
       payload: { receiptTitle: "ใบรับรองเก่า" },
       evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
       rawFiles: ["B1_payment-slip_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
@@ -732,7 +831,75 @@ test("O15 legacy drafts stay readable with contained attachments and reject writ
     assert.equal(receipt.legacyReadOnly, true);
     assert.equal((await readFile((await getLegacySubstituteReceiptDraftFile({ rootDir, draftId: receiptId, fileName: "B1_payment-slip_001.jpg" })).absolutePath)).toString(), "legacy-slip");
     await assert.rejects(() => saveSubstituteReceiptDraft({ rootDir, payload: { draftId: receiptId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    await assert.rejects(() => saveSubstituteReceiptSubmission({ rootDir, payload: { draftId: receiptId, receiptNo: "SR-2026-09-0001" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered lifecycle and O15 contracts hold over loopback HTTP", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-http-"));
+  const legacyId = "DRAFT-2026-09-http-legacy";
+  const legacyFolder = `drafts/2026/09/${legacyId}`;
+  const legacyJsonPath = join(rootDir, legacyFolder, "data", "draft.json");
+  const legacyRawPath = join(rootDir, legacyFolder, "raw", "A1_receipt_001.jpg");
+  await mkdir(join(rootDir, legacyFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, legacyFolder, "raw"), { recursive: true });
+  await writeFile(legacyRawPath, "legacy-http-bytes");
+  await writeFile(legacyJsonPath, JSON.stringify({
+    draftId: legacyId,
+    status: "submitted",
+    folderPath: legacyFolder,
+    payload: { requestTitle: "แบบร่าง HTTP เก่า" },
+    evidenceFiles: { receipt: [{ storedName: "A1_receipt_001.jpg" }] },
+    rawFiles: ["A1_receipt_001.jpg"],
+  }));
+  const server = await startLoopbackServer(rootDir);
+  try {
+    const sendPayload = async (pathname, payload, uploads = []) => {
+      const form = new FormData();
+      form.set("payload", JSON.stringify(payload));
+      for (const upload of uploads) form.append(`evidence_${upload.evidenceKey}`, new Blob([upload.buffer], { type: upload.type }), upload.originalName);
+      const response = await fetch(`${server.baseUrl}${pathname}`, { method: "POST", body: form });
+      return { status: response.status, body: await response.json() };
+    };
+
+    const created = await sendPayload("/api/expense-drafts", validExpensePayload(), [{ evidenceKey: "receipt", originalName: "receipt.jpg", type: "image/jpeg", buffer: "http-receipt" }]);
+    assert.equal(created.status, 200);
+    assert.match(created.body.requestNo, /^REQ-2026-09-\d{4}$/);
+    assert.equal(created.body.status, "draft");
+    assert.equal(Object.prototype.hasOwnProperty.call(created.body, "absoluteFolderPath"), false);
+
+    const submitted = await sendPayload("/api/expense-requests", { requestNo: created.body.requestNo });
+    assert.equal(submitted.status, 200);
+    assert.equal(submitted.body.requestNo, created.body.requestNo);
+    assert.equal(submitted.body.status, "pending_approval");
+    assert.equal(submitted.body.statusHistory.length, 1);
+    const repeated = await sendPayload("/api/expense-requests", { requestNo: created.body.requestNo, status: "draft", folderPath: "../../outside" });
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.body.statusHistory, submitted.body.statusHistory);
+
+    const legacyDetailResponse = await fetch(`${server.baseUrl}/api/expense-drafts/${legacyId}`);
+    const legacyDetail = await legacyDetailResponse.json();
+    assert.equal(legacyDetailResponse.status, 200);
+    assert.equal(legacyDetail.legacyReadOnly, true);
+    assert.equal(legacyDetail.status, "draft");
+    assert.equal(Object.prototype.hasOwnProperty.call(legacyDetail, "absoluteFolderPath"), false);
+    const legacyFileResponse = await fetch(`${server.baseUrl}${legacyDetail.rawFiles[0].url}`);
+    assert.equal(legacyFileResponse.status, 200);
+    assert.equal(await legacyFileResponse.text(), "legacy-http-bytes");
+    const legacyBefore = await readFile(legacyJsonPath);
+    const legacySave = await sendPayload("/api/expense-drafts", { draftId: legacyId, requestNo: "REQ-2026-09-9999" });
+    assert.deepEqual(legacySave, { status: 409, body: { code: "LEGACY_DRAFT_READ_ONLY", error: "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" } });
+    const legacySubmit = await sendPayload("/api/expense-requests", { draftId: legacyId, requestNo: "REQ-2026-09-9999" });
+    assert.deepEqual(legacySubmit, { status: 409, body: { code: "LEGACY_DRAFT_READ_ONLY", error: "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" } });
+    assert.deepEqual(await readFile(legacyJsonPath), legacyBefore);
+
+    const invalidNumber = await fetch(`${server.baseUrl}/api/expense-requests/not-a-number`);
+    assert.equal(invalidNumber.status, 400);
+    assert.equal((await invalidNumber.json()).code, "INVALID_DOCUMENT_NUMBER");
+  } finally {
+    await stopLoopbackServer(server.child);
     await rm(rootDir, { recursive: true, force: true });
   }
 });
@@ -764,7 +931,9 @@ test("getNextExpenseRequestInfo previews the exact number the next real allocati
         requestTitle: "ทดสอบ",
         requestType: "reimbursement",
         requesterName: "คุณทดสอบ",
-        expenseLines: [],
+        businessPurpose: "ทดสอบค่าใช้จ่าย",
+        paymentTargetName: "คุณทดสอบ",
+        expenseLines: [{ description: "รายการทดสอบ", amountBeforeVat: "1" }],
       },
     });
     assert.equal(first.requestNo, "REQ-2026-09-0001");
@@ -793,7 +962,9 @@ test("getNextExpenseRequestInfo previews the exact number the next real allocati
         requestTitle: "ทดสอบสอง",
         requestType: "reimbursement",
         requesterName: "คุณทดสอบ",
-        expenseLines: [],
+        businessPurpose: "ทดสอบค่าใช้จ่าย",
+        paymentTargetName: "คุณทดสอบ",
+        expenseLines: [{ description: "รายการทดสอบ", amountBeforeVat: "1" }],
       },
     });
     assert.equal(second.requestNo, "REQ-2026-09-0002", "the real allocation must land on exactly the number just previewed");
