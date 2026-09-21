@@ -1196,6 +1196,7 @@
         nextRequestInfo = { sequence: currentRequestNo.split("-").at(-1), requestNo: currentRequestNo };
         document.querySelector("#requestNoPreview").value = currentRequestNo;
         updatePreview();
+        return;
       }
 
       const accountingMonth = form.elements.accountingMonth.value;
