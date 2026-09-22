@@ -615,7 +615,9 @@ function createTransactionStubFetch({
   onSyncSheets,
 }) {
   let current = transaction;
-  return async (url, options = {}) => {
+  const calls = [];
+  const stubFetch = async (url, options = {}) => {
+    calls.push({ url, options });
     if (url === `/api/workflow-transactions/${transactionNo}` && (!options.method || options.method === "GET")) {
       return { ok: true, json: async () => current };
     }
@@ -643,6 +645,8 @@ function createTransactionStubFetch({
     }
     throw new Error(`Unexpected fetch in test stub: ${options.method || "GET"} ${url}`);
   };
+  stubFetch.calls = calls;
+  return stubFetch;
 }
 
 // Sets up forms/workflow.logic.browser.js against a fake DOM derived from
@@ -693,7 +697,7 @@ async function setupTransactionPageSandbox({
   context.window._handlers.DOMContentLoaded();
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  return { elements: elementsById, location };
+  return { elements: elementsById, location, fetchCalls: stubFetch.calls };
 }
 
 function buildFourStepTransaction(overrides = {}) {
@@ -778,7 +782,7 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
 
 test("workflow cancellation renders pending 202, blocks forward actions, and retries the same route", async () => {
   const transaction = buildFourStepTransaction();
-  const pending = { ...transaction, status: "cancellation_pending", baseStatus: "in_progress", cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", pendingEffects: [{ type: "sheet", sourceKey: "workflow_transaction:TXN-2026-09-0001", code: "TEMPORARY" }] }, childDocuments: [] };
+  const pending = { ...transaction, status: "cancellation_pending", code: "WORKFLOW_CANCELLATION_PENDING", baseStatus: "in_progress", cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", pendingEffects: [{ type: "sheet", sourceKey: "workflow_transaction:TXN-2026-09-0001", code: "TEMPORARY" }] }, childDocuments: [] };
   const cancelled = { ...pending, status: "cancelled", cancellation: { ...pending.cancellation, pendingEffects: [], cancelledAt: "2026-09-22T01:01:00.000Z" } };
   let calls = 0;
   const { elements } = await setupTransactionPageSandbox({
@@ -804,6 +808,20 @@ test("workflow cancellation renders pending 202, blocks forward actions, and ret
   assert.equal(calls, 2);
   assert.equal(elements.retryCancellationButton.hidden, true);
   assert.equal(elements.cancelTransactionButton.hidden, true);
+});
+
+test("initial workflow cancellation state loads via GET detail and preserves retry controls", async () => {
+  const pending = {
+    ...buildFourStepTransaction(),
+    status: "cancellation_pending",
+    code: "WORKFLOW_CANCELLATION_PENDING",
+    cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", pendingEffects: [{ type: "sheet", code: "TEMPORARY" }] },
+  };
+  const { elements, fetchCalls } = await setupTransactionPageSandbox({ transaction: pending, refreshedTransaction: pending });
+  assert.equal(fetchCalls[0].options.method, undefined);
+  assert.match(fetchCalls[0].url, /\/api\/workflow-transactions\/TXN-2026-09-0001$/);
+  assert.equal(elements.cancellationSummary.hidden, false);
+  assert.equal(elements.retryCancellationButton.hidden, false);
 });
 
 test("invalid cancellation response preserves the prior transaction and shows a safe error", async () => {
@@ -1134,12 +1152,7 @@ test("the refresh button re-fetches the transaction and unlocks the next step on
   assert.equal(rows[1].querySelector("[data-step-action]").disabled, false, "the newly-current step must unlock");
 });
 
-test("initial page load already reflects the freshest state (self-refreshes on load, matching start-document's own self-refresh)", async () => {
-  // If the page only did a bare GET on load, landing back here right after
-  // completing a document (which never itself touches the transaction
-  // record) would show stale step statuses until the user manually clicked
-  // refresh. The transaction detail page must refresh on load, the same way
-  // POST start-document already refreshes before checking currentStepId.
+test("initial page load uses the canonical detail GET and reflects the freshest state", async () => {
   const stale = buildFourStepTransaction();
   const fresh = buildFourStepTransaction({
     currentStepId: "step-002",
@@ -1152,7 +1165,7 @@ test("initial page load already reflects the freshest state (self-refreshes on l
   });
 
   const { elements } = await setupTransactionPageSandbox({
-    transaction: stale,
+    transaction: fresh,
     refreshedTransaction: fresh,
   });
 
@@ -1243,7 +1256,7 @@ test("the packet PDF link is unhidden and points at the packet file's download U
   };
 
   const { elements } = await setupTransactionPageSandbox({
-    transaction,
+    transaction: refreshedTransaction,
     refreshedTransaction,
   });
 

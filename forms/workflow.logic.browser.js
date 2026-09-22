@@ -1049,10 +1049,27 @@ async function refreshTransaction({ regeneratePacket = true } = {}) {
   return transaction;
 }
 
+async function loadTransactionDetail() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+  const transaction = await fetchJson(`${transactionsUrl}/${encodeURIComponent(transactionNo)}`);
+  if (!transaction || transaction.transactionNo !== transactionNo || !Array.isArray(transaction.childDocuments)) {
+    throw new Error("ข้อมูลธุรกรรมไม่ถูกต้อง");
+  }
+  renderTransaction(transaction, transaction.childDocuments);
+  return transaction;
+}
+
 function validatedCancellationResponse(result, transactionNo, httpStatus) {
   if (httpStatus !== 200 && httpStatus !== 202) throw new Error(result?.error || "ยกเลิก Workflow ไม่สำเร็จ");
   if (!result || result.transactionNo !== transactionNo || !["cancellation_pending", "cancelled"].includes(result.status)) {
     throw new Error("ข้อมูลการยกเลิก Workflow ไม่ถูกต้อง");
+  }
+  if ((httpStatus === 200 && result.status !== "cancelled")
+    || (httpStatus === 202 && (result.status !== "cancellation_pending" || result.code !== "WORKFLOW_CANCELLATION_PENDING"))) {
+    throw new Error("ข้อมูลการยกเลิก Workflow ไม่ตรงกับผลลัพธ์");
   }
   if (!result.cancellation || typeof result.cancellation !== "object" || !Array.isArray(result.cancellation.pendingEffects)) {
     throw new Error("ข้อมูลการยกเลิก Workflow ไม่ครบถ้วน");
@@ -1197,7 +1214,7 @@ function initTransactionPage() {
   }
 
   async function runCancellation() {
-    if (transactionCancellationInFlight || transactionPageState.transaction?.status === "cancelled") return;
+    if (transactionCancellationInFlight || transactionExternalSyncInFlight || transactionPageState.transaction?.status === "cancelled") return;
     transactionCancellationInFlight = true;
     setTransactionMutationControlsDisabled(true);
     clearStatusBox(statusBox);
@@ -1300,7 +1317,7 @@ function initTransactionPage() {
   // load must not spawn Python to regenerate a packet PDF the user may never
   // download; the packet stays fresh as of the last explicit "รีเฟรชสถานะ"
   // click or completion instead (see refreshTransaction above).
-  refreshTransaction({ regeneratePacket: false }).catch((error) => setStatusBox(statusBox, error.message, "error"));
+  loadTransactionDetail().catch((error) => setStatusBox(statusBox, error.message, "error"));
 }
 
 // ---------------------------------------------------------------------------
