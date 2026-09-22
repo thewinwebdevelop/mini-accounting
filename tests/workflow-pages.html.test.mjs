@@ -1165,7 +1165,7 @@ test("initial page load uses the canonical detail GET and reflects the freshest 
   });
 
   const { elements } = await setupTransactionPageSandbox({
-    transaction: fresh,
+    transaction: stale,
     refreshedTransaction: fresh,
   });
 

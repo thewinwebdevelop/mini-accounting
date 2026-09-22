@@ -984,6 +984,8 @@ function setTransactionSyncButtonsDisabled(disabled) {
   const sheetButton = document.querySelector("#syncSheetsButton");
   if (driveButton) driveButton.disabled = disabled;
   if (sheetButton) sheetButton.disabled = disabled;
+  const cancelButton = document.querySelector("#cancelTransactionButton");
+  if (cancelButton) cancelButton.disabled = disabled || transactionCancellationInFlight || cancellationLocked();
 }
 
 function renderTransaction(transaction, childDocuments = []) {
@@ -1317,7 +1319,12 @@ function initTransactionPage() {
   // load must not spawn Python to regenerate a packet PDF the user may never
   // download; the packet stays fresh as of the last explicit "รีเฟรชสถานะ"
   // click or completion instead (see refreshTransaction above).
-  loadTransactionDetail().catch((error) => setStatusBox(statusBox, error.message, "error"));
+  loadTransactionDetail()
+    .then((transaction) => {
+      if (!cancellationLocked(transaction)) return refreshTransaction({ regeneratePacket: false });
+      return transaction;
+    })
+    .catch((error) => setStatusBox(statusBox, error.message, "error"));
 }
 
 // ---------------------------------------------------------------------------
