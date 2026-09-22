@@ -3641,7 +3641,13 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
       await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
     }
     sidecar.status = "cancelled"; sidecar.cancelledAt = sidecar.requestedAt;
-    await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
+    await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar);
+    if (!(await persistCancellationIndex(rootDir, transaction, sidecar))) {
+      sidecar.status = "cancellation_pending";
+      sidecar.cancelledAt = "";
+      await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar);
+      return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
+    }
     return cancellationSnapshot(rootDir, transaction, sidecar);
   });
   workflowCancellationQueues.set(key, operation);
@@ -4232,9 +4238,9 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     }
     try {
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      const recorded = await expenseRecorder({ rootDir, entry, now });
       return await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrier(rootDir, transaction);
+        const recorded = await expenseRecorder({ rootDir, entry, now });
         await assertWorkflowCancellationBarrier(rootDir, transaction);
         const stamp = now();
         if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
@@ -4564,9 +4570,14 @@ async function syncExpenseRequestToDrive({
   let uploadResult;
 
   try {
-    uploadResult = await driveUploader({
+    uploadResult = await withWorkflowMutationGate(rootDir, request.payload?.transactionNo || request.transactionNo, async () => {
+      await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
+      const result = await driveUploader({
       rootDir,
       folderPath: request.folderPath,
+      });
+      await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
+      return result;
     });
   } catch (error) {
     const message = error.message || "Google Drive sync failed";
@@ -4613,9 +4624,14 @@ async function syncSubstituteReceiptToDrive({
   let uploadResult;
 
   try {
-    uploadResult = await driveUploader({
+    uploadResult = await withWorkflowMutationGate(rootDir, receipt.payload?.transactionNo, async () => {
+      await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
+      const result = await driveUploader({
       rootDir,
       folderPath: receipt.folderPath,
+      });
+      await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
+      return result;
     });
   } catch (error) {
     const failedAt = now();
@@ -4710,7 +4726,12 @@ async function syncWorkflowDocumentToDrive({
 
   let uploadResult;
   try {
-    uploadResult = await driveUploader({ rootDir, folderPath: record.folderPath });
+    uploadResult = await withWorkflowMutationGate(rootDir, record.payload?.transactionNo || record.transactionNo, async () => {
+      await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
+      const result = await driveUploader({ rootDir, folderPath: record.folderPath });
+      await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
+      return result;
+    });
   } catch (error) {
     await writeDriveSyncMetadata(rootDir, record.folderPath, {
       documentKind,
@@ -4924,8 +4945,12 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
         childDocuments,
       );
     });
-    await assertWorkflowMutationAllowed(rootDir, transactionNo);
-    transactionFolder = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
+    transactionFolder = await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+      await assertWorkflowMutationAllowed(rootDir, transactionNo);
+      const result = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
+      await assertWorkflowMutationAllowed(rootDir, transactionNo);
+      return result;
+    });
   }
 
   const failures = [
