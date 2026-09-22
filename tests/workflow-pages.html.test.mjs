@@ -818,6 +818,7 @@ test("workflow cancellation renders pending 202, blocks forward actions, and ret
   assert.equal(calls, 2);
   assert.equal(elements.retryCancellationButton.hidden, true);
   assert.equal(elements.cancelTransactionButton.hidden, true);
+  assert.equal(document.activeElement, elements.cancellationSummary);
 });
 
 test("initial workflow cancellation state loads via GET detail and preserves retry controls", async () => {
