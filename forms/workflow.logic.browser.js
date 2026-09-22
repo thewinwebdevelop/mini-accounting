@@ -509,6 +509,7 @@ const transactionPageState = {
 };
 let transactionExternalSyncInFlight = false;
 let transactionCancellationInFlight = false;
+let cancellationDialogTrigger = null;
 
 function transactionNoFromQuery() {
   return getQueryParam("transactionNo") || "";
@@ -926,8 +927,10 @@ function renderCancellationSummary(transaction) {
   title.textContent = isPending ? "การยกเลิกอยู่ระหว่างดำเนินการ" : "ยกเลิก Workflow แล้ว";
   const cancellation = transaction.cancellation || {};
   const pending = Array.isArray(cancellation.pendingEffects) ? cancellation.pendingEffects : [];
-  const pendingText = pending.length
+  const pendingText = isPending
+    ? (pending.length
     ? `รายการที่รอดำเนินการ: ${pending.map((effect) => [effect.type, effect.documentNo, effect.code].filter(Boolean).join(" ")).join(", ")}`
+    : "การยกเลิกยังอยู่ระหว่างดำเนินการ")
     : "ดำเนินการชดเชยครบถ้วนแล้ว";
   details.textContent = [
     transaction.baseStatus ? `สถานะเดิม: ${transactionStatusLabel(transaction.baseStatus)}` : "",
@@ -965,6 +968,14 @@ function restoreTransactionControlsFromState() {
     document.querySelector("#syncDriveButton"),
     document.querySelector("#syncSheetsButton"),
   ].forEach((control) => { if (control) control.disabled = false; });
+  if (transactionExternalSyncInFlight) {
+    [
+      document.querySelector("#cancelTransactionButton"),
+      document.querySelector("#retryCancellationButton"),
+      document.querySelector("#syncDriveButton"),
+      document.querySelector("#syncSheetsButton"),
+    ].forEach((control) => { if (control) control.disabled = true; });
+  }
   const transaction = transactionPageState.transaction;
   if (cancellationLocked(transaction)) {
     [
@@ -1206,11 +1217,12 @@ function initTransactionPage() {
 
   function closeCancellationDialog(restoreFocus = true) {
     if (cancellationDialog) cancellationDialog.hidden = true;
-    if (restoreFocus && typeof cancelButton?.focus === "function") cancelButton.focus();
+    if (restoreFocus && typeof cancellationDialogTrigger?.focus === "function") cancellationDialogTrigger.focus();
   }
 
   function openCancellationDialog() {
     if (!cancelButton || cancelButton.disabled || cancellationLocked()) return;
+    cancellationDialogTrigger = cancelButton;
     if (cancellationDialog) cancellationDialog.hidden = false;
     if (typeof confirmCancellationButton?.focus === "function") confirmCancellationButton.focus();
   }
@@ -1237,7 +1249,11 @@ function initTransactionPage() {
 
   cancelButton?.addEventListener("click", openCancellationDialog);
   dismissCancellationButton?.addEventListener("click", () => closeCancellationDialog());
-  confirmCancellationButton?.addEventListener("click", () => { closeCancellationDialog(false); runCancellation(); });
+  confirmCancellationButton?.addEventListener("click", async () => {
+    closeCancellationDialog(false);
+    await runCancellation();
+    if (typeof cancellationDialogTrigger?.focus === "function") cancellationDialogTrigger.focus();
+  });
   cancellationDialog?.addEventListener("click", (event) => { if (event.target === cancellationDialog) closeCancellationDialog(); });
   cancellationDialog?.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); closeCancellationDialog(); }

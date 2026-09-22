@@ -770,6 +770,7 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
   assert.equal(elements.cancellationDialog.hidden, false);
   elements.dismissCancellationButton.dispatch("click");
   assert.equal(cancelCalls, 0);
+  assert.equal(elements.cancellationDialog.hidden, true);
   elements.cancelTransactionButton.dispatch("click");
   elements.confirmCancellationButton.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -801,6 +802,7 @@ test("workflow cancellation renders pending 202, blocks forward actions, and ret
   assert.equal(calls, 1);
   assert.equal(elements.retryCancellationButton.hidden, false);
   assert.match(elements.cancellationSummaryTitle.textContent, /อยู่ระหว่างดำเนินการ/);
+  assert.match(elements.cancellationSummaryDetails.textContent, /การยกเลิกยังอยู่ระหว่างดำเนินการ|รายการที่รอดำเนินการ/);
   assert.equal(elements.cancelTransactionButton.hidden, true);
   assert.equal(elements.completeTransactionButton.disabled, true);
   elements.retryCancellationButton.dispatch("click");
