@@ -1249,6 +1249,12 @@ test("POST workflow cancellation requires literal confirmation over the real loo
     assert.equal(detail.status, 200);
     assert.notEqual(detail.body.status, "cancellation_pending");
     assert.notEqual(detail.body.status, "cancelled");
+    const pending = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/cancel`, { method: "POST", body: JSON.stringify({ confirmed: true, cancelledBy: "http-test" }) });
+    assert.equal(pending.status, 202);
+    assert.equal(pending.body.code, "WORKFLOW_CANCELLATION_PENDING");
+    const blocked = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/refresh`, { method: "POST", body: JSON.stringify({ regeneratePacket: false }) });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
   } finally {
     await stopServer(server);
     await rm(rootDir, { recursive: true, force: true });

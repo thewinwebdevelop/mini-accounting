@@ -3482,12 +3482,17 @@ async function validateFrozenCancellationPlan(rootDir, transaction, sidecar) {
 }
 
 async function persistCancellationIndex(rootDir, transaction, sidecar) {
-  indexDocument(rootDir, {
-    documentKind: "workflow_transaction", documentNo: transaction.transactionNo,
-    accountingMonth: transaction.accountingMonth, status: sidecar.status,
-    folderPath: transaction.folderPath, transactionNo: "", workflowTemplateId: transaction.workflowTemplateId,
-    workflowStepId: "", createdAt: transaction.createdAt, updatedAt: sidecar.cancelledAt || sidecar.requestedAt,
-  });
+  try {
+    indexDocument(rootDir, {
+      documentKind: "workflow_transaction", documentNo: transaction.transactionNo,
+      accountingMonth: transaction.accountingMonth, status: sidecar.status,
+      folderPath: transaction.folderPath, transactionNo: "", workflowTemplateId: transaction.workflowTemplateId,
+      workflowStepId: "", createdAt: transaction.createdAt, updatedAt: sidecar.cancelledAt || sidecar.requestedAt,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function cancellationSnapshot(rootDir, transaction, sidecar) {
@@ -3589,8 +3594,8 @@ async function createCancellationSidecarIfAbsent(rootDir, transaction, actor, re
       children: childEffects.map((effect) => ({ ...effect })), stockEffects, sheetEffects, attempts: [], cancelledAt: "",
     };
     await writeWorkflowCancellationSidecar(rootDir, latest, sidecar);
-    await persistCancellationIndex(rootDir, latest, sidecar);
-    return { transaction: latest, sidecar: await readWorkflowCancellationSidecar(rootDir, latest) };
+    const indexPending = !(await persistCancellationIndex(rootDir, latest, sidecar));
+    return { transaction: latest, sidecar: await readWorkflowCancellationSidecar(rootDir, latest), indexPending };
   });
 }
 
@@ -3604,8 +3609,12 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
     let transaction = await getWorkflowTransaction(rootDir, transactionNo);
     if (!transaction) throw workflowCancellationError("WORKFLOW_NOT_FOUND", "ไม่พบธุรกรรม", 404);
     let sidecar = await readWorkflowCancellationSidecar(rootDir, transaction);
+    let indexPending = false;
     if (!sidecar) {
-      ({ transaction, sidecar } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt));
+      ({ transaction, sidecar, indexPending } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt));
+      if (indexPending) return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
+    } else if (!(await persistCancellationIndex(rootDir, transaction, sidecar))) {
+      return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
     }
 
     const planChildren = await validateFrozenCancellationPlan(rootDir, transaction, sidecar);
@@ -4223,9 +4232,9 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     }
     try {
+      await assertWorkflowCancellationBarrier(rootDir, transaction);
+      const recorded = await expenseRecorder({ rootDir, entry, now });
       return await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-        await assertWorkflowCancellationBarrier(rootDir, transaction);
-        const recorded = await expenseRecorder({ rootDir, entry, now });
         await assertWorkflowCancellationBarrier(rootDir, transaction);
         const stamp = now();
         if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
@@ -4583,7 +4592,10 @@ async function syncExpenseRequestToDrive({
     syncedAt,
     updatedAt: syncedAt,
   };
-  await writeDriveSyncMetadata(rootDir, request.folderPath, metadata);
+  await withWorkflowMutationGate(rootDir, request.payload?.transactionNo || request.transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
+    await writeDriveSyncMetadata(rootDir, request.folderPath, metadata);
+  });
 
   return metadata;
 }
@@ -4630,7 +4642,10 @@ async function syncSubstituteReceiptToDrive({
     syncedAt,
     updatedAt: syncedAt,
   };
-  await writeDriveSyncMetadata(rootDir, receipt.folderPath, metadata);
+  await withWorkflowMutationGate(rootDir, receipt.payload?.transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
+    await writeDriveSyncMetadata(rootDir, receipt.folderPath, metadata);
+  });
 
   return metadata;
 }
@@ -4721,7 +4736,10 @@ async function syncWorkflowDocumentToDrive({
     syncedAt,
     updatedAt: syncedAt,
   };
-  await writeDriveSyncMetadata(rootDir, record.folderPath, metadata);
+  await withWorkflowMutationGate(rootDir, record.payload?.transactionNo || record.transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
+    await writeDriveSyncMetadata(rootDir, record.folderPath, metadata);
+  });
 
   return metadata;
 }
@@ -4898,15 +4916,16 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
   } else {
     // Persisted first so the workflow-summary.md this rewrites -- and the
     // upload right after carries -- already links every child's Drive folder.
-    transactionFolder = await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    await withWorkflowMutationGate(rootDir, transactionNo, async () => {
       await assertWorkflowMutationAllowed(rootDir, transactionNo);
       await persistWorkflowTransaction(
         rootDir,
         { ...transaction, driveSync: { ...(transaction.driveSync || {}), documents }, updatedAt: now() },
         childDocuments,
       );
-      return uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
     });
+    await assertWorkflowMutationAllowed(rootDir, transactionNo);
+    transactionFolder = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
   }
 
   const failures = [

@@ -159,6 +159,12 @@ function sendOperationError(response, error, fallback) {
   });
 }
 
+function sendWorkflowMutationError(response, error, fallback, defaultStatus = 400) {
+  const barrier = new Set(["WORKFLOW_CANCELLATION_IN_PROGRESS", "WORKFLOW_CANCELLED"]);
+  const status = barrier.has(error?.code) ? 409 : (Number.isInteger(error?.statusCode) ? error.statusCode : defaultStatus);
+  sendJson(response, status, { ...(error?.code ? { code: error.code } : {}), error: error?.message || fallback });
+}
+
 function safeStaticPath(urlPath) {
   const routeMap = {
     "/": "/index.html",
@@ -390,9 +396,7 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot approve substitute receipt",
-    });
+    sendWorkflowMutationError(response, error, "Cannot approve substitute receipt");
   }
 }
 
@@ -406,9 +410,7 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot approve expense request",
-    });
+    sendWorkflowMutationError(response, error, "Cannot approve expense request");
   }
 }
 
@@ -429,9 +431,7 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete expense request",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete expense request");
   }
 }
 
@@ -448,9 +448,7 @@ async function handleSubstituteReceiptComplete(receiptNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete substitute receipt",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete substitute receipt");
   }
 }
 
@@ -465,9 +463,7 @@ async function handleSubstituteReceiptReceiveStock(receiptNo, request, response)
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot receive substitute receipt stock",
-    });
+    sendWorkflowMutationError(response, error, "Cannot receive substitute receipt stock");
   }
 }
 
@@ -480,9 +476,7 @@ async function handleExpenseDriveSync(requestNo, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot sync expense request to Google Drive",
-    });
+    sendWorkflowMutationError(response, error, "Cannot sync expense request to Google Drive");
   }
 }
 
@@ -495,9 +489,7 @@ async function handleSubstituteReceiptDriveSync(receiptNo, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot sync substitute receipt to Google Drive",
-    });
+    sendWorkflowMutationError(response, error, "Cannot sync substitute receipt to Google Drive");
   }
 }
 
@@ -630,9 +622,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถบันทึกเอกสารได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถบันทึกเอกสารได้");
   }
 }
 
@@ -647,9 +637,7 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete workflow document",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete workflow document");
   }
 }
 
@@ -662,7 +650,7 @@ async function handleWorkflowDocumentAction(action, documentKind, documentNo, re
     };
     sendJson(response, 200, await actions[action]());
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "ไม่สามารถเปลี่ยนสถานะเอกสารได้" });
+    sendWorkflowMutationError(response, error, "ไม่สามารถเปลี่ยนสถานะเอกสารได้");
   }
 }
 
@@ -885,9 +873,7 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "ไม่สามารถรีเฟรชธุรกรรมได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
   }
 }
 
@@ -905,9 +891,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
     });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถปิดงานธุรกรรมได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
   }
 }
 
@@ -948,9 +932,7 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
     const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้");
   }
 }
 
