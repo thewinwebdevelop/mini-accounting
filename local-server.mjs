@@ -23,6 +23,7 @@ const {
   completeSubstituteReceipt,
   completeWorkflowDocument,
   completeWorkflowTransaction,
+  cancelWorkflowTransaction,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getNextWorkflowDocumentInfo,
@@ -910,6 +911,27 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
   }
 }
 
+async function handleWorkflowTransactionCancel(transactionNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo,
+      confirmed: body.confirmed,
+      cancelledBy: body.cancelledBy,
+    });
+    const statusCode = result.httpStatus || 200;
+    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
+  } catch (error) {
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 409;
+    sendJson(response, statusCode, {
+      error: error.message || "ไม่สามารถยกเลิก Workflow ได้",
+      code: error.code || "WORKFLOW_CANCELLATION_FAILED",
+      ...(error.details?.items ? { items: error.details.items } : {}),
+    });
+  }
+}
+
 // Usable any time after completion regardless of the toggle (the manual
 // "sync Drive" button on the transaction page), and the exact same function
 // completeWorkflowTransaction calls internally for the toggle-on path.
@@ -1741,6 +1763,14 @@ const server = createServer(async (request, response) => {
       .replace("/api/workflow-transactions/", "")
       .replace("/complete", ""));
     await handleWorkflowTransactionComplete(transactionNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/cancel")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/cancel", ""));
+    await handleWorkflowTransactionCancel(transactionNo, request, response);
     return;
   }
 

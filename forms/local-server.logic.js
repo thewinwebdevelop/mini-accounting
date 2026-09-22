@@ -1,4 +1,5 @@
-const { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } = require("node:fs/promises");
+const { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } = require("node:fs/promises");
+const { createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -47,10 +48,12 @@ const {
 } = require("./workflow-prefill.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
 const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
-const { recordMonthlyExpense, findMonthlyExpenseSourceKeyConflicts } = require("./google-sheets.logic.js");
+const { recordMonthlyExpense, findMonthlyExpenseSourceKeyConflicts, deleteMonthlyExpenseRowsBySourceKey } = require("./google-sheets.logic.js");
 const {
   createPurchaseInMovement,
   listStockMovementsByReference,
+  listInventoryBalances,
+  reversePurchaseInMovementsByReference,
 } = require("./inventory.logic.js");
 const {
   allocateDocumentNumber,
@@ -68,6 +71,7 @@ const workflowPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "ge
 const workflowDocumentMutationQueues = new Map();
 const expenseRequestMutationQueues = new Map();
 const substituteReceiptMutationQueues = new Map();
+const workflowCancellationQueues = new Map();
 
 const EXPENSE_NUMBERED_STATUS_LABELS = {
   draft: "แบบร่าง",
@@ -81,6 +85,8 @@ const LEGACY_DRAFT_ID_PATTERN = /^DRAFT-\d{4}-(0[1-9]|1[0-2])-[A-Za-z0-9-]+$/;
 const LEGACY_SR_DRAFT_ID_PATTERN = /^SR-DRAFT-\d{4}-(0[1-9]|1[0-2])-[A-Za-z0-9-]+$/;
 const EXPENSE_NUMBER_PATTERN = /^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
 const SUBSTITUTE_RECEIPT_NUMBER_PATTERN = /^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
+const WORKFLOW_TRANSACTION_NUMBER_PATTERN = /^TXN-\d{4}-(0[1-9]|1[0-2])-\d{4}$/;
+const WORKFLOW_CANCELLATION_SCHEMA_VERSION = 1;
 
 function withMutationQueue(queue, rootDir, documentNo, work) {
   const key = `${path.resolve(rootDir)}\u0000${documentNo}`;
@@ -3039,6 +3045,389 @@ async function getWorkflowTemplate(rootDir, templateId) {
   return templates.find((template) => template.templateId === templateId) || null;
 }
 
+function workflowCancellationError(code, message, statusCode = 409, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  error.details = details;
+  error.safeCancellationError = true;
+  return error;
+}
+
+function assertCancellationActor(value) {
+  const actor = String(value ?? "").trim();
+  if (actor.length > 120 || CONTROL_CHARACTER_PATTERN.test(actor)) {
+    throw workflowCancellationError("INVALID_CANCELLATION_REQUEST", "ข้อมูลผู้ยกเลิกไม่ถูกต้อง", 400);
+  }
+  return actor;
+}
+
+function cancellationSidecarPath(transaction) {
+  return path.join(transaction.folderPath, "data", "workflow-cancellation.json");
+}
+
+async function assertWorkflowCancellationSidecarPath(rootDir, transaction, { create = false } = {}) {
+  if (!WORKFLOW_TRANSACTION_NUMBER_PATTERN.test(String(transaction?.transactionNo || ""))) {
+    throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  }
+  const rootReal = await realpath(rootDir);
+  const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, transaction.folderPath || ""), "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  const folderInfo = await lstat(folder);
+  if (folderInfo.isSymbolicLink() || !folderInfo.isDirectory()) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  const folderReal = await realpath(folder);
+  assertPathWithinDirectory(rootReal, folderReal, "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  const dataDir = path.join(folderReal, "data");
+  if (create) await mkdir(dataDir, { recursive: true });
+  const dataInfo = await lstat(dataDir);
+  if (dataInfo.isSymbolicLink() || !dataInfo.isDirectory()) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  const dataReal = await realpath(dataDir);
+  assertPathWithinDirectory(rootReal, dataReal, "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  const sidecar = path.join(dataReal, "workflow-cancellation.json");
+  try {
+    const sidecarInfo = await lstat(sidecar);
+    if (sidecarInfo.isSymbolicLink() || !sidecarInfo.isFile()) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+    assertPathWithinDirectory(rootReal, await realpath(sidecar), "ข้อมูล Workflow สำหรับยกเลิกไม่ถูกต้อง");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  return sidecar;
+}
+
+function normalizeCancellationSidecar(value, transactionNo) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.schemaVersion !== WORKFLOW_CANCELLATION_SCHEMA_VERSION
+    || value.transactionNo !== transactionNo
+    || !["cancellation_pending", "cancelled"].includes(value.status)
+    || !/^\d{4}-\d{2}-\d{2}T/.test(String(value.requestedAt || ""))
+    || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.cancellationDate || ""))
+    || !["in_progress", "completed"].includes(value.baseStatus)
+    || typeof value.planHash !== "string" || !/^[a-f0-9]{64}$/.test(value.planHash)
+    || !Array.isArray(value.children) || !Array.isArray(value.stockEffects) || !Array.isArray(value.sheetEffects)) {
+    throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูลการยกเลิก Workflow ไม่ถูกต้อง");
+  }
+  return value;
+}
+
+async function readWorkflowCancellationSidecar(rootDir, transaction) {
+  const target = await assertWorkflowCancellationSidecarPath(rootDir, transaction);
+  try {
+    return normalizeCancellationSidecar(JSON.parse(await readFile(target, "utf8")), transaction.transactionNo);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    if (error.safeCancellationError) throw error;
+    throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูลการยกเลิก Workflow ไม่ถูกต้อง");
+  }
+}
+
+async function writeWorkflowCancellationSidecar(rootDir, transaction, sidecar) {
+  const target = await assertWorkflowCancellationSidecarPath(rootDir, transaction, { create: true });
+  const safe = normalizeCancellationSidecar(sidecar, transaction.transactionNo);
+  const temporary = path.join(path.dirname(target), `.workflow-cancellation-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(safe, null, 2)}\n`, "utf8");
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+  return safe;
+}
+
+function cancellationAudit(transactionNo, cancelledAt, cancelledBy) {
+  return { transactionNo, cancelledAt, cancelledBy: cancelledBy || "" };
+}
+
+function canonicalCancellationChildNo(kind, payload) {
+  return kind === "expense_request" ? payload.requestNo
+    : kind === "substitute_receipt" ? payload.receiptNo
+      : payload.documentNo;
+}
+
+function cancellationChildFileName(kind) {
+  return kind === "expense_request" ? "submission.json"
+    : kind === "substitute_receipt" ? "substitute-receipt.json"
+      : "workflow-document.json";
+}
+
+function cancellationChildNumberPattern(kind) {
+  return kind === "expense_request" ? EXPENSE_NUMBER_PATTERN
+    : kind === "substitute_receipt" ? SUBSTITUTE_RECEIPT_NUMBER_PATTERN
+      : new RegExp(`^${WORKFLOW_DOCUMENT_PREFIXES[kind]}-\\d{4}-(0[1-9]|1[0-2])-\\d{4}$`);
+}
+
+async function readCancellationChildStrict(rootDir, row, transaction, expectedSteps) {
+  const kind = row.documentKind;
+  if (!DOCUMENT_TYPE_DEFINITIONS[kind] || !cancellationChildNumberPattern(kind).test(row.documentNo)
+    || row.transactionNo !== transaction.transactionNo) {
+    throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  }
+  const rootReal = await realpath(rootDir);
+  const folder = assertPathWithinDirectory(rootDir, path.join(rootDir, row.folderPath || ""), "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  const folderInfo = await lstat(folder);
+  if (folderInfo.isSymbolicLink() || !folderInfo.isDirectory()) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  const folderReal = await realpath(folder);
+  assertPathWithinDirectory(rootReal, folderReal, "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  const dataDir = await realpath(path.join(folderReal, "data"));
+  assertPathWithinDirectory(rootReal, dataDir, "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  const filePath = await realpath(path.join(dataDir, cancellationChildFileName(kind)));
+  const fileInfo = await lstat(filePath);
+  if (fileInfo.isSymbolicLink() || !fileInfo.isFile()) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  assertPathWithinDirectory(rootReal, filePath, "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  let payload;
+  try { payload = JSON.parse(await readFile(filePath, "utf8")); } catch { throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow ไม่ถูกต้อง"); }
+  const no = canonicalCancellationChildNo(kind, payload);
+  if (no !== row.documentNo || payload.transactionNo !== transaction.transactionNo) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  const step = expectedSteps.find((candidate) => candidate.stepId === payload.workflowStepId);
+  if (!step || step.documentKind !== kind || row.workflowStepId !== payload.workflowStepId) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ความสัมพันธ์เอกสารย่อยของ Workflow ไม่ถูกต้อง");
+  return { ...payload, documentKind: kind, documentNo: no, folderPath: row.folderPath, workflowStepId: payload.workflowStepId, _indexRow: row };
+}
+
+async function collectCancellationChildrenStrict(rootDir, transaction) {
+  const expectedSteps = transaction.templateSnapshot?.documentSteps || transaction.steps || [];
+  const rows = withDocumentIndexDatabase(rootDir, (db) => queryDocumentIndexRows(db, {
+    documentKinds: Object.keys(DOCUMENT_TYPE_DEFINITIONS), transactionNo: transaction.transactionNo,
+  }));
+  const seen = new Set();
+  const children = [];
+  for (const row of rows) {
+    const key = `${row.documentKind}:${row.documentNo}`;
+    if (seen.has(key)) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "พบเอกสารย่อยซ้ำใน Workflow");
+    seen.add(key);
+    children.push(await readCancellationChildStrict(rootDir, row, transaction, expectedSteps));
+  }
+  const byStep = new Map();
+  for (const child of children) {
+    if (byStep.has(child.workflowStepId)) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "พบเอกสารย่อยซ้ำในขั้นตอน Workflow");
+    byStep.set(child.workflowStepId, child);
+  }
+  return children.sort((a, b) => String(a.workflowStepId).localeCompare(String(b.workflowStepId)));
+}
+
+function cancellationNativeStatus(kind, payload) {
+  if (kind === "expense_request") return normalizeExpenseRequestStatus(payload.status || "pending_approval");
+  if (kind === "substitute_receipt") return normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+  return payload.status || "draft";
+}
+
+function cancellationTargetForChild(child) {
+  const status = cancellationNativeStatus(child.documentKind, child);
+  if (status === "completed") return "retain_completed";
+  if (child.documentKind === "substitute_receipt" && status === "received") return "void";
+  if (["draft", "pending_approval", "approved"].includes(status)) return "cancel";
+  if (["cancelled", "voided"].includes(status)) return "already_satisfied";
+  throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "สถานะเอกสารย่อยของ Workflow ไม่รองรับการยกเลิก");
+}
+
+function cancellationKnownLocations(payload) {
+  const location = payload?.sheetSync;
+  if (!location || typeof location !== "object") return [];
+  if (typeof location.spreadsheetId !== "string" || !/^[A-Za-z0-9_-]+$/.test(location.spreadsheetId)
+    || typeof location.sheetName !== "string" || !location.sheetName || location.sheetName.length > 200) return [];
+  return [{ spreadsheetId: location.spreadsheetId, sheetName: location.sheetName }];
+}
+
+function cancellationPlanHash(plan) {
+  return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+}
+
+function cancellationStockEffects(children) {
+  return children.filter((child) => child.documentKind === "substitute_receipt")
+    .map((child) => {
+      const movements = listStockMovementsByReference(child._rootDir, "substitute_receipt", child.receiptNo)
+        .filter((movement) => movement.movementType === "purchase_in");
+      const persisted = child.stockReceipt?.movementIds;
+      if ((movements.length || persisted) && (!Array.isArray(persisted) || persisted.length !== movements.length
+        || new Set(persisted).size !== persisted.length
+        || persisted.some((id) => !movements.some((movement) => movement.id === id)))) {
+        throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "หลักฐานการรับสินค้าในเอกสารย่อยไม่ถูกต้อง");
+      }
+      if (!movements.length) return null;
+      return {
+        receiptNo: child.receiptNo,
+        expectedOriginalMovementIds: movements.map((movement) => movement.id),
+        status: "pending",
+        reversals: [],
+      };
+    }).filter(Boolean);
+}
+
+function assertCancellationStockPreflight(rootDir, stockEffects) {
+  const required = new Map();
+  for (const effect of stockEffects) {
+    const movements = listStockMovementsByReference(rootDir, "substitute_receipt", effect.receiptNo)
+      .filter((movement) => effect.expectedOriginalMovementIds.includes(movement.id));
+    for (const movement of movements) required.set(movement.stockSkuId, (required.get(movement.stockSkuId) || 0) + movement.quantity);
+  }
+  if (!required.size) return;
+  const balances = new Map(listInventoryBalances(rootDir).map((item) => [item.id, item]));
+  const insufficient = [];
+  for (const [stockSkuId, requiredQuantity] of required) {
+    const availableQuantity = Number(balances.get(stockSkuId)?.quantityOnHand || 0);
+    if (availableQuantity < requiredQuantity) insufficient.push({ sku: balances.get(stockSkuId)?.sku || `SKU-${stockSkuId}`, availableQuantity, requiredQuantity });
+  }
+  if (insufficient.length) throw workflowCancellationError("INSUFFICIENT_STOCK_FOR_CANCELLATION", "สต๊อกไม่เพียงพอสำหรับการยกเลิก", 409, { items: insufficient });
+}
+
+function buildCancellationSummary(sidecar) {
+  return {
+    requestedAt: sidecar.requestedAt,
+    cancelledAt: sidecar.cancelledAt || "",
+    requestedBy: sidecar.requestedBy || "",
+    pendingEffects: [
+      ...sidecar.stockEffects.filter((effect) => effect.status !== "completed").map((effect) => ({ type: "stock", documentNo: effect.receiptNo, code: effect.errorCode || "" })),
+      ...sidecar.children.filter((effect) => effect.status !== "completed").map((effect) => ({ type: "child", documentNo: effect.documentNo, code: effect.errorCode || "" })),
+      ...sidecar.sheetEffects.filter((effect) => effect.status !== "completed").map((effect) => ({ type: "sheet", sourceKey: effect.sourceKey, code: effect.errorCode || "" })),
+    ],
+  };
+}
+
+async function persistCancellationIndex(rootDir, transaction, sidecar) {
+  indexDocument(rootDir, {
+    documentKind: "workflow_transaction", documentNo: transaction.transactionNo,
+    accountingMonth: transaction.accountingMonth, status: sidecar.status,
+    folderPath: transaction.folderPath, transactionNo: "", workflowTemplateId: transaction.workflowTemplateId,
+    workflowStepId: "", createdAt: transaction.createdAt, updatedAt: sidecar.cancelledAt || sidecar.requestedAt,
+  });
+}
+
+async function cancellationSnapshot(rootDir, transaction, sidecar) {
+  const children = await findWorkflowChildDocuments(rootDir, transaction.transactionNo);
+  return {
+    ...transaction,
+    status: sidecar.status,
+    baseStatus: sidecar.baseStatus,
+    completedAt: sidecar.baseCompletedAt || transaction.completedAt || "",
+    cancellation: buildCancellationSummary(sidecar),
+    childDocuments: children.map(formatWorkflowChildDocumentForResponse),
+    pdfFiles: await listWorkflowTransactionPdfFiles(rootDir, transaction.folderPath, transaction.transactionNo),
+  };
+}
+
+async function appendParentCancellationAudit(rootDir, child, sidecar) {
+  const audit = cancellationAudit(sidecar.transactionNo, sidecar.requestedAt, sidecar.requestedBy);
+  const current = child.documentKind === "expense_request"
+    ? await getSubmittedExpenseRequest(rootDir, child.requestNo)
+    : child.documentKind === "substitute_receipt"
+      ? await getSubmittedSubstituteReceipt(rootDir, child.receiptNo)
+      : await getWorkflowDocument(rootDir, child.documentKind, child.documentNo);
+  if (!current) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ไม่พบเอกสารย่อยของ Workflow");
+  const payload = { ...(current.payload || current), folderPath: current.folderPath };
+  const existing = Array.isArray(payload.statusHistory) ? payload.statusHistory : [];
+  if (existing.some((entry) => entry?.parentCancellation?.transactionNo === sidecar.transactionNo)) return;
+  payload.statusHistory = [...existing, { parentCancellation: audit, changedAt: sidecar.requestedAt, note: "parent cancellation", actor: sidecar.requestedBy || "" }];
+  payload.updatedAt = sidecar.requestedAt;
+  if (child.documentKind === "expense_request") await writeSubmittedExpenseRequestFiles(rootDir, payload);
+  else if (child.documentKind === "substitute_receipt") await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+  else await writeWorkflowDocumentFiles(rootDir, payload);
+}
+
+async function executeCancellationChild(rootDir, childEffect, sidecar) {
+  const child = childEffect.child;
+  const current = child.documentKind === "expense_request"
+    ? (await getSubmittedExpenseRequest(rootDir, child.documentNo)).payload
+    : child.documentKind === "substitute_receipt"
+      ? (await getSubmittedSubstituteReceipt(rootDir, child.documentNo)).payload
+      : (await getWorkflowDocument(rootDir, child.documentKind, child.documentNo)).payload;
+  const currentStatus = cancellationNativeStatus(child.documentKind, current);
+  if (current.transactionNo !== sidecar.transactionNo || canonicalCancellationChildNo(child.documentKind, current) !== child.documentNo) {
+    throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "เอกสารย่อยของ Workflow เปลี่ยนแปลงแล้ว");
+  }
+  if (childEffect.target === "retain_completed") {
+    await appendParentCancellationAudit(rootDir, { ...child, ...current }, sidecar);
+    return;
+  }
+  if (childEffect.target === "void" && currentStatus !== "voided") {
+    const payload = { ...current, folderPath: child.folderPath };
+    appendSubstituteReceiptStatus(payload, "voided", "parent cancellation", sidecar.requestedBy, () => sidecar.requestedAt);
+    payload.statusHistory[payload.statusHistory.length - 1].parentCancellation = cancellationAudit(sidecar.transactionNo, sidecar.requestedAt, sidecar.requestedBy);
+    await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+    return;
+  }
+  if (childEffect.target === "cancel" && currentStatus !== "cancelled") {
+    const payload = { ...current, folderPath: child.folderPath };
+    if (child.documentKind === "expense_request") appendExpenseRequestStatus(payload, "cancelled", "parent cancellation", sidecar.requestedBy, () => sidecar.requestedAt);
+    else if (child.documentKind === "substitute_receipt") appendSubstituteReceiptStatus(payload, "cancelled", "parent cancellation", sidecar.requestedBy, () => sidecar.requestedAt);
+    else {
+      assertDocumentTransition(child.documentKind, currentStatus, "cancelled");
+      payload.status = "cancelled";
+      payload.statusLabel = WORKFLOW_DOCUMENT_STATUS_LABELS.cancelled;
+      payload.updatedAt = sidecar.requestedAt;
+      payload.statusHistory = [...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []), { fromStatus: currentStatus, toStatus: "cancelled", changedAt: sidecar.requestedAt, note: "parent cancellation", actor: sidecar.requestedBy || "" }];
+    }
+    payload.statusHistory[payload.statusHistory.length - 1].parentCancellation = cancellationAudit(sidecar.transactionNo, sidecar.requestedAt, sidecar.requestedBy);
+    if (child.documentKind === "expense_request") await writeSubmittedExpenseRequestFiles(rootDir, payload);
+    else if (child.documentKind === "substitute_receipt") await writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+    else await writeWorkflowDocumentFiles(rootDir, payload);
+  }
+}
+
+async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = true, cancelledBy = "", requestedAt = () => new Date().toISOString(), sheetDeleter = deleteMonthlyExpenseRowsBySourceKey }) {
+  if (confirmed !== true) throw workflowCancellationError("CANCELLATION_CONFIRMATION_REQUIRED", "ต้องยืนยันการยกเลิก Workflow", 400);
+  if (!WORKFLOW_TRANSACTION_NUMBER_PATTERN.test(String(transactionNo || ""))) throw workflowCancellationError("INVALID_DOCUMENT_NUMBER", "เลขที่ธุรกรรมไม่ถูกต้อง", 400);
+  const actor = assertCancellationActor(cancelledBy);
+  const key = `${path.resolve(rootDir)}\u0000${transactionNo}`;
+  const previous = workflowCancellationQueues.get(key) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+    if (!transaction) throw workflowCancellationError("WORKFLOW_NOT_FOUND", "ไม่พบธุรกรรม", 404);
+    let sidecar = await readWorkflowCancellationSidecar(rootDir, transaction);
+    if (!sidecar) {
+      const children = await collectCancellationChildrenStrict(rootDir, transaction);
+      const childEffects = children.map((child) => ({ documentKind: child.documentKind, documentNo: child.documentNo, workflowStepId: child.workflowStepId, originalStatus: cancellationNativeStatus(child.documentKind, child), target: cancellationTargetForChild(child), status: "pending", errorCode: "" }));
+      const childByNo = new Map(children.map((child) => [`${child.documentKind}:${child.documentNo}`, child]));
+      const stockInput = children.map((child) => ({ ...child, _rootDir: rootDir }));
+      const stockEffects = cancellationStockEffects(stockInput);
+      assertCancellationStockPreflight(rootDir, stockEffects);
+      const sheetEffects = [
+        { sourceKey: `workflow_transaction:${transaction.transactionNo}`, knownLocations: [], status: "pending", errorCode: "" },
+        ...children.filter((child) => ["expense_request", "substitute_receipt"].includes(child.documentKind)).map((child) => ({
+          sourceKey: `${child.documentKind}:${child.documentNo}`, knownLocations: cancellationKnownLocations(child), status: "pending", errorCode: "",
+        })),
+      ];
+      const eventTime = typeof requestedAt === "function" ? requestedAt() : requestedAt;
+      if (typeof eventTime !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(eventTime)) throw workflowCancellationError("INVALID_CANCELLATION_REQUEST", "วันที่ยกเลิกไม่ถูกต้อง", 400);
+      const plan = { transactionNo, baseStatus: transaction.completedAt ? "completed" : "in_progress", baseCompletedAt: transaction.completedAt || "", children: childEffects, stockEffects: stockEffects.map(({ receiptNo, expectedOriginalMovementIds }) => ({ receiptNo, expectedOriginalMovementIds })), sheetEffects: sheetEffects.map(({ sourceKey, knownLocations }) => ({ sourceKey, knownLocations })) };
+      sidecar = {
+        schemaVersion: WORKFLOW_CANCELLATION_SCHEMA_VERSION, transactionNo, accountingMonth: transaction.accountingMonth,
+        status: "cancellation_pending", requestedAt: eventTime, requestedBy: actor, cancellationDate: eventTime.slice(0, 10),
+        baseStatus: plan.baseStatus, baseCompletedAt: plan.baseCompletedAt, planHash: cancellationPlanHash(plan),
+        children: childEffects.map((effect) => ({ ...effect, child: undefined })), stockEffects, sheetEffects, attempts: [], cancelledAt: "",
+      };
+      await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar);
+      await persistCancellationIndex(rootDir, transaction, sidecar);
+      sidecar = await readWorkflowCancellationSidecar(rootDir, transaction);
+    }
+
+    const planChildren = await collectCancellationChildrenStrict(rootDir, transaction);
+    const childLookup = new Map(planChildren.map((child) => [`${child.documentKind}:${child.documentNo}`, child]));
+    for (const effect of sidecar.stockEffects) {
+      if (effect.status === "completed") continue;
+      try {
+        const reversed = reversePurchaseInMovementsByReference({ rootDir, referenceType: "substitute_receipt", referenceNo: effect.receiptNo, expectedOriginalMovementIds: effect.expectedOriginalMovementIds, reversalDate: sidecar.cancellationDate, cancellationReference: `workflow_transaction:${transactionNo}`, now: () => sidecar.requestedAt });
+        effect.reversals = reversed.reversals.map((item) => ({ originalMovementId: item.originalMovementId, reversalMovementId: item.reversalMovementId, movementNo: item.movementNo, movementDate: item.movementDate, stockSkuId: item.stockSkuId, quantity: item.quantity }));
+        effect.status = "completed"; effect.errorCode = "";
+      } catch (error) { effect.errorCode = error.code || "STOCK_REVERSAL_FAILED"; await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar); return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" }; }
+      await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
+    }
+    for (const effect of sidecar.children) {
+      if (effect.status === "completed") continue;
+      try { await executeCancellationChild(rootDir, { ...effect, child: childLookup.get(`${effect.documentKind}:${effect.documentNo}`) }, sidecar); effect.status = "completed"; effect.errorCode = ""; }
+      catch (error) { effect.errorCode = error.code || "CANCELLATION_SOURCE_INVALID"; await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar); return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" }; }
+      await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
+    }
+    for (const effect of sidecar.sheetEffects) {
+      if (effect.status === "completed") continue;
+      try { const result = await sheetDeleter({ rootDir, accountingMonth: transaction.accountingMonth, sourceKey: effect.sourceKey, knownLocations: effect.knownLocations }); if (!result || !["deleted", "not_found"].includes(result.status)) throw workflowCancellationError("MONTHLY_EXPENSE_DELETE_FAILED", "ลบแถว Google Sheets ไม่สำเร็จ"); effect.status = "completed"; effect.errorCode = ""; }
+      catch (error) { effect.errorCode = error.code || "MONTHLY_EXPENSE_DELETE_FAILED"; await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar); return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" }; }
+      await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
+    }
+    sidecar.status = "cancelled"; sidecar.cancelledAt = sidecar.requestedAt;
+    await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar);
+    return cancellationSnapshot(rootDir, transaction, sidecar);
+  });
+  workflowCancellationQueues.set(key, operation);
+  try { return await operation; } finally { if (workflowCancellationQueues.get(key) === operation) workflowCancellationQueues.delete(key); }
+}
+
 async function persistWorkflowTransaction(rootDir, transaction, childDocuments = [], { beforeCommit } = {}) {
   if (!transaction.folderPath) {
     throw new Error("ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
@@ -3178,7 +3567,9 @@ async function findAllWorkflowTransactions(rootDir) {
 
   for (const row of rows) {
     try {
-      records.push(await buildWorkflowTransactionRecord(rootDir, row.folderPath));
+      const record = await buildWorkflowTransactionRecord(rootDir, row.folderPath);
+      const sidecar = await readWorkflowCancellationSidecar(rootDir, record);
+      records.push(sidecar ? { ...record, status: sidecar.status, baseStatus: sidecar.baseStatus, completedAt: sidecar.baseCompletedAt || record.completedAt || "", cancellation: buildCancellationSummary(sidecar) } : record);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       logIndexDriftWarning(row.documentNo, row.folderPath);
@@ -3405,6 +3796,11 @@ async function getWorkflowTransactionDetail(rootDir, transactionNo) {
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (!transaction) return null;
 
+  const cancellation = await readWorkflowCancellationSidecar(rootDir, transaction);
+  const transactionView = cancellation
+    ? { ...transaction, status: cancellation.status, baseStatus: cancellation.baseStatus, completedAt: cancellation.baseCompletedAt || transaction.completedAt || "", cancellation: buildCancellationSummary(cancellation) }
+    : transaction;
+
   const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
 
   // The transaction's own pdfFiles (currently just the packet, if one has
@@ -3418,7 +3814,7 @@ async function getWorkflowTransactionDetail(rootDir, transactionNo) {
 
   const sheetSync = await readWorkflowSheetSyncMetadata(rootDir, transaction);
   return {
-    ...transaction,
+    ...transactionView,
     ...(sheetSync ? { sheetSync } : {}),
     childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
     pdfFiles,
@@ -4348,6 +4744,7 @@ module.exports = {
   approveWorkflowDocument,
   assertPathWithinDirectory,
   buildWorkflowTransactionSheetEntry,
+  cancelWorkflowTransaction,
   describeDriveSyncError,
   DOCUMENT_DRIVE_SYNC_ACTIONS,
   completeExpenseRequest,
