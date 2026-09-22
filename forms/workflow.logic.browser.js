@@ -341,6 +341,8 @@ const WORKFLOW_STEP_STATUS_LABELS = {
 const TRANSACTION_STATUS_LABELS = {
   in_progress: "กำลังดำเนินการ",
   completed: "เสร็จสมบูรณ์",
+  cancellation_pending: "รอดำเนินการยกเลิก",
+  cancelled: "ยกเลิกแล้ว",
 };
 
 function workflowStepStatusLabel(status) {
@@ -506,6 +508,7 @@ const transactionPageState = {
   childDocuments: [],
 };
 let transactionExternalSyncInFlight = false;
+let transactionCancellationInFlight = false;
 
 function transactionNoFromQuery() {
   return getQueryParam("transactionNo") || "";
@@ -592,6 +595,14 @@ function renderChecklist(list, template, transaction, childDocuments) {
         documentNoEl.hidden = false;
         documentNoEl.textContent = documentNo;
       }
+      if (transaction.status === "cancellation_pending" || transaction.status === "cancelled") {
+        const note = document.createElement("span");
+        note.className = "muted parent-cancellation-note";
+        note.textContent = normalized.nativeStatus === "completed" || childDoc.status === "completed"
+          ? "คงสถานะเสร็จสิ้นจากการยกเลิก Workflow"
+          : "อยู่ภายใต้การยกเลิก Workflow";
+        row.querySelector(".step-meta").appendChild(note);
+      }
     }
 
     const actionButton = row.querySelector("[data-step-action]");
@@ -601,7 +612,7 @@ function renderChecklist(list, template, transaction, childDocuments) {
       actionButton.disabled = true;
     } else if (isCurrent) {
       actionButton.textContent = step.workflowStatus === "in_progress" ? "ดำเนินการต่อ" : "เปิดเอกสาร";
-      actionButton.disabled = false;
+      actionButton.disabled = transaction.status === "cancellation_pending" || transaction.status === "cancelled";
     } else {
       actionButton.textContent = "ยังไม่พร้อมใช้งาน";
       actionButton.disabled = true;
@@ -707,7 +718,8 @@ function renderCompleteButton(button, transaction) {
   const steps = transaction.steps || [];
   const allStepsCompleted = steps.length > 0 && steps.every((step) => step.workflowStatus === "completed");
   const alreadyCompleted = !!transaction.completedAt;
-  button.disabled = alreadyCompleted || !allStepsCompleted;
+  const cancellationLocked = transaction.status === "cancellation_pending" || transaction.status === "cancelled";
+  button.disabled = cancellationLocked || alreadyCompleted || !allStepsCompleted;
   button.textContent = alreadyCompleted ? "ปิดงานธุรกรรมแล้ว" : "ปิดงานธุรกรรม";
 }
 
@@ -830,8 +842,9 @@ function renderDriveSyncSection(section, statusEl, button, transaction, document
 
   const syncGoogleDrive = !!transaction.templateSnapshot?.syncGoogleDrive;
   const failed = transaction.driveSync?.syncStatus === "sync_failed";
+  const cancellationLocked = transaction.status === "cancellation_pending" || transaction.status === "cancelled";
   if (button) {
-    button.hidden = syncGoogleDrive && !failed;
+    button.hidden = cancellationLocked || (syncGoogleDrive && !failed);
     button.textContent = failed ? "ลองซิงก์อีกครั้ง (เฉพาะรายการที่ยังไม่สำเร็จ)" : "ซิงก์ Google Drive";
   }
 }
@@ -888,11 +901,82 @@ function renderSheetSyncSection(section, statusEl, link, button, transaction) {
     link.href = syncedUrl || "#";
   }
   if (button) {
-    button.hidden = false;
+    button.hidden = transaction.status === "cancellation_pending" || transaction.status === "cancelled";
     button.textContent = validSynced ? "ซิงก์ Google Sheets อีกครั้ง"
       : sheetSync?.syncStatus === "blocked_child_rows" ? "ตรวจสอบแล้วลองอีกครั้ง"
         : sheetSync?.syncStatus === "sync_failed" ? "ลองซิงก์ Google Sheets อีกครั้ง" : "ซิงก์ Google Sheets";
   }
+}
+
+function cancellationLocked(transaction = transactionPageState.transaction) {
+  return transaction?.status === "cancellation_pending" || transaction?.status === "cancelled";
+}
+
+function renderCancellationSummary(transaction) {
+  const summary = document.querySelector("#cancellationSummary");
+  const title = document.querySelector("#cancellationSummaryTitle");
+  const details = document.querySelector("#cancellationSummaryDetails");
+  const retry = document.querySelector("#retryCancellationButton");
+  const cancelButton = document.querySelector("#cancelTransactionButton");
+  if (!summary || !title || !details) return;
+  const isPending = transaction.status === "cancellation_pending";
+  const isCancelled = transaction.status === "cancelled";
+  summary.hidden = !isPending && !isCancelled;
+  summary.className = `status-box active ${isPending ? "" : "success"}`.trim();
+  title.textContent = isPending ? "การยกเลิกอยู่ระหว่างดำเนินการ" : "ยกเลิก Workflow แล้ว";
+  const cancellation = transaction.cancellation || {};
+  const pending = Array.isArray(cancellation.pendingEffects) ? cancellation.pendingEffects : [];
+  const pendingText = pending.length
+    ? `รายการที่รอดำเนินการ: ${pending.map((effect) => [effect.type, effect.documentNo, effect.code].filter(Boolean).join(" ")).join(", ")}`
+    : "ดำเนินการชดเชยครบถ้วนแล้ว";
+  details.textContent = [
+    transaction.baseStatus ? `สถานะเดิม: ${transactionStatusLabel(transaction.baseStatus)}` : "",
+    transaction.completedAt ? `เสร็จสิ้นเดิมเมื่อ: ${transaction.completedAt}` : "",
+    cancellation.requestedBy ? `ผู้ขอยกเลิก: ${cancellation.requestedBy}` : "",
+    cancellation.requestedAt ? `ขอเมื่อ: ${cancellation.requestedAt}` : "",
+    cancellation.cancelledAt ? `ยกเลิกเมื่อ: ${cancellation.cancelledAt}` : "",
+    pendingText,
+  ].filter(Boolean).join("\n");
+  if (retry) retry.hidden = !isPending;
+  if (cancelButton) cancelButton.hidden = isPending || isCancelled;
+}
+
+function setTransactionMutationControlsDisabled(disabled) {
+  [
+    document.querySelector("#refreshTransactionButton"),
+    document.querySelector("#cancelTransactionButton"),
+    document.querySelector("#retryCancellationButton"),
+    document.querySelector("#completeTransactionButton"),
+    document.querySelector("#syncDriveButton"),
+    document.querySelector("#syncSheetsButton"),
+    ...document.querySelectorAll("[data-step-action]"),
+  ].forEach((control) => { if (control) control.disabled = disabled; });
+}
+
+function restoreTransactionControlsFromState() {
+  if (transactionCancellationInFlight) {
+    setTransactionMutationControlsDisabled(true);
+    return;
+  }
+  [
+    document.querySelector("#refreshTransactionButton"),
+    document.querySelector("#cancelTransactionButton"),
+    document.querySelector("#retryCancellationButton"),
+    document.querySelector("#syncDriveButton"),
+    document.querySelector("#syncSheetsButton"),
+  ].forEach((control) => { if (control) control.disabled = false; });
+  const transaction = transactionPageState.transaction;
+  if (cancellationLocked(transaction)) {
+    [
+      document.querySelector("#cancelTransactionButton"),
+      document.querySelector("#completeTransactionButton"),
+      document.querySelector("#syncDriveButton"),
+      document.querySelector("#syncSheetsButton"),
+      ...document.querySelectorAll("[data-step-action]"),
+    ].forEach((control) => { if (control) control.disabled = true; });
+  }
+  const retry = document.querySelector("#retryCancellationButton");
+  if (retry) retry.disabled = transactionCancellationInFlight;
 }
 
 function setTransactionSyncButtonsDisabled(disabled) {
@@ -931,6 +1015,8 @@ function renderTransaction(transaction, childDocuments = []) {
     childDocuments,
   );
   renderChildDocumentFiles(document.querySelector("#childDocumentFiles"), transaction, childDocuments);
+  renderCancellationSummary(transaction);
+  restoreTransactionControlsFromState();
 }
 
 // Refreshes the transaction the same way POST start-document already does
@@ -961,6 +1047,40 @@ async function refreshTransaction({ regeneratePacket = true } = {}) {
 
   renderTransaction(transaction, transaction.childDocuments || []);
   return transaction;
+}
+
+function validatedCancellationResponse(result, transactionNo, httpStatus) {
+  if (httpStatus !== 200 && httpStatus !== 202) throw new Error(result?.error || "ยกเลิก Workflow ไม่สำเร็จ");
+  if (!result || result.transactionNo !== transactionNo || !["cancellation_pending", "cancelled"].includes(result.status)) {
+    throw new Error("ข้อมูลการยกเลิก Workflow ไม่ถูกต้อง");
+  }
+  if (!result.cancellation || typeof result.cancellation !== "object" || !Array.isArray(result.cancellation.pendingEffects)) {
+    throw new Error("ข้อมูลการยกเลิก Workflow ไม่ครบถ้วน");
+  }
+  if (!Array.isArray(result.childDocuments)) throw new Error("ข้อมูลเอกสารย่อยไม่ถูกต้อง");
+  return result;
+}
+
+async function cancelWorkflowTransaction() {
+  const transactionNo = transactionNoFromQuery();
+  if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+  const root = document.querySelector("#transactionPage");
+  const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+  let response;
+  let result = {};
+  try {
+    response = await fetch(`${transactionsUrl}/${encodeURIComponent(transactionNo)}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmed: true, cancelledBy: "" }),
+    });
+    result = await response.json();
+  } catch (error) {
+    throw new Error("ไม่สามารถเชื่อมต่อเพื่อยกเลิก Workflow ได้");
+  }
+  const validated = validatedCancellationResponse(result, transactionNo, response.status);
+  renderTransaction(validated, validated.childDocuments);
+  return validated;
 }
 
 // Refuses server-side unless every step is completed (see
@@ -1039,6 +1159,7 @@ async function syncTransactionSheets() {
 async function startDocument(stepId) {
   const transactionNo = transactionNoFromQuery();
   if (!transactionNo) throw new Error("ไม่พบเลขที่ธุรกรรม");
+  if (transactionCancellationInFlight || cancellationLocked()) throw new Error("ธุรกรรมนี้อยู่ระหว่างหรือเสร็จสิ้นการยกเลิก");
 
   const root = document.querySelector("#transactionPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
@@ -1058,10 +1179,61 @@ function initTransactionPage() {
   const syncDriveButton = document.querySelector("#syncDriveButton");
   const syncSheetsButton = document.querySelector("#syncSheetsButton");
   const statusBox = document.querySelector("#transactionStatus");
+  const cancelButton = document.querySelector("#cancelTransactionButton");
+  const retryCancellationButton = document.querySelector("#retryCancellationButton");
+  const cancellationDialog = document.querySelector("#cancellationDialog");
+  const dismissCancellationButton = document.querySelector("#dismissCancellationButton");
+  const confirmCancellationButton = document.querySelector("#confirmCancellationButton");
+
+  function closeCancellationDialog(restoreFocus = true) {
+    if (cancellationDialog) cancellationDialog.hidden = true;
+    if (restoreFocus && typeof cancelButton?.focus === "function") cancelButton.focus();
+  }
+
+  function openCancellationDialog() {
+    if (!cancelButton || cancelButton.disabled || cancellationLocked()) return;
+    if (cancellationDialog) cancellationDialog.hidden = false;
+    if (typeof confirmCancellationButton?.focus === "function") confirmCancellationButton.focus();
+  }
+
+  async function runCancellation() {
+    if (transactionCancellationInFlight || transactionPageState.transaction?.status === "cancelled") return;
+    transactionCancellationInFlight = true;
+    setTransactionMutationControlsDisabled(true);
+    clearStatusBox(statusBox);
+    try {
+      const result = await cancelWorkflowTransaction();
+      setStatusBox(statusBox, result.status === "cancelled" ? "ยกเลิก Workflow เรียบร้อยแล้ว" : "รอดำเนินการยกเลิก", result.status === "cancelled" ? "success" : "");
+    } catch (error) {
+      setStatusBox(statusBox, error.message, "error");
+    } finally {
+      transactionCancellationInFlight = false;
+      if (transactionPageState.transaction) {
+        renderTransaction(transactionPageState.transaction, transactionPageState.childDocuments);
+      } else {
+        setTransactionMutationControlsDisabled(false);
+      }
+    }
+  }
+
+  cancelButton?.addEventListener("click", openCancellationDialog);
+  dismissCancellationButton?.addEventListener("click", () => closeCancellationDialog());
+  confirmCancellationButton?.addEventListener("click", () => { closeCancellationDialog(false); runCancellation(); });
+  cancellationDialog?.addEventListener("click", (event) => { if (event.target === cancellationDialog) closeCancellationDialog(); });
+  cancellationDialog?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); closeCancellationDialog(); }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      const target = event.shiftKey ? dismissCancellationButton : confirmCancellationButton;
+      if (typeof target?.focus === "function") target.focus();
+    }
+  });
+  retryCancellationButton?.addEventListener("click", () => runCancellation());
 
   if (refreshButton) {
     refreshButton.addEventListener("click", () => {
       clearStatusBox(statusBox);
+      if (transactionCancellationInFlight || cancellationLocked()) return;
       refreshTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
     });
   }
@@ -1069,6 +1241,7 @@ function initTransactionPage() {
   if (completeButton) {
     completeButton.addEventListener("click", () => {
       if (completeButton.disabled) return;
+      if (transactionCancellationInFlight || cancellationLocked()) return;
       clearStatusBox(statusBox);
       completeTransaction()
         .then(() => setStatusBox(statusBox, "ปิดงานธุรกรรมเรียบร้อยแล้ว", "success"))
@@ -1079,6 +1252,7 @@ function initTransactionPage() {
   if (syncDriveButton) {
     syncDriveButton.addEventListener("click", () => {
       if (syncDriveButton.disabled || syncDriveButton.hidden || transactionExternalSyncInFlight) return;
+      if (transactionCancellationInFlight || cancellationLocked()) return;
       clearStatusBox(statusBox);
       // Disabled while the request runs: a second press would start a second
       // upload of the same files (the server also refuses to run two syncs of
@@ -1101,6 +1275,7 @@ function initTransactionPage() {
   if (syncSheetsButton) {
     syncSheetsButton.addEventListener("click", () => {
       if (syncSheetsButton.disabled || syncSheetsButton.hidden || transactionExternalSyncInFlight || !transactionPageState.transaction?.completedAt) return;
+      if (transactionCancellationInFlight || cancellationLocked()) return;
       clearStatusBox(statusBox);
       transactionExternalSyncInFlight = true;
       setTransactionSyncButtonsDisabled(true);

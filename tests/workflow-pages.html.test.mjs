@@ -610,6 +610,7 @@ function createTransactionStubFetch({
   refreshedTransaction,
   onStartDocument,
   onComplete,
+  onCancel = () => ({ ok: true, status: 200, json: async () => ({}) }),
   onSyncDrive,
   onSyncSheets,
 }) {
@@ -631,6 +632,9 @@ function createTransactionStubFetch({
       current = result;
       return { ok: true, json: async () => result };
     }
+    if (url === `/api/workflow-transactions/${transactionNo}/cancel` && options.method === "POST") {
+      return onCancel(options);
+    }
     if (url === `/api/workflow-transactions/${transactionNo}/sync-drive` && options.method === "POST") {
       return onSyncDrive();
     }
@@ -651,6 +655,7 @@ async function setupTransactionPageSandbox({
   refreshedTransaction,
   onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
   onComplete = () => { throw new Error("complete should not be called in this test"); },
+  onCancel = () => ({ ok: true, status: 200, json: async () => ({}) }),
   onSyncDrive = () => { throw new Error("sync-drive should not be called in this test"); },
   onSyncSheets = () => { throw new Error("sync-sheets should not be called in this test"); },
 }) {
@@ -663,6 +668,7 @@ async function setupTransactionPageSandbox({
     refreshedTransaction,
     onStartDocument,
     onComplete,
+    onCancel,
     onSyncDrive,
     onSyncSheets,
   });
@@ -730,6 +736,89 @@ test("workflow transaction page exposes the separate manual Sheets controls", as
   assert.match(html, /id="sheetSyncLink"/);
   assert.match(html, /id="syncSheetsButton"/);
   assert.match(html, /sync-sheets/);
+});
+
+test("workflow cancellation requires explicit confirmation and adopts a validated 200", async () => {
+  const transaction = buildFourStepTransaction({
+    status: "in_progress",
+    childDocuments: [{ workflowStepId: "step-001", documentKind: "purchase_order", documentNo: "PO-1", status: "completed" }],
+  });
+  const cancelled = {
+    ...transaction,
+    status: "cancelled",
+    baseStatus: "in_progress",
+    cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", requestedBy: "", cancelledAt: "2026-09-22T01:01:00.000Z", pendingEffects: [] },
+    childDocuments: transaction.childDocuments,
+  };
+  let cancelCalls = 0;
+  let cancelBody;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onCancel: (options) => {
+      cancelCalls += 1;
+      cancelBody = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => cancelled };
+    },
+  });
+  assert.equal(elements.cancelTransactionButton.hidden, false);
+  elements.cancelTransactionButton.dispatch("click");
+  assert.equal(elements.cancellationDialog.hidden, false);
+  elements.dismissCancellationButton.dispatch("click");
+  assert.equal(cancelCalls, 0);
+  elements.cancelTransactionButton.dispatch("click");
+  elements.confirmCancellationButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(cancelBody, { confirmed: true, cancelledBy: "" });
+  assert.equal(cancelCalls, 1);
+  assert.equal(elements.cancelTransactionButton.hidden, true);
+  assert.match(elements.cancellationSummaryTitle.textContent, /ยกเลิก Workflow แล้ว/);
+  assert.equal(elements.completeTransactionButton.disabled, true);
+});
+
+test("workflow cancellation renders pending 202, blocks forward actions, and retries the same route", async () => {
+  const transaction = buildFourStepTransaction();
+  const pending = { ...transaction, status: "cancellation_pending", baseStatus: "in_progress", cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", pendingEffects: [{ type: "sheet", sourceKey: "workflow_transaction:TXN-2026-09-0001", code: "TEMPORARY" }] }, childDocuments: [] };
+  const cancelled = { ...pending, status: "cancelled", cancellation: { ...pending.cancellation, pendingEffects: [], cancelledAt: "2026-09-22T01:01:00.000Z" } };
+  let calls = 0;
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onCancel: () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: true, status: 202, json: async () => pending }
+        : { ok: true, status: 200, json: async () => cancelled };
+    },
+  });
+  elements.cancelTransactionButton.dispatch("click");
+  elements.confirmCancellationButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls, 1);
+  assert.equal(elements.retryCancellationButton.hidden, false);
+  assert.match(elements.cancellationSummaryTitle.textContent, /อยู่ระหว่างดำเนินการ/);
+  assert.equal(elements.cancelTransactionButton.hidden, true);
+  assert.equal(elements.completeTransactionButton.disabled, true);
+  elements.retryCancellationButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls, 2);
+  assert.equal(elements.retryCancellationButton.hidden, true);
+  assert.equal(elements.cancelTransactionButton.hidden, true);
+});
+
+test("invalid cancellation response preserves the prior transaction and shows a safe error", async () => {
+  const transaction = buildFourStepTransaction();
+  const { elements } = await setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    onCancel: () => ({ ok: false, status: 409, json: async () => ({ code: "WORKFLOW_CANCELLATION_IN_PROGRESS", error: "กำลังยกเลิก" }) }),
+  });
+  elements.cancelTransactionButton.dispatch("click");
+  elements.confirmCancellationButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.cancelTransactionButton.hidden, false);
+  assert.equal(elements.cancellationSummary.hidden, true);
+  assert.match(elements.transactionStatus.textContent, /กำลังยกเลิก/);
 });
 
 test("Sheets is a manual parent action only after persisted completedAt, adopts one safe result, and never affects Drive state", async () => {
