@@ -2747,6 +2747,69 @@ test("cancelWorkflowTransaction cancels an incomplete child, deletes exact paren
   }
 });
 
+test("cancelWorkflowTransaction waits for an in-flight child Drive lease before publishing cleanup", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-lease-"));
+  try {
+    const template = await makeCancellationTemplate(rootDir, "expense_request");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "รอ Drive ก่อนยกเลิก",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const request = await saveExpenseSubmission({
+      rootDir,
+      payload: validExpensePayload({
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+      }),
+    });
+    let releaseDrive;
+    let driveEntered;
+    const driveStarted = new Promise((resolve) => { driveEntered = resolve; });
+    const driveRelease = new Promise((resolve) => { releaseDrive = resolve; });
+    const syncPromise = syncExpenseRequestToDrive({
+      rootDir,
+      requestNo: request.requestNo,
+      driveUploader: async () => {
+        driveEntered();
+        await driveRelease;
+        return {
+          driveFolderId: "drive-folder-lease",
+          driveFolderUrl: "https://drive.google.com/drive/folders/drive-folder-lease",
+          drivePath: "documents/drive-folder-lease",
+          uploadedFileCount: 1,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await driveStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, transaction.folderPath, "data", "workflow-cancellation.json")), false);
+
+    releaseDrive();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.equal(syncResult.status, "rejected");
+    assert.equal(syncResult.reason.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
+    assert.equal(cancellationResult.status, "fulfilled");
+    assert.equal(cancellationResult.value.status, "cancelled");
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
 test("cancelWorkflowTransaction reverses a completed stock receipt while retaining native completed status and parent JSON", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-"));
   try {
