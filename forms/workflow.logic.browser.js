@@ -1252,14 +1252,22 @@ function initTransactionPage() {
   confirmCancellationButton?.addEventListener("click", async () => {
     closeCancellationDialog(false);
     await runCancellation();
-    if (typeof cancellationDialogTrigger?.focus === "function") cancellationDialogTrigger.focus();
+    const transaction = transactionPageState.transaction;
+    const focusTarget = transaction?.status === "cancellation_pending"
+      ? retryCancellationButton
+      : transaction?.status === "cancelled"
+        ? document.querySelector("#cancellationSummary")
+        : cancellationDialogTrigger;
+    if (typeof focusTarget?.focus === "function") focusTarget.focus();
   });
   cancellationDialog?.addEventListener("click", (event) => { if (event.target === cancellationDialog) closeCancellationDialog(); });
   cancellationDialog?.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); closeCancellationDialog(); }
     if (event.key === "Tab") {
       event.preventDefault();
-      const target = event.shiftKey ? dismissCancellationButton : confirmCancellationButton;
+      const target = event.shiftKey
+        ? (document.activeElement === confirmCancellationButton ? dismissCancellationButton : confirmCancellationButton)
+        : (document.activeElement === dismissCancellationButton ? confirmCancellationButton : dismissCancellationButton);
       if (typeof target?.focus === "function") target.focus();
     }
   });

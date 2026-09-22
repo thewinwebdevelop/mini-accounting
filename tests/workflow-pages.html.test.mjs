@@ -697,7 +697,10 @@ async function setupTransactionPageSandbox({
   context.window._handlers.DOMContentLoaded();
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  return { elements: elementsById, location, fetchCalls: stubFetch.calls };
+  for (const element of Object.values(elementsById)) {
+    element.focus = () => { fakeDocument.activeElement = element; };
+  }
+  return { elements: elementsById, location, fetchCalls: stubFetch.calls, document: fakeDocument };
 }
 
 function buildFourStepTransaction(overrides = {}) {
@@ -756,7 +759,7 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
   };
   let cancelCalls = 0;
   let cancelBody;
-  const { elements } = await setupTransactionPageSandbox({
+  const { elements, document } = await setupTransactionPageSandbox({
     transaction,
     refreshedTransaction: transaction,
     onCancel: (options) => {
@@ -768,7 +771,10 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
   assert.equal(elements.cancelTransactionButton.hidden, false);
   elements.cancelTransactionButton.dispatch("click");
   assert.equal(elements.cancellationDialog.hidden, false);
+  elements.cancellationDialog.dispatch("keydown", { key: "Tab", preventDefault() {} });
+  assert.equal(document.activeElement, elements.dismissCancellationButton);
   elements.dismissCancellationButton.dispatch("click");
+  assert.equal(document.activeElement, elements.cancelTransactionButton);
   assert.equal(cancelCalls, 0);
   assert.equal(elements.cancellationDialog.hidden, true);
   elements.cancelTransactionButton.dispatch("click");
@@ -779,6 +785,7 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
   assert.equal(elements.cancelTransactionButton.hidden, true);
   assert.match(elements.cancellationSummaryTitle.textContent, /ยกเลิก Workflow แล้ว/);
   assert.equal(elements.completeTransactionButton.disabled, true);
+  assert.equal(document.activeElement, elements.cancellationSummary);
 });
 
 test("workflow cancellation renders pending 202, blocks forward actions, and retries the same route", async () => {
@@ -786,7 +793,7 @@ test("workflow cancellation renders pending 202, blocks forward actions, and ret
   const pending = { ...transaction, status: "cancellation_pending", code: "WORKFLOW_CANCELLATION_PENDING", baseStatus: "in_progress", cancellation: { requestedAt: "2026-09-22T01:00:00.000Z", pendingEffects: [{ type: "sheet", sourceKey: "workflow_transaction:TXN-2026-09-0001", code: "TEMPORARY" }] }, childDocuments: [] };
   const cancelled = { ...pending, status: "cancelled", cancellation: { ...pending.cancellation, pendingEffects: [], cancelledAt: "2026-09-22T01:01:00.000Z" } };
   let calls = 0;
-  const { elements } = await setupTransactionPageSandbox({
+  const { elements, document } = await setupTransactionPageSandbox({
     transaction,
     refreshedTransaction: transaction,
     onCancel: () => {
@@ -805,6 +812,7 @@ test("workflow cancellation renders pending 202, blocks forward actions, and ret
   assert.match(elements.cancellationSummaryDetails.textContent, /การยกเลิกยังอยู่ระหว่างดำเนินการ|รายการที่รอดำเนินการ/);
   assert.equal(elements.cancelTransactionButton.hidden, true);
   assert.equal(elements.completeTransactionButton.disabled, true);
+  assert.equal(document.activeElement, elements.retryCancellationButton);
   elements.retryCancellationButton.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(calls, 2);
