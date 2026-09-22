@@ -923,11 +923,19 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
     const statusCode = result.httpStatus || 200;
     sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
   } catch (error) {
-    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 409;
+    const stableCodes = new Set([
+      "CANCELLATION_CONFIRMATION_REQUIRED", "INVALID_DOCUMENT_NUMBER", "INVALID_CANCELLATION_REQUEST",
+      "WORKFLOW_NOT_FOUND", "WORKFLOW_CANCELLATION_IN_PROGRESS", "WORKFLOW_CANCELLED",
+      "INSUFFICIENT_STOCK_FOR_CANCELLATION", "CANCELLATION_SOURCE_INVALID", "WORKFLOW_CANCELLATION_PENDING",
+      "MONTHLY_EXPENSE_DELETE_FAILED", "STOCK_REVERSAL_FAILED",
+    ]);
+    const safeError = error?.safeCancellationError === true;
+    const code = safeError && stableCodes.has(error.code) ? error.code : "WORKFLOW_CANCELLATION_FAILED";
+    const statusCode = safeError && Number.isInteger(error.statusCode) ? error.statusCode : 409;
     sendJson(response, statusCode, {
-      error: error.message || "ไม่สามารถยกเลิก Workflow ได้",
-      code: error.code || "WORKFLOW_CANCELLATION_FAILED",
-      ...(error.details?.items ? { items: error.details.items } : {}),
+      error: safeError ? (error.message || "ไม่สามารถยกเลิก Workflow ได้") : "ไม่สามารถยกเลิก Workflow ได้",
+      code,
+      ...(safeError && error.code === "INSUFFICIENT_STOCK_FOR_CANCELLATION" && Array.isArray(error.details?.items) ? { items: error.details.items } : {}),
     });
   }
 }

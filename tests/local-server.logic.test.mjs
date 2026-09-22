@@ -124,8 +124,8 @@ async function seedWorkflowSheetsFixture(rootDir, { includeSr = false } = {}) {
   if (includeSr) await writeFile(join(rootDir, receiptFolder, "data", "substitute-receipt.json"), JSON.stringify({ receiptNo: "SR-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: receiptFolder, receiptTitle: "ใบรับรอง", payeeName: "ร้านค้า", workflowStepId: "sr", totals: { totalAmount: "100.00" } }));
   const indexLogic = await import("../forms/document-index.logic.js");
   indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
-  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
-  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo, workflowStepId: "req" });
+  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo, workflowStepId: "sr" });
   return { transactionNo, transactionFolder, requestFolder, receiptFolder };
 }
 
@@ -2800,4 +2800,107 @@ test("cancelWorkflowTransaction reverses a completed stock receipt while retaini
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+
+test("cancelWorkflowTransaction fails closed when an expected in-progress child is missing", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-missing-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const transactionPath = join(rootDir, fixture.transactionFolder, "data", "workflow-transaction.json");
+    const transaction = JSON.parse(await readFile(transactionPath, "utf8"));
+    transaction.steps = transaction.steps.map((step) => ({ ...step, workflowStatus: "in_progress" }));
+    await writeFile(transactionPath, JSON.stringify(transaction));
+    await rm(join(rootDir, fixture.requestFolder, "data", "submission.json"));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects frozen child relation drift and keeps pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-drift-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    const first = await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    assert.equal(first.status, "cancellation_pending");
+    const childPath = join(rootDir, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.transactionNo = "TXN-2026-09-0099";
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json"), "utf8"));
+    assert.equal(sidecar.status, "cancellation_pending");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects tampered Sheet effect keys and mismatched prior child cancellation", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-tamper-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    const sidecarPath = join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json");
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+    sidecar.sheetEffects[0].sourceKey = "expense_request:REQ-2026-09-0099";
+    await writeFile(sidecarPath, JSON.stringify(sidecar));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+
+  const auditRoot = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-audit-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(auditRoot);
+    const childPath = join(auditRoot, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.status = "cancelled";
+    child.statusHistory = [];
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir: auditRoot, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(auditRoot, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction blocks forward parent and child actions after durable pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-barrier-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: async () => { throw new Error("temporary Sheets outage"); } });
+    await assert.rejects(
+      () => completeWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+    await assert.rejects(
+      () => approveExpenseRequest({ rootDir, requestNo: "REQ-2026-09-0042" }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects received stock child without persisted movement evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-evidence-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const receiptPath = join(rootDir, fixture.receiptFolder, "data", "substitute-receipt.json");
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    receipt.receiptType = "stock_purchase";
+    receipt.status = "received";
+    receipt.stockReceipt = { movementIds: [] };
+    await writeFile(receiptPath, JSON.stringify(receipt));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
