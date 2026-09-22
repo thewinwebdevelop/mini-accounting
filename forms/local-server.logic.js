@@ -3467,6 +3467,12 @@ async function assertWorkflowCancellationBarrier(rootDir, transaction) {
   throw workflowCancellationError("WORKFLOW_CANCELLATION_IN_PROGRESS", "Workflow นี้อยู่ระหว่างการยกเลิก");
 }
 
+async function assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo) {
+  if (!transactionNo) return;
+  const transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  if (transaction) await assertWorkflowCancellationBarrier(rootDir, transaction);
+}
+
 async function assertWorkflowMutationAllowed(rootDir, transactionNo) {
   if (!transactionNo) return;
   if (workflowCancellationIntents.has(cancellationIntentKey(rootDir, transactionNo))) {
@@ -4306,57 +4312,68 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
     let preflight;
     try {
       preflight = await withWorkflowMutationLease(rootDir, transactionNo, async () => {
-        await assertWorkflowMutationAllowed(rootDir, transaction.transactionNo);
-        const result = await conflictChecker({ rootDir, accountingMonth: transaction.accountingMonth, sourceKeys, knownLocations });
-        await assertWorkflowMutationAllowed(rootDir, transaction.transactionNo);
-        return result;
-      });
-    }
-    catch (error) {
-      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-        await assertWorkflowMutationAllowed(rootDir, transaction.transactionNo);
-        const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
-        await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_preflight_failed", error: "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", syncedAt: "", updatedAt: now() });
-      });
-      throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
-    }
-    if (preflight.conflicts?.length) {
-      const conflicts = preflight.conflicts.filter((item) => item && sourceKeys.includes(item.sourceKey)
-        && isSafeWorkflowSheetText(item.sourceKey) && isSafeWorkflowSheetId(item.spreadsheetId)
-        && isSafeWorkflowSheetText(item.sheetName) && Number.isInteger(item.rowNumber) && item.rowNumber > 0)
-        .map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
-      const documentNos = [...new Set(conflicts.map((item) => item.sourceKey.split(":")[1]).filter(Boolean))].join(", ");
-      const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts, syncedAt: "", updatedAt: now() };
-      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-        await assertWorkflowMutationAllowed(rootDir, transaction.transactionNo);
-        await writeWorkflowSheetSyncMetadata(rootDir, transaction, result);
-      });
-      return result;
-    }
-    try {
-      const recorded = await withWorkflowMutationLease(rootDir, transactionNo, async () => {
-        await assertWorkflowCancellationBarrier(rootDir, transaction);
-        const result = await expenseRecorder({ rootDir, entry, now });
-        await assertWorkflowCancellationBarrier(rootDir, transaction);
-        return result;
-      });
-      return await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-        await assertWorkflowCancellationBarrier(rootDir, transaction);
-        const stamp = now();
-        if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
-          || !isSafeWorkflowSpreadsheetUrl(recorded.spreadsheetUrl, recorded.spreadsheetId)
-          || !isSafeWorkflowSheetText(recorded.sheetName) || recorded.sheetName !== transaction.accountingMonth
-          || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
-        const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
-        await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
+        try {
+          await assertWorkflowCancellationBarrier(rootDir, transaction);
+          const checked = await conflictChecker({ rootDir, accountingMonth: transaction.accountingMonth, sourceKeys, knownLocations });
+          await assertWorkflowCancellationBarrier(rootDir, transaction);
+          if (checked.conflicts?.length) {
+            const conflicts = checked.conflicts.filter((item) => item && sourceKeys.includes(item.sourceKey)
+              && isSafeWorkflowSheetText(item.sourceKey) && isSafeWorkflowSheetId(item.spreadsheetId)
+              && isSafeWorkflowSheetText(item.sheetName) && Number.isInteger(item.rowNumber) && item.rowNumber > 0)
+              .map((item) => ({ sourceKey: item.sourceKey, spreadsheetId: item.spreadsheetId, sheetName: item.sheetName, rowNumber: item.rowNumber }));
+            const documentNos = [...new Set(conflicts.map((item) => item.sourceKey.split(":")[1]).filter(Boolean))].join(", ");
+            const result = { syncStatus: "blocked_child_rows", code: "workflow_child_sheet_rows_exist", error: `พบแถวเอกสารย่อยใน Google Sheets (${documentNos}) จึงไม่สามารถซิงก์ workflow ได้`, conflicts, syncedAt: "", updatedAt: now() };
+            await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+              await assertWorkflowCancellationBarrier(rootDir, transaction);
+              await writeWorkflowSheetSyncMetadata(rootDir, transaction, result);
+            });
+            return { kind: "blocked", result };
+          }
+          return { kind: "clear", value: checked };
+        } catch (error) {
+          if (error?.safeCancellationError) throw error;
+          await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+            await assertWorkflowCancellationBarrier(rootDir, transaction);
+            const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+            await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_preflight_failed", error: "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", syncedAt: "", updatedAt: now() });
+          });
+          throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
+        }
       });
     } catch (error) {
       if (error?.safeCancellationError) throw error;
-      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-        await assertWorkflowCancellationBarrier(rootDir, transaction);
-        const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
-        await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_sync_failed", error: "ไม่สามารถซิงก์ Google Sheets ได้", syncedAt: "", updatedAt: now() });
+      throw new Error("ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้");
+    }
+    if (preflight.kind === "blocked") return preflight.result;
+    try {
+      return await withWorkflowMutationLease(rootDir, transactionNo, async () => {
+        try {
+          await assertWorkflowCancellationBarrier(rootDir, transaction);
+          const recorded = await expenseRecorder({ rootDir, entry, now });
+          await assertWorkflowCancellationBarrier(rootDir, transaction);
+          const stamp = now();
+          if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
+            || !isSafeWorkflowSpreadsheetUrl(recorded.spreadsheetUrl, recorded.spreadsheetId)
+            || !isSafeWorkflowSheetText(recorded.sheetName) || recorded.sheetName !== transaction.accountingMonth
+            || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
+          const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
+          await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+            await assertWorkflowCancellationBarrier(rootDir, transaction);
+            await writeWorkflowSheetSyncMetadata(rootDir, transaction, result);
+          });
+          return result;
+        } catch (error) {
+          if (error?.safeCancellationError) throw error;
+          await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+            await assertWorkflowCancellationBarrier(rootDir, transaction);
+            const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+            await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_sync_failed", error: "ไม่สามารถซิงก์ Google Sheets ได้", syncedAt: "", updatedAt: now() });
+          });
+          throw new Error("ไม่สามารถซิงก์ Google Sheets ได้");
+        }
       });
+    } catch (error) {
+      if (error?.safeCancellationError) throw error;
       throw new Error("ไม่สามารถซิงก์ Google Sheets ได้");
     }
   })();
@@ -4667,51 +4684,37 @@ async function syncExpenseRequestToDrive({
   if (!request) throw new Error("Expense request not found");
   await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
 
-  let uploadResult;
-
+  const transactionNo = request.payload?.transactionNo || request.transactionNo;
   try {
-    uploadResult = await withWorkflowMutationLease(rootDir, request.payload?.transactionNo || request.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
-      const result = await driveUploader({
-      rootDir,
-      folderPath: request.folderPath,
-      });
-      await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
-      return result;
+    return await withWorkflowMutationLease(rootDir, transactionNo, async () => {
+      try {
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        const uploadResult = await driveUploader({ rootDir, folderPath: request.folderPath });
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        const syncedAt = now();
+        const metadata = {
+          requestNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+          driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
+          uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
+        };
+        await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+          await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+          await writeDriveSyncMetadata(rootDir, request.folderPath, metadata);
+        });
+        return metadata;
+      } catch (error) {
+        const message = error.message || "Google Drive sync failed";
+        const failedMetadata = { requestNo, syncStatus: "sync_failed", error: message, updatedAt: now() };
+        await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+          await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+          await writeDriveSyncMetadata(rootDir, request.folderPath, failedMetadata);
+        });
+        throw new Error(message);
+      }
     });
   } catch (error) {
-    const message = error.message || "Google Drive sync failed";
-    const failedMetadata = {
-      requestNo,
-      syncStatus: "sync_failed",
-      error: message,
-      updatedAt: now(),
-    };
-    await withWorkflowMutationGate(rootDir, request.payload?.transactionNo || request.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
-      await writeDriveSyncMetadata(rootDir, request.folderPath, failedMetadata);
-    });
-    throw new Error(message);
+    throw error;
   }
-
-  await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
-  const syncedAt = now();
-  const metadata = {
-    requestNo,
-    syncStatus: "synced",
-    driveFolderId: uploadResult.driveFolderId,
-    driveFolderUrl: uploadResult.driveFolderUrl,
-    drivePath: uploadResult.drivePath,
-    uploadedFileCount: uploadResult.uploadedFileCount,
-    syncedAt,
-    updatedAt: syncedAt,
-  };
-  await withWorkflowMutationGate(rootDir, request.payload?.transactionNo || request.transactionNo, async () => {
-    await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo || request.transactionNo);
-    await writeDriveSyncMetadata(rootDir, request.folderPath, metadata);
-  });
-
-  return metadata;
 }
 
 async function syncSubstituteReceiptToDrive({
@@ -4724,52 +4727,35 @@ async function syncSubstituteReceiptToDrive({
 
   const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
   await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-  let uploadResult;
-
-  try {
-    uploadResult = await withWorkflowMutationLease(rootDir, receipt.payload?.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-      const result = await driveUploader({
-      rootDir,
-      folderPath: receipt.folderPath,
+  const transactionNo = receipt.payload?.transactionNo;
+  return withWorkflowMutationLease(rootDir, transactionNo, async () => {
+    try {
+      await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+      const uploadResult = await driveUploader({ rootDir, folderPath: receipt.folderPath });
+      await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+      const syncedAt = now();
+      const metadata = {
+        receiptNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+        driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
+        uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
+      };
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        await writeDriveSyncMetadata(rootDir, receipt.folderPath, metadata);
       });
-      await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-      return result;
-    });
-  } catch (error) {
-    const failedAt = now();
-    const failedMetadata = {
-      receiptNo,
-      syncStatus: "sync_failed",
-      error: error.message || "Google Drive sync failed",
-      syncedAt: "",
-      updatedAt: failedAt,
-    };
-    await withWorkflowMutationGate(rootDir, receipt.payload?.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-      await writeDriveSyncMetadata(rootDir, receipt.folderPath, failedMetadata);
-    });
-    throw error;
-  }
-
-  await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-  const syncedAt = now();
-  const metadata = {
-    receiptNo,
-    syncStatus: "synced",
-    driveFolderId: uploadResult.driveFolderId,
-    driveFolderUrl: uploadResult.driveFolderUrl,
-    drivePath: uploadResult.drivePath,
-    uploadedFileCount: uploadResult.uploadedFileCount,
-    syncedAt,
-    updatedAt: syncedAt,
-  };
-  await withWorkflowMutationGate(rootDir, receipt.payload?.transactionNo, async () => {
-    await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
-    await writeDriveSyncMetadata(rootDir, receipt.folderPath, metadata);
+      return metadata;
+    } catch (error) {
+      const failedMetadata = {
+        receiptNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed",
+        syncedAt: "", updatedAt: now(),
+      };
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        await writeDriveSyncMetadata(rootDir, receipt.folderPath, failedMetadata);
+      });
+      throw error;
+    }
   });
-
-  return metadata;
 }
 
 // Turns an uploader/Drive error into the Thai sentence a user reads. The two
@@ -4830,48 +4816,33 @@ async function syncWorkflowDocumentToDrive({
   // recursively, so it must never be pointed outside rootDir.
   assertPathWithinDirectory(rootDir, path.join(rootDir, record.folderPath || ""), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
 
-  let uploadResult;
-  try {
-    uploadResult = await withWorkflowMutationLease(rootDir, record.payload?.transactionNo || record.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
-      const result = await driveUploader({ rootDir, folderPath: record.folderPath });
-      await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
-      return result;
-    });
-  } catch (error) {
-    await withWorkflowMutationGate(rootDir, record.payload?.transactionNo || record.transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
-      await writeDriveSyncMetadata(rootDir, record.folderPath, {
-        documentKind,
-        documentNo,
-        syncStatus: "sync_failed",
-        error: error.message || "Google Drive sync failed",
-        syncedAt: "",
-        updatedAt: now(),
+  const transactionNo = record.payload?.transactionNo || record.transactionNo;
+  return withWorkflowMutationLease(rootDir, transactionNo, async () => {
+    try {
+      await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+      const uploadResult = await driveUploader({ rootDir, folderPath: record.folderPath });
+      await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+      const syncedAt = now();
+      const metadata = {
+        documentKind, documentNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+        driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
+        uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
+      };
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        await writeDriveSyncMetadata(rootDir, record.folderPath, metadata);
       });
-    });
-    throw error;
-  }
-
-  await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
-  const syncedAt = now();
-  const metadata = {
-    documentKind,
-    documentNo,
-    syncStatus: "synced",
-    driveFolderId: uploadResult.driveFolderId,
-    driveFolderUrl: uploadResult.driveFolderUrl,
-    drivePath: uploadResult.drivePath,
-    uploadedFileCount: uploadResult.uploadedFileCount,
-    syncedAt,
-    updatedAt: syncedAt,
-  };
-  await withWorkflowMutationGate(rootDir, record.payload?.transactionNo || record.transactionNo, async () => {
-    await assertWorkflowMutationAllowed(rootDir, record.payload?.transactionNo || record.transactionNo);
-    await writeDriveSyncMetadata(rootDir, record.folderPath, metadata);
+      return metadata;
+    } catch (error) {
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
+        await writeDriveSyncMetadata(rootDir, record.folderPath, {
+          documentKind, documentNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed", syncedAt: "", updatedAt: now(),
+        });
+      });
+      throw error;
+    }
   });
-
-  return metadata;
 }
 
 // documentKind -> that document's OWN standalone Drive sync action. The
@@ -5035,44 +5006,46 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
   for (const doc of orderedChildren) {
     documents.push(await syncWorkflowChildDocumentToDrive(rootDir, doc, { driveUploader, now }));
   }
-  const missingDocuments = documents.filter((doc) => doc.syncStatus !== "synced");
+  return withWorkflowMutationLease(rootDir, transactionNo, async () => {
+    await assertWorkflowCancellationBarrier(rootDir, transaction);
+    const missingDocuments = documents.filter((doc) => doc.syncStatus !== "synced");
 
-  const previousFolder = previousWorkflowTransactionFolderSync(transaction.driveSync);
-  let transactionFolder;
-  if (previousFolder?.syncStatus === "synced") {
-    transactionFolder = { ...previousFolder, alreadySynced: true };
-  } else if (missingDocuments.length) {
-    transactionFolder = { syncStatus: "waiting_for_documents", message: WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE };
-  } else {
+    const previousFolder = previousWorkflowTransactionFolderSync(transaction.driveSync);
+    let transactionFolder;
+    if (previousFolder?.syncStatus === "synced") {
+      transactionFolder = { ...previousFolder, alreadySynced: true };
+    } else if (missingDocuments.length) {
+      transactionFolder = { syncStatus: "waiting_for_documents", message: WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE };
+    } else {
     // Persisted first so the workflow-summary.md this rewrites -- and the
     // upload right after carries -- already links every child's Drive folder.
-    await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, transactionNo);
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+      await assertWorkflowCancellationBarrier(rootDir, transaction);
       await persistWorkflowTransaction(
         rootDir,
         { ...transaction, driveSync: { ...(transaction.driveSync || {}), documents }, updatedAt: now() },
         childDocuments,
       );
     });
-    transactionFolder = await withWorkflowMutationLease(rootDir, transactionNo, async () => {
-      await assertWorkflowMutationAllowed(rootDir, transactionNo);
+      transactionFolder = await (async () => {
+      await assertWorkflowCancellationBarrier(rootDir, transaction);
       const result = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
-      await assertWorkflowMutationAllowed(rootDir, transactionNo);
+      await assertWorkflowCancellationBarrier(rootDir, transaction);
       return result;
-    });
-  }
+    })();
+    }
 
-  const failures = [
+    const failures = [
     ...missingDocuments.map((doc) => ({ name: driveSyncDocumentName(doc.documentKind, doc.documentNo), error: doc.error, message: doc.message })),
     ...(transactionFolder.syncStatus === "sync_failed"
       ? [{ name: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo}`, error: transactionFolder.error, message: transactionFolder.message }]
       : []),
   ];
-  const allSynced = failures.length === 0 && transactionFolder.syncStatus === "synced";
-  const syncedDocumentCount = documents.length - missingDocuments.length;
+    const allSynced = failures.length === 0 && transactionFolder.syncStatus === "synced";
+    const syncedDocumentCount = documents.length - missingDocuments.length;
 
-  let failureSummary = {};
-  if (!allSynced) {
+    let failureSummary = {};
+    if (!allSynced) {
     const lines = [
       `สำเร็จ ${syncedDocumentCount} จาก ${documents.length} เอกสาร ยังไม่สำเร็จ:`,
       ...failures.map((failure) => `- ${failure.name}: ${failure.message}`),
@@ -5080,11 +5053,11 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
     if (transactionFolder.syncStatus === "waiting_for_documents") {
       lines.push(`- โฟลเดอร์ธุรกรรม ${transaction.transactionNo} (ชุดรวม PDF และสรุป): ${WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE}`);
     }
-    failureSummary = { error: failures[0].error, message: lines.join("\n") };
-  }
+      failureSummary = { error: failures[0]?.error || transactionFolder.error || "Google Drive sync failed", message: lines.join("\n") };
+    }
 
-  const finishedAt = now();
-  const metadata = {
+    const finishedAt = now();
+    const metadata = {
     syncStatus: allSynced ? "synced" : "sync_failed",
     ...failureSummary,
     syncedDocumentCount,
@@ -5105,16 +5078,17 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
     updatedAt: finishedAt,
   };
 
-  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-    await assertWorkflowMutationAllowed(rootDir, transactionNo);
-    await persistWorkflowTransaction(
-      rootDir,
-      { ...transaction, driveSync: metadata, updatedAt: finishedAt },
-      childDocuments,
-    );
-  });
+    await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+      await assertWorkflowCancellationBarrier(rootDir, transaction);
+      await persistWorkflowTransaction(
+        rootDir,
+        { ...transaction, driveSync: metadata, updatedAt: finishedAt },
+        childDocuments,
+      );
+    });
 
-  return metadata;
+    return metadata;
+  });
 }
 
 // One sync per transaction at a time. The uploader is not idempotent, so two

@@ -2812,8 +2812,10 @@ test("cancelWorkflowTransaction waits for an in-flight child Drive lease before 
 
     releaseDrive();
     const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
-    assert.equal(syncResult.status, "rejected");
-    assert.equal(syncResult.reason.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const driveMetadata = JSON.parse(await readFile(join(rootDir, request.folderPath, "data", "drive-sync.json"), "utf8"));
+    assert.equal(driveMetadata.driveFolderId, "drive-folder-lease");
     assert.equal(cancellationResult.status, "fulfilled");
     assert.equal(cancellationResult.value.status, "cancelled");
   } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
@@ -2823,6 +2825,8 @@ test("cancelWorkflowTransaction closes Sheets admission while the parent row rec
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-sheets-lease-"));
   try {
     const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const deleted = [];
+    const sheetDeleter = async (input) => { deleted.push(input.sourceKey); return { status: "deleted", deletedCount: 1, checkedLocations: [] }; };
     let releaseRecorder;
     let recorderEntered;
     const recorderStarted = new Promise((resolve) => { recorderEntered = resolve; });
@@ -2853,7 +2857,7 @@ test("cancelWorkflowTransaction closes Sheets admission while the parent row rec
       confirmed: true,
       cancelledBy: "ผู้ทดสอบ",
       requestedAt: "2026-09-21T09:01:00.000Z",
-      sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+      sheetDeleter,
     });
     cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2862,8 +2866,10 @@ test("cancelWorkflowTransaction closes Sheets admission while the parent row rec
 
     releaseRecorder();
     const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
-    assert.ok(["fulfilled", "rejected"].includes(syncResult.status));
-    if (syncResult.status === "rejected") assert.equal(syncResult.reason.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const sheetMetadata = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+    assert.equal(sheetMetadata.spreadsheetId, "sheet-lease");
     assert.equal(cancellationResult.status, "fulfilled");
     let finalCancellation = cancellationResult.value;
     if (finalCancellation.status === "cancellation_pending") {
@@ -2873,10 +2879,11 @@ test("cancelWorkflowTransaction closes Sheets admission while the parent row rec
         confirmed: true,
         cancelledBy: "ผู้ทดสอบ",
         requestedAt: "2026-09-21T09:01:00.000Z",
-        sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+        sheetDeleter,
       });
     }
     assert.equal(finalCancellation.status, "cancelled");
+    assert.deepEqual(deleted.sort(), ["expense_request:REQ-2026-09-0042", "workflow_transaction:TXN-2026-09-0042"].sort());
   } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
 });
 
