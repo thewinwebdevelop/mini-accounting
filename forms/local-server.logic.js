@@ -3440,7 +3440,7 @@ async function validateFrozenCancellationPlan(rootDir, transaction, sidecar) {
     const child = childByKey.get(`${effect.documentKind}:${effect.documentNo}`);
     if (!child || child.workflowStepId !== effect.workflowStepId) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ความสัมพันธ์เอกสารย่อยของ Workflow เปลี่ยนแปลงหลังเริ่มการยกเลิก");
     const currentStatus = cancellationNativeStatus(child.documentKind, child);
-    const targetStatus = effect.target === "void" ? "voided" : effect.target === "cancel" ? "cancelled" : "completed";
+    const targetStatus = effect.target === "void" ? "voided" : effect.target === "cancel" ? "cancelled" : effect.target === "already_satisfied" ? (effect.originalStatus === "voided" ? "voided" : "cancelled") : "completed";
     const alreadyApplied = currentStatus === targetStatus && hasParentAudit(child);
     if (effect.status === "completed" && !alreadyApplied) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "สถานะเอกสารย่อยของ Workflow เปลี่ยนแปลงหลังเริ่มการยกเลิก");
     if (effect.status === "pending" && currentStatus !== effect.originalStatus && !alreadyApplied) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "สถานะเอกสารย่อยของ Workflow เปลี่ยนแปลงหลังเริ่มการยกเลิก");
@@ -4223,19 +4223,25 @@ async function syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflic
       await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
     }
     try {
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      const recorded = await expenseRecorder({ rootDir, entry, now });
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      const stamp = now();
-      if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
-        || !isSafeWorkflowSpreadsheetUrl(recorded.spreadsheetUrl, recorded.spreadsheetId)
-        || !isSafeWorkflowSheetText(recorded.sheetName) || recorded.sheetName !== transaction.accountingMonth
-        || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
-      const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
-      await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
+      return await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrier(rootDir, transaction);
+        const recorded = await expenseRecorder({ rootDir, entry, now });
+        await assertWorkflowCancellationBarrier(rootDir, transaction);
+        const stamp = now();
+        if (!recorded || recorded.syncStatus !== "synced" || !isSafeWorkflowSheetId(recorded.spreadsheetId)
+          || !isSafeWorkflowSpreadsheetUrl(recorded.spreadsheetUrl, recorded.spreadsheetId)
+          || !isSafeWorkflowSheetText(recorded.sheetName) || recorded.sheetName !== transaction.accountingMonth
+          || !Number.isInteger(recorded.rowNumber) || recorded.rowNumber < 1) throw new Error("invalid recorder result");
+        const result = { syncStatus: "synced", sourceKey: entry.sourceKey, sourceDocumentKind: source.documentKind, sourceDocumentNo: source.documentKind === "expense_request" ? source.requestNo : source.receiptNo, sourceWorkflowStepId: source.workflowStepId || "", spreadsheetId: recorded.spreadsheetId || "", spreadsheetUrl: recorded.spreadsheetUrl || "", sheetName: recorded.sheetName || "", rowNumber: recorded.rowNumber || 0, syncedAt: stamp, updatedAt: stamp };
+        await writeWorkflowSheetSyncMetadata(rootDir, transaction, result); return result;
+      });
     } catch (error) {
-      const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
-      await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_sync_failed", error: "ไม่สามารถซิงก์ Google Sheets ได้", syncedAt: "", updatedAt: now() });
+      if (error?.safeCancellationError) throw error;
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        await assertWorkflowCancellationBarrier(rootDir, transaction);
+        const prior = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+        await writeWorkflowSheetSyncMetadata(rootDir, transaction, { ...(prior || {}), syncStatus: "sync_failed", code: "workflow_sheet_sync_failed", error: "ไม่สามารถซิงก์ Google Sheets ได้", syncedAt: "", updatedAt: now() });
+      });
       throw new Error("ไม่สามารถซิงก์ Google Sheets ได้");
     }
   })();
@@ -4892,15 +4898,15 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
   } else {
     // Persisted first so the workflow-summary.md this rewrites -- and the
     // upload right after carries -- already links every child's Drive folder.
-    await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    transactionFolder = await withWorkflowMutationGate(rootDir, transactionNo, async () => {
       await assertWorkflowMutationAllowed(rootDir, transactionNo);
       await persistWorkflowTransaction(
         rootDir,
         { ...transaction, driveSync: { ...(transaction.driveSync || {}), documents }, updatedAt: now() },
         childDocuments,
       );
+      return uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
     });
-    transactionFolder = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
   }
 
   const failures = [
@@ -4946,11 +4952,14 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
     updatedAt: finishedAt,
   };
 
-  await persistWorkflowTransaction(
-    rootDir,
-    { ...transaction, driveSync: metadata, updatedAt: finishedAt },
-    childDocuments,
-  );
+  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, transactionNo);
+    await persistWorkflowTransaction(
+      rootDir,
+      { ...transaction, driveSync: metadata, updatedAt: finishedAt },
+      childDocuments,
+    );
+  });
 
   return metadata;
 }

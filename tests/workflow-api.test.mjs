@@ -1227,6 +1227,32 @@ test("local server exposes workflow transaction completion, Drive, and Sheets sy
   assert.match(source, /\/sync-drive/);
   assert.match(source, /syncWorkflowTransactionToSheets/);
   assert.match(source, /\/sync-sheets/);
+  assert.match(source, /cancelWorkflowTransaction/);
+  assert.match(source, /\/cancel/);
+});
+
+test("POST workflow cancellation requires literal confirmation over the real loopback route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-http-"));
+  const server = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(server);
+    const baseUrl = `http://localhost:${port}`;
+    const started = await requestJson(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-09", title: "HTTP cancel confirmation" }),
+    });
+    assert.equal(started.status, 200);
+    const refused = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/cancel`, { method: "POST", body: JSON.stringify({ cancelledBy: "hostile" }) });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.code, "CANCELLATION_CONFIRMATION_REQUIRED");
+    const detail = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}`);
+    assert.equal(detail.status, 200);
+    assert.notEqual(detail.body.status, "cancellation_pending");
+    assert.notEqual(detail.body.status, "cancelled");
+  } finally {
+    await stopServer(server);
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
