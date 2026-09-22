@@ -74,6 +74,11 @@ const substituteReceiptMutationQueues = new Map();
 const workflowCancellationQueues = new Map();
 const workflowMutationGates = new Map();
 const workflowMutationLeases = new Map();
+// An in-memory admission barrier closes the small interval between a
+// cancellation request and its durable sidecar.  It is always set/cleared
+// under the short mutation gate; remote work only sees it while acquiring a
+// lease and never holds the gate across the network call.
+const workflowCancellationIntents = new Map();
 
 const EXPENSE_NUMBERED_STATUS_LABELS = {
   draft: "แบบร่าง",
@@ -142,10 +147,17 @@ function withWorkflowMutationGate(rootDir, transactionNo, work) {
 async function withWorkflowMutationLease(rootDir, transactionNo, work) {
   if (!transactionNo) return work();
   const key = `${path.resolve(rootDir)}\u0000${transactionNo}`;
-  const previous = workflowMutationLeases.get(key) || Promise.resolve();
+  let previous;
   let release;
-  const lease = previous.catch(() => {}).then(() => new Promise((resolve) => { release = resolve; }));
-  workflowMutationLeases.set(key, lease);
+  let lease;
+  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    if (workflowCancellationIntents.has(key)) {
+      throw workflowCancellationError("WORKFLOW_CANCELLATION_IN_PROGRESS", "Workflow นี้อยู่ระหว่างการยกเลิก");
+    }
+    previous = workflowMutationLeases.get(key) || Promise.resolve();
+    lease = previous.catch(() => {}).then(() => new Promise((resolve) => { release = resolve; }));
+    workflowMutationLeases.set(key, lease);
+  });
   await previous.catch(() => {});
   try { return await work(); }
   finally {
@@ -158,6 +170,24 @@ async function awaitWorkflowMutationLease(rootDir, transactionNo) {
   if (!transactionNo) return;
   const key = `${path.resolve(rootDir)}\u0000${transactionNo}`;
   await (workflowMutationLeases.get(key) || Promise.resolve()).catch(() => {});
+}
+
+function cancellationIntentKey(rootDir, transactionNo) {
+  return `${path.resolve(rootDir)}\u0000${transactionNo}`;
+}
+
+async function setWorkflowCancellationIntent(rootDir, transactionNo) {
+  const key = cancellationIntentKey(rootDir, transactionNo);
+  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    workflowCancellationIntents.set(key, true);
+  });
+}
+
+async function clearWorkflowCancellationIntent(rootDir, transactionNo) {
+  const key = cancellationIntentKey(rootDir, transactionNo);
+  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+    workflowCancellationIntents.delete(key);
+  });
 }
 
 // Fixed name so the packet always overwrites the previous one on refresh
@@ -3439,6 +3469,9 @@ async function assertWorkflowCancellationBarrier(rootDir, transaction) {
 
 async function assertWorkflowMutationAllowed(rootDir, transactionNo) {
   if (!transactionNo) return;
+  if (workflowCancellationIntents.has(cancellationIntentKey(rootDir, transactionNo))) {
+    throw workflowCancellationError("WORKFLOW_CANCELLATION_IN_PROGRESS", "Workflow นี้อยู่ระหว่างการยกเลิก");
+  }
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (transaction) await assertWorkflowCancellationBarrier(rootDir, transaction);
 }
@@ -3632,19 +3665,35 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
   const key = `${path.resolve(rootDir)}\u0000${transactionNo}`;
   const previous = workflowCancellationQueues.get(key) || Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
-    let transaction = await getWorkflowTransaction(rootDir, transactionNo);
-    if (!transaction) throw workflowCancellationError("WORKFLOW_NOT_FOUND", "ไม่พบธุรกรรม", 404);
-    await awaitWorkflowMutationLease(rootDir, transactionNo);
-    let sidecar = await readWorkflowCancellationSidecar(rootDir, transaction);
-    let indexPending = false;
-    if (!sidecar) {
-      ({ transaction, sidecar, indexPending } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt));
+    let intentActive = true;
+    try {
+      let transaction;
+      // Admission close and transaction lookup are one short local state
+      // transition.  Once this completes, new remote work cannot register a
+      // lease until the cancellation either publishes its sidecar or clears
+      // the intent on a pre-sidecar validation failure.
+      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+        transaction = await getWorkflowTransaction(rootDir, transactionNo);
+        if (!transaction) throw workflowCancellationError("WORKFLOW_NOT_FOUND", "ไม่พบธุรกรรม", 404);
+        workflowCancellationIntents.set(key, true);
+      });
+      await awaitWorkflowMutationLease(rootDir, transactionNo);
+      let sidecar = await readWorkflowCancellationSidecar(rootDir, transaction);
+      const existingSidecar = Boolean(sidecar);
+      let indexPending = false;
+      if (!sidecar) {
+        ({ transaction, sidecar, indexPending } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt));
+      }
+      // The durable sidecar now owns the barrier.  Release the in-memory
+      // admission intent before any external compensation work begins.
+      await clearWorkflowCancellationIntent(rootDir, transactionNo);
+      intentActive = false;
       if (indexPending) return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
-    } else if (!(await persistCancellationIndex(rootDir, transaction, sidecar))) {
-      return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
-    }
+      if (existingSidecar && !(await persistCancellationIndex(rootDir, transaction, sidecar))) {
+        return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
+      }
 
-    const planChildren = await validateFrozenCancellationPlan(rootDir, transaction, sidecar);
+      const planChildren = await validateFrozenCancellationPlan(rootDir, transaction, sidecar);
     const childLookup = new Map(planChildren.map((child) => [`${child.documentKind}:${child.documentNo}`, child]));
     for (const effect of sidecar.stockEffects) {
       if (effect.status === "completed") continue;
@@ -3675,7 +3724,13 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
       await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar);
       return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
     }
-    return cancellationSnapshot(rootDir, transaction, sidecar);
+      return cancellationSnapshot(rootDir, transaction, sidecar);
+    } catch (error) {
+      if (intentActive) {
+        await clearWorkflowCancellationIntent(rootDir, transactionNo).catch(() => {});
+      }
+      throw error;
+    }
   });
   workflowCancellationQueues.set(key, operation);
   try { return await operation; } finally { if (workflowCancellationQueues.get(key) === operation) workflowCancellationQueues.delete(key); }

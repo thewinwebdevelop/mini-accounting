@@ -2801,12 +2801,82 @@ test("cancelWorkflowTransaction waits for an in-flight child Drive lease before 
     assert.equal(cancellationFinished, false);
     assert.equal(existsSync(join(rootDir, transaction.folderPath, "data", "workflow-cancellation.json")), false);
 
+    await assert.rejects(
+      () => syncExpenseRequestToDrive({
+        rootDir,
+        requestNo: request.requestNo,
+        driveUploader: async () => ({ driveFolderId: "late", driveFolderUrl: "https://drive.google.com/drive/folders/late", drivePath: "late", uploadedFileCount: 1 }),
+      }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+
     releaseDrive();
     const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
     assert.equal(syncResult.status, "rejected");
     assert.equal(syncResult.reason.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
     assert.equal(cancellationResult.status, "fulfilled");
     assert.equal(cancellationResult.value.status, "cancelled");
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
+test("cancelWorkflowTransaction closes Sheets admission while the parent row recorder is delayed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-sheets-lease-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    let releaseRecorder;
+    let recorderEntered;
+    const recorderStarted = new Promise((resolve) => { recorderEntered = resolve; });
+    const recorderRelease = new Promise((resolve) => { releaseRecorder = resolve; });
+    const syncPromise = syncWorkflowTransactionToSheets({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      conflictChecker: async () => ({ conflicts: [], checkedLocations: [] }),
+      expenseRecorder: async () => {
+        recorderEntered();
+        await recorderRelease;
+        return {
+          syncStatus: "synced",
+          spreadsheetId: "sheet-lease",
+          spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-lease",
+          sheetName: "2026-09",
+          rowNumber: 7,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await recorderStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+
+    releaseRecorder();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.ok(["fulfilled", "rejected"].includes(syncResult.status));
+    if (syncResult.status === "rejected") assert.equal(syncResult.reason.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
+    assert.equal(cancellationResult.status, "fulfilled");
+    let finalCancellation = cancellationResult.value;
+    if (finalCancellation.status === "cancellation_pending") {
+      finalCancellation = await cancelWorkflowTransaction({
+        rootDir,
+        transactionNo: fixture.transactionNo,
+        confirmed: true,
+        cancelledBy: "ผู้ทดสอบ",
+        requestedAt: "2026-09-21T09:01:00.000Z",
+        sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+      });
+    }
+    assert.equal(finalCancellation.status, "cancelled");
   } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
 });
 
