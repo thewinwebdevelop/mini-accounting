@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -81,22 +81,41 @@ test("shared persistence supports no-tax vendors and requires bound duplicate co
     assert.equal(created.status, "active");
     assert.equal((await serverLogic.listVendors(rootDir)).length, 1);
 
+    let duplicateError;
     await assert.rejects(
       serverLogic.createVendor(rootDir, { name: " ไม่มีเลขภาษี " }),
-      (error) => error.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED"
-        && error.matches.some((item) => item.id === created.id),
+      (error) => {
+        duplicateError = error;
+        return error.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED"
+          && error.matches.some((item) => item.id === created.id)
+          && /^[a-f0-9]{64}$/.test(error.candidateFingerprint);
+      },
     );
     await assert.rejects(
-      serverLogic.createVendor(rootDir, { name: "ไม่มีเลขภาษี" }, { confirmDuplicate: true, expectedMatchIds: ["VENDOR-stale"] }),
+      serverLogic.createVendor(rootDir, { name: "ไม่มีเลขภาษี" }, { confirmDuplicate: true, expectedMatchIds: [created.id], expectedCandidateFingerprint: "stale" }),
       (error) => error.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED",
     );
     const duplicate = await serverLogic.createVendor(rootDir, { name: "ไม่มีเลขภาษี" }, {
       confirmDuplicate: true,
       expectedMatchIds: [created.id],
+      expectedCandidateFingerprint: duplicateError.candidateFingerprint,
       now: () => "2026-09-23T00:00:01.000Z",
       idSuffix: "two",
     });
     assert.notEqual(duplicate.id, created.id);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("does not lose concurrent vendor creations and writes atomically", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-vendor-concurrency-"));
+  try {
+    const created = await Promise.all(Array.from({ length: 20 }, (_, index) => serverLogic.createVendor(rootDir, { name: `พร้อมกัน ${index}` }, { idSuffix: `concurrent-${index}` })));
+    assert.equal(new Set(created.map((vendor) => vendor.id)).size, 20);
+    assert.equal((await serverLogic.listVendors(rootDir)).length, 20);
+    const stored = JSON.parse(await readFile(join(rootDir, "config", "vendors.json"), "utf8"));
+    assert.equal(stored.vendors.length, 20);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

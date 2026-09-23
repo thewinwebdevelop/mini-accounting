@@ -1,4 +1,5 @@
-const { mkdir, readFile, writeFile } = require("node:fs/promises");
+const { mkdir, readFile, rename, rm, writeFile } = require("node:fs/promises");
+const { createHash } = require("node:crypto");
 const path = require("node:path");
 
 const VENDOR_FIELDS = [
@@ -18,6 +19,7 @@ const VENDOR_FIELDS = [
 
 const SNAPSHOT_FIELDS = VENDOR_FIELDS.filter((field) => field !== "note");
 const DEFAULT_ROOT_DIR = process.env.SWEET_HOUSE_ROOT_DIR || process.cwd();
+const vendorMutationQueues = new Map();
 
 function cleanText(value) {
   return String(value ?? "").trim();
@@ -53,6 +55,11 @@ function cloneVendor(record) {
 
 function vendorSnapshotFromRecord(record = {}) {
   return Object.fromEntries(SNAPSHOT_FIELDS.map((field) => [field, cleanText(record?.[field])]));
+}
+
+function vendorCandidateFingerprint(input = {}) {
+  const normalized = normalizeVendorInput(input);
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
 function normalizedMatchValue(value) {
@@ -160,7 +167,24 @@ async function readAllVendors(rootDir) {
 async function writeAllVendors(rootDir, vendors) {
   const filePath = vendorsPath(rootDir);
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify({ vendors }, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify({ vendors }, null, 2)}\n`, "utf8");
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function withVendorMutation(rootDir, work) {
+  const key = path.resolve(rootDir);
+  const previous = vendorMutationQueues.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(work);
+  vendorMutationQueues.set(key, next);
+  return next.finally(() => {
+    if (vendorMutationQueues.get(key) === next) vendorMutationQueues.delete(key);
+  });
 }
 
 function sortVendors(vendors) {
@@ -203,10 +227,11 @@ function createVendorId(options = {}) {
   return `VENDOR-${suffix}`;
 }
 
-function duplicateError(matches, stale = false) {
+function duplicateError(matches, candidateFingerprint, stale = false) {
   const error = new Error(stale ? "ข้อมูลยืนยันผู้ขายซ้ำไม่ตรงกับข้อมูลล่าสุด" : "พบผู้ขายที่อาจซ้ำ กรุณายืนยันก่อนบันทึก");
   error.code = "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED";
   error.statusCode = 409;
+  error.candidateFingerprint = candidateFingerprint;
   error.matches = matches.map((match) => ({
     id: match.id,
     name: match.name,
@@ -219,59 +244,72 @@ function duplicateError(matches, stale = false) {
 async function createVendor(first, second, third) {
   const { rootDir, input, options } = resolveRootAndOptions(first, second, third);
   const normalized = normalizeVendorInput(input || {});
-  const vendors = await readAllVendors(rootDir);
-  const matches = findVendorMatches(normalized, vendors);
-  const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
-  const actualIds = matches.map((match) => match.id).sort();
-  if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || expectedIds.length !== actualIds.length || expectedIds.some((id, index) => id !== actualIds[index]))) {
-    throw duplicateError(matches, Boolean(options.confirmDuplicate || expectedIds.length));
-  }
+  const candidateFingerprint = vendorCandidateFingerprint(normalized);
+  return withVendorMutation(rootDir, async () => {
+    const vendors = await readAllVendors(rootDir);
+    const matches = findVendorMatches(normalized, vendors);
+    const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
+    const actualIds = matches.map((match) => match.id).sort();
+    const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
+    const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((id, index) => id !== actualIds[index]);
+    const confirmationCandidate = expectedFingerprint !== candidateFingerprint;
+    if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
+      throw duplicateError(matches, candidateFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
+    }
 
-  const timestamp = options.now ? options.now() : new Date().toISOString();
-  const vendor = {
-    id: createVendorId(options),
-    ...normalized,
-    status: "active",
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  await writeAllVendors(rootDir, [...vendors, vendor]);
-  return cloneVendor(vendor);
+    const timestamp = options.now ? options.now() : new Date().toISOString();
+    const vendor = {
+      id: createVendorId(options),
+      ...normalized,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await writeAllVendors(rootDir, [...vendors, vendor]);
+    return cloneVendor(vendor);
+  });
 }
 
 async function updateVendor(first, second, third) {
   const { rootDir, id, patch } = resolveRootAndId(first, second, third);
-  const vendors = await readAllVendors(rootDir);
-  const index = vendors.findIndex((vendor) => vendor.id === cleanText(id));
-  if (index < 0) {
-    const error = new Error("ไม่พบผู้ขาย");
-    error.code = "VENDOR_NOT_FOUND";
-    error.statusCode = 404;
-    throw error;
-  }
-  const current = vendors[index];
-  const options = patch?.options || {};
-  const nextInput = normalizeVendorInput({ ...current, ...(patch || {}) });
-  const matches = findVendorMatches(nextInput, vendors.filter((vendor) => vendor.id !== current.id));
-  const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
-  const actualIds = matches.map((match) => match.id).sort();
-  if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || expectedIds.length !== actualIds.length || expectedIds.some((matchId, matchIndex) => matchId !== actualIds[matchIndex]))) {
-    throw duplicateError(matches, Boolean(options.confirmDuplicate || expectedIds.length));
-  }
-  const timestamp = options.now ? options.now() : new Date().toISOString();
-  const updated = {
-    ...current,
-    ...nextInput,
-    status: normalizeStatus(patch?.status || current.status),
-    updatedAt: timestamp,
-  };
-  await writeAllVendors(rootDir, vendors.map((vendor, itemIndex) => itemIndex === index ? updated : vendor));
-  return cloneVendor(updated);
+  return withVendorMutation(rootDir, async () => {
+    const vendors = await readAllVendors(rootDir);
+    const index = vendors.findIndex((vendor) => vendor.id === cleanText(id));
+    if (index < 0) {
+      const error = new Error("ไม่พบผู้ขาย");
+      error.code = "VENDOR_NOT_FOUND";
+      error.statusCode = 404;
+      throw error;
+    }
+    const current = vendors[index];
+    const options = patch?.options || {};
+    const nextInput = normalizeVendorInput({ ...current, ...(patch || {}) });
+    const nextFingerprint = vendorCandidateFingerprint(nextInput);
+    const matches = findVendorMatches(nextInput, vendors.filter((vendor) => vendor.id !== current.id));
+    const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
+    const actualIds = matches.map((match) => match.id).sort();
+    const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
+    const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((matchId, matchIndex) => matchId !== actualIds[matchIndex]);
+    const confirmationCandidate = expectedFingerprint !== nextFingerprint;
+    if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
+      throw duplicateError(matches, nextFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
+    }
+    const timestamp = options.now ? options.now() : new Date().toISOString();
+    const updated = {
+      ...current,
+      ...nextInput,
+      status: normalizeStatus(patch?.status || current.status),
+      updatedAt: timestamp,
+    };
+    await writeAllVendors(rootDir, vendors.map((vendor, itemIndex) => itemIndex === index ? updated : vendor));
+    return cloneVendor(updated);
+  });
 }
 
 module.exports = {
   VENDOR_FIELDS,
   SNAPSHOT_FIELDS,
+  vendorCandidateFingerprint,
   normalizeVendorInput,
   vendorSnapshotFromRecord,
   findVendorMatches,
