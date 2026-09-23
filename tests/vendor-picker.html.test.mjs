@@ -23,6 +23,19 @@ test("generic workflow shell covers all supported vendor document kinds", async 
   assert.match(html, /name="payeeName"/);
   assert.match(await readFile(new URL("../forms/workflow-document.logic.browser.js", import.meta.url), "utf8"), /vendorId/);
   assert.match(await readFile(new URL("../forms/workflow-document.logic.browser.js", import.meta.url), "utf8"), /saveVendorPresetIfRequested/);
+  assert.match(html, /searchable-select\.logic\.browser\.js/);
+});
+
+test("document save keeps vendor preset failure visible", async () => {
+  const sources = [
+    await readFile(new URL("../forms/expense-request.html", import.meta.url), "utf8"),
+    await readFile(new URL("../forms/substitute-receipt.logic.browser.js", import.meta.url), "utf8"),
+    await readFile(new URL("../forms/workflow-document.logic.browser.js", import.meta.url), "utf8"),
+  ];
+  for (const source of sources) {
+    assert.match(source, /vendorPresetError/);
+    assert.match(source, /บันทึกผู้ขายไม่สำเร็จ/);
+  }
 });
 
 test("shared picker loads active vendors and copies only mapped fields", async () => {

@@ -495,7 +495,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const { vendors } = await api("/api/vendors");
-    state.vendors = (vendors || []).filter((vendor) => vendor.status !== "inactive");
+    state.vendors = (vendors || []).filter((vendor) => vendor.status === "active");
     renderVendorOptions();
   }
 
@@ -644,7 +644,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
-    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
+    let vendorPresetError = "";
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
     state.status = "draft";
     state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
@@ -659,7 +660,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     setReceiptState("draft");
-    setStatus(`บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, "success");
+    setStatus(vendorPresetError || `บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, vendorPresetError ? "error" : "success");
   }
 
   async function submitForApproval() {
@@ -679,7 +680,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
-    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
+    let vendorPresetError = "";
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
     state.status = status;
     state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
@@ -694,7 +696,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     setReceiptState(state.status);
-    setStatus(`ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, "success");
+    setStatus(vendorPresetError || `ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
 
   async function approveReceipt() {

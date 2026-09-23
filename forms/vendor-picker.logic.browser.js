@@ -60,6 +60,7 @@
         : Object.assign(global.document.createElement("option"), { textContent: text, value });
       select.replaceChildren(makeOption("กรอกเอง / ไม่ใช้ preset", ""));
       vendors.forEach((vendor) => select.appendChild(makeOption(vendorLabel(vendor), vendor.id)));
+      global.SearchableSelect?.enhance?.(select);
       return vendors;
     } catch (error) {
       const fallback = global.Option ? new global.Option("กรอกเอง / ไม่ใช้ preset", "") : Object.assign(global.document.createElement("option"), { textContent: "กรอกเอง / ไม่ใช้ preset", value: "" });

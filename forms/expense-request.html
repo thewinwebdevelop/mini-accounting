@@ -1619,7 +1619,8 @@
       }
 
       adoptNumberedResult(result, "draft");
-      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setSaveStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
+      let vendorPresetError = "";
+      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
       currentStatus = "draft";
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
@@ -1632,7 +1633,7 @@
       replaceNumberedUrl(currentRequestNo);
       setReadOnlyMode(false);
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
-      setSaveStatus(`บันทึกแบบร่างแล้ว: ${currentRequestNo}`, "success");
+      setSaveStatus(vendorPresetError || `บันทึกแบบร่างแล้ว: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
     }
 
     async function submitRequest() {
@@ -1664,7 +1665,8 @@
       }
 
       adoptNumberedResult(result, "pending_approval");
-      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setSaveStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
+      let vendorPresetError = "";
+      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
       currentStatus = "pending_approval";
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
@@ -1677,7 +1679,7 @@
       replaceNumberedUrl(currentRequestNo);
       setReadOnlyMode(false);
       const pdfCount = result.pdfFiles?.length || 0;
-      setSaveStatus(`ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, "success");
+      setSaveStatus(vendorPresetError || `ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, vendorPresetError ? "error" : "success");
       output.value = JSON.stringify(result, null, 2);
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       updatePreview();
