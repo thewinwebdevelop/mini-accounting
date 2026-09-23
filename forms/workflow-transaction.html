@@ -197,6 +197,8 @@
     .status.not_started { color: #475569; background: #e2e8f0; }
     .status.in_progress { color: #7c2d12; background: #ffedd5; }
     .status.completed { color: #166534; background: #dcfce7; }
+    .status.cancellation_pending { color: #92400e; background: #fef3c7; }
+    .status.cancelled { color: #475569; background: #e2e8f0; }
     .status.blocked { color: #64748b; background: #f1f5f9; }
     .muted { color: var(--muted); font-size: 12px; }
 
@@ -236,6 +238,9 @@
     .status-box.active { display: block; }
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+    #cancellationDialog[hidden] { display: none; }
+    #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, 0.45); }
+    #cancellationDialog > .section { width: min(520px, 100%); }
 
     #driveSyncStatus { white-space: pre-line; }
     .status.sync_failed { color: #991b1b; background: #fee2e2; }
@@ -332,6 +337,7 @@
     </div>
     <div class="topbar-actions">
       <button class="button secondary small" type="button" id="refreshTransactionButton">รีเฟรชสถานะ</button>
+      <button class="button secondary small" type="button" id="cancelTransactionButton">ยกเลิก Workflow</button>
       <a class="button secondary small" id="workflowPacketLink" href="#" hidden>ดาวน์โหลดชุดรวมเอกสาร Workflow</a>
       <a class="button secondary small" href="/workflow-transactions">รายการธุรกรรมทั้งหมด</a>
     </div>
@@ -346,8 +352,26 @@
         <div id="workflowProgress" class="muted">กำลังโหลดข้อมูล...</div>
         <button class="button primary" type="button" id="completeTransactionButton" disabled>ปิดงานธุรกรรม</button>
         <div class="status-box" id="transactionStatus"></div>
+        <section class="status-box" id="cancellationSummary" aria-live="polite" tabindex="-1" hidden>
+          <strong id="cancellationSummaryTitle"></strong>
+          <div id="cancellationSummaryDetails"></div>
+          <button class="button secondary small" type="button" id="retryCancellationButton" hidden>ลองยกเลิกอีกครั้ง</button>
+        </section>
       </div>
     </section>
+
+    <div id="cancellationDialog" role="dialog" aria-modal="true" aria-labelledby="cancellationDialogTitle" hidden>
+      <div class="section">
+        <div class="section-header"><h2 class="section-title" id="cancellationDialogTitle">ยืนยันการยกเลิก Workflow</h2></div>
+        <div class="section-body">
+          <p>การยกเลิกจะยกเลิกเอกสารย่อยที่ยังไม่เสร็จ อาจย้อนรายการรับสินค้าและลบแถวใน Google Sheets เอกสารย่อยที่เสร็จแล้วจะคงสถานะเสร็จสิ้นไว้</p>
+          <div class="topbar-actions">
+            <button class="button secondary" type="button" id="dismissCancellationButton">ยกเลิก</button>
+            <button class="button primary" type="button" id="confirmCancellationButton">ยืนยันการยกเลิก</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <section class="section" aria-label="ซิงก์ Google Drive" id="driveSyncSection" hidden>
       <div class="section-header">

@@ -47,6 +47,13 @@ const {
   resolveWorkflowSheetExpenseSource,
   buildWorkflowTransactionSheetEntry,
   getWorkflowTransactionDetail,
+  getWorkflowTransaction,
+  listWorkflowTransactions,
+  listWorkflowTemplates,
+  saveWorkflowTemplate,
+  startWorkflowTransaction,
+  completeWorkflowTransaction,
+  cancelWorkflowTransaction,
   syncWorkflowTransactionToSheets,
 } = serverLogic;
 
@@ -117,8 +124,8 @@ async function seedWorkflowSheetsFixture(rootDir, { includeSr = false } = {}) {
   if (includeSr) await writeFile(join(rootDir, receiptFolder, "data", "substitute-receipt.json"), JSON.stringify({ receiptNo: "SR-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: receiptFolder, receiptTitle: "ใบรับรอง", payeeName: "ร้านค้า", workflowStepId: "sr", totals: { totalAmount: "100.00" } }));
   const indexLogic = await import("../forms/document-index.logic.js");
   indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
-  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
-  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo, workflowStepId: "req" });
+  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo, workflowStepId: "sr" });
   return { transactionNo, transactionFolder, requestFolder, receiptFolder };
 }
 
@@ -2658,4 +2665,382 @@ test("syncSubstituteReceiptToDrive uploads a submitted receipt folder with Googl
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+async function makeCancellationTemplate(rootDir, documentKind, receiptType = undefined) {
+  const templates = await listWorkflowTemplates(rootDir);
+  const base = templates.find((template) => template.templateId === "director_expense_transfer");
+  const step = { stepId: "step-001", documentKind };
+  if (receiptType) step.receiptType = receiptType;
+  return saveWorkflowTemplate({
+    rootDir,
+    template: {
+      ...base,
+      templateId: `cancellation_${documentKind}_${receiptType || "default"}`,
+      documentSteps: [step],
+    },
+  });
+}
+
+test("cancelWorkflowTransaction cancels an incomplete child, deletes exact parent and child Sheet keys, and is idempotent", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-"));
+  const deleted = [];
+  try {
+    const template = await makeCancellationTemplate(rootDir, "expense_request");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "ยกเลิก workflow ทดสอบ",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const request = await saveExpenseSubmission({
+      rootDir,
+      payload: validExpensePayload({
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+      }),
+    });
+
+    const sheetDeleter = async (input) => {
+      deleted.push({ ...input });
+      return { sourceKey: input.sourceKey, status: "deleted", deletedCount: 1, checkedLocations: [] };
+    };
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:00:00.000Z",
+      sheetDeleter,
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.baseStatus, "in_progress");
+    assert.deepEqual(deleted.map((item) => item.sourceKey), [
+      `workflow_transaction:${transaction.transactionNo}`,
+      `expense_request:${request.requestNo}`,
+    ]);
+    const child = await getSubmittedExpenseRequest(rootDir, request.requestNo);
+    assert.equal(child.payload.status, "cancelled");
+    assert.equal(child.payload.statusHistory.at(-1).toStatus, "cancelled");
+
+    const detail = await getWorkflowTransactionDetail(rootDir, transaction.transactionNo);
+    assert.equal(detail.status, "cancelled");
+    assert.equal(detail.baseStatus, "in_progress");
+    assert.equal(detail.cancellation.pendingEffects.length, 0);
+
+    const repeat = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-22T09:00:00.000Z",
+      sheetDeleter,
+    });
+    assert.deepEqual(repeat.cancellation, result.cancellation);
+    assert.equal(deleted.length, 2, "a completed cancellation must not delete Sheet keys again");
+    assert.equal((await listWorkflowTransactions(rootDir))[0].status, "cancelled");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("cancelWorkflowTransaction waits for an in-flight child Drive lease before publishing cleanup", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-lease-"));
+  try {
+    const template = await makeCancellationTemplate(rootDir, "expense_request");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "รอ Drive ก่อนยกเลิก",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const request = await saveExpenseSubmission({
+      rootDir,
+      payload: validExpensePayload({
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+      }),
+    });
+    let releaseDrive;
+    let driveEntered;
+    const driveStarted = new Promise((resolve) => { driveEntered = resolve; });
+    const driveRelease = new Promise((resolve) => { releaseDrive = resolve; });
+    const syncPromise = syncExpenseRequestToDrive({
+      rootDir,
+      requestNo: request.requestNo,
+      driveUploader: async () => {
+        driveEntered();
+        await driveRelease;
+        return {
+          driveFolderId: "drive-folder-lease",
+          driveFolderUrl: "https://drive.google.com/drive/folders/drive-folder-lease",
+          drivePath: "documents/drive-folder-lease",
+          uploadedFileCount: 1,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await driveStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, transaction.folderPath, "data", "workflow-cancellation.json")), false);
+
+    await assert.rejects(
+      () => syncExpenseRequestToDrive({
+        rootDir,
+        requestNo: request.requestNo,
+        driveUploader: async () => ({ driveFolderId: "late", driveFolderUrl: "https://drive.google.com/drive/folders/late", drivePath: "late", uploadedFileCount: 1 }),
+      }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+
+    releaseDrive();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const driveMetadata = JSON.parse(await readFile(join(rootDir, request.folderPath, "data", "drive-sync.json"), "utf8"));
+    assert.equal(driveMetadata.driveFolderId, "drive-folder-lease");
+    assert.equal(cancellationResult.status, "fulfilled");
+    assert.equal(cancellationResult.value.status, "cancelled");
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
+test("cancelWorkflowTransaction closes Sheets admission while the parent row recorder is delayed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-sheets-lease-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const deleted = [];
+    const sheetDeleter = async (input) => { deleted.push(input.sourceKey); return { status: "deleted", deletedCount: 1, checkedLocations: [] }; };
+    let releaseRecorder;
+    let recorderEntered;
+    const recorderStarted = new Promise((resolve) => { recorderEntered = resolve; });
+    const recorderRelease = new Promise((resolve) => { releaseRecorder = resolve; });
+    const syncPromise = syncWorkflowTransactionToSheets({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      conflictChecker: async () => ({ conflicts: [], checkedLocations: [] }),
+      expenseRecorder: async () => {
+        recorderEntered();
+        await recorderRelease;
+        return {
+          syncStatus: "synced",
+          spreadsheetId: "sheet-lease",
+          spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-lease",
+          sheetName: "2026-09",
+          rowNumber: 7,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await recorderStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter,
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+
+    releaseRecorder();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const sheetMetadata = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+    assert.equal(sheetMetadata.spreadsheetId, "sheet-lease");
+    assert.equal(cancellationResult.status, "fulfilled");
+    let finalCancellation = cancellationResult.value;
+    if (finalCancellation.status === "cancellation_pending") {
+      finalCancellation = await cancelWorkflowTransaction({
+        rootDir,
+        transactionNo: fixture.transactionNo,
+        confirmed: true,
+        cancelledBy: "ผู้ทดสอบ",
+        requestedAt: "2026-09-21T09:01:00.000Z",
+        sheetDeleter,
+      });
+    }
+    assert.equal(finalCancellation.status, "cancelled");
+    assert.deepEqual(deleted.sort(), ["expense_request:REQ-2026-09-0042", "workflow_transaction:TXN-2026-09-0042"].sort());
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
+test("cancelWorkflowTransaction reverses a completed stock receipt while retaining native completed status and parent JSON", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "CANCEL-STOCK", name: "สินค้า cancel", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "CANCEL-STOCK-M", defaultUnitCost: "100" });
+    const template = await makeCancellationTemplate(rootDir, "substitute_receipt", "stock_purchase");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "ยกเลิก stock workflow",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const receipt = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "stock_purchase",
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+        lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "สินค้า cancel", quantity: "2", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: receipt.receiptNo, approvedBy: "บัญชี" });
+    await receiveSubstituteReceiptStock({ rootDir, receiptNo: receipt.receiptNo, receivedDate: "2026-09-21", receivedBy: "คลัง" });
+    await completeSubstituteReceipt({ rootDir, receiptNo: receipt.receiptNo, completedBy: "บัญชี" });
+    const completedTransaction = await completeWorkflowTransaction({ rootDir, transactionNo: transaction.transactionNo, completedBy: "ผู้อนุมัติ", now: () => "2026-09-21T08:00:00.000Z", packetGenerator: async () => {} });
+
+    const transactionPath = join(rootDir, transaction.folderPath, "data", "workflow-transaction.json");
+    const before = await readFile(transactionPath, "utf8");
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-22T09:00:00.000Z",
+      sheetDeleter: async ({ sourceKey }) => ({ sourceKey, status: "not_found", deletedCount: 0, checkedLocations: [] }),
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.baseStatus, "completed");
+    assert.equal(result.completedAt, completedTransaction.completedAt);
+    assert.equal(await readFile(transactionPath, "utf8"), before, "parent JSON remains byte-equivalent");
+    const reloaded = await getSubmittedSubstituteReceipt(rootDir, receipt.receiptNo);
+    assert.equal(reloaded.payload.status, "completed");
+    assert.equal(reloaded.payload.completedAt, receipt.payload?.completedAt || reloaded.payload.completedAt);
+    assert.equal(reloaded.payload.statusHistory.filter((entry) => entry.parentCancellation).length, 1);
+    assert.equal(listStockMovementsByReference(rootDir, "substitute_receipt", receipt.receiptNo).length, 1);
+    assert.equal(getStockCard(rootDir, sku.id).balance.quantityOnHand, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+
+test("cancelWorkflowTransaction fails closed when an expected in-progress child is missing", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-missing-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const transactionPath = join(rootDir, fixture.transactionFolder, "data", "workflow-transaction.json");
+    const transaction = JSON.parse(await readFile(transactionPath, "utf8"));
+    transaction.steps = transaction.steps.map((step) => ({ ...step, workflowStatus: "in_progress" }));
+    await writeFile(transactionPath, JSON.stringify(transaction));
+    await rm(join(rootDir, fixture.requestFolder, "data", "submission.json"));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects frozen child relation drift and keeps pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-drift-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    const first = await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    assert.equal(first.status, "cancellation_pending");
+    const childPath = join(rootDir, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.transactionNo = "TXN-2026-09-0099";
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json"), "utf8"));
+    assert.equal(sidecar.status, "cancellation_pending");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects tampered Sheet effect keys and mismatched prior child cancellation", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-tamper-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    const sidecarPath = join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json");
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+    sidecar.sheetEffects[0].sourceKey = "expense_request:REQ-2026-09-0099";
+    await writeFile(sidecarPath, JSON.stringify(sidecar));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+
+  const auditRoot = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-audit-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(auditRoot);
+    const childPath = join(auditRoot, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.status = "cancelled";
+    child.statusHistory = [];
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir: auditRoot, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(auditRoot, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction blocks forward parent and child actions after durable pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-barrier-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: async () => { throw new Error("temporary Sheets outage"); } });
+    await assert.rejects(
+      () => completeWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+    await assert.rejects(
+      () => approveExpenseRequest({ rootDir, requestNo: "REQ-2026-09-0042" }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects received stock child without persisted movement evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-evidence-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const receiptPath = join(rootDir, fixture.receiptFolder, "data", "substitute-receipt.json");
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    receipt.receiptType = "stock_purchase";
+    receipt.status = "received";
+    receipt.stockReceipt = { movementIds: [] };
+    await writeFile(receiptPath, JSON.stringify(receipt));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
 });

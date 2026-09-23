@@ -73,7 +73,17 @@ test("an installation with real documents on disk but a wiped/never-built index 
         requestTitle: "ค่าน้ำก่อนดัชนีหาย",
         requestType: "reimbursement",
         requesterName: "คุณทดสอบ",
-        expenseLines: [],
+        businessPurpose: "ค่าน้ำก่อนดัชนีหาย",
+        paymentTargetName: "คุณทดสอบ",
+        expenseLines: [{
+          date: "2026-09-05",
+          category: "ค่าสาธารณูปโภค",
+          description: "ค่าน้ำประปา",
+          vendor: "การประปาตัวอย่าง",
+          amountBeforeVat: "100",
+          vatAmount: "7",
+          withholdingTax: "0",
+        }],
       },
     });
 

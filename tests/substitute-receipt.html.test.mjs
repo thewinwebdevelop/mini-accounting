@@ -11,6 +11,7 @@ const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", impor
 const prefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
 const prefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const documentLifecyclePath = new URL("../forms/document-lifecycle.logic.js", import.meta.url);
+const vendorPickerPath = new URL("../forms/vendor-picker.logic.browser.js", import.meta.url);
 
 test("substitute receipt page provides stock purchase form, evidence uploads, and summary", async () => {
   const html = await readFile(htmlPath, "utf8");
@@ -70,6 +71,24 @@ test("substitute receipt browser controller loads draft and submitted receipt qu
   assert.match(browserLogic, /\/api\/substitute-receipt-vendors/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/approve/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/receive-stock/);
+});
+
+test("substitute receipt controller uses numbered draft responses and locks legacy reads", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /legacyReadOnly/);
+  assert.match(browserLogic, /result\.receiptNo/);
+  assert.match(browserLogic, /result\.status/);
+  assert.match(browserLogic, /history\.replaceState/);
+  assert.match(browserLogic, /pending_approval/);
+});
+
+test("substitute receipt controller validates canonical identity and legacy attachment links", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /SR-\\d\{4\}.*\\d\{4\}/);
+  assert.match(browserLogic, /state\.status !== "draft"/);
+  assert.match(browserLogic, /legacyEvidenceLinks/);
+  assert.match(browserLogic, /target="_blank" rel="noreferrer"/);
+  assert.match(browserLogic, /workflowTemplateId/);
 });
 
 test("substitute receipt browser controller updates stock line summaries", async () => {
@@ -195,17 +214,37 @@ test("stock modal prompt cancellation and malformed receive status retain approv
   assert.equal(malformed.fetchCalls.filter((call) => call.url.endsWith("/complete")).length, 0);
 });
 
-test("draft save adopts the established no-status response and reuses its draft identity", async () => {
-  const { elements, capturedPost } = await setupSubstituteReceiptSandbox();
+test("draft save adopts the numbered response and reuses its receipt identity", async () => {
+  const { elements, capturedPost } = await setupSubstituteReceiptSandbox({
+    draftResponse: { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [] },
+  });
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(elements.receiptStatus.textContent, "แบบร่าง");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง DRAFT-TEST แล้ว/);
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
 
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(capturedPost.payloads[1].draftId, "DRAFT-TEST");
-  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง DRAFT-TEST แล้ว/);
+  assert.equal(capturedPost.payloads[1].receiptNo, "SR-2026-09-0001");
+  assert.match(elements.substituteReceiptStatus.textContent, /บันทึกแบบร่าง SR-2026-09-0001 แล้ว/);
+});
+
+test("SR POST success keeps committed identity when detail GET fails, then reloads with GET only", async () => {
+  const { elements, fetchCalls } = await setupSubstituteReceiptSandbox({
+    draftResponse: { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [] },
+    detailFailureCount: 1,
+    receiptResponse: { receiptNo: "SR-2026-09-0001", status: "draft", payload: { lines: [] }, evidenceFiles: {} },
+  });
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedReceipt.hidden, false);
+  assert.equal(elements.receiptNoPreview.textContent, "SR-2026-09-0001");
+  assert.equal(fetchCalls.filter((call) => call.options.method === "POST").length, 1);
+
+  elements.reloadSavedReceipt.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.reloadSavedReceipt.hidden, true);
+  assert.equal(fetchCalls.filter((call) => call.options.method === "POST").length, 1, "reload must not repost");
 });
 
 test("stock dialog cycles Tab forward and Shift+Tab backward across both decisions", async () => {
@@ -352,8 +391,10 @@ async function setupSubstituteReceiptSandbox({
   receiptResponse = null,
   mutationResponses = [],
   promptResult = "2026-09-13",
-  draftResponse = { draftId: "DRAFT-TEST", folderPath: "substitute-receipt-drafts/DRAFT-TEST", rawFiles: [], updatedAt: "2026-09-13T00:00:00.000Z" },
+  draftResponse = { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [], updatedAt: "2026-09-13T00:00:00.000Z" },
+  detailFailureCount = 0,
   holdMutations = false,
+  vendorPickerVendors = [],
 } = {}) {
   const realHtml = await readFile(htmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
@@ -380,6 +421,9 @@ async function setupSubstituteReceiptSandbox({
     if (url.includes("/api/inventory/stock-skus")) {
       return { ok: true, json: async () => ({ stockSkus: [] }) };
     }
+    if (url === "/api/vendors") {
+      return { ok: true, json: async () => ({ vendors: vendorPickerVendors }) };
+    }
     if (url.includes("/api/substitute-receipt-vendors")) {
       return { ok: true, json: async () => ({ vendors: [] }) };
     }
@@ -387,6 +431,10 @@ async function setupSubstituteReceiptSandbox({
       return { ok: true, json: async () => ({ sequence: "1", receiptNo: nextReceiptNo }) };
     }
     if (url.includes("/api/substitute-receipts/") && !url.includes("/approve") && !url.includes("/complete") && !url.includes("/receive-stock")) {
+      if (detailFailureCount > 0) {
+        detailFailureCount -= 1;
+        return { ok: false, json: async () => ({ error: "detail unavailable" }) };
+      }
       return { ok: true, json: async () => receiptResponse ?? {} };
     }
     if (options.method === "POST" && (url.includes("/approve") || url.includes("/complete") || url.includes("/receive-stock"))) {
@@ -406,12 +454,12 @@ async function setupSubstituteReceiptSandbox({
       if (url.includes("/api/substitute-receipt-drafts")) {
         return { ok: true, json: async () => draftResponse };
       }
-      return { ok: true, json: async () => ({ receiptNo: nextReceiptNo, status: "pending_approval", pdfFiles: [], rawFiles: [] }) };
+      return { ok: true, json: async () => ({ receiptNo: nextReceiptNo, status: "pending_approval", evidenceFiles: {}, pdfFiles: [], rawFiles: [] }) };
     }
     return { ok: true, json: async () => ({}) };
   };
 
-  const window = { prompt: () => promptResult };
+  const window = { prompt: () => promptResult, document: fakeDocument, fetch: stubFetch };
   window.addEventListener = (type, handler) => {
     (window._handlers ??= {})[type] = handler;
   };
@@ -432,6 +480,7 @@ async function setupSubstituteReceiptSandbox({
   }
 
   vm.runInContext(await readFile(substituteReceiptLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(vendorPickerPath, "utf8"), context);
   vm.runInContext(await readFile(returnLinkPath, "utf8"), context);
   // workflow-return-link.browser.js is a plain classic script (no
   // `window.` assignment, per its own test coverage) — in a real browser,
@@ -578,6 +627,73 @@ test("saved draft payload still carries the workflow-locked receiptType even tho
   );
   assert.equal(capturedPost.payload.transactionNo, "TXN-2026-09-0001");
   assert.equal(capturedPost.payload.workflowStepId, "step-2");
+});
+
+test("real substitute-receipt controller selects an active vendor and submits its identity", async () => {
+  const savedVendor = {
+    id: "VENDOR-E2E-SR",
+    name: "ผู้ขาย SR จาก preset",
+    taxId: "0105559876543",
+    paymentChannel: "โอนผ่านบัญชีบริษัท",
+    paymentReference: "บัญชีทดสอบ",
+    status: "active",
+  };
+  const { elements, form, capturedPost } = await setupSubstituteReceiptSandbox({
+    vendorPickerVendors: [savedVendor],
+    nextReceiptNo: "SR-2026-09-0001",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  elements.vendorPresetSelect.value = savedVendor.id;
+  elements.vendorPresetSelect.dispatch("change");
+  assert.equal(form.elements.payeeName.value, savedVendor.name);
+  assert.equal(form.elements.payeeTaxId.value, savedVendor.taxId);
+  assert.equal(form.elements.paymentReference.value, savedVendor.paymentReference);
+  assert.equal(form.dataset.vendorId, savedVendor.id);
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(capturedPost.payload.vendorId, savedVendor.id);
+  assert.equal(capturedPost.payload.payeeName, savedVendor.name);
+});
+
+test("substitute-receipt controller renders an old inactive vendor snapshot when the picker lists no active match", async () => {
+  const oldSnapshot = {
+    name: "ผู้ขาย SR เก่าจาก snapshot",
+    taxId: "0105550000002",
+    paymentChannel: "โอนบัญชีเดิม",
+    paymentReference: "REF-OLD",
+  };
+  const { elements, form } = await setupSubstituteReceiptSandbox({
+    search: "?receiptNo=SR-2026-09-0099",
+    vendorPickerVendors: [],
+    receiptResponse: {
+      receiptNo: "SR-2026-09-0099",
+      status: "draft",
+      payload: {
+        receiptNo: "SR-2026-09-0099",
+        status: "draft",
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-20",
+        receiptType: "general_expense",
+        receiptTitle: "ใบรับรองเก่า",
+        payeeName: oldSnapshot.name,
+        payeeTaxId: oldSnapshot.taxId,
+        paymentChannel: oldSnapshot.paymentChannel,
+        paymentReference: oldSnapshot.paymentReference,
+        vendorId: "VENDOR-INACTIVE-SR",
+        vendorSnapshot: oldSnapshot,
+        businessPurpose: "ทดสอบ snapshot",
+        lines: [{ description: "สินค้าเก่า", quantity: "1", unitCost: "100" }],
+      },
+    },
+  });
+
+  assert.equal(form.elements.payeeName.value, oldSnapshot.name);
+  assert.equal(form.elements.payeeTaxId.value, oldSnapshot.taxId);
+  assert.equal(form.elements.paymentReference.value, oldSnapshot.paymentReference);
+  assert.equal(form.dataset.vendorId, "VENDOR-INACTIVE-SR");
+  assert.equal(elements.vendorPresetSelect.value, "", "inactive vendor is not offered as a new selection");
 });
 
 test("applyWorkflowPrefillPatch fills only ticked groups, leaving unticked fields untouched", async () => {

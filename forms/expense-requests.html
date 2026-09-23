@@ -356,6 +356,7 @@
     function statusLabel(status) {
       return {
         draft: "แบบร่าง",
+        pending_approval: "รอตรวจอนุมัติ",
         submitted: "บันทึกแล้ว",
         approved: "อนุมัติแล้ว",
         completed: "เสร็จสิ้น",
@@ -395,8 +396,11 @@
     }
 
     function actionHtml(request) {
+      if (request.legacyReadOnly === true) {
+        return `<a class="button secondary small" href="/expense-request?draftId=${encodeURIComponent(request.draftId || "")}">ดูแบบร่างเก่า</a>`;
+      }
       if (request.status === "draft") {
-        return `<a class="button primary" href="/expense-request?draftId=${encodeURIComponent(request.draftId)}">แก้ไขต่อ</a>`;
+        return `<a class="button primary" href="/expense-request?requestNo=${encodeURIComponent(request.requestNo || "")}">แก้ไขต่อ</a>`;
       }
 
       const requestNo = request.requestNo || "";
@@ -430,7 +434,7 @@
         ? `<a class="button secondary small" href="${escapeHtml(request.sheetSpreadsheetUrl)}" target="_blank" rel="noreferrer">เปิด Sheet</a>`
         : "";
       const syncButton = `<button class="button warn small" type="button" data-sync-drive="${escapeHtml(requestNo)}">${syncButtonLabel}</button>`;
-      const approveButton = request.status === "submitted"
+      const approveButton = ["submitted", "pending_approval"].includes(request.status)
         ? `<button class="button primary small" type="button" data-approve="${escapeHtml(requestNo)}">อนุมัติ</button>`
         : request.status === "approved" && !workflowManaged && request.sheetSyncStatus !== "synced"
           ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}">ลง Sheet อีกครั้ง</button>`
@@ -565,7 +569,7 @@
     }
 
     const initialStatus = new URLSearchParams(location.search).get("status");
-    if (["all", "draft", "submitted", "approved"].includes(initialStatus)) {
+    if (["all", "draft", "pending_approval", "submitted", "approved"].includes(initialStatus)) {
       statusFilter.value = initialStatus;
     }
     statusFilter.addEventListener("change", render);

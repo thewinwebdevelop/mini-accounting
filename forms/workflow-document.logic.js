@@ -27,6 +27,30 @@ const WORKFLOW_DOCUMENT_STATUS_LABELS = {
 // already-completed document is handled separately as an idempotent no-op).
 const WORKFLOW_DOCUMENT_UNCOMPLETABLE_STATUSES = new Set(["cancelled"]);
 
+const VENDOR_SNAPSHOT_FIELDS = ["name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo", "paymentChannel", "paymentReference", "defaultBusinessPurpose"];
+const VENDOR_FIELD_ALIASES = {
+  name: ["vendorName", "payeeName", "paymentTargetName"],
+  taxId: ["vendorTaxId", "payeeTaxId", "paymentTargetTaxId"],
+  address: ["vendorAddress", "payeeAddress", "paymentAddress"],
+  contactName: ["vendorContactName", "payeeContactName", "paymentContactName"],
+  phone: ["vendorPhone", "payeePhone", "paymentPhone"],
+  email: ["vendorEmail", "payeeEmail", "paymentEmail"],
+  bankName: ["vendorBankName", "bankName", "paymentBankName"],
+  accountNo: ["vendorAccountNo", "accountNo", "paymentAccountNo"],
+  paymentChannel: ["vendorPaymentChannel", "paymentChannel"],
+  paymentReference: ["vendorPaymentReference", "paymentReference"],
+  defaultBusinessPurpose: ["vendorDefaultBusinessPurpose", "defaultBusinessPurpose"],
+};
+
+function buildVendorSnapshot(payload = {}) {
+  const snapshot = Object.fromEntries(VENDOR_SNAPSHOT_FIELDS.map((field) => [field, cleanText(payload.vendorSnapshot?.[field])]));
+  for (const field of VENDOR_SNAPSHOT_FIELDS) {
+    const source = (VENDOR_FIELD_ALIASES[field] || []).find((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (source) snapshot[field] = cleanText(payload[source]);
+  }
+  return snapshot;
+}
+
 function assertWorkflowDocumentCompletable(currentStatus) {
   if (WORKFLOW_DOCUMENT_UNCOMPLETABLE_STATUSES.has(cleanText(currentStatus))) {
     throw new Error(`ไม่สามารถทำให้เอกสารสถานะ "${WORKFLOW_DOCUMENT_STATUS_LABELS[currentStatus] || currentStatus}" เสร็จสิ้นได้`);
@@ -194,6 +218,8 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
     documentDate: cleanText(data.documentDate),
     requesterName: cleanText(data.requesterName),
     payeeName: cleanText(data.payeeName),
+    vendorId: cleanText(data.vendorId),
+    vendorSnapshot: buildVendorSnapshot(data),
     businessPurpose: cleanText(data.businessPurpose),
     transactionNo: cleanText(data.transactionNo),
     workflowTemplateId: cleanText(data.workflowTemplateId),
@@ -267,6 +293,7 @@ const WorkflowDocumentLogic = {
   WORKFLOW_DOCUMENT_STATUS_LABELS,
   assertWorkflowDocumentCompletable,
   buildWorkflowDocumentPayload,
+  buildVendorSnapshot,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
   sanitizeEvidenceKey,

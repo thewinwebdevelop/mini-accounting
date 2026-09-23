@@ -12,12 +12,15 @@ window.addEventListener("DOMContentLoaded", () => {
     existingEvidenceFiles: {},
     mutationInFlight: false,
     modalOpen: false,
+    legacyReadOnly: false,
   };
 
   const queryDraftId = new URLSearchParams(location.search).get("draftId");
   const queryReceiptNo = new URLSearchParams(location.search).get("receiptNo");
   const form = document.querySelector("#substituteReceiptForm");
   const statusBox = document.querySelector("#substituteReceiptStatus");
+  const reloadSavedReceiptButton = document.querySelector("#reloadSavedReceipt");
+  const legacyEvidenceLinks = document.querySelector("#legacyEvidenceLinks");
   const lineItems = document.querySelector("#stockLineItems");
   const lineTemplate = document.querySelector("#stockLineTemplate");
   const addLineButton = document.querySelector("#addStockLine");
@@ -36,6 +39,14 @@ window.addEventListener("DOMContentLoaded", () => {
   const evidenceCountPreview = document.querySelector("#evidenceCountPreview");
   const stockReceiptNotice = document.querySelector("#stockReceiptNotice");
   const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
+  const saveVendorPresetCheckbox = document.querySelector("#saveVendorPreset");
+  const vendorPicker = window.SharedVendorPicker?.create({
+    form,
+    select: vendorPresetSelect,
+    checkbox: saveVendorPresetCheckbox,
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], paymentChannel: ["paymentChannel"], paymentReference: ["paymentReference"], defaultBusinessPurpose: ["businessPurpose"] },
+    onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+  });
 
   // --- Workflow context (Task 9) ---------------------------------------
   // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as query
@@ -107,6 +118,33 @@ window.addEventListener("DOMContentLoaded", () => {
     statusBox.textContent = "";
   }
 
+  function showReloadSavedReceipt(show) {
+    if (reloadSavedReceiptButton) reloadSavedReceiptButton.hidden = !show;
+  }
+
+  async function reloadSavedReceipt() {
+    if (!state.receiptNo || !reloadSavedReceiptButton) return;
+    reloadSavedReceiptButton.disabled = true;
+    try {
+      await loadReceipt(state.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+    } finally {
+      reloadSavedReceiptButton.disabled = false;
+    }
+  }
+
+  function renderLegacyEvidence(filesByKey = {}, rawFiles = []) {
+    if (!legacyEvidenceLinks) return;
+    const files = [...Object.values(filesByKey).flat(), ...(Array.isArray(rawFiles) ? rawFiles : [])].filter((file) => file && file.url);
+    legacyEvidenceLinks.hidden = !files.length;
+    legacyEvidenceLinks.innerHTML = files.length
+      ? `ไฟล์แนบแบบร่างเก่า: ${files.map((file) => `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName || file.originalName || "ดาวน์โหลด")}</a>`).join(" · ")}`
+      : "";
+  }
+
   async function api(route, options = {}) {
     const response = await fetch(route, options);
     const result = await response.json();
@@ -130,14 +168,35 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function setMutationControlsDisabled(disabled) {
-    [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton]
-      .forEach((button) => { button.disabled = disabled; });
+    [saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton, declineReceiveBeforeCompleteButton, reloadSavedReceiptButton, form.querySelector("button[type=reset]")]
+      .forEach((button) => { if (button) button.disabled = disabled; });
+  }
+
+  function setLegacyReadOnly(readOnly) {
+    state.legacyReadOnly = !!readOnly;
+    const controls = [addLineButton, saveDraftButton, submitForApprovalButton, approveReceiptButton, receiveStockButton, completeReceiptButton, confirmReceiveBeforeCompleteButton, ...form.querySelectorAll("input, select, textarea")];
+    controls.forEach((control) => { if (control) control.disabled = state.legacyReadOnly || state.mutationInFlight; });
+  }
+
+  function applyRecordFieldLock() {
+    const locked = state.legacyReadOnly || state.status !== "draft" || state.mutationInFlight;
+    form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = locked; });
+    addLineButton.disabled = locked;
+  }
+
+  function replaceReceiptUrl(receiptNo) {
+    if (window.history?.replaceState) {
+      const params = new URLSearchParams({ receiptNo });
+      for (const key of ["transactionNo", "workflowTemplateId", "workflowStepId", "returnTo"]) if (workflowContext[key]) params.set(key, workflowContext[key]);
+      window.history.replaceState({}, "", `?${params}`);
+    }
   }
 
   async function runMutation(work, { allowWhileModalOpen = false } = {}) {
     if (state.mutationInFlight || (state.modalOpen && !allowWhileModalOpen)) return;
     state.mutationInFlight = true;
     setMutationControlsDisabled(true);
+    form.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = true; });
     try {
       await work();
     } finally {
@@ -206,7 +265,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function stockLinesLocked() {
-    return ["approved", "received"].includes(state.status);
+    return state.legacyReadOnly || state.mutationInFlight || state.status !== "draft";
   }
 
   function applyStockLineLock() {
@@ -257,12 +316,13 @@ window.addEventListener("DOMContentLoaded", () => {
     state.status = lifecycleLogic.normalizeDocumentStatus("substitute_receipt", status || "draft");
     const actions = availableActions();
     receiptStatus.textContent = lifecycleLogic.DOCUMENT_STATUS_LABELS[state.status];
-    saveDraftButton.hidden = state.status !== "draft";
-    submitForApprovalButton.hidden = !actions.includes("submit");
+    saveDraftButton.hidden = state.status !== "draft" || state.legacyReadOnly;
+    submitForApprovalButton.hidden = state.legacyReadOnly || !actions.includes("submit");
     approveReceiptButton.hidden = !actions.includes("approve");
     receiveStockButton.hidden = !actions.includes("receive_stock");
     completeReceiptButton.hidden = !actions.includes("complete");
-    setMutationControlsDisabled(state.mutationInFlight);
+    setMutationControlsDisabled(state.mutationInFlight || state.legacyReadOnly);
+    applyRecordFieldLock();
     receiptNoPreview.textContent = state.receiptNo || state.nextReceipt?.receiptNo || "-";
     applyReceiptTypeState();
   }
@@ -353,6 +413,8 @@ window.addEventListener("DOMContentLoaded", () => {
       receiptType: form.elements.receiptType.value,
       payeeName: form.elements.payeeName.value,
       payeeTaxId: form.elements.payeeTaxId.value,
+      vendorId: form.dataset.vendorId || "",
+      vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
       businessPurpose: form.elements.businessPurpose.value,
@@ -418,8 +480,22 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function refreshVendors() {
-    const { vendors } = await api("/api/substitute-receipt-vendors");
-    state.vendors = vendors;
+    if (vendorPicker) {
+      state.vendors = await vendorPicker.load();
+      // Keep the legacy route as a compatibility fallback for older local data.
+      if (!state.vendors.length) {
+        try {
+          const legacy = await api("/api/substitute-receipt-vendors");
+          state.vendors = (legacy.vendors || []).filter((vendor) => vendor.status === "active");
+          renderVendorOptions();
+        } catch {
+          // The shared picker already left the form usable for document-only entry.
+        }
+      }
+      return;
+    }
+    const { vendors } = await api("/api/vendors");
+    state.vendors = (vendors || []).filter((vendor) => vendor.status === "active");
     renderVendorOptions();
   }
 
@@ -493,6 +569,8 @@ window.addEventListener("DOMContentLoaded", () => {
     applyWorkflowReceiptTypeLock();
     form.elements.receiptTitle.value = payload.receiptTitle || "";
     form.elements.payeeName.value = payload.payeeName || "";
+    if (payload.vendorId) form.dataset.vendorId = payload.vendorId; else delete form.dataset.vendorId;
+    if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot); else delete form.dataset.vendorSnapshot;
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
     form.elements.paymentReference.value = payload.paymentReference || "";
@@ -516,7 +594,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   async function loadDraft(draftId) {
     const draft = await api(`/api/substitute-receipt-drafts/${encodeURIComponent(draftId)}`);
+    if (draft.legacyReadOnly !== true) throw new Error("ข้อมูลแบบร่างเก่าไม่ครบถ้วน");
     state.draftId = draft.draftId;
+    state.legacyReadOnly = true;
     state.receiptNo = "";
     state.status = "draft";
     fillForm({
@@ -524,6 +604,8 @@ window.addEventListener("DOMContentLoaded", () => {
       status: "draft",
       evidenceFiles: draft.evidenceFiles || draft.payload?.evidenceFiles || {},
     });
+    renderLegacyEvidence(draft.evidenceFiles || draft.payload?.evidenceFiles || {}, draft.rawFiles || []);
+    setLegacyReadOnly(true);
     setStatus(`โหลดแบบร่าง ${escapeHtml(draft.draftId)} แล้ว`, "success");
   }
 
@@ -531,6 +613,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const receipt = await api(`/api/substitute-receipts/${encodeURIComponent(receiptNo)}`);
     const payload = receipt.payload || {};
     state.draftId = "";
+    state.legacyReadOnly = false;
     state.receiptNo = receipt.receiptNo || payload.receiptNo || receiptNo;
     state.status = receipt.status || payload.status || "pending_approval";
     fillForm({
@@ -550,25 +633,41 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function saveDraft() {
+    if (state.legacyReadOnly || state.status !== "draft") throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     clearStatus();
     const payload = collectPayload();
-    delete payload.receiptNo;
+    delete payload.draftId;
     const result = await api("/api/substitute-receipt-drafts", {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
-    state.draftId = result.draftId;
-    state.receiptNo = "";
+    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+    if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
+    state.receiptNo = result.receiptNo;
+    let vendorPresetError = "";
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
     state.status = "draft";
-    state.existingEvidenceFiles = collectEvidenceFilesForValidation();
+    state.existingEvidenceFiles = result.evidenceFiles;
+    for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
+    replaceReceiptUrl(state.receiptNo);
+    setReceiptState(state.status);
+    try {
+      await loadReceipt(result.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+      return;
+    }
     setReceiptState("draft");
-    setStatus(`บันทึกแบบร่าง ${escapeHtml(result.draftId)} แล้ว`, "success");
+    setStatus(vendorPresetError || `บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, vendorPresetError ? "error" : "success");
   }
 
   async function submitForApproval() {
+    if (state.legacyReadOnly || state.status !== "draft") throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     clearStatus();
     const payload = collectPayload();
-    delete payload.receiptNo;
+    delete payload.draftId;
     const errors = logic.validateSubstituteReceipt(payload);
     if (errors.length) throw new Error(errors.join("\n"));
 
@@ -578,12 +677,26 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const status = adoptExpectedStatus(result, "pending_approval");
 
-    state.draftId = "";
+    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
+    if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
+    let vendorPresetError = "";
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
     state.status = status;
-    state.existingEvidenceFiles = collectEvidenceFilesForValidation();
+    state.existingEvidenceFiles = result.evidenceFiles;
+    for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
+    replaceReceiptUrl(state.receiptNo);
     setReceiptState(state.status);
-    setStatus(`ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, "success");
+    try {
+      await loadReceipt(result.receiptNo);
+      showReloadSavedReceipt(false);
+    } catch (error) {
+      setStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+      showReloadSavedReceipt(true);
+      return;
+    }
+    setReceiptState(state.status);
+    setStatus(vendorPresetError || `ส่งตรวจอนุมัติ ${escapeHtml(result.receiptNo)} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์, raw ${result.rawFiles.length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
 
   async function approveReceipt() {
@@ -639,8 +752,9 @@ window.addEventListener("DOMContentLoaded", () => {
     clearStatus();
   }
 
-  addLineButton.addEventListener("click", () => addStockLine());
+  addLineButton.addEventListener("click", () => { if (!state.legacyReadOnly && state.status === "draft" && !state.mutationInFlight) addStockLine(); });
   saveDraftButton.addEventListener("click", () => runMutation(saveDraft).catch((error) => setStatus(error.message, "error")));
+  reloadSavedReceiptButton?.addEventListener("click", reloadSavedReceipt);
   approveReceiptButton.addEventListener("click", () => runMutation(approveReceipt).catch((error) => setStatus(error.message, "error")));
   receiveStockButton.addEventListener("click", () => runMutation(receiveStock).catch((error) => setStatus(error.message, "error")));
   completeReceiptButton.addEventListener("click", () => {
@@ -686,7 +800,7 @@ window.addEventListener("DOMContentLoaded", () => {
     runMutation(submitForApproval).catch((error) => setStatus(error.message, "error"));
   });
   form.addEventListener("reset", (event) => {
-    if (state.modalOpen || state.mutationInFlight) {
+    if (state.modalOpen || state.mutationInFlight || state.legacyReadOnly || state.status !== "draft") {
       event.preventDefault();
       return;
     }
