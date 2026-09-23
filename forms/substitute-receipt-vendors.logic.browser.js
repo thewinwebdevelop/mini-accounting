@@ -30,7 +30,12 @@ window.addEventListener("DOMContentLoaded", () => {
       },
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "บันทึกข้อมูลไม่สำเร็จ");
+    if (!response.ok) {
+      const error = new Error(result.error || "บันทึกข้อมูลไม่สำเร็จ");
+      Object.assign(error, result);
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
 
@@ -59,16 +64,26 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>
           <strong>${escapeHtml(vendor.name)}</strong>
           <div class="muted">${escapeHtml(vendor.taxId || "-")}</div>
+          <div class="muted">${escapeHtml(vendor.address || "")}</div>
         </td>
         <td>
-          ${escapeHtml(vendor.paymentChannel || "-")}
+          ${escapeHtml(vendor.contactName || "-")}
+          <div class="muted">${escapeHtml(vendor.phone || "")}</div>
+          <div class="muted">${escapeHtml(vendor.email || "")}</div>
+        </td>
+        <td>
+          ${escapeHtml(vendor.bankName || vendor.paymentChannel || "-")}
+          <div class="muted">${escapeHtml(vendor.accountNo || "")}</div>
           <div class="muted">${escapeHtml(vendor.paymentReference || "")}</div>
         </td>
         <td>${escapeHtml(vendor.defaultBusinessPurpose || "-")}</td>
         <td>${renderStatus(vendor.status)}</td>
-        <td><button class="icon-button" type="button" title="แก้ไขผู้ขาย" data-edit-vendor="${vendor.id}">✎</button></td>
+        <td>
+          <button class="icon-button" type="button" title="แก้ไขผู้ขาย" data-edit-vendor="${vendor.id}">✎</button>
+          ${vendor.status === "active" ? `<button class="icon-button" type="button" title="ปิดใช้ผู้ขาย" data-deactivate-vendor="${vendor.id}">×</button>` : ""}
+        </td>
       </tr>
-    `).join("") || `<tr><td colspan="5">ยังไม่มี preset ผู้ขาย</td></tr>`;
+    `).join("") || `<tr><td colspan="6">ยังไม่มีผู้ขาย</td></tr>`;
   }
 
   function resetVendorForm() {
@@ -83,6 +98,12 @@ window.addEventListener("DOMContentLoaded", () => {
     vendorForm.elements.id.value = vendor.id;
     vendorForm.elements.name.value = vendor.name;
     vendorForm.elements.taxId.value = vendor.taxId || "";
+    vendorForm.elements.address.value = vendor.address || "";
+    vendorForm.elements.contactName.value = vendor.contactName || "";
+    vendorForm.elements.phone.value = vendor.phone || "";
+    vendorForm.elements.email.value = vendor.email || "";
+    vendorForm.elements.bankName.value = vendor.bankName || "";
+    vendorForm.elements.accountNo.value = vendor.accountNo || "";
     vendorForm.elements.paymentChannel.value = vendor.paymentChannel || "โอนผ่านบัญชีบริษัท";
     vendorForm.elements.paymentReference.value = vendor.paymentReference || "";
     vendorForm.elements.defaultBusinessPurpose.value = vendor.defaultBusinessPurpose || "";
@@ -93,9 +114,20 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function refreshVendors() {
-    const { vendors } = await api("/api/substitute-receipt-vendors?includeInactive=1");
+    const { vendors } = await api("/api/vendors?includeInactive=1");
     state.vendors = vendors;
     renderVendors();
+  }
+
+  function duplicateMessage(error) {
+    const names = (error.matches || []).map((match) => match.taxId ? `${match.name} (${match.taxId})` : match.name).join(", ");
+    return `พบผู้ขายที่อาจซ้ำ: ${names || "รายการเดิม"} ต้องการบันทึกซ้ำหรือไม่`;
+  }
+
+  async function saveVendor(payload, id, options = {}) {
+    const route = id ? `/api/vendors/${encodeURIComponent(id)}` : "/api/vendors";
+    const method = id ? "PATCH" : "POST";
+    return api(route, { method, body: JSON.stringify({ ...payload, ...options }) });
   }
 
   vendorForm.addEventListener("submit", async (event) => {
@@ -105,9 +137,16 @@ window.addEventListener("DOMContentLoaded", () => {
       const payload = formPayload(vendorForm);
       const id = payload.id;
       delete payload.id;
-      const route = id ? `/api/substitute-receipt-vendors/${encodeURIComponent(id)}` : "/api/substitute-receipt-vendors";
-      const method = id ? "PUT" : "POST";
-      await api(route, { method, body: JSON.stringify(payload) });
+      try {
+        await saveVendor(payload, id);
+      } catch (error) {
+        if (error.code !== "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED" || !window.confirm(duplicateMessage(error))) throw error;
+        await saveVendor(payload, id, {
+          confirmDuplicate: true,
+          expectedMatchIds: (error.matches || []).map((match) => match.id),
+          expectedCandidateFingerprint: error.candidateFingerprint,
+        });
+      }
       resetVendorForm();
       await refreshVendors();
       setStatus("บันทึกผู้ขายแล้ว", "success");
@@ -117,10 +156,21 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   vendorRows.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-edit-vendor]");
-    if (!button) return;
-    const vendor = state.vendors.find((item) => item.id === button.dataset.editVendor);
-    if (vendor) fillVendorForm(vendor);
+    const editButton = event.target.closest("[data-edit-vendor]");
+    if (editButton) {
+      const vendor = state.vendors.find((item) => item.id === editButton.dataset.editVendor);
+      if (vendor) fillVendorForm(vendor);
+      return;
+    }
+
+    const deactivateButton = event.target.closest("[data-deactivate-vendor]");
+    if (!deactivateButton) return;
+    const vendor = state.vendors.find((item) => item.id === deactivateButton.dataset.deactivateVendor);
+    if (!vendor || !window.confirm(`ปิดใช้ผู้ขาย ${vendor.name} หรือไม่`)) return;
+    api(`/api/vendors/${encodeURIComponent(vendor.id)}`, { method: "PATCH", body: JSON.stringify({ status: "inactive" }) })
+      .then(refreshVendors)
+      .then(() => setStatus("ปิดใช้ผู้ขายแล้ว", "success"))
+      .catch((error) => setStatus(error.message, "error"));
   });
 
   document.querySelector("#refreshVendors").addEventListener("click", () => {
