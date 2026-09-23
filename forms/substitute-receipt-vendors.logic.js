@@ -46,7 +46,17 @@ async function listSubstituteReceiptVendors(rootDir, filters = {}) {
 }
 
 async function createSubstituteReceiptVendor(rootDir, data = {}, options = {}) {
+  const status = String(data?.status ?? "active").trim() || "active";
+  if (!["active", "inactive"].includes(status)) {
+    const error = new Error("สถานะผู้ขายไม่ถูกต้อง");
+    error.code = "INVALID_VENDOR_STATUS";
+    error.statusCode = 400;
+    throw error;
+  }
   const vendor = await createVendor(rootDir, legacyVendorInput(data), mutationOptions(data, options));
+  if (status === "inactive") {
+    return compatibilityVendor(await updateVendor(rootDir, vendor.id, { status: "inactive" }));
+  }
   return compatibilityVendor(vendor);
 }
 

@@ -111,6 +111,7 @@ const {
   getVendorById,
   listVendors,
   updateVendor,
+  vendorCandidateFingerprint,
 } = require("./forms/vendor.logic.js");
 const {
   generateCurrentStockPdf,
@@ -1467,7 +1468,7 @@ async function handleSubstituteReceiptVendorList(url, response) {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
     sendJson(response, 200, { vendors: await listSubstituteReceiptVendors(rootDir, { includeInactive }) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot list substitute receipt vendors" });
+    sendVendorError(response, error, "Cannot list substitute receipt vendors");
   }
 }
 
@@ -1494,11 +1495,20 @@ function decodeVendorId(rawId) {
 }
 
 function sendVendorError(response, error, fallback) {
-  const body = {
-    ...(error?.code ? { code: error.code } : {}),
-    error: error?.message || fallback,
+  const safeMessages = {
+    INVALID_VENDOR_ID: "รหัสผู้ขายไม่ถูกต้อง",
+    INVALID_VENDOR: "ข้อมูลผู้ขายไม่ถูกต้อง",
+    INVALID_VENDOR_STATUS: "สถานะผู้ขายไม่ถูกต้อง",
+    VENDOR_NOT_FOUND: "ไม่พบผู้ขาย",
+    VENDOR_INACTIVE: "ผู้ขายถูกปิดใช้งาน",
+    VENDOR_DUPLICATE_CONFIRMATION_REQUIRED: "พบผู้ขายที่อาจซ้ำ กรุณายืนยันก่อนบันทึก",
   };
-  if (error?.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED") {
+  const knownCode = Object.prototype.hasOwnProperty.call(safeMessages, error?.code) ? error.code : undefined;
+  const body = {
+    ...(knownCode ? { code: knownCode } : {}),
+    error: knownCode ? safeMessages[knownCode] : fallback,
+  };
+  if (knownCode === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED") {
     body.candidateFingerprint = error.candidateFingerprint;
     body.matches = Array.isArray(error.matches) ? error.matches.map((match) => ({
       id: match.id,
@@ -1550,6 +1560,7 @@ async function handleVendorMatches(url, response) {
         status: match.status,
         matchedFields: [...match.matchedFields],
       })),
+      candidateFingerprint: vendorCandidateFingerprint(candidate),
     });
   } catch (error) {
     sendVendorError(response, error, "Cannot match vendors");
@@ -1591,7 +1602,7 @@ async function handleSubstituteReceiptVendorCreate(request, response) {
     const payload = await readJsonBody(request);
     sendJson(response, 200, { vendor: await createSubstituteReceiptVendor(rootDir, payload) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot create substitute receipt vendor" });
+    sendVendorError(response, error, "Cannot create substitute receipt vendor");
   }
 }
 
@@ -1600,7 +1611,7 @@ async function handleSubstituteReceiptVendorUpdate(vendorId, request, response) 
     const payload = await readJsonBody(request);
     sendJson(response, 200, { vendor: await updateSubstituteReceiptVendor(rootDir, vendorId, payload) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot update substitute receipt vendor" });
+    sendVendorError(response, error, "Cannot update substitute receipt vendor");
   }
 }
 
