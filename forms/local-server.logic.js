@@ -63,6 +63,16 @@ const {
   indexDocument,
   withDocumentIndexDatabase,
 } = require("./document-index.logic.js");
+const {
+  assertVendorSelection,
+  createVendor,
+  findVendorMatches,
+  getVendorById,
+  listVendors,
+  normalizeVendorInput,
+  updateVendor,
+  vendorSnapshotFromRecord,
+} = require("./vendor.logic.js");
 
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
@@ -5122,6 +5132,7 @@ module.exports = {
   approveSubstituteReceipt,
   approveWorkflowDocument,
   assertPathWithinDirectory,
+  assertVendorSelection,
   buildWorkflowTransactionSheetEntry,
   cancelWorkflowTransaction,
   describeDriveSyncError,
@@ -5131,6 +5142,7 @@ module.exports = {
   completeWorkflowDocument,
   completeWorkflowTransaction,
   findLightweightWorkflowDocuments,
+  findVendorMatches,
   findWorkflowChildDocuments,
   readExpenseRequestChildDocument,
   getExpenseDraft,
@@ -5152,6 +5164,7 @@ module.exports = {
   getWorkflowTransactionDetail,
   getWorkflowTransactionFile,
   getWorkflowTransactionPrefill,
+  getVendorById,
   groupUploadsByEvidence,
   listExpenseRequests,
   listExpenseDrafts,
@@ -5161,6 +5174,8 @@ module.exports = {
   listWorkflowDocuments,
   listWorkflowTemplates,
   listWorkflowTransactions,
+  listVendors,
+  normalizeVendorInput,
   parseMultipartForm,
   parseWorkflowDocumentListFilters,
   persistWorkflowTransaction,
@@ -5173,6 +5188,9 @@ module.exports = {
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
   submitWorkflowDocument,
+  updateVendor,
+  vendorSnapshotFromRecord,
+  createVendor,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   syncExpenseRequestToDrive,
