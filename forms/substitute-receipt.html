@@ -589,9 +589,11 @@
           <div class="grid">
             <div class="field span-12">
               <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
-              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable>
+              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable aria-describedby="vendorPresetHint">
                 <option value="">กรอกเอง / ไม่ใช้ preset</option>
               </select>
+              <span class="hint" id="vendorPresetHint">เลือกข้อมูลผู้ขายเดิม หรือกรอกข้อมูลใหม่เอง</span>
+              <label class="choice"><input type="checkbox" id="saveVendorPreset" name="saveVendorPreset"> บันทึกผู้ขายรายนี้ไว้ใช้ครั้งต่อไป</label>
             </div>
             <div class="field span-6">
               <label for="payeeName">ผู้ขาย/ผู้รับเงิน *</label>
@@ -749,6 +751,7 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
+  <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>

@@ -29,6 +29,15 @@ window.addEventListener("DOMContentLoaded", () => {
   const pageTitle = document.querySelector("#pageTitle");
   const documentListLink = document.querySelector("#workflowDocumentListLink");
   const mutationButtons = [saveButton, submitButton, approveButton, completeButton].filter(Boolean);
+  const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
+  const saveVendorPresetCheckbox = document.querySelector("#saveVendorPreset");
+  const vendorPicker = window.SharedVendorPicker?.create({
+    form,
+    select: vendorPresetSelect,
+    checkbox: saveVendorPresetCheckbox,
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], address: ["payeeAddress"], bankName: ["paymentBankName", "bankName"], accountNo: ["paymentAccountNo", "accountNo"] },
+    onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+  });
   let mutationInFlight = false;
   const implementedActions = new Set(["submit", "approve", "complete"]);
 
@@ -140,6 +149,8 @@ window.addEventListener("DOMContentLoaded", () => {
       title: form.elements.title.value,
       requesterName: form.elements.requesterName.value,
       payeeName: form.elements.payeeName.value,
+      vendorId: form.dataset.vendorId || "",
+      vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       businessPurpose: form.elements.businessPurpose.value,
       transactionNo: state.transactionNo,
       workflowTemplateId: state.workflowTemplateId,
@@ -208,6 +219,8 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.title.value = payload.title || "";
     form.elements.requesterName.value = payload.requesterName || "";
     form.elements.payeeName.value = payload.payeeName || "";
+    if (payload.vendorId) form.dataset.vendorId = payload.vendorId;
+    if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot);
     form.elements.businessPurpose.value = payload.businessPurpose || "";
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
@@ -310,6 +323,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   applyDocumentKindLabel();
   applyDocumentListLink();
+  vendorPicker?.load();
   fillForm();
 
   if (state.documentNo) {

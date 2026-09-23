@@ -39,6 +39,14 @@ window.addEventListener("DOMContentLoaded", () => {
   const evidenceCountPreview = document.querySelector("#evidenceCountPreview");
   const stockReceiptNotice = document.querySelector("#stockReceiptNotice");
   const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
+  const saveVendorPresetCheckbox = document.querySelector("#saveVendorPreset");
+  const vendorPicker = window.SharedVendorPicker?.create({
+    form,
+    select: vendorPresetSelect,
+    checkbox: saveVendorPresetCheckbox,
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], paymentChannel: ["paymentChannel"], paymentReference: ["paymentReference"], defaultBusinessPurpose: ["businessPurpose"] },
+    onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+  });
 
   // --- Workflow context (Task 9) ---------------------------------------
   // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as query
@@ -405,6 +413,8 @@ window.addEventListener("DOMContentLoaded", () => {
       receiptType: form.elements.receiptType.value,
       payeeName: form.elements.payeeName.value,
       payeeTaxId: form.elements.payeeTaxId.value,
+      vendorId: form.dataset.vendorId || "",
+      vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
       businessPurpose: form.elements.businessPurpose.value,
@@ -470,8 +480,22 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function refreshVendors() {
-    const { vendors } = await api("/api/substitute-receipt-vendors");
-    state.vendors = vendors;
+    if (vendorPicker) {
+      state.vendors = await vendorPicker.load();
+      // Keep the legacy route as a compatibility fallback for older local data.
+      if (!state.vendors.length) {
+        try {
+          const legacy = await api("/api/substitute-receipt-vendors");
+          state.vendors = legacy.vendors || [];
+          renderVendorOptions();
+        } catch {
+          // The shared picker already left the form usable for document-only entry.
+        }
+      }
+      return;
+    }
+    const { vendors } = await api("/api/vendors");
+    state.vendors = (vendors || []).filter((vendor) => vendor.status !== "inactive");
     renderVendorOptions();
   }
 
