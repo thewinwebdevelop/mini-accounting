@@ -6,6 +6,7 @@ const REQUEST_TYPE_LABELS = {
 const EXPENSE_REQUEST_STATUS_LABELS = {
   submitted: "บันทึกแล้ว",
   approved: "อนุมัติแล้ว",
+  completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
 };
 
@@ -26,6 +27,30 @@ const EVIDENCE_SLUGS = {
   businessEvidence: "business-evidence",
   otherEvidence: "other-evidence",
 };
+
+const VENDOR_SNAPSHOT_FIELDS = ["name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo", "paymentChannel", "paymentReference", "defaultBusinessPurpose"];
+const VENDOR_FIELD_ALIASES = {
+  name: ["vendorName", "payeeName", "paymentTargetName"],
+  taxId: ["vendorTaxId", "payeeTaxId", "paymentTargetTaxId"],
+  address: ["vendorAddress", "payeeAddress", "paymentAddress"],
+  contactName: ["vendorContactName", "payeeContactName", "paymentContactName"],
+  phone: ["vendorPhone", "payeePhone", "paymentPhone"],
+  email: ["vendorEmail", "payeeEmail", "paymentEmail"],
+  bankName: ["vendorBankName", "bankName", "paymentBankName"],
+  accountNo: ["vendorAccountNo", "accountNo", "paymentAccountNo"],
+  paymentChannel: ["vendorPaymentChannel", "paymentChannel"],
+  paymentReference: ["vendorPaymentReference", "paymentReference"],
+  defaultBusinessPurpose: ["vendorDefaultBusinessPurpose", "defaultBusinessPurpose"],
+};
+
+function buildVendorSnapshot(payload = {}) {
+  const snapshot = Object.fromEntries(VENDOR_SNAPSHOT_FIELDS.map((field) => [field, String(payload.vendorSnapshot?.[field] ?? "").trim()]));
+  for (const field of VENDOR_SNAPSHOT_FIELDS) {
+    const source = (VENDOR_FIELD_ALIASES[field] || []).find((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (source) snapshot[field] = String(payload[source] ?? "").trim();
+  }
+  return snapshot;
+}
 
 function toCents(value) {
   const text = String(value ?? "").replace(/,/g, "").trim();
@@ -165,8 +190,15 @@ function buildExpensePayload(data = {}) {
     expenseDate: String(data.expenseDate ?? "").trim(),
     businessPurpose: String(data.businessPurpose ?? "").trim(),
     paymentTargetName: String(data.paymentTargetName ?? "").trim(),
+    vendorId: String(data.vendorId ?? "").trim(),
+    vendorSnapshot: buildVendorSnapshot(data),
     paymentBankName: String(data.paymentBankName ?? "").trim(),
     paymentAccountNo: String(data.paymentAccountNo ?? "").trim(),
+    transactionNo: String(data.transactionNo ?? "").trim(),
+    workflowTemplateId: String(data.workflowTemplateId ?? "").trim(),
+    workflowStepId: String(data.workflowStepId ?? "").trim(),
+    completedAt: String(data.completedAt ?? "").trim(),
+    completedBy: String(data.completedBy ?? "").trim(),
     expenseLines: data.expenseLines,
     totals,
     evidence,
@@ -230,6 +262,7 @@ const ExpenseRequestLogic = {
   EXPENSE_REQUEST_STATUS_LABELS,
   buildRawFileName,
   buildExpensePayload,
+  buildVendorSnapshot,
   calculateExpenseTotals,
   formatPayloadMarkdown,
   validateExpenseRequest,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -156,6 +156,133 @@ test("substitute receipt APIs return next number and submit stock purchase recei
   }
 });
 
+test("complete route requires persisted stock receipts to be received, then preserves explicit completion and idempotence over HTTP", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-complete-api-"));
+  const port = 19193;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), SWEET_HOUSE_ROOT_DIR: rootDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const submitReceipt = async ({ receiptType, lines }) => {
+    const formData = new FormData();
+    formData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-04",
+      receiptTitle: `ทดสอบ complete ${receiptType}`,
+      receiptType,
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ complete ผ่าน HTTP",
+      lines,
+    }));
+    formData.append("evidence_paymentSlip", new Blob([`slip-${receiptType}`], { type: "text/plain" }), `${receiptType}.txt`);
+    return requestJson(baseUrl, "/api/substitute-receipts", { method: "POST", body: formData });
+  };
+
+  try {
+    await waitForServer(child);
+
+    const { product } = await requestJson(baseUrl, "/api/inventory/products", {
+      method: "POST",
+      body: JSON.stringify({ productCode: "COMPLETE-SR", name: "สินค้า complete SR", category: "เสื้อ" }),
+    });
+    const { stockSku } = await requestJson(baseUrl, "/api/inventory/stock-skus", {
+      method: "POST",
+      body: JSON.stringify({ productId: product.id, sku: "COMPLETE-SR-M", color: "ขาว", size: "M", defaultUnitCost: "100" }),
+    });
+    const stockSubmitted = await submitReceipt({
+      receiptType: "stock_purchase",
+      lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "สินค้า complete", quantity: "2", unitCost: "125" }],
+    });
+    await requestJson(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+
+    const receiptJsonPath = join(rootDir, stockSubmitted.folderPath, "data", "substitute-receipt.json");
+    const receiptJsonBeforeRefusal = await readFile(receiptJsonPath);
+    const pdfUrl = `/api/substitute-receipts/${stockSubmitted.receiptNo}/files/pdf/${stockSubmitted.pdfFiles[0].name}`;
+    const rawUrl = `/api/substitute-receipts/${stockSubmitted.receiptNo}/files/raw/${stockSubmitted.rawFiles[0].storedName}`;
+    const [pdfBeforeRefusal, rawBeforeRefusal, indexBeforeRefusal, stockBeforeRefusal] = await Promise.all([
+      (await fetch(`${baseUrl}${pdfUrl}`)).arrayBuffer(),
+      (await fetch(`${baseUrl}${rawUrl}`)).arrayBuffer(),
+      requestJson(baseUrl, "/api/substitute-receipts"),
+      requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`),
+    ]);
+    assert.equal(indexBeforeRefusal.receipts.find((row) => row.receiptNo === stockSubmitted.receiptNo).status, "approved");
+    assert.equal(stockBeforeRefusal.movements.length, 0);
+
+    const refused = await requestJsonResponse(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({
+        completedBy: "ผู้โจมตี",
+        receiptType: "general_expense",
+        status: "received",
+        stockReceipt: { receivedAt: "forged" },
+        stockMovements: [{ id: "forged" }],
+      }),
+    });
+    assert.equal(refused.response.status, 400);
+    assert.equal(refused.body.error, "ซื้อสต๊อกต้องรับสินค้าเข้าคลังก่อนเสร็จสิ้นเอกสาร");
+    assert.deepEqual(await readFile(receiptJsonPath), receiptJsonBeforeRefusal, "refusal must not rewrite receipt JSON");
+    assert.deepEqual(new Uint8Array(await (await fetch(`${baseUrl}${pdfUrl}`)).arrayBuffer()), new Uint8Array(pdfBeforeRefusal), "refusal must not rewrite PDF bytes");
+    assert.deepEqual(new Uint8Array(await (await fetch(`${baseUrl}${rawUrl}`)).arrayBuffer()), new Uint8Array(rawBeforeRefusal), "refusal must not rewrite raw evidence");
+    const [indexAfterRefusal, stockAfterRefusal] = await Promise.all([
+      requestJson(baseUrl, "/api/substitute-receipts"),
+      requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`),
+    ]);
+    assert.equal(indexAfterRefusal.receipts.find((row) => row.receiptNo === stockSubmitted.receiptNo).status, "approved");
+    assert.equal(stockAfterRefusal.movements.length, 0, "refusal must not create stock movements");
+
+    const received = await requestJson(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/receive-stock`, {
+      method: "POST",
+      body: JSON.stringify({ receivedDate: "2026-09-05", receivedBy: "คลังแรก" }),
+    });
+    assert.equal(received.status, "received");
+    assert.equal(received.stockMovements.length, 1);
+    const receiptAfterReceive = JSON.parse(await readFile(receiptJsonPath, "utf8"));
+    const receivedHistoryLength = receiptAfterReceive.statusHistory.length;
+    const repeatedReceive = await requestJson(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/receive-stock`, {
+      method: "POST",
+      body: JSON.stringify({ receivedDate: "2026-09-06", receivedBy: "คลังสอง" }),
+    });
+    assert.deepEqual(repeatedReceive.stockMovements.map((movement) => movement.id), received.stockMovements.map((movement) => movement.id));
+    assert.deepEqual(JSON.parse(await readFile(receiptJsonPath, "utf8")).stockReceipt, receiptAfterReceive.stockReceipt, "repeat receive keeps first receipt stamps");
+
+    const completed = await requestJson(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชีแรก" }),
+    });
+    assert.equal(completed.status, "completed");
+    const receiptAfterComplete = JSON.parse(await readFile(receiptJsonPath, "utf8"));
+    const pdfAfterComplete = await (await fetch(`${baseUrl}${pdfUrl}`)).arrayBuffer();
+    const repeatedComplete = await requestJson(baseUrl, `/api/substitute-receipts/${stockSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชีสอง" }),
+    });
+    assert.equal(repeatedComplete.completedAt, completed.completedAt);
+    assert.equal(repeatedComplete.completedBy, "บัญชีแรก");
+    assert.deepEqual(JSON.parse(await readFile(receiptJsonPath, "utf8")), receiptAfterComplete, "repeat completion keeps JSON and history unchanged");
+    assert.equal(receiptAfterComplete.statusHistory.length, receivedHistoryLength + 1);
+    assert.deepEqual(new Uint8Array(await (await fetch(`${baseUrl}${pdfUrl}`)).arrayBuffer()), new Uint8Array(pdfAfterComplete), "repeat completion keeps PDF bytes unchanged");
+    const stockAfterComplete = await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`);
+    assert.deepEqual(stockAfterComplete.movements.map((movement) => movement.id), received.stockMovements.map((movement) => movement.id));
+    assert.equal((await requestJson(baseUrl, "/api/substitute-receipts")).receipts.find((row) => row.receiptNo === stockSubmitted.receiptNo).status, "completed");
+
+    const generalSubmitted = await submitReceipt({ receiptType: "general_expense", lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "107" }] });
+    await requestJson(baseUrl, `/api/substitute-receipts/${generalSubmitted.receiptNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "บัญชี" }) });
+    const generalCompleted = await requestJson(baseUrl, `/api/substitute-receipts/${generalSubmitted.receiptNo}/complete`, { method: "POST", body: JSON.stringify({ completedBy: "บัญชี" }) });
+    assert.equal(generalCompleted.status, "completed");
+    assert.deepEqual((await requestJson(baseUrl, `/api/inventory/stock-card?stockSkuId=${stockSku.id}`)).movements.map((movement) => movement.id), received.stockMovements.map((movement) => movement.id), "general completion must not create stock movements");
+  } finally {
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("expense request API approves submitted requests and reports sheet sync status", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-api-"));
   const port = 19191;
@@ -210,6 +337,91 @@ test("expense request API approves submitted requests and reports sheet sync sta
     const approvedRecord = list.requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(approvedRecord.status, "approved");
     assert.equal(approvedRecord.sheetSyncStatus, "sync_failed");
+  } finally {
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// receiptType controls whether stock receiving applies; native "completed"
+// alone unlocks the next workflow step. forms/substitute-receipt.html locks
+// the field in the browser when opened from a workflow step, but that is a UI
+// affordance only -- this test exercises the real HTTP submission route
+// (multipart form, real local-server.mjs process) with a receiptType that
+// disagrees with what the workflow step's snapshotted template declared, to
+// prove the server itself refuses it end to end, not just at the unit level.
+test("POST /api/substitute-receipts rejects a receiptType that disagrees with the workflow step's declared type, over the real HTTP route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-api-"));
+  const port = 19192;
+  const baseUrl = `http://localhost:${port}`;
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    await waitForServer(child);
+
+    // stock_no_tax_invoice_company_bank's substitute_receipt step (the
+    // second step) declares "stock_purchase".
+    const txn = await requestJson(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "stock_no_tax_invoice_company_bank",
+        accountingMonth: "2026-09",
+        title: "ทดสอบปฏิเสธ receiptType ผ่าน HTTP จริง",
+      }),
+    });
+    const receiptStepId = txn.steps[1].stepId;
+
+    const mismatchedFormData = new FormData();
+    mismatchedFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-04",
+      receiptTitle: "ทดสอบ receiptType ผิด",
+      receiptType: "general_expense",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ",
+      transactionNo: txn.transactionNo,
+      workflowTemplateId: txn.workflowTemplateId,
+      workflowStepId: receiptStepId,
+      lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+    }));
+    mismatchedFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+
+    const { response, body } = await requestJsonResponse(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: mismatchedFormData,
+    });
+    assert.equal(response.status, 400);
+    assert.match(body.error, /[ก-๙]/, "refusal must be a Thai error message");
+
+    // Standalone submission (no transactionNo/workflowStepId at all) must
+    // stay completely unaffected -- this is the same request this file's
+    // first test already sends successfully, repeated here in the same
+    // process to prove the new guard does not touch that path.
+    const standaloneFormData = new FormData();
+    standaloneFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-04",
+      receiptTitle: "ทดสอบแบบเดี่ยว ไม่มี workflow",
+      receiptType: "general_expense",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ",
+      lines: [{ description: "รายการทดสอบ", quantity: "1", unitCost: "100" }],
+    }));
+    standaloneFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
+    const standaloneSubmitted = await requestJson(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: standaloneFormData,
+    });
+    assert.equal(standaloneSubmitted.status, "pending_approval", "standalone submission must be entirely unaffected by the workflow guard");
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));

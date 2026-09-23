@@ -329,6 +329,59 @@
       display: none;
     }
 
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+    }
+
+    .field-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #14532d;
+      font-size: 11px;
+      font-weight: 800;
+      width: fit-content;
+    }
+
+    .field-badge[hidden] {
+      display: none;
+    }
+
+    .prefill-banner {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #93c5fd;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: #1e3a8a;
+    }
+
+    .prefill-banner[hidden] {
+      display: none;
+    }
+
+    .prefill-banner p {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .prefill-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .icon-button {
       width: 38px;
       height: 38px;
@@ -396,6 +449,26 @@
       font-weight: 800;
     }
 
+    .lifecycle-dialog {
+      position: fixed;
+      z-index: 50;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(16, 42, 67, 0.45);
+    }
+
+    .lifecycle-dialog[hidden] { display: none; }
+
+    .lifecycle-dialog-card {
+      width: min(100%, 460px);
+      padding: 20px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
     @media (max-width: 980px) {
       .page { grid-template-columns: 1fr; }
       .span-3,
@@ -435,6 +508,19 @@
           <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
         </div>
         <div class="menu-group">
+          <div class="menu-group-title">เอกสารจัดซื้อ / จ่ายเงิน</div>
+          <a class="menu-item" href="/workflow-documents?documentKind=purchase_order">ใบสั่งซื้อ</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payment_voucher">ใบสำคัญจ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=cash_spend_declaration">ใบรับรองการจ่ายเงินสดส่วนตัว</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payee_acknowledgement">ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=goods_receipt">ใบรับของ/ใบรับสินค้าเข้าคลัง</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">Workflow</div>
+          <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+          <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+        </div>
+        <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
@@ -446,10 +532,24 @@
       <h1 class="brand-title">ใบรับรองแทนใบเสร็จรับเงิน</h1>
       <p class="brand-subtitle">กรอกเอกสาร แนบหลักฐาน อนุมัติ และรับ Stock SKU เข้าคลังเป็นคนละขั้น</p>
     </div>
+    <a class="button secondary" id="workflowReturnLink" href="/workflow-transactions" hidden>กลับไปที่ Workflow</a>
   </header>
 
   <main class="page">
     <form class="stack" id="substituteReceiptForm">
+      <input type="hidden" name="transactionNo" id="transactionNo">
+      <input type="hidden" name="workflowTemplateId" id="workflowTemplateId">
+      <input type="hidden" name="workflowStepId" id="workflowStepId">
+
+      <div class="prefill-banner" id="workflowPrefillBanner" hidden>
+        <p>พบข้อมูลจากเอกสารก่อนหน้าใน Workflow นี้ เลือกกลุ่มข้อมูลที่ต้องการนำมาใช้</p>
+        <div id="workflowPrefillGroups"></div>
+        <div class="actions">
+          <button type="button" id="workflowPrefillApply" class="button primary">ใช้ข้อมูลเดิม</button>
+          <button type="button" id="workflowPrefillDismiss" class="button secondary">กรอกใหม่</button>
+        </div>
+      </div>
+
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">ข้อมูลเอกสาร</h2>
@@ -470,10 +570,12 @@
                 <option value="stock_purchase">ซื้อสต๊อกสินค้า</option>
                 <option value="general_expense">รายจ่ายทั่วไป</option>
               </select>
+              <span class="field-badge" id="receiptTypeWorkflowNote" hidden>Workflow นี้กำหนดประเภทของเอกสารนี้ไว้แล้ว ไม่สามารถเปลี่ยนได้</span>
             </div>
             <div class="field span-12">
               <label for="receiptTitle">ชื่อรายการ</label>
               <input id="receiptTitle" name="receiptTitle" placeholder="เช่น ซื้อสต๊อกเสื้อผ้า Lot กันยายน">
+              <span class="field-badge" data-badge-for="receiptTitle" hidden></span>
             </div>
           </div>
         </div>
@@ -487,17 +589,21 @@
           <div class="grid">
             <div class="field span-12">
               <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
-              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable>
+              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable aria-describedby="vendorPresetHint">
                 <option value="">กรอกเอง / ไม่ใช้ preset</option>
               </select>
+              <span class="hint" id="vendorPresetHint">เลือกข้อมูลผู้ขายเดิม หรือกรอกข้อมูลใหม่เอง</span>
+              <label class="choice"><input type="checkbox" id="saveVendorPreset" name="saveVendorPreset"> บันทึกผู้ขายรายนี้ไว้ใช้ครั้งต่อไป</label>
             </div>
             <div class="field span-6">
               <label for="payeeName">ผู้ขาย/ผู้รับเงิน *</label>
               <input id="payeeName" name="payeeName" required>
+              <span class="field-badge" data-badge-for="payeeName" hidden></span>
             </div>
             <div class="field span-6">
               <label for="payeeTaxId">เลขประจำตัวผู้เสียภาษีผู้ขาย</label>
               <input id="payeeTaxId" name="payeeTaxId">
+              <span class="field-badge" data-badge-for="payeeTaxId" hidden></span>
             </div>
             <div class="field span-6">
               <label for="paymentChannel">ช่องทางชำระเงิน</label>
@@ -508,8 +614,14 @@
               <input id="paymentReference" name="paymentReference">
             </div>
             <div class="field span-12">
+              <label for="paymentNote">หมายเหตุการจ่ายเงิน / รายละเอียดการชำระเงิน</label>
+              <textarea id="paymentNote" name="paymentNote" placeholder="เช่น จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท"></textarea>
+              <span class="hint">ระบุรายละเอียดการแบ่งจ่ายหรือข้อมูลเพิ่มเติมที่ต้องการแสดงในเอกสาร</span>
+            </div>
+            <div class="field span-12">
               <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
               <textarea id="businessPurpose" name="businessPurpose" required>ซื้อสินค้าเพื่อขาย</textarea>
+              <span class="field-badge" data-badge-for="businessPurpose" hidden></span>
             </div>
             <div class="field span-12">
               <label for="additionalNote">หมายเหตุเพิ่มเติม</label>
@@ -524,7 +636,10 @@
           <h2 class="section-title">รายการสินค้า/ค่าใช้จ่าย</h2>
           <button class="button secondary" type="button" id="addStockLine">เพิ่มรายการ</button>
         </div>
-        <div class="section-body" id="stockLineItems"></div>
+        <div class="section-body">
+          <span class="field-badge" data-badge-for="lines" hidden></span>
+          <div id="stockLineItems"></div>
+        </div>
       </section>
 
       <section class="section">
@@ -558,10 +673,13 @@
         <button class="button primary" type="submit" id="submitForApproval">ส่งตรวจอนุมัติ</button>
         <button class="button primary" type="button" id="approveReceipt" hidden>อนุมัติ</button>
         <button class="button primary" type="button" id="receiveStock" hidden>รับสินค้าเข้าคลัง</button>
+        <button class="button primary" type="button" id="completeReceipt" hidden>เสร็จสิ้นเอกสาร</button>
         <button hidden type="submit" id="submitSubstituteReceipt" aria-hidden="true" tabindex="-1"></button>
         <button class="button secondary" type="reset">ล้างฟอร์ม</button>
       </div>
       <div class="status-box" id="substituteReceiptStatus"></div>
+      <button class="button secondary" type="button" id="reloadSavedReceipt" hidden>โหลดรายละเอียดซ้ำ</button>
+      <div class="status-box" id="legacyEvidenceLinks" hidden></div>
     </form>
 
     <aside class="stack">
@@ -600,6 +718,17 @@
     </aside>
   </main>
 
+  <div class="lifecycle-dialog" id="stockBeforeCompleteDialog" role="dialog" aria-modal="true" aria-labelledby="stockBeforeCompleteDialogTitle" hidden>
+    <div class="lifecycle-dialog-card">
+      <h2 id="stockBeforeCompleteDialogTitle">รับสินค้าเข้าสต๊อกก่อนเสร็จสิ้นเอกสาร</h2>
+      <p>ยังไม่ได้ทำการ move เข้าสต๊อก ต้องการ move เข้าสต๊อกก่อนหรือไม่</p>
+      <div class="actions">
+        <button type="button" class="button primary" id="confirmReceiveBeforeComplete">รับเข้าสต๊อกก่อน</button>
+        <button type="button" class="button secondary" id="declineReceiveBeforeComplete">ยังไม่รับตอนนี้</button>
+      </div>
+    </div>
+  </div>
+
   <template id="stockLineTemplate">
     <details class="stock-line" open>
       <summary class="stock-line-summary">
@@ -631,6 +760,11 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
+  <script src="./vendor-picker.logic.browser.js"></script>
+  <script src="./document-lifecycle.logic.js"></script>
+  <script src="./workflow-return-link.browser.js"></script>
+  <script src="./workflow-prefill.logic.js"></script>
+  <script src="./workflow-prefill-banner.browser.js"></script>
   <script src="./substitute-receipt.logic.browser.js"></script>
 </body>
 </html>

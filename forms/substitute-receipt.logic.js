@@ -17,12 +17,37 @@ const EVIDENCE_SLUGS = {
   otherEvidence: "other-evidence",
 };
 
-const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "cancelled", "voided"];
+const VENDOR_SNAPSHOT_FIELDS = ["name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo", "paymentChannel", "paymentReference", "defaultBusinessPurpose"];
+const VENDOR_FIELD_ALIASES = {
+  name: ["vendorName", "payeeName", "paymentTargetName"],
+  taxId: ["vendorTaxId", "payeeTaxId", "paymentTargetTaxId"],
+  address: ["vendorAddress", "payeeAddress", "paymentAddress"],
+  contactName: ["vendorContactName", "payeeContactName", "paymentContactName"],
+  phone: ["vendorPhone", "payeePhone", "paymentPhone"],
+  email: ["vendorEmail", "payeeEmail", "paymentEmail"],
+  bankName: ["vendorBankName", "bankName", "paymentBankName"],
+  accountNo: ["vendorAccountNo", "accountNo", "paymentAccountNo"],
+  paymentChannel: ["vendorPaymentChannel", "paymentChannel"],
+  paymentReference: ["vendorPaymentReference", "paymentReference"],
+  defaultBusinessPurpose: ["vendorDefaultBusinessPurpose", "defaultBusinessPurpose"],
+};
+
+function buildVendorSnapshot(payload = {}) {
+  const snapshot = Object.fromEntries(VENDOR_SNAPSHOT_FIELDS.map((field) => [field, cleanText(payload.vendorSnapshot?.[field])]));
+  for (const field of VENDOR_SNAPSHOT_FIELDS) {
+    const source = (VENDOR_FIELD_ALIASES[field] || []).find((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (source) snapshot[field] = cleanText(payload[source]);
+  }
+  return snapshot;
+}
+
+const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "completed", "cancelled", "voided"];
 const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
   draft: "แบบร่าง",
   pending_approval: "รอตรวจอนุมัติ",
   approved: "อนุมัติแล้ว",
   received: "รับเข้าคลังแล้ว",
+  completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
   voided: "ยกเลิกหลังรับรู้",
 };
@@ -30,8 +55,9 @@ const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
 const SUBSTITUTE_RECEIPT_TRANSITIONS = {
   draft: new Set(["draft", "pending_approval", "cancelled"]),
   pending_approval: new Set(["draft", "pending_approval", "approved", "cancelled"]),
-  approved: new Set(["approved", "received", "cancelled"]),
-  received: new Set(["received", "voided"]),
+  approved: new Set(["approved", "received", "completed", "cancelled"]),
+  received: new Set(["received", "completed", "voided"]),
+  completed: new Set(["completed"]),
   cancelled: new Set(["cancelled"]),
   voided: new Set(["voided"]),
 };
@@ -241,14 +267,22 @@ function buildSubstituteReceiptPayload(data = {}) {
       branch: cleanText(data.company.branch),
       address: cleanText(data.company.address),
     } : undefined,
+    status: cleanText(data.status) || "draft",
     accountingMonth: cleanText(data.accountingMonth),
     receiptDate: cleanText(data.receiptDate),
     payeeName: cleanText(data.payeeName),
     payeeTaxId: cleanText(data.payeeTaxId),
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
+    paymentNote: cleanText(data.paymentNote),
+    vendorId: cleanText(data.vendorId),
+    vendorSnapshot: buildVendorSnapshot(data),
     businessPurpose: cleanText(data.businessPurpose),
-    additionalNote: cleanText(data.additionalNote),
+    transactionNo: cleanText(data.transactionNo),
+    workflowTemplateId: cleanText(data.workflowTemplateId),
+    workflowStepId: cleanText(data.workflowStepId),
+    completedAt: cleanText(data.completedAt),
+    completedBy: cleanText(data.completedBy),
     lines,
     totals: {
       totalAmount: money(totalCents),
@@ -287,8 +321,8 @@ function formatSubstituteReceiptMarkdown(payload = {}) {
 ผู้ขาย/ผู้รับเงิน: ${payload.payeeName || ""}
 ช่องทางชำระเงิน: ${payload.paymentChannel || ""}
 เลขอ้างอิงชำระเงิน: ${payload.paymentReference || ""}
+หมายเหตุการจ่ายเงิน: ${payload.paymentNote || ""}
 วัตถุประสงค์ทางธุรกิจ: ${payload.businessPurpose || ""}
-หมายเหตุเพิ่มเติม: ${payload.additionalNote || ""}
 โฟลเดอร์: ${payload.folderPath || ""}
 
 ## รายการ
@@ -316,6 +350,7 @@ const SubstituteReceiptLogic = {
   assertStockLinesUnchanged,
   assertSubstituteReceiptTransition,
   buildSubstituteReceiptPayload,
+  buildVendorSnapshot,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
   normalizeSubstituteReceiptStatus,
