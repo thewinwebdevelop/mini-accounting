@@ -486,7 +486,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!state.vendors.length) {
         try {
           const legacy = await api("/api/substitute-receipt-vendors");
-          state.vendors = legacy.vendors || [];
+          state.vendors = (legacy.vendors || []).filter((vendor) => vendor.status === "active");
           renderVendorOptions();
         } catch {
           // The shared picker already left the form usable for document-only entry.
@@ -569,6 +569,8 @@ window.addEventListener("DOMContentLoaded", () => {
     applyWorkflowReceiptTypeLock();
     form.elements.receiptTitle.value = payload.receiptTitle || "";
     form.elements.payeeName.value = payload.payeeName || "";
+    if (payload.vendorId) form.dataset.vendorId = payload.vendorId; else delete form.dataset.vendorId;
+    if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot); else delete form.dataset.vendorSnapshot;
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
     form.elements.paymentReference.value = payload.paymentReference || "";
@@ -642,6 +644,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
     state.status = "draft";
     state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
@@ -676,6 +679,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (result.receiptNo !== state.receiptNo && state.receiptNo)) throw new Error("เซิร์ฟเวอร์ส่งเลขเอกสารไม่ตรงกัน");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || !Array.isArray(result.pdfFiles)) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
     state.status = status;
     state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";

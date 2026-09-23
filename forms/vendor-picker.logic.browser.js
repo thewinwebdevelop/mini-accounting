@@ -54,7 +54,7 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "โหลดรายชื่อผู้ขายไม่สำเร็จ");
       const vendors = (Array.isArray(result) ? result : result.vendors || [])
-        .filter((vendor) => vendor && vendor.status !== "inactive");
+        .filter((vendor) => vendor && vendor.status === "active");
       const makeOption = (text, value) => global.Option
         ? new global.Option(text, value)
         : Object.assign(global.document.createElement("option"), { textContent: text, value });
@@ -80,7 +80,7 @@
 
   async function saveVendorPresetIfRequested(options = {}) {
     const { form, checkbox, mapping = {}, fetchImpl = global.fetch, confirmImpl = global.confirm } = options;
-    if (!checkbox?.checked || !form) return null;
+    if (!checkbox?.checked || !form || clean(form.dataset.vendorId)) return null;
     const candidate = options.candidate || candidateFromForm(form, mapping);
     if (!candidate.name) return null;
     const post = async (body) => {
@@ -92,7 +92,22 @@
       const result = await response.json();
       return { response, result };
     };
-    let { response, result } = await post(candidate);
+    let matchResult = null;
+    try {
+      const params = global.URLSearchParams
+        ? new global.URLSearchParams(Object.entries(candidate).filter(([, value]) => value))
+        : Object.entries(candidate).filter(([, value]) => value).map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
+      const matchResponse = await fetchImpl(`/api/vendors/matches?${params}`);
+      if (matchResponse.ok) matchResult = await matchResponse.json();
+    } catch {
+      // Preset saving remains best effort; the document can still be saved.
+    }
+    const duplicateIds = matchResult?.matches?.map((match) => match.id).filter(Boolean) || [];
+    let { response, result } = await post(duplicateIds.length ? {
+      ...candidate,
+      expectedMatchIds: duplicateIds,
+      expectedCandidateFingerprint: matchResult.candidateFingerprint,
+    } : candidate);
     if (response.status === 409 && result.candidateFingerprint && Array.isArray(result.matches)) {
       const ids = result.matches.map((match) => match.id).filter(Boolean);
       const confirmText = "พบผู้ขายข้อมูลใกล้เคียง ต้องการบันทึกซ้ำหรือไม่?";
@@ -116,9 +131,6 @@
       if (vendor) applyVendorToForm(form, vendor, options.mapping);
       else clearVendorSelection(select, form);
       options.onChange?.(vendor || null);
-    });
-    options.checkbox?.addEventListener("change", () => {
-      if (options.checkbox.checked) saveVendorPresetIfRequested(options).catch(options.onError);
     });
     return { state, load, applyVendorToForm: (vendor) => applyVendorToForm(form, vendor, options.mapping), clearVendorSelection: () => clearVendorSelection(select, form), saveVendorPresetIfRequested: () => saveVendorPresetIfRequested(options) };
   }

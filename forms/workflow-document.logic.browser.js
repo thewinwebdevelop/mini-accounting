@@ -290,6 +290,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     adoptAuthoritativeResult(result);
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { setStatus(`บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`, "error"); }
     clearSubmittedUploads();
     setStatus(`บันทึกเอกสาร ${state.documentNo} แล้ว\nPDF ${(result.pdfFiles || []).length} ไฟล์`, "success");
   }
