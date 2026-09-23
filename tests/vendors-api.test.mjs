@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -222,6 +222,8 @@ test("vendor API redacts storage errors and compatibility create preserves inact
     });
     assert.equal(created.response.status, 200);
     assert.equal(created.body.vendor.status, "inactive");
+    const persisted = JSON.parse(await readFile(join(legacyFixture.rootDir, "config", "vendors.json"), "utf8"));
+    assert.deepEqual(persisted.vendors.map((vendor) => vendor.status), ["inactive"]);
     const active = await requestJson(legacyFixture.baseUrl, "/api/substitute-receipt-vendors");
     assert.equal(active.body.vendors.length, 0);
     const all = await requestJson(legacyFixture.baseUrl, "/api/substitute-receipt-vendors?includeInactive=1");

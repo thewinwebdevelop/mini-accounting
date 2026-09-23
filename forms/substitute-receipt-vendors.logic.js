@@ -53,10 +53,11 @@ async function createSubstituteReceiptVendor(rootDir, data = {}, options = {}) {
     error.statusCode = 400;
     throw error;
   }
-  const vendor = await createVendor(rootDir, legacyVendorInput(data), mutationOptions(data, options));
-  if (status === "inactive") {
-    return compatibilityVendor(await updateVendor(rootDir, vendor.id, { status: "inactive" }));
-  }
+  const vendor = await createVendor(
+    rootDir,
+    legacyVendorInput(data),
+    { ...mutationOptions(data, options), status },
+  );
   return compatibilityVendor(vendor);
 }
 

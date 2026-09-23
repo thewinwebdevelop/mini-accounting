@@ -261,7 +261,11 @@ async function createVendor(first, second, third) {
     const vendor = {
       id: createVendorId(options),
       ...normalized,
-      status: "active",
+      // New shared vendors are active by default. Compatibility adapters may
+      // pass a validated status when importing an existing inactive preset;
+      // keeping it in this single write avoids an observable active interval
+      // and avoids a second mutation that could leave a partial record.
+      status: normalizeStatus(options.status),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
