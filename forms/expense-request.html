@@ -1633,6 +1633,8 @@
       replaceNumberedUrl(currentRequestNo);
       setReadOnlyMode(false);
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
+      // The detail reload updates the status panel; restore the preset result
+      // afterward so a failed optional vendor save remains visible.
       setSaveStatus(vendorPresetError || `บันทึกแบบร่างแล้ว: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
     }
 
@@ -1679,9 +1681,9 @@
       replaceNumberedUrl(currentRequestNo);
       setReadOnlyMode(false);
       const pdfCount = result.pdfFiles?.length || 0;
-      setSaveStatus(vendorPresetError || `ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, vendorPresetError ? "error" : "success");
       output.value = JSON.stringify(result, null, 2);
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
+      setSaveStatus(vendorPresetError || `ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, vendorPresetError ? "error" : "success");
       updatePreview();
     }
 

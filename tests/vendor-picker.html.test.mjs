@@ -38,6 +38,15 @@ test("document save keeps vendor preset failure visible", async () => {
   }
 });
 
+test("expense submit restores optional vendor warning after detail reload", async () => {
+  const html = await readFile(new URL("../forms/expense-request.html", import.meta.url), "utf8");
+  const submitStart = html.indexOf("async function submitRequest()");
+  const submitSource = html.slice(submitStart, html.indexOf("document.querySelector(\"#addLine\")", submitStart));
+  const reloadIndex = submitSource.indexOf("await loadSubmittedRequest(currentRequestNo)");
+  const warningIndex = submitSource.indexOf("setSaveStatus(vendorPresetError");
+  assert.ok(reloadIndex >= 0 && warningIndex > reloadIndex, "vendor warning must be rendered after detail reload");
+});
+
 test("shared picker loads active vendors and copies only mapped fields", async () => {
   const source = await readFile(helperPath, "utf8");
   const options = { children: [], replaceChildren(...nodes) { this.children = nodes; }, appendChild(node) { this.children.push(node); } };
