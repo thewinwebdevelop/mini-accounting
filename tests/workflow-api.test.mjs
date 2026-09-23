@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
 
 import serverLogic from "../forms/local-server.logic.js";
+import inventoryLogic from "../forms/inventory.logic.js";
 import workflowLogic from "../forms/workflow.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+
+const { createProduct, createStockSku } = inventoryLogic;
 
 const execFileAsync = promisify(execFile);
 
@@ -450,6 +453,8 @@ test("refreshWorkflowTransaction really scans lightweight documents and unblocks
       lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
     await serverLogic.completeWorkflowDocument({
       rootDir,
       documentKind: "purchase_order",
@@ -594,6 +599,8 @@ test("refreshWorkflowTransaction with regeneratePacket:false derives and persist
       lines: [{ description: "สินค้า A", quantity: "1", unitCost: "100" }],
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo, completedBy: "คุณต้า" });
 
     let packetGeneratorCalls = 0;
@@ -715,7 +722,7 @@ test("readExpenseRequestChildDocument degrades to null instead of throwing when 
   }
 });
 
-test("refreshWorkflowTransaction injects documentKind so expense_request and the substitute_receipt hybrid rule dispatch correctly", async () => {
+test("refreshWorkflowTransaction keeps an approved substitute receipt in progress until its explicit complete action", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {
     const txn = await serverLogic.startWorkflowTransaction({
@@ -797,10 +804,93 @@ test("refreshWorkflowTransaction injects documentKind so expense_request and the
     const afterReceipt = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
     assert.equal(
       afterReceipt.steps[1].workflowStatus,
-      "completed",
-      "an approved general_expense substitute_receipt must dispatch through the hybrid rule, which needs documentKind injected",
+      "in_progress",
+      "an approved general_expense substitute_receipt must remain in progress until explicitly completed",
     );
-    assert.equal(afterReceipt.steps[2].workflowStatus, "not_started", "payment_voucher step should now be unblocked");
+    assert.equal(afterReceipt.steps[2].workflowStatus, "blocked", "payment_voucher step must remain blocked after receipt approval");
+
+    await serverLogic.completeSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      completedBy: "บัญชี",
+    });
+    const afterComplete = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterComplete.steps[1].workflowStatus, "completed", "explicit completion must complete the substitute_receipt step");
+    assert.equal(afterComplete.steps[2].workflowStatus, "not_started", "explicit completion must unblock the payment_voucher step");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("refreshWorkflowTransaction keeps a received stock substitute receipt in progress until its explicit complete action", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "O7", name: "สินค้า O7", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "O7-STOCK-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "100",
+    });
+    await serverLogic.saveWorkflowTemplate({
+      rootDir,
+      template: {
+        templateId: "o7_stock_receipt_test",
+        name: "ทดสอบปิดใบรับรองสต๊อก",
+        documentSteps: [
+          { documentKind: "substitute_receipt", receiptType: "stock_purchase" },
+          { documentKind: "payment_voucher" },
+        ],
+      },
+    });
+    const txn = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "o7_stock_receipt_test",
+      accountingMonth: "2026-09",
+      title: "รับสินค้า O7",
+    });
+    const savedReceipt = await serverLogic.saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        receiptDate: "2026-09-05",
+        receiptTitle: "ใบรับรองแทนใบเสร็จสต๊อก",
+        receiptType: "stock_purchase",
+        payeeName: "ผู้ขายทดสอบ",
+        businessPurpose: "ซื้อสินค้าทดสอบ",
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: txn.steps[0].stepId,
+        lines: [{ stockSkuId: String(stockSku.id), sku: stockSku.sku, description: "สินค้า O7", quantity: "2", unitCost: "100" }],
+      },
+      uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
+    });
+    await serverLogic.approveSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+    await serverLogic.receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+
+    const afterReceive = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterReceive.steps[0].workflowStatus, "in_progress", "receiving stock must not complete the substitute_receipt step");
+    assert.equal(afterReceive.steps[1].workflowStatus, "blocked", "payment_voucher must remain blocked after stock receiving");
+
+    await serverLogic.completeSubstituteReceipt({
+      rootDir,
+      receiptNo: savedReceipt.receiptNo,
+      completedBy: "บัญชี",
+    });
+    const afterComplete = await serverLogic.refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo });
+    assert.equal(afterComplete.steps[0].workflowStatus, "completed");
+    assert.equal(afterComplete.steps[1].workflowStatus, "not_started", "explicit completion must unblock the payment_voucher step");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -836,6 +926,8 @@ test("getWorkflowTransactionPrefill builds context from completed sibling docume
       workflowStepId: txn.steps[0].stepId,
     });
     const po = await serverLogic.saveWorkflowDocument({ rootDir, payload: poPayload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: po.documentNo, completedBy: "บัญชี" });
 
     const prefill = await serverLogic.getWorkflowTransactionPrefill({
@@ -997,6 +1089,8 @@ async function completeSingleStepTransaction(rootDir, templateOverrides) {
     workflowStepId: txn.steps[0].stepId,
   });
   await serverLogic.saveWorkflowDocument({ rootDir, payload });
+  await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo });
+  await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo });
   await serverLogic.completeWorkflowDocument({
     rootDir,
     documentKind: "payment_voucher",
@@ -1125,14 +1219,46 @@ test("syncWorkflowTransactionToDrive returns a sync_failed status without throwi
   }
 });
 
-test("local server exposes workflow transaction completion and sync routes", async () => {
+test("local server exposes workflow transaction completion, Drive, and Sheets sync routes", async () => {
   const source = await readFile(new URL("../local-server.mjs", import.meta.url), "utf8");
   assert.match(source, /completeWorkflowTransaction/);
   assert.match(source, /syncWorkflowTransactionToDrive/);
   assert.match(source, /\/complete/);
   assert.match(source, /\/sync-drive/);
-  assert.doesNotMatch(source, /syncWorkflowTransactionToSheets/);
-  assert.doesNotMatch(source, /\/sync-sheets/);
+  assert.match(source, /syncWorkflowTransactionToSheets/);
+  assert.match(source, /\/sync-sheets/);
+  assert.match(source, /cancelWorkflowTransaction/);
+  assert.match(source, /\/cancel/);
+});
+
+test("POST workflow cancellation requires literal confirmation over the real loopback route", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-http-"));
+  const server = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(server);
+    const baseUrl = `http://localhost:${port}`;
+    const started = await requestJson(baseUrl, "/api/workflow-transactions", {
+      method: "POST",
+      body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-09", title: "HTTP cancel confirmation" }),
+    });
+    assert.equal(started.status, 200);
+    const refused = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/cancel`, { method: "POST", body: JSON.stringify({ cancelledBy: "hostile" }) });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.code, "CANCELLATION_CONFIRMATION_REQUIRED");
+    const detail = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}`);
+    assert.equal(detail.status, 200);
+    assert.notEqual(detail.body.status, "cancellation_pending");
+    assert.notEqual(detail.body.status, "cancelled");
+    const pending = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/cancel`, { method: "POST", body: JSON.stringify({ confirmed: true, cancelledBy: "http-test" }) });
+    assert.equal(pending.status, 202);
+    assert.equal(pending.body.code, "WORKFLOW_CANCELLATION_PENDING");
+    const blocked = await requestJson(baseUrl, `/api/workflow-transactions/${started.body.transactionNo}/refresh`, { method: "POST", body: JSON.stringify({ regeneratePacket: false }) });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.code, "WORKFLOW_CANCELLATION_IN_PROGRESS");
+  } finally {
+    await stopServer(server);
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1168,13 +1294,15 @@ async function waitForServerPort(child) {
   });
 }
 
-function spawnLocalServer(rootDir) {
-  return spawn(process.execPath, ["local-server.mjs"], {
+function spawnLocalServer(rootDir, { fetchMode = "", fetchLog = "" } = {}) {
+  const preload = new URL("./helpers/workflow-sheets-fetch-preload.mjs", import.meta.url).pathname;
+  return spawn(process.execPath, fetchMode ? ["--import", preload, "local-server.mjs"] : ["local-server.mjs"], {
     cwd: new URL("..", import.meta.url),
     env: {
       ...process.env,
       PORT: "0",
       SWEET_HOUSE_ROOT_DIR: rootDir,
+      ...(fetchMode ? { WORKFLOW_SHEETS_FETCH_MODE: fetchMode, WORKFLOW_SHEETS_FETCH_LOG: fetchLog } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1240,12 +1368,97 @@ async function submitAndCompletePurchaseOrder(baseUrl, txn) {
       workflowStepId: txn.steps[0].stepId,
     }),
   });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
   await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/complete`, {
     method: "POST",
     body: JSON.stringify({ completedBy: "คุณต้า" }),
   });
   return submitted;
 }
+
+async function seedSheetsSyncTransaction(rootDir, { completedAt = "2026-09-10T00:00:00.000Z" } = {}) {
+  const transactionNo = "TXN-2026-09-0001";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0001";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0001";
+  await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, "config"), { recursive: true });
+  await writeFile(join(rootDir, "config", "google-drive-config.json"), JSON.stringify({ clientId: "test", clientSecret: "test", driveBasePath: "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี" }));
+  await writeFile(join(rootDir, "config", "google-drive-token.json"), JSON.stringify({ access_token: "test-token", refresh_token: "test-refresh", expiresAt: Date.now() + 3_600_000 }));
+  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt, steps: [{ stepId: "expense", documentKind: "expense_request" }] }));
+  await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({ requestNo: "REQ-2026-09-0001", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder, requestTitle: "ค่าใช้จ่ายจริง", paymentTargetName: "ร้านค้า", workflowStepId: "expense", totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" } }));
+  const indexLogic = await import("../forms/document-index.logic.js");
+  indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0001", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
+  return { transactionNo, transactionFolder };
+}
+
+test("POST workflow Sheets sync uses real loopback fetch, ignores hostile body, and resyncs one parent row", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-http-"));
+  const logPath = join(rootDir, "fetch.log");
+  const { transactionNo } = await seedSheetsSyncTransaction(rootDir);
+  const child = spawnLocalServer(rootDir, { fetchMode: "success", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const first = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({ accountingMonth: "1999-01", sourceKey: "evil", amount: "999999" }) });
+    assert.equal(first.sourceKey, "workflow_transaction:TXN-2026-09-0001");
+    assert.equal(first.sourceDocumentNo, "REQ-2026-09-0001");
+    assert.equal(first.rowNumber, 2);
+    const second = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(second.sourceKey, first.sourceKey);
+    assert.equal(second.rowNumber, 2);
+    const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(calls.some((call) => call.method === "POST" && call.url.includes(":append")));
+    assert.equal(calls.filter((call) => call.method === "POST" && decodeURIComponent(call.url).includes(":append")).length, 1, "only the first sync appends the parent row");
+    assert.ok(calls.some((call) => call.method === "PUT" && decodeURIComponent(call.url).includes("A2:N2")), "the resync updates row 2 instead of appending");
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync returns 409 without a parent mutation when child rows conflict", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-conflict-"));
+  const logPath = join(rootDir, "fetch.log"); const { transactionNo } = await seedSheetsSyncTransaction(rootDir);
+  const child = spawnLocalServer(rootDir, { fetchMode: "conflict", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const result = await requestJson(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 409); assert.equal(result.body.code, "workflow_child_sheet_rows_exist");
+    const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(calls.every((call) => call.method === "GET"));
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync rejects pre-completion with zero Google calls", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-precomplete-"));
+  const logPath = join(rootDir, "fetch.log"); const { transactionNo } = await seedSheetsSyncTransaction(rootDir, { completedAt: "" });
+  const child = spawnLocalServer(rootDir, { fetchMode: "success", fetchLog: logPath });
+  try {
+    const port = await waitForServerPort(child); const result = await requestJson(`http://127.0.0.1:${port}`, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 400); assert.match(result.body.error, /ต้องปิดงาน Workflow/);
+    assert.equal(existsSync(logPath), false, "the completion guard must run before Google fetch");
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("POST workflow Sheets sync maps filesystem containment failures without exposing its workspace path", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-path-http-"));
+  const outside = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-path-outside-"));
+  let child;
+  try {
+    const { transactionNo, transactionFolder } = await seedSheetsSyncTransaction(rootDir);
+    const dataDir = join(rootDir, transactionFolder, "data");
+    const transactionJson = await readFile(join(dataDir, "workflow-transaction.json"));
+    await rm(dataDir, { recursive: true, force: true });
+    await writeFile(join(outside, "workflow-transaction.json"), transactionJson);
+    await symlink(outside, dataDir);
+    child = spawnLocalServer(rootDir);
+    const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
+    const result = await requestJson(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, "workflow_sheet_sync_failed");
+    assert.equal(JSON.stringify(result.body).includes(rootDir), false);
+    assert.equal(JSON.stringify(result.body).includes(outside), false);
+  } finally { if (child) await stopServer(child); await rm(rootDir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
 
 test("GET /api/workflow-document-types exposes registered document kinds over HTTP", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
@@ -1979,7 +2192,8 @@ const ALL_DOCUMENT_KINDS = [
   "substitute_receipt",
 ];
 
-async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
+async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl, { captureResponse } = {}) {
+  const capture = captureResponse || (() => {});
   await requestJsonOk(baseUrl, "/api/workflow-templates", {
     method: "POST",
     body: JSON.stringify({
@@ -2017,10 +2231,21 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
     formData.append("evidence_evidence", new Blob([`evidence-for-${documentKind}`], { type: "text/plain" }), "evidence.txt");
 
     const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: formData });
-    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+    capture(`${documentKind} submission`, created);
+    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
+    const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
     });
+    capture(`${documentKind} complete`, completed);
+    if (captureResponse) {
+      const repeated = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ completedBy: "คุณต้า" }),
+      });
+      capture(`${documentKind} repeat complete`, repeated);
+    }
   }
 
   // expense_request: its own dedicated submission route. A PDF is generated
@@ -2048,20 +2273,30 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
   }));
   expenseFormData.append("evidence_businessEvidence", new Blob(["evidence-for-expense_request"], { type: "text/plain" }), "evidence.txt");
   const expenseSubmitted = await requestJsonOk(baseUrl, "/api/expense-requests", { method: "POST", body: expenseFormData });
-  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
+  capture("expense_request submission", expenseSubmitted);
+  const expenseApproved = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/approve`, {
     method: "POST",
     body: JSON.stringify({ approvedBy: "เจ้าของ" }),
   });
+  capture("expense_request approve", expenseApproved);
   // Completed over its real HTTP route (Important 2 fix) — an expense_request
   // step could never leave in_progress before this route was wired.
-  await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+  const expenseCompleted = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
     method: "POST",
     body: JSON.stringify({ completedBy: "บัญชี" }),
   });
+  capture("expense_request complete", expenseCompleted);
+  if (captureResponse) {
+    const expenseRepeated = await requestJsonOk(baseUrl, `/api/expense-requests/${expenseSubmitted.requestNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    capture("expense_request repeat complete", expenseRepeated);
+  }
 
-  // substitute_receipt: its own dedicated submission route. A general_expense
-  // receipt counts as workflow-completed once approved (the hybrid rule in
-  // deriveChildWorkflowStatus), which is reachable over HTTP.
+  // substitute_receipt: its own dedicated submission, approval, and explicit
+  // completion routes. Native completed is required before the workflow step
+  // can count as completed.
   const receiptFormData = new FormData();
   receiptFormData.append("payload", JSON.stringify({
     accountingMonth: "2026-09",
@@ -2077,13 +2312,127 @@ async function buildTransactionWithEveryDocumentKind(rootDir, baseUrl) {
   }));
   receiptFormData.append("evidence_paymentSlip", new Blob(["slip"], { type: "text/plain" }), "slip.txt");
   const receiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", { method: "POST", body: receiptFormData });
-  await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
+  capture("substitute_receipt submission", receiptSubmitted);
+  const receiptApproved = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/approve`, {
     method: "POST",
     body: JSON.stringify({ approvedBy: "บัญชี" }),
   });
+  capture("substitute_receipt approve", receiptApproved);
+  const receiptCompleted = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ completedBy: "บัญชี" }),
+  });
+  capture("substitute_receipt complete", receiptCompleted);
+  if (captureResponse) {
+    const receiptRepeated = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "บัญชี" }),
+    });
+    capture("substitute_receipt repeat complete", receiptRepeated);
+  }
 
   return txn;
 }
+
+function assertNoPrivateAbsolutePathKeys(value, label, location = "response") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertNoPrivateAbsolutePathKeys(entry, label, `${location}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  for (const [key, nested] of Object.entries(value)) {
+    assert.notEqual(key, "absolutePath", `${label}: ${location} must omit absolutePath`);
+    assert.notEqual(key, "absoluteFolderPath", `${label}: ${location} must omit absoluteFolderPath`);
+    assertNoPrivateAbsolutePathKeys(nested, label, `${location}.${key}`);
+  }
+}
+
+test("every document action JSON response recursively omits private absolute path keys", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-http-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const responses = [];
+    const txn = await buildTransactionWithEveryDocumentKind(rootDir, baseUrl, {
+      captureResponse: (label, body) => responses.push({ label, body }),
+    });
+
+    const { product } = await requestJsonOk(baseUrl, "/api/inventory/products", {
+      method: "POST",
+      body: JSON.stringify({ productCode: "PATH-GUARD", name: "สินค้าทดสอบ path guard", category: "เสื้อ" }),
+    });
+    const { stockSku } = await requestJsonOk(baseUrl, "/api/inventory/stock-skus", {
+      method: "POST",
+      body: JSON.stringify({
+        productId: product.id,
+        sku: "PATH-GUARD-ONE",
+        color: "ขาว",
+        size: "M",
+        defaultUnitCost: "10",
+      }),
+    });
+    const stockReceiptFormData = new FormData();
+    stockReceiptFormData.append("payload", JSON.stringify({
+      accountingMonth: "2026-09",
+      receiptDate: "2026-09-06",
+      receiptTitle: "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ",
+      receiptType: "stock_purchase",
+      payeeName: "ผู้ขายทดสอบ",
+      businessPurpose: "ทดสอบ receive-stock response",
+      lines: [{
+        stockSkuId: String(stockSku.id),
+        sku: stockSku.sku,
+        description: "สินค้าทดสอบ",
+        quantity: "1",
+        unitCost: "10",
+      }],
+    }));
+    stockReceiptFormData.append("evidence_paymentSlip", new Blob(["stock-slip"], { type: "text/plain" }), "stock-slip.txt");
+    const stockReceiptSubmitted = await requestJsonOk(baseUrl, "/api/substitute-receipts", {
+      method: "POST",
+      body: stockReceiptFormData,
+    });
+    responses.push({ label: "stock substitute_receipt submission", body: stockReceiptSubmitted });
+    const stockReceiptApproved = await requestJsonOk(baseUrl, `/api/substitute-receipts/${stockReceiptSubmitted.receiptNo}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "บัญชี" }),
+    });
+    responses.push({ label: "stock substitute_receipt approve", body: stockReceiptApproved });
+    const stockReceived = await requestJsonOk(baseUrl, `/api/substitute-receipts/${stockReceiptSubmitted.receiptNo}/receive-stock`, {
+      method: "POST",
+      body: JSON.stringify({ receivedDate: "2026-09-07", receivedBy: "คลัง" }),
+    });
+    responses.push({ label: "stock substitute_receipt receive-stock", body: stockReceived });
+
+    for (const { label, body } of responses) {
+      assertNoPrivateAbsolutePathKeys(body, label);
+    }
+    assert.equal(responses.length, 26, "all seven submissions/completions/repeats plus approve and receive-stock actions must be checked");
+    const literalValueResponse = await requestJsonOk(baseUrl, "/api/workflow-templates", {
+      method: "POST",
+      body: JSON.stringify({
+        templateId: "reserved_key_string_test",
+        name: "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ",
+        documentSteps: [{ documentKind: "purchase_order" }],
+      }),
+    });
+    assert.equal(literalValueResponse.name, "ข้อความ absolutePath และ absoluteFolderPath ต้องไม่ถูกลบ");
+    assert.ok(stockReceiptApproved.pdfFiles[0].name, "public PDF metadata must keep its name");
+    assert.ok(stockReceiptApproved.pdfFiles[0].path, "public PDF metadata must keep its relative path");
+    assert.ok(stockReceiptApproved.pdfFiles[0].url, "public PDF metadata must keep its download URL");
+    const pdfDownload = await fetch(`${baseUrl}${stockReceiptApproved.pdfFiles[0].url}`);
+    assert.equal(pdfDownload.status, 200, "a returned PDF URL must still download successfully");
+    assert.match(pdfDownload.headers.get("content-type") || "", /application\/pdf/);
+
+    const detail = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}`);
+    assertNoPrivateAbsolutePathKeys(detail, "workflow transaction detail");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 
 async function assertDetailCarriesEveryChildDocument(baseUrl, detail, txn) {
   assert.ok(Array.isArray(detail.childDocuments), "response must carry a childDocuments array");
@@ -2187,6 +2536,8 @@ test("POST .../complete refuses until every step is done, then completes and sur
         workflowStepId: txn.steps[0].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${submitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2284,9 +2635,8 @@ test("director_expense_transfer (a real shipped template) completes end to end p
     assert.equal(afterExpense.steps[1].workflowStatus, "not_started", "substitute_receipt step must now be unblocked");
 
     // Step 2: substitute_receipt — its own dedicated submission route, then
-    // approve, then the newly-wired complete route (not load-bearing here —
-    // the hybrid rule already completes an approved general_expense receipt —
-    // but wired for consistency, so exercised here too).
+    // approve, then explicitly complete. Approval alone remains in progress
+    // and keeps the payment voucher blocked.
     const receiptFormData = new FormData();
     receiptFormData.append("payload", JSON.stringify({
       accountingMonth: "2026-09",
@@ -2307,6 +2657,10 @@ test("director_expense_transfer (a real shipped template) completes end to end p
       method: "POST",
       body: JSON.stringify({ approvedBy: "บัญชี" }),
     });
+    const afterReceiptApproval = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/refresh`, { method: "POST" });
+    assert.equal(afterReceiptApproval.steps[1].workflowStatus, "in_progress", "approved substitute_receipt must remain in progress");
+    assert.equal(afterReceiptApproval.steps[2].workflowStatus, "blocked", "payment_voucher must remain blocked until explicit receipt completion");
+
     const receiptCompleted = await requestJsonOk(baseUrl, `/api/substitute-receipts/${receiptSubmitted.receiptNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "บัญชี" }),
@@ -2328,6 +2682,8 @@ test("director_expense_transfer (a real shipped template) completes end to end p
         workflowStepId: txn.steps[2].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${voucherSubmitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "บัญชี" }),
@@ -2382,6 +2738,8 @@ test("GET/refresh/complete workflow-transaction routes never leak absolutePath o
         workflowStepId: txn.steps[0].stepId,
       }),
     });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
     await requestJsonOk(baseUrl, `/api/workflow-documents/payment_voucher/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -2458,6 +2816,8 @@ async function completeMultiStepTransaction(rootDir, documentKinds = ["purchase_
       workflowStepId: txn.steps[index].stepId,
     });
     await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy: "บัญชี" });
     children.push(await serverLogic.getWorkflowDocument(rootDir, documentKind, documentNo));
   }

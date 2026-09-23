@@ -92,6 +92,24 @@ function compactGroup(fields) {
   return Object.keys(result).length ? result : undefined;
 }
 
+function attachVendorMetadata(group, payload = {}) {
+  if (!group) return group;
+  const result = { ...group };
+  const vendorId = cleanText(payload.vendorId);
+  if (vendorId) result.vendorId = vendorId;
+  if (payload.vendorSnapshot && typeof payload.vendorSnapshot === "object") {
+    result.vendorSnapshot = { ...payload.vendorSnapshot };
+  }
+  return result;
+}
+
+function copyVendorMetadata(patch, payee = {}) {
+  if (cleanText(payee.vendorId)) patch.vendorId = cleanText(payee.vendorId);
+  if (payee.vendorSnapshot && typeof payee.vendorSnapshot === "object") {
+    patch.vendorSnapshot = { ...payee.vendorSnapshot };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // expense_request
 // ---------------------------------------------------------------------------
@@ -104,7 +122,7 @@ function expenseRequestToWorkflowContext(payload = {}) {
     bankName: payload.paymentBankName,
     accountNo: payload.paymentAccountNo,
   });
-  if (payee) context.payee = payee;
+  if (payee) context.payee = attachVendorMetadata(payee, payload);
 
   const purpose = compactGroup({
     title: payload.requestTitle,
@@ -146,6 +164,7 @@ function applyWorkflowContextToExpenseRequest(context = {}, groups = []) {
     copyIfSupplied(patch, "paymentTargetName", context.payee.name);
     copyIfSupplied(patch, "paymentBankName", context.payee.bankName);
     copyIfSupplied(patch, "paymentAccountNo", context.payee.accountNo);
+    copyVendorMetadata(patch, context.payee);
   }
 
   if (groups.includes("purpose") && context.purpose) {
@@ -197,7 +216,7 @@ function substituteReceiptToWorkflowContext(payload = {}) {
     name: payload.payeeName,
     taxId: payload.payeeTaxId,
   });
-  if (payee) context.payee = payee;
+  if (payee) context.payee = attachVendorMetadata(payee, payload);
 
   const purpose = compactGroup({
     title: payload.receiptTitle,
@@ -219,6 +238,7 @@ function applyWorkflowContextToSubstituteReceipt(context = {}, groups = []) {
   if (groups.includes("payee") && context.payee) {
     copyIfSupplied(patch, "payeeName", context.payee.name);
     copyIfSupplied(patch, "payeeTaxId", context.payee.taxId);
+    copyVendorMetadata(patch, context.payee);
   }
 
   if (groups.includes("purpose") && context.purpose) {
@@ -259,7 +279,7 @@ function workflowDocumentShellToContext(payload = {}) {
   // The lightweight shell has no taxId/address/bankName/accountNo fields — a
   // known limitation of the generic shell, not of this adapter.
   const payee = compactGroup({ name: payload.payeeName });
-  if (payee) context.payee = payee;
+  if (payee) context.payee = attachVendorMetadata(payee, payload);
 
   const purpose = compactGroup({
     title: payload.title,
@@ -282,6 +302,7 @@ function applyWorkflowContextToWorkflowDocumentShell(context = {}, groups = []) 
 
   if (groups.includes("payee") && context.payee) {
     copyIfSupplied(patch, "payeeName", context.payee.name);
+    copyVendorMetadata(patch, context.payee);
   }
 
   if (groups.includes("purpose") && context.purpose) {
@@ -375,16 +396,9 @@ function isGroupNonEmpty(value) {
 // "completed" are ever used as a source.
 //
 // Recency is the document's `workflowStepId` ("step-001", "step-002", …),
-// NOT `completedAt`. `completedAt` looks tempting (it's an ISO string, so
-// lexicographic comparison "just works"), but it is not reliably stamped: the
-// hybrid substitute_receipt completion rule (workflow.logic.js
-// deriveChildWorkflowStatus) reports a receipt as workflow-completed on
-// native status alone (general_expense+approved, stock_purchase+received)
-// without ever setting completedAt, so it can be "" on a completed source.
-// "" sorts before every real ISO string, which made a completed-but-unstamped
-// document look like the *oldest* one regardless of when it actually
-// completed. workflowStepId has no such gap: every child document carries
-// one, it sorts lexicographically into exactly template order, and a
+// NOT `completedAt`. Workflow order is the authoritative source precedence;
+// timestamps may be missing on legacy records or equal in deterministic test
+// fixtures. workflowStepId sorts lexicographically into template order, and a
 // separate binding rule already forces documents to be produced in strict
 // template order (a step after the first incomplete step is `blocked`) — so
 // step order IS completion order, deterministically, with no dependence on

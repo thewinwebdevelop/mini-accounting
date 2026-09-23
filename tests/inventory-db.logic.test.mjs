@@ -35,6 +35,7 @@ test("ensureInventorySchema creates inventory database tables", async () => {
       "product_categories",
       "products",
       "sale_skus",
+      "stock_movement_reversals",
       "stock_movements",
       "stock_skus",
     ]);

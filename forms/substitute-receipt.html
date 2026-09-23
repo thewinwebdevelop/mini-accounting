@@ -449,6 +449,26 @@
       font-weight: 800;
     }
 
+    .lifecycle-dialog {
+      position: fixed;
+      z-index: 50;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(16, 42, 67, 0.45);
+    }
+
+    .lifecycle-dialog[hidden] { display: none; }
+
+    .lifecycle-dialog-card {
+      width: min(100%, 460px);
+      padding: 20px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
     @media (max-width: 980px) {
       .page { grid-template-columns: 1fr; }
       .span-3,
@@ -569,9 +589,11 @@
           <div class="grid">
             <div class="field span-12">
               <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
-              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable>
+              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable aria-describedby="vendorPresetHint">
                 <option value="">กรอกเอง / ไม่ใช้ preset</option>
               </select>
+              <span class="hint" id="vendorPresetHint">เลือกข้อมูลผู้ขายเดิม หรือกรอกข้อมูลใหม่เอง</span>
+              <label class="choice"><input type="checkbox" id="saveVendorPreset" name="saveVendorPreset"> บันทึกผู้ขายรายนี้ไว้ใช้ครั้งต่อไป</label>
             </div>
             <div class="field span-6">
               <label for="payeeName">ผู้ขาย/ผู้รับเงิน *</label>
@@ -642,10 +664,13 @@
         <button class="button primary" type="submit" id="submitForApproval">ส่งตรวจอนุมัติ</button>
         <button class="button primary" type="button" id="approveReceipt" hidden>อนุมัติ</button>
         <button class="button primary" type="button" id="receiveStock" hidden>รับสินค้าเข้าคลัง</button>
+        <button class="button primary" type="button" id="completeReceipt" hidden>เสร็จสิ้นเอกสาร</button>
         <button hidden type="submit" id="submitSubstituteReceipt" aria-hidden="true" tabindex="-1"></button>
         <button class="button secondary" type="reset">ล้างฟอร์ม</button>
       </div>
       <div class="status-box" id="substituteReceiptStatus"></div>
+      <button class="button secondary" type="button" id="reloadSavedReceipt" hidden>โหลดรายละเอียดซ้ำ</button>
+      <div class="status-box" id="legacyEvidenceLinks" hidden></div>
     </form>
 
     <aside class="stack">
@@ -684,6 +709,17 @@
     </aside>
   </main>
 
+  <div class="lifecycle-dialog" id="stockBeforeCompleteDialog" role="dialog" aria-modal="true" aria-labelledby="stockBeforeCompleteDialogTitle" hidden>
+    <div class="lifecycle-dialog-card">
+      <h2 id="stockBeforeCompleteDialogTitle">รับสินค้าเข้าสต๊อกก่อนเสร็จสิ้นเอกสาร</h2>
+      <p>ยังไม่ได้ทำการ move เข้าสต๊อก ต้องการ move เข้าสต๊อกก่อนหรือไม่</p>
+      <div class="actions">
+        <button type="button" class="button primary" id="confirmReceiveBeforeComplete">รับเข้าสต๊อกก่อน</button>
+        <button type="button" class="button secondary" id="declineReceiveBeforeComplete">ยังไม่รับตอนนี้</button>
+      </div>
+    </div>
+  </div>
+
   <template id="stockLineTemplate">
     <details class="stock-line" open>
       <summary class="stock-line-summary">
@@ -715,6 +751,8 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
+  <script src="./vendor-picker.logic.browser.js"></script>
+  <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>

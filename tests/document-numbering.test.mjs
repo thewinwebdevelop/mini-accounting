@@ -23,6 +23,8 @@ const {
   getWorkflowDocument,
   getNextWorkflowDocumentInfo,
   saveWorkflowDocument,
+  submitWorkflowDocument,
+  approveWorkflowDocument,
   completeWorkflowDocument,
   approveExpenseRequest,
   startWorkflowTransaction,
@@ -223,7 +225,7 @@ test("the documents index agrees with disk after a create", async () => {
     const rows = await readDocumentIndexRows(rootDir, "expense_request");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].document_no, submitted.requestNo);
-    assert.equal(rows[0].status, "submitted");
+    assert.equal(rows[0].status, "pending_approval");
     assert.equal(rows[0].folder_path, submitted.folderPath);
     assert.equal(rows[0].accounting_month, "2026-09");
   });
@@ -257,6 +259,8 @@ test("the documents index agrees with disk after a completion", async () => {
 test("the documents index agrees with disk after a lightweight document is completed", async () => {
   await withTempRoot(async (rootDir) => {
     const created = await createLightweightDocument(rootDir, "purchase_order", "สั่งซื้อทดสอบ");
+    await submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo, completedBy: "บัญชี" });
 
     const rows = await readDocumentIndexRows(rootDir, "purchase_order");
@@ -269,6 +273,8 @@ test("the documents index agrees with disk after a lightweight document is compl
 test("a save refused by the completed-document guard leaves no trace in the documents index", async () => {
   await withTempRoot(async (rootDir) => {
     const created = await createLightweightDocument(rootDir, "purchase_order", "สั่งซื้อทดสอบ");
+    await submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: created.documentNo, completedBy: "บัญชี" });
 
     const beforeRows = await readDocumentIndexRows(rootDir, "purchase_order");

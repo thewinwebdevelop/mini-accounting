@@ -1,6 +1,7 @@
 window.addEventListener("DOMContentLoaded", () => {
   const logic = window.WorkflowDocumentLogic;
   const workflowLogic = window.WorkflowLogic;
+  const lifecycleLogic = window.DocumentLifecycleLogic;
   const query = new URLSearchParams(location.search);
 
   const state = {
@@ -18,12 +19,27 @@ window.addEventListener("DOMContentLoaded", () => {
   const lineTemplate = document.querySelector("#lineTemplate");
   const addLineButton = document.querySelector("#addLine");
   const saveButton = document.querySelector("#saveWorkflowDocument");
+  const submitButton = document.querySelector("#submitWorkflowDocument");
+  const approveButton = document.querySelector("#approveWorkflowDocument");
   const completeButton = document.querySelector("#completeWorkflowDocument");
   const documentStatusPreview = document.querySelector("#documentStatusPreview");
   const documentNoPreview = document.querySelector("#documentNoPreview");
   const lineCountPreview = document.querySelector("#lineCountPreview");
   const totalAmountPreview = document.querySelector("#totalAmountPreview");
   const pageTitle = document.querySelector("#pageTitle");
+  const documentListLink = document.querySelector("#workflowDocumentListLink");
+  const mutationButtons = [saveButton, submitButton, approveButton, completeButton].filter(Boolean);
+  const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
+  const saveVendorPresetCheckbox = document.querySelector("#saveVendorPreset");
+  const vendorPicker = window.SharedVendorPicker?.create({
+    form,
+    select: vendorPresetSelect,
+    checkbox: saveVendorPresetCheckbox,
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], address: ["payeeAddress"], bankName: ["paymentBankName", "bankName"], accountNo: ["paymentAccountNo", "accountNo"], defaultBusinessPurpose: ["businessPurpose"] },
+    onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+  });
+  let mutationInFlight = false;
+  const implementedActions = new Set(["submit", "approve", "complete"]);
 
   function todayInputValue() {
     const now = new Date();
@@ -71,6 +87,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (definition?.label && pageTitle) pageTitle.textContent = definition.label;
   }
 
+  function applyDocumentListLink() {
+    if (logic?.LIGHTWEIGHT_DOCUMENT_KINDS?.includes(state.documentKind)) {
+      documentListLink?.setAttribute("href", `/workflow-documents?documentKind=${encodeURIComponent(state.documentKind)}`);
+    }
+  }
+
   function addLine(initial = {}) {
     const fragment = lineTemplate.content.cloneNode(true);
     const row = fragment.querySelector(".line-item");
@@ -108,6 +130,16 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function clearSubmittedUploads() {
+    const input = form.querySelector('[name="evidence_evidence"]');
+    if (!input) return;
+    input.value = "";
+    // The browser clears FileList when value is reset. The array branch keeps
+    // the real-HTML VM harness faithful without attempting to assign to a
+    // browser's read-only FileList.
+    if (Array.isArray(input.files)) input.files = [];
+  }
+
   function collectPayload() {
     return {
       documentKind: state.documentKind,
@@ -117,6 +149,8 @@ window.addEventListener("DOMContentLoaded", () => {
       title: form.elements.title.value,
       requesterName: form.elements.requesterName.value,
       payeeName: form.elements.payeeName.value,
+      vendorId: form.dataset.vendorId || "",
+      vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       businessPurpose: form.elements.businessPurpose.value,
       transactionNo: state.transactionNo,
       workflowTemplateId: state.workflowTemplateId,
@@ -126,11 +160,17 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function setDocumentState(status) {
-    state.status = status || "draft";
-    documentStatusPreview.textContent = logic.WORKFLOW_DOCUMENT_STATUS_LABELS[state.status] || state.status;
+    const supportsLifecycle = lifecycleLogic?.DOCUMENT_KINDS?.includes(state.documentKind);
+    state.status = supportsLifecycle ? lifecycleLogic.normalizeDocumentStatus(state.documentKind, status || "draft") : (status || "draft");
+    documentStatusPreview.textContent = lifecycleLogic?.DOCUMENT_STATUS_LABELS?.[state.status] || state.status;
     documentNoPreview.textContent = state.documentNo || "-";
     saveButton.hidden = state.status === "completed";
-    completeButton.hidden = !state.documentNo || state.status === "completed";
+    const actions = supportsLifecycle && state.documentNo
+      ? lifecycleLogic.availableDocumentActions(state.documentKind, state.status).filter((action) => implementedActions.has(action))
+      : [];
+    submitButton.hidden = !actions.includes("submit");
+    approveButton.hidden = !actions.includes("approve");
+    completeButton.hidden = !actions.includes("complete");
     form.elements.documentKind.value = state.documentKind;
     form.elements.documentNo.value = state.documentNo;
     form.elements.transactionNo.value = state.transactionNo;
@@ -179,6 +219,8 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.title.value = payload.title || "";
     form.elements.requesterName.value = payload.requesterName || "";
     form.elements.payeeName.value = payload.payeeName || "";
+    if (payload.vendorId) form.dataset.vendorId = payload.vendorId;
+    if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot);
     form.elements.businessPurpose.value = payload.businessPurpose || "";
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
@@ -206,6 +248,36 @@ window.addEventListener("DOMContentLoaded", () => {
     return body;
   }
 
+  function adoptAuthoritativeResult(result) {
+    if (!result || !Object.prototype.hasOwnProperty.call(result, "status")) {
+      throw new Error("การตอบกลับจากเซิร์ฟเวอร์ไม่มีสถานะเอกสารที่ยืนยันได้");
+    }
+    const status = lifecycleLogic.normalizeDocumentStatus(state.documentKind, result.status);
+    if (!result.documentNo && !state.documentNo) {
+      throw new Error("การตอบกลับจากเซิร์ฟเวอร์ไม่มีเลขที่เอกสารที่ยืนยันได้");
+    }
+    state.documentNo = result.documentNo || state.documentNo;
+    setDocumentState(status);
+  }
+
+  function setMutationControls(disabled) {
+    mutationButtons.forEach((button) => { button.disabled = disabled; });
+  }
+
+  async function runMutation(work) {
+    if (mutationInFlight) return;
+    mutationInFlight = true;
+    setMutationControls(true);
+    try {
+      await work();
+    } catch (error) {
+      setStatus(error.message, "error");
+    } finally {
+      mutationInFlight = false;
+      setMutationControls(false);
+    }
+  }
+
   async function saveWorkflowDocumentSubmission() {
     clearStatus();
     const payload = collectPayload();
@@ -217,33 +289,43 @@ window.addEventListener("DOMContentLoaded", () => {
       body: buildMultipartPayload(payload),
     });
 
-    state.documentNo = result.documentNo;
-    state.status = result.status || "draft";
-    setDocumentState(state.status);
-    setStatus(`บันทึกเอกสาร ${result.documentNo} แล้ว\nPDF ${result.pdfFiles.length} ไฟล์`, "success");
+    adoptAuthoritativeResult(result);
+    let vendorPresetError = "";
+    try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
+    clearSubmittedUploads();
+    setStatus(vendorPresetError || `บันทึกเอกสาร ${state.documentNo} แล้ว\nPDF ${(result.pdfFiles || []).length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
 
-  async function completeWorkflowDocumentSubmission() {
+  async function transitionWorkflowDocument(action) {
     if (!state.documentNo) return;
     clearStatus();
-    const result = await api(`/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}/complete`, {
+    const body = action === "complete" ? { completedBy: "" } : {};
+    const result = await api(`/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ completedBy: "" }),
+      body: JSON.stringify(body),
     });
-    state.status = result.status || "completed";
-    setDocumentState(state.status);
-    setStatus(`เอกสาร ${state.documentNo} เสร็จสิ้นแล้ว`, "success");
+    adoptAuthoritativeResult(result);
+    const messages = {
+      submit: `ส่งเอกสาร ${state.documentNo} ตรวจอนุมัติแล้ว`,
+      approve: `อนุมัติเอกสาร ${state.documentNo} แล้ว`,
+      complete: `เอกสาร ${state.documentNo} เสร็จสิ้นแล้ว`,
+    };
+    setStatus(messages[action], "success");
   }
 
   addLineButton.addEventListener("click", () => addLine());
-  saveButton.addEventListener("click", () => saveWorkflowDocumentSubmission().catch((error) => setStatus(error.message, "error")));
-  completeButton.addEventListener("click", () => completeWorkflowDocumentSubmission().catch((error) => setStatus(error.message, "error")));
+  saveButton.addEventListener("click", () => runMutation(saveWorkflowDocumentSubmission));
+  submitButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("submit")));
+  approveButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("approve")));
+  completeButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("complete")));
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);
   form.addEventListener("submit", (event) => event.preventDefault());
 
   applyDocumentKindLabel();
+  applyDocumentListLink();
+  vendorPicker?.load();
   fillForm();
 
   if (state.documentNo) {

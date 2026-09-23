@@ -45,6 +45,18 @@ function seedConfig(rootDir) {
   writeFileSync(join(configDir, "google-drive.json"), JSON.stringify({ token: "fake" }));
 }
 
+function seedDrafts(rootDir) {
+  const expenseDir = join(rootDir, "drafts", "expense", "legacy-expense-001");
+  mkdirSync(join(expenseDir, "attachments"), { recursive: true });
+  writeFileSync(join(expenseDir, "draft.json"), JSON.stringify({ type: "expense", id: "legacy-expense-001" }));
+  writeFileSync(join(expenseDir, "attachments", "receipt.jpg"), "expense receipt bytes");
+
+  const srDir = join(rootDir, "drafts", "sales-return", "legacy-sr-001");
+  mkdirSync(join(srDir, "attachments"), { recursive: true });
+  writeFileSync(join(srDir, "draft.json"), JSON.stringify({ type: "sales-return", id: "legacy-sr-001" }));
+  writeFileSync(join(srDir, "attachments", "return-note.pdf"), "sales return attachment bytes");
+}
+
 function seedDatabase(rootDir) {
   createProduct(rootDir, { productCode: "p001", name: "เสื้อยืดทดสอบ", category: "เสื้อ" });
   createProduct(rootDir, { productCode: "p002", name: "กระโปรงทดสอบ", category: "กระโปรง" });
@@ -134,6 +146,61 @@ test("backup script produces a consistent snapshot of documents, config, and the
     const sourceConfig = listFilesRecursive(join(rootDir, "config"));
     const copiedConfig = listFilesRecursive(join(snapshotDir, "config"));
     assert.deepEqual(copiedConfig, sourceConfig, "every config file must be present in the snapshot");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(backupRoot, { recursive: true, force: true });
+  }
+});
+
+test("backup script snapshots nested legacy expense and sales-return drafts without changing source bytes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-backup-src-drafts-"));
+  const backupRoot = await mkdtemp(join(tmpdir(), "sweet-house-backup-dst-"));
+
+  try {
+    seedDocuments(rootDir);
+    seedDatabase(rootDir);
+    seedDrafts(rootDir);
+    const sourceDrafts = join(rootDir, "drafts");
+    const sourceFiles = listFilesRecursive(sourceDrafts);
+    const sourceContents = new Map(sourceFiles.map((rel) => [rel, readFileSync(join(sourceDrafts, rel))]));
+
+    const { stdout } = await runBackup({
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+      SWEET_HOUSE_BACKUP_DIR: backupRoot,
+    });
+
+    const [snapshotDir] = findSnapshotDirs(backupRoot);
+    const copiedDrafts = join(snapshotDir, "drafts");
+    assert.deepEqual(listFilesRecursive(copiedDrafts), sourceFiles, "every legacy draft file must be in the snapshot");
+    for (const [rel, contents] of sourceContents) {
+      assert.deepEqual(readFileSync(join(copiedDrafts, rel)), contents, `copied ${rel} must preserve exact bytes`);
+      assert.deepEqual(readFileSync(join(sourceDrafts, rel)), contents, `source ${rel} must remain unchanged`);
+    }
+    assert.match(stdout, /drafts 4 ไฟล์/, "summary must include the draft file count");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(backupRoot, { recursive: true, force: true });
+  }
+});
+
+test("backup script tolerates a missing drafts directory without creating it", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-backup-src-nodrafts-"));
+  const backupRoot = await mkdtemp(join(tmpdir(), "sweet-house-backup-dst-"));
+
+  try {
+    seedDocuments(rootDir);
+    seedDatabase(rootDir);
+    const sourceDrafts = join(rootDir, "drafts");
+    assert.equal(existsSync(sourceDrafts), false, "fixture must start without drafts/");
+
+    const { stdout } = await runBackup({
+      SWEET_HOUSE_ROOT_DIR: rootDir,
+      SWEET_HOUSE_BACKUP_DIR: backupRoot,
+    });
+
+    assert.equal(findSnapshotDirs(backupRoot).length, 1, `missing drafts/ must not fail backup, stdout was:\n${stdout}`);
+    assert.equal(existsSync(sourceDrafts), false, "backup must not create a missing source drafts/ directory");
+    assert.match(stdout, /drafts 0 ไฟล์ \(ไม่พบโฟลเดอร์\)/, "summary must identify missing drafts/");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
     await rm(backupRoot, { recursive: true, force: true });

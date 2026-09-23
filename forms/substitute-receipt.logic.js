@@ -17,6 +17,30 @@ const EVIDENCE_SLUGS = {
   otherEvidence: "other-evidence",
 };
 
+const VENDOR_SNAPSHOT_FIELDS = ["name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo", "paymentChannel", "paymentReference", "defaultBusinessPurpose"];
+const VENDOR_FIELD_ALIASES = {
+  name: ["vendorName", "payeeName", "paymentTargetName"],
+  taxId: ["vendorTaxId", "payeeTaxId", "paymentTargetTaxId"],
+  address: ["vendorAddress", "payeeAddress", "paymentAddress"],
+  contactName: ["vendorContactName", "payeeContactName", "paymentContactName"],
+  phone: ["vendorPhone", "payeePhone", "paymentPhone"],
+  email: ["vendorEmail", "payeeEmail", "paymentEmail"],
+  bankName: ["vendorBankName", "bankName", "paymentBankName"],
+  accountNo: ["vendorAccountNo", "accountNo", "paymentAccountNo"],
+  paymentChannel: ["vendorPaymentChannel", "paymentChannel"],
+  paymentReference: ["vendorPaymentReference", "paymentReference"],
+  defaultBusinessPurpose: ["vendorDefaultBusinessPurpose", "defaultBusinessPurpose"],
+};
+
+function buildVendorSnapshot(payload = {}) {
+  const snapshot = Object.fromEntries(VENDOR_SNAPSHOT_FIELDS.map((field) => [field, cleanText(payload.vendorSnapshot?.[field])]));
+  for (const field of VENDOR_SNAPSHOT_FIELDS) {
+    const source = (VENDOR_FIELD_ALIASES[field] || []).find((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (source) snapshot[field] = cleanText(payload[source]);
+  }
+  return snapshot;
+}
+
 const SUBSTITUTE_RECEIPT_STATUSES = ["draft", "pending_approval", "approved", "received", "completed", "cancelled", "voided"];
 const SUBSTITUTE_RECEIPT_STATUS_LABELS = {
   draft: "แบบร่าง",
@@ -250,6 +274,8 @@ function buildSubstituteReceiptPayload(data = {}) {
     payeeTaxId: cleanText(data.payeeTaxId),
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
+    vendorId: cleanText(data.vendorId),
+    vendorSnapshot: buildVendorSnapshot(data),
     businessPurpose: cleanText(data.businessPurpose),
     transactionNo: cleanText(data.transactionNo),
     workflowTemplateId: cleanText(data.workflowTemplateId),
@@ -322,6 +348,7 @@ const SubstituteReceiptLogic = {
   assertStockLinesUnchanged,
   assertSubstituteReceiptTransition,
   buildSubstituteReceiptPayload,
+  buildVendorSnapshot,
   buildSubstituteReceiptRawFileName,
   formatSubstituteReceiptMarkdown,
   normalizeSubstituteReceiptStatus,

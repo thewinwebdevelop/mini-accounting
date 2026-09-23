@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,10 +25,12 @@ const {
   completeExpenseRequest,
   completeSubstituteReceipt,
   getExpenseDraft,
+  getLegacyExpenseDraftFile,
   getExpenseRequestFile,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getSubstituteReceiptDraft,
+  getLegacySubstituteReceiptDraftFile,
   getSubmittedSubstituteReceipt,
   getSubmittedExpenseRequest,
   listExpenseRequests,
@@ -42,7 +44,274 @@ const {
   saveSubstituteReceiptSubmission,
   syncSubstituteReceiptToDrive,
   syncExpenseRequestToDrive,
+  resolveWorkflowSheetExpenseSource,
+  buildWorkflowTransactionSheetEntry,
+  getWorkflowTransactionDetail,
+  getWorkflowTransaction,
+  listWorkflowTransactions,
+  listWorkflowTemplates,
+  saveWorkflowTemplate,
+  startWorkflowTransaction,
+  completeWorkflowTransaction,
+  cancelWorkflowTransaction,
+  syncWorkflowTransactionToSheets,
 } = serverLogic;
+
+test("syncWorkflowTransactionToSheets uses the completed REQ as one parent-keyed row", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-"));
+  const transactionNo = "TXN-2026-09-0001";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0001";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0001";
+  try {
+    await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+    await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({
+      transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, completedAt: "2026-09-10T00:00:00.000Z",
+      steps: [{ stepId: "expense", documentKind: "expense_request" }],
+    }));
+    await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({
+      requestNo: "REQ-2026-09-0001", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder,
+      requestTitle: "ค่าใช้จ่าย", paymentTargetName: "ร้านค้า", workflowStepId: "expense",
+      totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" },
+    }));
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+    indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0001", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo });
+    let preflightCalls = 0;
+    let recorderCalls = 0;
+    const options = {
+      rootDir, transactionNo, now: () => "2026-09-11T00:00:00.000Z",
+      conflictChecker: async ({ sourceKeys }) => { preflightCalls += 1; assert.deepEqual(sourceKeys, ["expense_request:REQ-2026-09-0001"]); return { conflicts: [], checkedLocations: [] }; },
+      expenseRecorder: async ({ entry }) => { recorderCalls += 1; return { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 5, sourceKey: entry.sourceKey }; },
+    };
+    const [result, duplicate] = await Promise.all([syncWorkflowTransactionToSheets(options), syncWorkflowTransactionToSheets(options)]);
+    assert.deepEqual(duplicate, result);
+    assert.equal(preflightCalls, 1);
+    assert.equal(recorderCalls, 1);
+    assert.deepEqual(result, {
+      syncStatus: "synced", sourceKey: "workflow_transaction:TXN-2026-09-0001", sourceDocumentKind: "expense_request", sourceDocumentNo: "REQ-2026-09-0001", sourceWorkflowStepId: "expense",
+      spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 5, syncedAt: "2026-09-11T00:00:00.000Z", updatedAt: "2026-09-11T00:00:00.000Z",
+    });
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("syncWorkflowTransactionToSheets refuses an uncompleted transaction before external calls", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-guard-"));
+  const transactionNo = "TXN-2026-09-0099";
+  const folderPath = "documents/2026/09/workflow-transactions/TXN-2026-09-0099";
+  try {
+    await mkdir(join(rootDir, folderPath, "data"), { recursive: true });
+    await writeFile(join(rootDir, folderPath, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath, status: "completed" }));
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath });
+    let calls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ต้องปิดงาน Workflow/);
+    assert.equal(calls, 0);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+async function seedWorkflowSheetsFixture(rootDir, { includeSr = false } = {}) {
+  const transactionNo = "TXN-2026-09-0042";
+  const transactionFolder = "documents/2026/09/workflow-transactions/TXN-2026-09-0042";
+  const requestFolder = "documents/2026/09/expense-requests/REQ-2026-09-0042";
+  const receiptFolder = "documents/2026/09/substitute-receipts/SR-2026-09-0042";
+  await mkdir(join(rootDir, transactionFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, requestFolder, "data"), { recursive: true });
+  if (includeSr) await mkdir(join(rootDir, receiptFolder, "data"), { recursive: true });
+  const steps = [{ stepId: "req", documentKind: "expense_request" }, ...(includeSr ? [{ stepId: "sr", documentKind: "substitute_receipt", receiptType: "stock_purchase" }] : [])];
+  await writeFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), JSON.stringify({ transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder, workflowTemplateId: "fixture-template", templateSnapshot: { templateId: "fixture-template", documentSteps: steps }, completedAt: "2026-09-10T00:00:00.000Z", steps }));
+  await writeFile(join(rootDir, requestFolder, "data", "submission.json"), JSON.stringify({ requestNo: "REQ-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: requestFolder, requestTitle: "ค่าใช้จ่าย", paymentTargetName: "ร้านค้า", workflowStepId: "req", totals: { amountBeforeVat: "100.00", vatAmount: "7.00", grossAmount: "107.00", withholdingTax: "0.00", netPayment: "107.00" } }));
+  if (includeSr) await writeFile(join(rootDir, receiptFolder, "data", "substitute-receipt.json"), JSON.stringify({ receiptNo: "SR-2026-09-0042", accountingMonth: "2026-09", transactionNo, folderPath: receiptFolder, receiptTitle: "ใบรับรอง", payeeName: "ร้านค้า", workflowStepId: "sr", totals: { totalAmount: "100.00" } }));
+  const indexLogic = await import("../forms/document-index.logic.js");
+  indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: transactionNo, accountingMonth: "2026-09", folderPath: transactionFolder });
+  indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: "REQ-2026-09-0042", accountingMonth: "2026-09", folderPath: requestFolder, transactionNo, workflowStepId: "req" });
+  if (includeSr) indexLogic.default.indexDocument(rootDir, { documentKind: "substitute_receipt", documentNo: "SR-2026-09-0042", accountingMonth: "2026-09", folderPath: receiptFolder, transactionNo, workflowStepId: "sr" });
+  return { transactionNo, transactionFolder, requestFolder, receiptFolder };
+}
+
+test("workflow Sheets sync rejects every child and transaction symlink component before external work", async () => {
+  for (const target of ["child-folder", "child-data", "child-file", "transaction-folder", "transaction-data", "sidecar"]) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-symlink-"));
+    const outside = await mkdtemp(join(tmpdir(), "sweet-house-sheets-outside-"));
+    try {
+      const fixture = await seedWorkflowSheetsFixture(rootDir);
+      if (target === "child-folder") {
+        const linked = join(rootDir, fixture.requestFolder);
+        await rm(linked, { recursive: true, force: true });
+        await mkdir(join(outside, "data"), { recursive: true });
+        await writeFile(join(outside, "data", "submission.json"), JSON.stringify({}));
+        await symlink(outside, linked);
+      } else if (target === "child-data") {
+        const data = join(rootDir, fixture.requestFolder, "data"); const payload = await readFile(join(data, "submission.json"));
+        await rm(data, { recursive: true, force: true }); await mkdir(outside, { recursive: true }); await writeFile(join(outside, "submission.json"), payload); await symlink(outside, data);
+      } else if (target === "child-file") {
+        const source = join(rootDir, fixture.requestFolder, "data", "submission.json"); const payload = await readFile(source);
+        const external = join(outside, "submission.json"); await writeFile(external, payload); await rm(source); await symlink(external, source);
+      } else if (target === "transaction-folder") {
+        const folder = join(rootDir, fixture.transactionFolder);
+        await rm(folder, { recursive: true, force: true }); await mkdir(join(outside, "data"), { recursive: true }); await writeFile(join(outside, "data", "workflow-transaction.json"), "{ deliberately malformed external JSON"); await symlink(outside, folder);
+      } else if (target === "transaction-data") {
+        const data = join(rootDir, fixture.transactionFolder, "data");
+        await rm(data, { recursive: true, force: true });
+        await mkdir(outside, { recursive: true });
+        await writeFile(join(outside, "workflow-transaction.json"), "{ deliberately malformed external JSON");
+        await symlink(outside, data);
+      } else {
+        const external = join(outside, "sheet-sync.json"); await writeFile(external, JSON.stringify({ hostile: true }));
+        await symlink(external, join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"));
+      }
+      let calls = 0;
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /โฟลเดอร์|อ่านเอกสาร/);
+      assert.equal(calls, 0);
+      assert.equal(existsSync(join(outside, "sheet-sync.json")), target === "sidecar", "must not write a sidecar outside the workspace");
+      if (target === "sidecar") assert.equal(await readFile(join(outside, "sheet-sync.json"), "utf8"), JSON.stringify({ hostile: true }));
+    } finally { await rm(rootDir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+  }
+});
+
+test("workflow Sheets sync rejects corrupt transaction identity and every non-object child payload before preflight", async () => {
+  for (const payload of ["null", "[]", "17"]) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-integrity-"));
+    try {
+      const fixture = await seedWorkflowSheetsFixture(rootDir);
+      await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), payload);
+      let calls = 0;
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ไม่สามารถอ่านเอกสารค่าใช้จ่าย/);
+      assert.equal(calls, 0);
+    } finally { await rm(rootDir, { recursive: true, force: true }); }
+  }
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-identity-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const indexLogic = await import("../forms/document-index.logic.js");
+    indexLogic.default.indexDocument(rootDir, { documentKind: "workflow_transaction", documentNo: "TXN-2026-09-0099", accountingMonth: "2026-09", folderPath: fixture.transactionFolder });
+    let calls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: "TXN-2026-09-0099", conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }), /ข้อมูลธุรกรรมไม่ตรง/);
+    assert.equal(calls, 0);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow Sheets strict collector fails closed for missing, unreadable, mismatched, and ambiguous financial children", async () => {
+  const cases = ["missing-required-req", "missing-required-sr", "missing-folder", "missing-file", "syntax-json", "transaction-mismatch", "native-mismatch", "multiple-req"];
+  for (const kind of cases) {
+    const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-strict-"));
+    try {
+      const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: kind === "missing-required-req" || kind === "missing-required-sr" || kind === "multiple-req" });
+      const indexLogic = await import("../forms/document-index.logic.js");
+      if (kind === "missing-required-req") indexLogic.default.withDocumentIndexDatabase(rootDir, (db) => db.prepare("DELETE FROM documents WHERE document_kind = ?").run("expense_request"));
+      if (kind === "missing-required-sr") indexLogic.default.withDocumentIndexDatabase(rootDir, (db) => db.prepare("DELETE FROM documents WHERE document_kind = ?").run("substitute_receipt"));
+      if (kind === "missing-folder") await rm(join(rootDir, fixture.requestFolder), { recursive: true, force: true });
+      if (kind === "missing-file") await rm(join(rootDir, fixture.requestFolder, "data", "submission.json"));
+      if (kind === "syntax-json") await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "{ bad JSON");
+      if (kind === "transaction-mismatch") {
+        const payload = JSON.parse(await readFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "utf8")); payload.transactionNo = "TXN-OTHER";
+        await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(payload));
+      }
+      if (kind === "native-mismatch") {
+        const payload = JSON.parse(await readFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "utf8")); payload.requestNo = "REQ-OTHER";
+        await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(payload));
+      }
+      if (kind === "multiple-req") {
+        const secondFolder = "documents/2026/09/expense-requests/REQ-2026-09-0099"; await mkdir(join(rootDir, secondFolder, "data"), { recursive: true });
+        const payload = JSON.parse(await readFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "utf8")); payload.requestNo = "REQ-2026-09-0099"; payload.folderPath = secondFolder;
+        await writeFile(join(rootDir, secondFolder, "data", "submission.json"), JSON.stringify(payload)); indexLogic.default.indexDocument(rootDir, { documentKind: "expense_request", documentNo: payload.requestNo, accountingMonth: "2026-09", folderPath: secondFolder, transactionNo: fixture.transactionNo });
+      }
+      let calls = 0;
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { calls += 1; }, expenseRecorder: async () => { calls += 1; } }));
+      assert.equal(calls, 0, kind);
+    } finally { await rm(rootDir, { recursive: true, force: true }); }
+  }
+});
+
+test("workflow Sheets sync never persists hostile recorder or sidecar metadata and names only conflicting SR", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-metadata-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    for (const recorded of [
+      { syncStatus: "failed", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: {}, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://evil.example/secret", sheetName: "2026-09", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2099-01", rowNumber: 2 },
+      { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id", sheetName: "2026-09", rowNumber: 0 },
+    ]) {
+      await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [] }), expenseRecorder: async () => recorded }), /ไม่สามารถซิงก์ Google Sheets/);
+      const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+      assert.equal(sidecar.syncStatus, "sync_failed");
+    }
+    const sourcePayload = JSON.parse(await readFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), "utf8"));
+    sourcePayload.workflowStepId = { hostile: true };
+    await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(sourcePayload));
+    let sourceCalls = 0;
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { sourceCalls += 1; }, expenseRecorder: async () => { sourceCalls += 1; } }), /ข้อมูลเอกสารค่าใช้จ่าย/);
+    assert.equal(sourceCalls, 0, "object source metadata must be refused before external work");
+    sourcePayload.workflowStepId = "req";
+    await writeFile(join(rootDir, fixture.requestFolder, "data", "submission.json"), JSON.stringify(sourcePayload));
+    await writeFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), JSON.stringify({ syncStatus: "synced", spreadsheetId: "sheet-id", nested: { absolutePath: rootDir } }));
+    const detail = await getWorkflowTransactionDetail(rootDir, fixture.transactionNo);
+    assert.equal(detail.sheetSync, undefined, "malformed sidecar is ignored rather than merged");
+    const blocked = await syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [{ sourceKey: "substitute_receipt:SR-2026-09-0042", spreadsheetId: "sheet-id", sheetName: "2026-09", rowNumber: 8 }] }), expenseRecorder: async () => { throw new Error("must not record"); } });
+    assert.equal(blocked.syncStatus, "blocked_child_rows");
+    assert.match(blocked.error, /SR-2026-09-0042/); assert.doesNotMatch(blocked.error, /REQ-2026-09-0042/);
+    assert.deepEqual(blocked.conflicts.map((item) => item.sourceKey), ["substitute_receipt:SR-2026-09-0042"]);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow Sheets sync retains validated prior success metadata on a later recorder failure", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-retry-metadata-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const ok = { syncStatus: "synced", spreadsheetId: "sheet-id", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-id/edit?usp=drivesdk", sheetName: "2026-09", rowNumber: 2 };
+    await syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [] }), expenseRecorder: async () => ok, now: () => "2026-09-11T00:00:00.000Z" });
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => ({ conflicts: [] }), expenseRecorder: async () => { throw new Error("remote failed"); }, now: () => "2026-09-12T00:00:00.000Z" }), /ไม่สามารถซิงก์ Google Sheets/);
+    const detail = await getWorkflowTransactionDetail(rootDir, fixture.transactionNo);
+    assert.deepEqual({ sourceKey: detail.sheetSync.sourceKey, spreadsheetId: detail.sheetSync.spreadsheetId, spreadsheetUrl: detail.sheetSync.spreadsheetUrl, sheetName: detail.sheetSync.sheetName, rowNumber: detail.sheetSync.rowNumber }, { sourceKey: "workflow_transaction:TXN-2026-09-0042", spreadsheetId: "sheet-id", spreadsheetUrl: ok.spreadsheetUrl, sheetName: "2026-09", rowNumber: 2 });
+    assert.equal(detail.sheetSync.syncStatus, "sync_failed");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow Sheets preflight failure persists only the stable retry-safe sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-sheets-preflight-failure-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    await assert.rejects(() => syncWorkflowTransactionToSheets({ rootDir, transactionNo: fixture.transactionNo, conflictChecker: async () => { throw new Error(`raw ${rootDir}`); }, expenseRecorder: async () => { throw new Error("must not run"); } }), /ไม่สามารถตรวจสอบ Google Sheets/);
+    const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+    assert.deepEqual({ syncStatus: sidecar.syncStatus, code: sidecar.code, error: sidecar.error, syncedAt: sidecar.syncedAt }, { syncStatus: "sync_failed", code: "workflow_sheet_preflight_failed", error: "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", syncedAt: "" });
+    assert.equal(JSON.stringify(sidecar).includes(rootDir), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow-bound REQ approval and retry make zero recorder calls and preserve legacy Sheet metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-req-approval-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const saved = await saveExpenseSubmission({ rootDir, payload: validExpensePayload({ accountingMonth: "2026-09", transactionNo: fixture.transactionNo, workflowTemplateId: "fixture-template", workflowStepId: "req" }) });
+    const file = join(rootDir, saved.folderPath, "data", "submission.json"); const payload = JSON.parse(await readFile(file, "utf8"));
+    payload.sheetSync = { syncStatus: "synced", spreadsheetId: "legacy-sheet", sheetName: "2026-09", rowNumber: 9 }; await writeFile(file, JSON.stringify(payload));
+    let calls = 0; const recorder = async () => { calls += 1; throw new Error("must not run"); };
+    await approveExpenseRequest({ rootDir, requestNo: saved.requestNo, expenseRecorder: recorder });
+    await approveExpenseRequest({ rootDir, requestNo: saved.requestNo, expenseRecorder: recorder });
+    assert.equal(calls, 0); const reread = JSON.parse(await readFile(file, "utf8"));
+    assert.deepEqual(reread.sheetSync, payload.sheetSync); assert.equal(reread.workflowSheetSync.syncStatus, "managed_by_workflow");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("workflow-bound SR approval and retry make zero recorder calls and preserve legacy or managed metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sr-approval-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const product = createProduct(rootDir, { productCode: "WS-SR", name: "Workflow SR", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "WS-SR-1", color: "white", size: "M", defaultUnitCost: "100" });
+    const saved = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload({ transactionNo: fixture.transactionNo, workflowTemplateId: "fixture-template", workflowStepId: "sr", lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "Workflow SR", quantity: "1", unitCost: "100" }] }), uploads: validSlipUpload() });
+    const file = join(rootDir, saved.folderPath, "data", "substitute-receipt.json"); const payload = JSON.parse(await readFile(file, "utf8"));
+    payload.sheetSync = { syncStatus: "synced", spreadsheetId: "legacy-sheet", sheetName: "2026-09", rowNumber: 9 }; await writeFile(file, JSON.stringify(payload));
+    let calls = 0; const recorder = async () => { calls += 1; throw new Error("must not run"); };
+    await approveSubstituteReceipt({ rootDir, receiptNo: saved.receiptNo, expenseRecorder: recorder });
+    await approveSubstituteReceipt({ rootDir, receiptNo: saved.receiptNo, expenseRecorder: recorder });
+    assert.equal(calls, 0); const reread = JSON.parse(await readFile(file, "utf8"));
+    assert.deepEqual(reread.sheetSync, payload.sheetSync); assert.equal(reread.workflowSheetSync.syncStatus, "managed_by_workflow");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
 
 function getPythonExecutable() {
   const bundledPython = join(
@@ -74,6 +343,40 @@ async function extractPdfText(pdfPath) {
   return stdout;
 }
 
+async function startLoopbackServer(rootDir) {
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: "0", SWEET_HOUSE_ROOT_DIR: rootDir, SWEET_HOUSE_ALLOW_NETWORK: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const port = await new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => reject(new Error(`local server did not start: ${output}`)), 5000);
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+      const match = output.match(/Expense request local web app: http:\/\/localhost:(\d+)\//);
+      if (match) {
+        clearTimeout(timer);
+        resolve(Number(match[1]));
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`local server exited early: ${code}; ${output}`));
+    });
+  });
+  return { child, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+async function stopLoopbackServer(child) {
+  child.kill();
+  await new Promise((resolve) => child.once("exit", resolve));
+}
+
 function validSubstituteReceiptPayload(overrides = {}) {
   return {
     accountingMonth: "2026-09",
@@ -96,6 +399,180 @@ function validSubstituteReceiptPayload(overrides = {}) {
     ...overrides,
   };
 }
+
+test("workflow Sheets source helpers expose the parent-level contract", () => {
+  assert.equal(typeof resolveWorkflowSheetExpenseSource, "function");
+  assert.equal(typeof buildWorkflowTransactionSheetEntry, "function");
+});
+
+function workflowTransaction(overrides = {}) {
+  return {
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    driveSync: { driveFolderUrl: "https://drive.example/workflows/WF-2026-09-0001" },
+    ...overrides,
+  };
+}
+
+function workflowExpenseRequest(overrides = {}) {
+  return {
+    documentKind: "expense_request",
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    requestNo: "REQ-2026-09-0001",
+    approvedAt: "2026-09-10T08:30:00.000Z",
+    paymentTargetName: "ร้านวัสดุ",
+    requestTitle: "ซื้อวัสดุสำนักงาน",
+    expenseLines: [{ category: "อุปกรณ์สำนักงาน" }],
+    totals: {
+      amountBeforeVat: "100.00",
+      vatAmount: "7.00",
+      grossAmount: "107.00",
+      withholdingTax: "3.00",
+      netPayment: "104.00",
+    },
+    ...overrides,
+  };
+}
+
+function workflowSubstituteReceipt(overrides = {}) {
+  return {
+    documentKind: "substitute_receipt",
+    transactionNo: "WF-2026-09-0001",
+    accountingMonth: "2026-09",
+    receiptNo: "SR-2026-09-0001",
+    approvedAt: "2026-09-11T08:30:00.000Z",
+    payeeName: "ร้านค้าทั่วไป",
+    receiptTitle: "ซื้อของใช้",
+    receiptType: "general_expense",
+    receiptTypeLabel: "ค่าใช้จ่ายทั่วไป",
+    totals: { totalAmount: "250.50" },
+    ...overrides,
+  };
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return value;
+}
+
+test("resolveWorkflowSheetExpenseSource selects the single REQ before SR and ignores foreign/lightweight children", () => {
+  const req = workflowExpenseRequest();
+  const sr = workflowSubstituteReceipt({ totals: { totalAmount: "999.99" } });
+  const foreignReq = workflowExpenseRequest({ transactionNo: "WF-2026-09-OTHER", requestNo: "REQ-FOREIGN" });
+  const lightweight = { documentKind: "purchase_order", transactionNo: "WF-2026-09-0001", documentNo: "PO-1" };
+
+  assert.strictEqual(
+    resolveWorkflowSheetExpenseSource(workflowTransaction(), [foreignReq, lightweight, sr, req]),
+    req,
+  );
+});
+
+test("resolveWorkflowSheetExpenseSource uses one SR only when no REQ exists", () => {
+  const sr = workflowSubstituteReceipt();
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(workflowTransaction(), [sr]), sr);
+});
+
+test("resolveWorkflowSheetExpenseSource exposes missing and ambiguous source cases", () => {
+  const transaction = workflowTransaction();
+  assert.throws(() => resolveWorkflowSheetExpenseSource(transaction, []), /ไม่พบเอกสารค่าใช้จ่าย REQ หรือ SR/);
+  assert.throws(
+    () => resolveWorkflowSheetExpenseSource(transaction, [workflowExpenseRequest(), workflowExpenseRequest({ requestNo: "REQ-2" })]),
+    /พบเอกสาร expense_request มากกว่าหนึ่งรายการ.*WF-2026-09-0001/,
+  );
+  assert.throws(
+    () => resolveWorkflowSheetExpenseSource(transaction, [workflowSubstituteReceipt(), workflowSubstituteReceipt({ receiptNo: "SR-2" })]),
+    /พบเอกสาร substitute_receipt มากกว่าหนึ่งรายการ.*WF-2026-09-0001/,
+  );
+});
+
+test("buildWorkflowTransactionSheetEntry maps a REQ into the exact 14-column parent row", () => {
+  const entry = buildWorkflowTransactionSheetEntry(workflowTransaction(), workflowExpenseRequest());
+  assert.deepEqual(entry, {
+    sourceKey: "workflow_transaction:WF-2026-09-0001",
+    approvedAt: "2026-09-10T08:30:00.000Z",
+    accountingMonth: "2026-09",
+    documentType: "ใบเบิกจ่าย",
+    documentNo: "WF-2026-09-0001",
+    payeeName: "ร้านวัสดุ",
+    title: "ซื้อวัสดุสำนักงาน",
+    category: "อุปกรณ์สำนักงาน",
+    amountBeforeVat: "100.00",
+    vatAmount: "7.00",
+    grossAmount: "107.00",
+    withholdingTax: "3.00",
+    netPayment: "104.00",
+    documentUrl: "https://drive.example/workflows/WF-2026-09-0001",
+  });
+  assert.equal(Object.keys(entry).length, 14);
+});
+
+test("buildWorkflowTransactionSheetEntry maps an SR total without inventing tax values", () => {
+  const entry = buildWorkflowTransactionSheetEntry(workflowTransaction(), workflowSubstituteReceipt());
+  assert.deepEqual(entry, {
+    sourceKey: "workflow_transaction:WF-2026-09-0001",
+    approvedAt: "2026-09-11T08:30:00.000Z",
+    accountingMonth: "2026-09",
+    documentType: "ใบรับรองแทนใบเสร็จรับเงิน",
+    documentNo: "WF-2026-09-0001",
+    payeeName: "ร้านค้าทั่วไป",
+    title: "ซื้อของใช้",
+    category: "ค่าใช้จ่ายทั่วไป",
+    amountBeforeVat: "250.50",
+    vatAmount: "0.00",
+    grossAmount: "250.50",
+    withholdingTax: "0.00",
+    netPayment: "250.50",
+    documentUrl: "https://drive.example/workflows/WF-2026-09-0001",
+  });
+});
+
+test("workflow Sheets source helpers do not mutate frozen inputs and produce a stable parent key", () => {
+  const transaction = deepFreeze(workflowTransaction());
+  const source = deepFreeze(workflowExpenseRequest());
+  const children = deepFreeze([source]);
+  const before = JSON.parse(JSON.stringify({ transaction, source, children }));
+
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(transaction, children), source);
+  assert.deepEqual(
+    buildWorkflowTransactionSheetEntry(transaction, source),
+    buildWorkflowTransactionSheetEntry(transaction, source),
+  );
+  assert.deepEqual({ transaction, source, children }, before);
+});
+
+test("buildWorkflowTransactionSheetEntry rejects malformed selected sources instead of defaulting money to zero", () => {
+  const transaction = workflowTransaction();
+  const invalidSources = [
+    workflowExpenseRequest({ accountingMonth: "2026-10" }),
+    workflowExpenseRequest({ transactionNo: "WF-OTHER" }),
+    workflowExpenseRequest({ requestNo: "" }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "-1", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "NaN", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowExpenseRequest({ totals: { amountBeforeVat: "1e3", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } }),
+    workflowSubstituteReceipt({ receiptNo: "" }),
+    workflowSubstituteReceipt({ totals: {} }),
+    { ...workflowExpenseRequest(), documentKind: "purchase_order" },
+  ];
+
+  for (const source of invalidSources) {
+    assert.throws(() => buildWorkflowTransactionSheetEntry(transaction, source), /.+/);
+  }
+  assert.throws(() => buildWorkflowTransactionSheetEntry({ transactionNo: "", accountingMonth: "2026-09" }, workflowExpenseRequest()), /.+/);
+  assert.throws(() => buildWorkflowTransactionSheetEntry({ transactionNo: "WF-1", accountingMonth: "2026-99" }, workflowExpenseRequest()), /.+/);
+});
+
+test("an invalid REQ remains the selected source and cannot fall back to a valid SR", () => {
+  const transaction = workflowTransaction();
+  const invalidReq = workflowExpenseRequest({ totals: { amountBeforeVat: "", vatAmount: "0.00", grossAmount: "0.00", withholdingTax: "0.00", netPayment: "0.00" } });
+  const validSr = workflowSubstituteReceipt();
+  assert.strictEqual(resolveWorkflowSheetExpenseSource(transaction, [invalidReq, validSr]), invalidReq);
+  assert.throws(() => buildWorkflowTransactionSheetEntry(transaction, invalidReq), /ยอดเงินของเอกสารต้นทางไม่ถูกต้อง/);
+});
 
 function validSlipUpload() {
   return [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }];
@@ -152,6 +629,288 @@ test("parseMultipartForm extracts payload fields and uploaded evidence files", (
   assert.equal(result.files[0].buffer.toString("utf8"), "invoice-content");
 });
 
+test("numbered REQ draft save allocates once and submit transitions the same record", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-req-red-"));
+  try {
+    const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+    assert.match(saved.requestNo, /^REQ-2026-09-0001$/);
+    assert.equal(saved.status, "draft");
+    const loaded = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(loaded.status, "draft");
+    assert.equal(loaded.payload.status, "draft");
+    assert.equal(loaded.legacyReadOnly, false);
+    const submitted = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+    assert.equal(submitted.requestNo, saved.requestNo);
+    assert.equal(submitted.status, "pending_approval");
+    const after = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(after.payload.status, "pending_approval");
+    assert.equal(after.payload.statusHistory.length, 1);
+    assert.equal(after.payload.statusHistory[0].fromStatus, "draft");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered SR draft save and submit preserve the same record and D12 relation", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-sr-red-"));
+  try {
+    const saved = await saveSubstituteReceiptDraft({
+      rootDir,
+      payload: validSubstituteReceiptPayload(),
+      uploads: validSlipUpload(),
+    });
+    assert.match(saved.receiptNo, /^SR-2026-09-0001$/);
+    assert.equal(saved.status, "draft");
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo }, uploads: [] });
+    assert.equal(submitted.receiptNo, saved.receiptNo);
+    assert.equal(submitted.status, "pending_approval");
+    const after = await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo);
+    assert.equal(after.payload.status, "pending_approval");
+    assert.equal(after.payload.transactionNo, "");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("D12 SR drafts derive and retain the snapshotted workflow receipt type", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-d12-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const payload = validSubstituteReceiptPayload({
+      transactionNo: fixture.transactionNo,
+      workflowTemplateId: "fixture-template",
+      workflowStepId: "sr",
+    });
+    delete payload.receiptType;
+    const saved = await saveSubstituteReceiptDraft({ rootDir, payload, uploads: validSlipUpload() });
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo);
+    assert.equal(loaded.payload.receiptType, "stock_purchase");
+    assert.equal(loaded.payload.transactionNo, fixture.transactionNo);
+    assert.equal(loaded.payload.workflowTemplateId, "fixture-template");
+    assert.equal(loaded.payload.workflowStepId, "sr");
+
+    await assert.rejects(
+      () => saveSubstituteReceiptDraft({ rootDir, payload: { receiptNo: saved.receiptNo, accountingMonth: "2026-09", receiptType: "general_expense" }, uploads: [] }),
+      /กำหนดประเภทใบรับรอง/,
+    );
+    await assert.rejects(
+      () => saveSubstituteReceiptDraft({ rootDir, payload: { receiptNo: saved.receiptNo, accountingMonth: "2026-09", transactionNo: "TXN-2026-09-9999", workflowTemplateId: "foreign", workflowStepId: "sr" }, uploads: [] }),
+      /ไม่พบ Workflow/,
+    );
+
+    const before = await readFile(join(rootDir, loaded.folderPath, "data", "substitute-receipt.json"));
+    await assert.rejects(
+      () => saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo, lines: [] }, uploads: [] }),
+      /เพิ่มรายการ/,
+    );
+    assert.deepEqual(await readFile(join(rootDir, loaded.folderPath, "data", "substitute-receipt.json")), before);
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: saved.receiptNo }, uploads: [] });
+    assert.equal(submitted.status, "pending_approval");
+    assert.equal((await getSubmittedSubstituteReceipt(rootDir, saved.receiptNo)).payload.receiptType, "stock_purchase");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered REQ save and submit races serialize without rewinding status", async () => {
+  const saveFirstRoot = await mkdtemp(join(tmpdir(), "sweet-house-race-save-first-"));
+  const submitFirstRoot = await mkdtemp(join(tmpdir(), "sweet-house-race-submit-first-"));
+  try {
+    for (const [rootDir, submitFirst] of [[saveFirstRoot, false], [submitFirstRoot, true]]) {
+      const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+      const save = () => saveExpenseDraft({ rootDir, payload: { ...validExpensePayload({ requestNo: saved.requestNo, requestTitle: "עדכון מתוזמן" }) }, uploads: validSlipUpload() });
+      const submit = () => saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+      const results = submitFirst ? await Promise.allSettled([submit(), save()]) : await Promise.allSettled([save(), submit()]);
+      assert.equal(results[submitFirst ? 0 : 1].status, "fulfilled");
+      assert.equal(results[submitFirst ? 1 : 0].status, submitFirst ? "rejected" : "fulfilled");
+      const final = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+      assert.equal(final.status, "pending_approval");
+      assert.equal(final.payload.statusHistory.length, 1);
+      assert.equal(final.rawFiles.length, submitFirst ? 1 : 2);
+    }
+  } finally {
+    await rm(saveFirstRoot, { recursive: true, force: true });
+    await rm(submitFirstRoot, { recursive: true, force: true });
+  }
+});
+
+test("numbered submit is idempotent and preserves canonical bytes on repeat", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-repeat-"));
+  try {
+    const saved = await saveExpenseDraft({ rootDir, payload: validExpensePayload(), uploads: validSlipUpload() });
+    const first = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo }, uploads: [] });
+    const before = await readFile(join(rootDir, first.folderPath, "data", "submission.json"));
+    const second = await saveExpenseSubmission({ rootDir, payload: { requestNo: saved.requestNo, status: "draft", folderPath: "../../outside" }, uploads: [] });
+    const after = await readFile(join(rootDir, first.folderPath, "data", "submission.json"));
+    assert.deepEqual(after, before);
+    assert.deepEqual(second.statusHistory, first.statusHistory);
+    assert.equal(second.folderPath, first.folderPath);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered draft updates keep server-owned identity and sync metadata", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-owned-fields-"));
+  try {
+    const saved = await saveExpenseDraft({
+      rootDir,
+      payload: validExpensePayload({
+        folderPath: "../../hostile-folder",
+        createdAt: "1999-01-01T00:00:00.000Z",
+        status: "approved",
+        statusHistory: [{ fromStatus: "draft", toStatus: "approved" }],
+        sheetSync: { syncStatus: "synced", spreadsheetId: "hostile" },
+        completedAt: "1999-01-01T00:00:00.000Z",
+      }),
+      uploads: validSlipUpload(),
+    });
+    const first = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(first.payload.folderPath, saved.folderPath);
+    assert.notEqual(first.payload.createdAt, "1999-01-01T00:00:00.000Z");
+    assert.equal(first.payload.status, "draft");
+    assert.deepEqual(first.payload.statusHistory, []);
+    assert.equal(first.payload.sheetSync, undefined);
+    assert.equal(first.payload.completedAt, undefined);
+
+    const updated = await saveExpenseDraft({
+      rootDir,
+      payload: {
+        requestNo: saved.requestNo,
+        ...validExpensePayload({
+          requestNo: saved.requestNo,
+          requestTitle: "แก้ชื่อแบบร่าง",
+          folderPath: "../../another-hostile-folder",
+          createdAt: "2000-01-01T00:00:00.000Z",
+          sheetSync: { syncStatus: "synced", spreadsheetId: "hostile-2" },
+        }),
+      },
+      uploads: [],
+    });
+    assert.equal(updated.requestNo, saved.requestNo);
+    assert.equal(updated.folderPath, saved.folderPath);
+    const after = await getSubmittedExpenseRequest(rootDir, saved.requestNo);
+    assert.equal(after.payload.folderPath, saved.folderPath);
+    assert.equal(after.payload.createdAt, first.payload.createdAt);
+    assert.equal(after.payload.sheetSync, undefined);
+    assert.deepEqual(after.payload.statusHistory, []);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("O15 legacy drafts stay readable with contained attachments and reject writes", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-legacy-readonly-"));
+  try {
+    const expenseId = "DRAFT-2026-09-legacy-1";
+    const expenseFolder = `drafts/2026/09/${expenseId}`;
+    await mkdir(join(rootDir, expenseFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, expenseFolder, "raw"), { recursive: true });
+    await writeFile(join(rootDir, expenseFolder, "raw", "A1_receipt_001.jpg"), "legacy-receipt");
+    await writeFile(join(rootDir, expenseFolder, "data", "draft.json"), JSON.stringify({
+      draftId: expenseId, status: "submitted", folderPath: expenseFolder,
+      payload: { requestTitle: "แบบร่างเก่า" },
+      evidenceFiles: { receipt: [{ storedName: "A1_receipt_001.jpg" }] },
+      rawFiles: ["A1_receipt_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
+    }));
+    const expense = await getExpenseDraft(rootDir, expenseId);
+    assert.equal(expense.legacyReadOnly, true);
+    assert.equal(expense.status, "draft");
+    assert.equal(expense.rawFiles[0].url, `/api/expense-drafts/${expenseId}/files/raw/A1_receipt_001.jpg`);
+    assert.equal((await readFile((await getLegacyExpenseDraftFile({ rootDir, draftId: expenseId, fileName: "A1_receipt_001.jpg" })).absolutePath)).toString(), "legacy-receipt");
+    const expenseBefore = await readFile(join(rootDir, expenseFolder, "data", "draft.json"));
+    await assert.rejects(() => saveExpenseDraft({ rootDir, payload: { draftId: expenseId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    await assert.rejects(() => saveExpenseSubmission({ rootDir, payload: { draftId: expenseId, requestNo: "REQ-2026-09-0001" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    assert.deepEqual(await readFile(join(rootDir, expenseFolder, "data", "draft.json")), expenseBefore);
+
+    const receiptId = "SR-DRAFT-2026-09-legacy-2";
+    const receiptFolder = `drafts/2026/09/substitute-receipts/${receiptId}`;
+    await mkdir(join(rootDir, receiptFolder, "data"), { recursive: true });
+    await mkdir(join(rootDir, receiptFolder, "raw"), { recursive: true });
+    await writeFile(join(rootDir, receiptFolder, "raw", "B1_payment-slip_001.jpg"), "legacy-slip");
+    await writeFile(join(rootDir, receiptFolder, "data", "draft.json"), JSON.stringify({
+      draftId: receiptId, status: "submitted", folderPath: receiptFolder,
+      payload: { receiptTitle: "ใบรับรองเก่า" },
+      evidenceFiles: { paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }] },
+      rawFiles: ["B1_payment-slip_001.jpg"], updatedAt: "2026-09-01T00:00:00.000Z",
+    }));
+    const receipt = await getSubstituteReceiptDraft(rootDir, receiptId);
+    assert.equal(receipt.legacyReadOnly, true);
+    assert.equal((await readFile((await getLegacySubstituteReceiptDraftFile({ rootDir, draftId: receiptId, fileName: "B1_payment-slip_001.jpg" })).absolutePath)).toString(), "legacy-slip");
+    await assert.rejects(() => saveSubstituteReceiptDraft({ rootDir, payload: { draftId: receiptId, accountingMonth: "2026-09" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+    await assert.rejects(() => saveSubstituteReceiptSubmission({ rootDir, payload: { draftId: receiptId, receiptNo: "SR-2026-09-0001" } }), (error) => error.code === "LEGACY_DRAFT_READ_ONLY" && error.statusCode === 409);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("numbered lifecycle and O15 contracts hold over loopback HTTP", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-numbered-http-"));
+  const legacyId = "DRAFT-2026-09-http-legacy";
+  const legacyFolder = `drafts/2026/09/${legacyId}`;
+  const legacyJsonPath = join(rootDir, legacyFolder, "data", "draft.json");
+  const legacyRawPath = join(rootDir, legacyFolder, "raw", "A1_receipt_001.jpg");
+  await mkdir(join(rootDir, legacyFolder, "data"), { recursive: true });
+  await mkdir(join(rootDir, legacyFolder, "raw"), { recursive: true });
+  await writeFile(legacyRawPath, "legacy-http-bytes");
+  await writeFile(legacyJsonPath, JSON.stringify({
+    draftId: legacyId,
+    status: "submitted",
+    folderPath: legacyFolder,
+    payload: { requestTitle: "แบบร่าง HTTP เก่า" },
+    evidenceFiles: { receipt: [{ storedName: "A1_receipt_001.jpg" }] },
+    rawFiles: ["A1_receipt_001.jpg"],
+  }));
+  const server = await startLoopbackServer(rootDir);
+  try {
+    const sendPayload = async (pathname, payload, uploads = []) => {
+      const form = new FormData();
+      form.set("payload", JSON.stringify(payload));
+      for (const upload of uploads) form.append(`evidence_${upload.evidenceKey}`, new Blob([upload.buffer], { type: upload.type }), upload.originalName);
+      const response = await fetch(`${server.baseUrl}${pathname}`, { method: "POST", body: form });
+      return { status: response.status, body: await response.json() };
+    };
+
+    const created = await sendPayload("/api/expense-drafts", validExpensePayload(), [{ evidenceKey: "receipt", originalName: "receipt.jpg", type: "image/jpeg", buffer: "http-receipt" }]);
+    assert.equal(created.status, 200);
+    assert.match(created.body.requestNo, /^REQ-2026-09-\d{4}$/);
+    assert.equal(created.body.status, "draft");
+    assert.equal(Object.prototype.hasOwnProperty.call(created.body, "absoluteFolderPath"), false);
+
+    const submitted = await sendPayload("/api/expense-requests", { requestNo: created.body.requestNo });
+    assert.equal(submitted.status, 200);
+    assert.equal(submitted.body.requestNo, created.body.requestNo);
+    assert.equal(submitted.body.status, "pending_approval");
+    assert.equal(submitted.body.statusHistory.length, 1);
+    const repeated = await sendPayload("/api/expense-requests", { requestNo: created.body.requestNo, status: "draft", folderPath: "../../outside" });
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.body.statusHistory, submitted.body.statusHistory);
+
+    const legacyDetailResponse = await fetch(`${server.baseUrl}/api/expense-drafts/${legacyId}`);
+    const legacyDetail = await legacyDetailResponse.json();
+    assert.equal(legacyDetailResponse.status, 200);
+    assert.equal(legacyDetail.legacyReadOnly, true);
+    assert.equal(legacyDetail.status, "draft");
+    assert.equal(Object.prototype.hasOwnProperty.call(legacyDetail, "absoluteFolderPath"), false);
+    const legacyFileResponse = await fetch(`${server.baseUrl}${legacyDetail.rawFiles[0].url}`);
+    assert.equal(legacyFileResponse.status, 200);
+    assert.equal(await legacyFileResponse.text(), "legacy-http-bytes");
+    const legacyBefore = await readFile(legacyJsonPath);
+    const legacySave = await sendPayload("/api/expense-drafts", { draftId: legacyId, requestNo: "REQ-2026-09-9999" });
+    assert.deepEqual(legacySave, { status: 409, body: { code: "LEGACY_DRAFT_READ_ONLY", error: "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" } });
+    const legacySubmit = await sendPayload("/api/expense-requests", { draftId: legacyId, requestNo: "REQ-2026-09-9999" });
+    assert.deepEqual(legacySubmit, { status: 409, body: { code: "LEGACY_DRAFT_READ_ONLY", error: "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" } });
+    assert.deepEqual(await readFile(legacyJsonPath), legacyBefore);
+
+    const invalidNumber = await fetch(`${server.baseUrl}/api/expense-requests/not-a-number`);
+    assert.equal(invalidNumber.status, 400);
+    assert.equal((await invalidNumber.json()).code, "INVALID_DOCUMENT_NUMBER");
+  } finally {
+    await stopLoopbackServer(server.child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // getNextExpenseRequestInfo used to scan documents/YYYY/MM/.../REQ-... folder
 // names on disk for the highest sequence in use. That made it a second,
 // independent source of truth from allocateExpenseRequestNumber (the real
@@ -179,7 +938,9 @@ test("getNextExpenseRequestInfo previews the exact number the next real allocati
         requestTitle: "ทดสอบ",
         requestType: "reimbursement",
         requesterName: "คุณทดสอบ",
-        expenseLines: [],
+        businessPurpose: "ทดสอบค่าใช้จ่าย",
+        paymentTargetName: "คุณทดสอบ",
+        expenseLines: [{ description: "รายการทดสอบ", amountBeforeVat: "1" }],
       },
     });
     assert.equal(first.requestNo, "REQ-2026-09-0001");
@@ -208,7 +969,9 @@ test("getNextExpenseRequestInfo previews the exact number the next real allocati
         requestTitle: "ทดสอบสอง",
         requestType: "reimbursement",
         requesterName: "คุณทดสอบ",
-        expenseLines: [],
+        businessPurpose: "ทดสอบค่าใช้จ่าย",
+        paymentTargetName: "คุณทดสอบ",
+        expenseLines: [{ description: "รายการทดสอบ", amountBeforeVat: "1" }],
       },
     });
     assert.equal(second.requestNo, "REQ-2026-09-0002", "the real allocation must land on exactly the number just previewed");
@@ -240,10 +1003,10 @@ test("getNextSubstituteReceiptInfo previews the exact number the next real alloc
       uploads: [],
     });
 
-    // Drafts never consume a real SR number -- the peek must still say "1".
+    // Numbered drafts consume their canonical sequence on first save.
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-09"), {
-      sequence: "1",
-      receiptNo: "SR-2026-09-0001",
+      sequence: "2",
+      receiptNo: "SR-2026-09-0002",
     });
 
     assert.deepEqual(await getNextSubstituteReceiptInfo(rootDir, "2026-11"), {
@@ -251,13 +1014,13 @@ test("getNextSubstituteReceiptInfo previews the exact number the next real alloc
       receiptNo: "SR-2026-11-0001",
     });
 
-    assert.equal(draft.draftId.startsWith("SR-DRAFT-2026-09-"), true);
+    assert.equal(draft.receiptNo, "SR-2026-09-0001");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("saveExpenseDraft writes editable drafts without consuming a real request number", async () => {
+test("saveExpenseDraft writes editable numbered drafts and consumes a request number", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -280,20 +1043,20 @@ test("saveExpenseDraft writes editable drafts without consuming a real request n
       ],
     });
 
-    assert.match(result.draftId, /^DRAFT-2026-09-/);
-    assert.match(result.folderPath, /^drafts\/2026\/09\/DRAFT-2026-09-/);
+    assert.equal(result.requestNo, "REQ-2026-09-0001");
+    assert.match(result.folderPath, /^documents\/2026\/09\//);
     assert.equal(result.rawFiles[0].storedName, "A1_receipt_001.jpg");
 
     const next = await getNextExpenseRequestInfo(rootDir, "2026-09");
-    assert.equal(next.requestNo, "REQ-2026-09-0001");
+    assert.equal(next.requestNo, "REQ-2026-09-0002");
 
-    const loaded = await getExpenseDraft(rootDir, result.draftId);
-    assert.equal(loaded.draftId, result.draftId);
+    const loaded = await getSubmittedExpenseRequest(rootDir, result.requestNo);
+    assert.equal(loaded.requestNo, result.requestNo);
+    assert.equal(loaded.status, "draft");
     assert.equal(loaded.payload.requesterName, "คุณร่าง");
     assert.deepEqual(loaded.evidenceFiles.receipt.map((file) => file.storedName), ["A1_receipt_001.jpg"]);
 
-    const drafts = await listExpenseDrafts(rootDir);
-    assert.deepEqual(drafts.map((draft) => draft.draftId), [result.draftId]);
+    assert.deepEqual(await listExpenseDrafts(rootDir), []);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -323,7 +1086,7 @@ test("saveExpenseDraft updates an existing draft and keeps previous raw files", 
     const updated = await saveExpenseDraft({
       rootDir,
       payload: {
-        draftId: first.draftId,
+        requestNo: first.requestNo,
         accountingMonth: "2026-09",
         requestTitle: "ร่างค่าแพ็คสินค้าแก้ไข",
         requestType: "reimbursement",
@@ -338,7 +1101,7 @@ test("saveExpenseDraft updates an existing draft and keeps previous raw files", 
       ],
     });
 
-    assert.equal(updated.draftId, first.draftId);
+    assert.equal(updated.requestNo, first.requestNo);
     assert.deepEqual(updated.rawFiles.map((file) => file.storedName), [
       "A1_receipt_001.jpg",
       "A1_receipt_002.jpg",
@@ -368,12 +1131,12 @@ test("saveSubstituteReceiptDraft writes editable drafts without consuming SR num
       uploads: [{ evidenceKey: "paymentSlip", originalName: "slip.jpg", type: "image/jpeg", buffer: Buffer.from("slip") }],
     });
 
-    assert.match(draft.draftId, /^SR-DRAFT-2026-09-/);
-    assert.match(draft.folderPath, /^drafts\/2026\/09\/substitute-receipts\//);
-    assert.equal((await getNextSubstituteReceiptInfo(rootDir, "2026-09")).receiptNo, "SR-2026-09-0001");
+    assert.equal(draft.receiptNo, "SR-2026-09-0001");
+    assert.match(draft.folderPath, /^documents\/2026\/09\//);
+    assert.equal((await getNextSubstituteReceiptInfo(rootDir, "2026-09")).receiptNo, "SR-2026-09-0002");
     assert.deepEqual(draft.rawFiles.map((file) => file.storedName), ["B1_payment-slip_001.jpg"]);
 
-    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId);
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, draft.receiptNo);
     assert.equal(loaded.status, "draft");
     assert.equal(loaded.payload.receiptTitle, "รอของจากผู้ขาย");
   } finally {
@@ -563,11 +1326,8 @@ test("saveSubstituteReceiptSubmission submits stock purchases without receiving 
             unitCost: "125.50",
           },
         ],
-        evidenceFiles: {
-          paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }],
-        },
       },
-      uploads: [],
+      uploads: validSlipUpload(),
     });
 
     assert.equal(result.status, "pending_approval");
@@ -593,15 +1353,14 @@ test("saveSubstituteReceiptSubmission submits a draft into pending approval", as
     });
     const result = await saveSubstituteReceiptSubmission({
       rootDir,
-      payload: { draftId: draft.draftId },
+      payload: { receiptNo: draft.receiptNo },
     });
 
     assert.equal(result.receiptNo, "SR-2026-09-0001");
     assert.equal(result.status, "pending_approval");
     assert.equal(result.stockMovements.length, 0);
-    const loaded = await getSubstituteReceiptDraft(rootDir, draft.draftId, { includeSubmitted: true });
-    assert.equal(loaded.status, "submitted");
-    assert.equal(loaded.submittedReceiptNo, "SR-2026-09-0001");
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, draft.receiptNo);
+    assert.equal(loaded.status, "pending_approval");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -625,7 +1384,7 @@ test("listSubstituteReceipts combines drafts and submitted state records", async
     const records = await listSubstituteReceipts(rootDir);
 
     assert.deepEqual(records.map((record) => record.status).sort(), ["draft", "pending_approval"]);
-    assert.equal(records.some((record) => record.draftId === draft.draftId), true);
+    assert.equal(records.some((record) => record.receiptNo === draft.receiptNo && record.legacyReadOnly === false), true);
     assert.equal(records.some((record) => record.receiptNo === submitted.receiptNo), true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1105,6 +1864,13 @@ test("completeSubstituteReceipt does not allow receiving stock after completion"
       uploads: validSlipUpload(),
     });
     await approveSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, approvedBy: "บัญชี" });
+    const received = await receiveSubstituteReceiptStock({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      receivedDate: "2026-09-05",
+      receivedBy: "คลัง",
+    });
+    assert.equal(received.stockMovements.length, 1);
     await completeSubstituteReceipt({ rootDir, receiptNo: submitted.receiptNo, completedBy: "บัญชี" });
 
     await assert.rejects(
@@ -1115,6 +1881,11 @@ test("completeSubstituteReceipt does not allow receiving stock after completion"
         receivedBy: "คลัง",
       }),
       /Invalid substitute receipt status transition: completed -> received/,
+    );
+    assert.deepEqual(
+      listStockMovementsByReference(rootDir, "substitute_receipt", submitted.receiptNo).map((movement) => movement.id),
+      received.stockMovements.map((movement) => movement.id),
+      "a rejected post-completion receive must retain the original movement set",
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1271,7 +2042,7 @@ test("completeExpenseRequest refuses to complete a request that was never approv
 
     await assert.rejects(
       completeExpenseRequest({ rootDir, requestNo: saved.requestNo, completedBy: "บัญชี" }),
-      /Invalid expense request status transition: submitted -> completed/,
+    /Invalid expense request status transition: pending_approval -> completed/,
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1494,35 +2265,18 @@ test("saveExpenseSubmission copies draft raw files into the final request folder
     const final = await saveExpenseSubmission({
       rootDir,
       payload: {
-        draftId: draft.draftId,
-        accountingMonth: "2026-09",
-        requestTitle: "ร่างค่าส่ง",
-        requestType: "reimbursement",
-        requesterName: "คุณร่าง",
-        businessPurpose: "ค่าส่งสินค้า",
-        paymentTargetName: "คุณร่าง",
-        expenseLines: [
-          {
-            date: "2026-09-05",
-            category: "ค่าส่ง/ขนส่ง",
-            description: "ค่าส่งสินค้า",
-            vendor: "ขนส่งตัวอย่าง",
-            amountBeforeVat: "100",
-            vatAmount: "7",
-            withholdingTax: "0",
-          },
-        ],
+        requestNo: draft.requestNo,
       },
       uploads: [],
     });
 
-    assert.equal(final.requestNo, "REQ-2026-09-0001");
+    assert.equal(final.requestNo, draft.requestNo);
     assert.deepEqual(final.rawFiles.map((file) => file.storedName), ["A3_vendor-payment-slip_001.jpg"]);
     assert.equal(await readFile(join(final.absoluteFolderPath, "raw", "A3_vendor-payment-slip_001.jpg"), "utf8"), "draft slip");
 
-    const submittedDraft = await getExpenseDraft(rootDir, draft.draftId, { includeSubmitted: true });
-    assert.equal(submittedDraft.status, "submitted");
-    assert.equal(submittedDraft.submittedRequestNo, "REQ-2026-09-0001");
+    const submitted = await getSubmittedExpenseRequest(rootDir, draft.requestNo);
+    assert.equal(submitted.status, "pending_approval");
+    assert.equal(submitted.payload.requestNo, draft.requestNo);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -1580,7 +2334,7 @@ test("getSubmittedExpenseRequest returns editable saved request data with raw ev
   }
 });
 
-test("saveExpenseSubmission updates an existing synced request in place and marks it for resync", async () => {
+test("saveExpenseSubmission rejects edits after submission", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -1633,59 +2387,20 @@ test("saveExpenseSubmission updates an existing synced request in place and mark
       }),
     });
 
-    const updated = await saveExpenseSubmission({
+    const repeated = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        requestNo: submitted.requestNo,
-        accountingMonth: "2026-09",
-        requestTitle: "ค่าส่งพัสดุแก้ไข",
-        requestType: "reimbursement",
-        requesterName: "คุณส่งแก้ไข",
-        requesterRole: "marketing",
-        requesterContact: "Line shop",
-        expenseDate: "2026-09-06",
-        businessPurpose: "ค่าส่งสินค้าเพิ่มเติม",
-        paymentTargetName: "คุณส่ง",
-        paymentBankName: "กสิกรไทย",
-        paymentAccountNo: "123-4-56789-0",
-        expenseLines: [
-          {
-            date: "2026-09-06",
-            category: "ค่าส่ง/ขนส่ง",
-            description: "ค่าส่งสินค้าเพิ่มเติม",
-            vendor: "ขนส่งตัวอย่าง",
-            amountBeforeVat: "200",
-            vatAmount: "14",
-            withholdingTax: "0",
-          },
-        ],
-      },
-      uploads: [
-        {
-          evidenceKey: "businessEvidence",
-          originalName: "usage.png",
-          type: "image/png",
-          buffer: Buffer.from("usage image"),
-        },
-      ],
+      payload: { requestNo: submitted.requestNo, requestTitle: "แก้ไขหลังส่ง" },
+      uploads: [],
     });
+    assert.equal(repeated.requestNo, submitted.requestNo);
+    assert.equal(repeated.status, "pending_approval");
 
-    assert.equal(updated.requestNo, submitted.requestNo);
-    assert.equal(updated.folderPath, submitted.folderPath);
-    assert.deepEqual(updated.rawFiles.map((file) => file.storedName), [
-      "A1_receipt_001.jpg",
-      "A5_business-evidence_001.png",
-    ]);
-
-    const savedJson = JSON.parse(await readFile(join(updated.absoluteFolderPath, "data", "submission.json"), "utf8"));
-    assert.equal(savedJson.requesterName, "คุณส่งแก้ไข");
-    assert.equal(savedJson.totals.netPayment, "214.00");
-    assert.deepEqual(savedJson.rawFiles, ["A1_receipt_001.jpg", "A5_business-evidence_001.png"]);
-
+    const saved = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.equal(saved.payload.requesterName, "คุณส่ง");
     const requests = await listExpenseRequests(rootDir);
-    assert.equal(requests.filter((request) => request.status === "submitted").length, 1);
+    assert.equal(requests.filter((request) => request.status === "pending_approval").length, 1);
     const submittedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
-    assert.equal(submittedRecord.syncStatus, "needs_resync");
+    assert.equal(submittedRecord.syncStatus, "synced");
     assert.equal(submittedRecord.driveFolderUrl, "https://drive.google.com/drive/folders/drive-folder-123");
     assert.equal(submittedRecord.editUrl, "/expense-request?requestNo=REQ-2026-09-0001");
   } finally {
@@ -1751,18 +2466,18 @@ test("listExpenseRequests combines submitted requests and editable drafts", asyn
 
     const requests = await listExpenseRequests(rootDir);
     assert.equal(requests.length, 2);
-    assert.deepEqual(requests.map((request) => request.status).sort(), ["draft", "submitted"]);
+    assert.deepEqual(requests.map((request) => request.status).sort(), ["draft", "pending_approval"]);
 
     const draftRecord = requests.find((request) => request.status === "draft");
-    assert.equal(draftRecord.draftId, draft.draftId);
-    assert.equal(draftRecord.editUrl, `/expense-request?draftId=${encodeURIComponent(draft.draftId)}`);
+    assert.equal(draftRecord.requestNo, draft.requestNo);
+    assert.equal(draftRecord.editUrl, `/expense-request?requestNo=${encodeURIComponent(draft.requestNo)}`);
 
-    const submittedRecord = requests.find((request) => request.status === "submitted");
+    const submittedRecord = requests.find((request) => request.status === "pending_approval");
     assert.equal(submittedRecord.requestNo, submitted.requestNo);
     assert.equal(submittedRecord.pdfFiles.length, 2);
     assert.equal(submittedRecord.rawFiles.length, 1);
-    assert.match(submittedRecord.pdfFiles[0].url, /^\/api\/expense-requests\/REQ-2026-09-0001\/files\/pdf\//);
-    assert.equal(submittedRecord.rawFiles[0].url, "/api/expense-requests/REQ-2026-09-0001/files/raw/A1_receipt_001.jpg");
+    assert.match(submittedRecord.pdfFiles[0].url, new RegExp(`^/api/expense-requests/${submitted.requestNo}/files/pdf/`));
+    assert.equal(submittedRecord.rawFiles[0].url, `/api/expense-requests/${submitted.requestNo}/files/raw/A1_receipt_001.jpg`);
     assert.match(submittedRecord.folderPath, /documents\/2026\/09\/เบิกจ่าย/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1950,4 +2665,382 @@ test("syncSubstituteReceiptToDrive uploads a submitted receipt folder with Googl
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+async function makeCancellationTemplate(rootDir, documentKind, receiptType = undefined) {
+  const templates = await listWorkflowTemplates(rootDir);
+  const base = templates.find((template) => template.templateId === "director_expense_transfer");
+  const step = { stepId: "step-001", documentKind };
+  if (receiptType) step.receiptType = receiptType;
+  return saveWorkflowTemplate({
+    rootDir,
+    template: {
+      ...base,
+      templateId: `cancellation_${documentKind}_${receiptType || "default"}`,
+      documentSteps: [step],
+    },
+  });
+}
+
+test("cancelWorkflowTransaction cancels an incomplete child, deletes exact parent and child Sheet keys, and is idempotent", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-"));
+  const deleted = [];
+  try {
+    const template = await makeCancellationTemplate(rootDir, "expense_request");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "ยกเลิก workflow ทดสอบ",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const request = await saveExpenseSubmission({
+      rootDir,
+      payload: validExpensePayload({
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+      }),
+    });
+
+    const sheetDeleter = async (input) => {
+      deleted.push({ ...input });
+      return { sourceKey: input.sourceKey, status: "deleted", deletedCount: 1, checkedLocations: [] };
+    };
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:00:00.000Z",
+      sheetDeleter,
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.baseStatus, "in_progress");
+    assert.deepEqual(deleted.map((item) => item.sourceKey), [
+      `workflow_transaction:${transaction.transactionNo}`,
+      `expense_request:${request.requestNo}`,
+    ]);
+    const child = await getSubmittedExpenseRequest(rootDir, request.requestNo);
+    assert.equal(child.payload.status, "cancelled");
+    assert.equal(child.payload.statusHistory.at(-1).toStatus, "cancelled");
+
+    const detail = await getWorkflowTransactionDetail(rootDir, transaction.transactionNo);
+    assert.equal(detail.status, "cancelled");
+    assert.equal(detail.baseStatus, "in_progress");
+    assert.equal(detail.cancellation.pendingEffects.length, 0);
+
+    const repeat = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-22T09:00:00.000Z",
+      sheetDeleter,
+    });
+    assert.deepEqual(repeat.cancellation, result.cancellation);
+    assert.equal(deleted.length, 2, "a completed cancellation must not delete Sheet keys again");
+    assert.equal((await listWorkflowTransactions(rootDir))[0].status, "cancelled");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("cancelWorkflowTransaction waits for an in-flight child Drive lease before publishing cleanup", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-lease-"));
+  try {
+    const template = await makeCancellationTemplate(rootDir, "expense_request");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "รอ Drive ก่อนยกเลิก",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const request = await saveExpenseSubmission({
+      rootDir,
+      payload: validExpensePayload({
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+      }),
+    });
+    let releaseDrive;
+    let driveEntered;
+    const driveStarted = new Promise((resolve) => { driveEntered = resolve; });
+    const driveRelease = new Promise((resolve) => { releaseDrive = resolve; });
+    const syncPromise = syncExpenseRequestToDrive({
+      rootDir,
+      requestNo: request.requestNo,
+      driveUploader: async () => {
+        driveEntered();
+        await driveRelease;
+        return {
+          driveFolderId: "drive-folder-lease",
+          driveFolderUrl: "https://drive.google.com/drive/folders/drive-folder-lease",
+          drivePath: "documents/drive-folder-lease",
+          uploadedFileCount: 1,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await driveStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter: async () => ({ status: "deleted", deletedCount: 1, checkedLocations: [] }),
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, transaction.folderPath, "data", "workflow-cancellation.json")), false);
+
+    await assert.rejects(
+      () => syncExpenseRequestToDrive({
+        rootDir,
+        requestNo: request.requestNo,
+        driveUploader: async () => ({ driveFolderId: "late", driveFolderUrl: "https://drive.google.com/drive/folders/late", drivePath: "late", uploadedFileCount: 1 }),
+      }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+
+    releaseDrive();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const driveMetadata = JSON.parse(await readFile(join(rootDir, request.folderPath, "data", "drive-sync.json"), "utf8"));
+    assert.equal(driveMetadata.driveFolderId, "drive-folder-lease");
+    assert.equal(cancellationResult.status, "fulfilled");
+    assert.equal(cancellationResult.value.status, "cancelled");
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
+test("cancelWorkflowTransaction closes Sheets admission while the parent row recorder is delayed", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-sheets-lease-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const deleted = [];
+    const sheetDeleter = async (input) => { deleted.push(input.sourceKey); return { status: "deleted", deletedCount: 1, checkedLocations: [] }; };
+    let releaseRecorder;
+    let recorderEntered;
+    const recorderStarted = new Promise((resolve) => { recorderEntered = resolve; });
+    const recorderRelease = new Promise((resolve) => { releaseRecorder = resolve; });
+    const syncPromise = syncWorkflowTransactionToSheets({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      conflictChecker: async () => ({ conflicts: [], checkedLocations: [] }),
+      expenseRecorder: async () => {
+        recorderEntered();
+        await recorderRelease;
+        return {
+          syncStatus: "synced",
+          spreadsheetId: "sheet-lease",
+          spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-lease",
+          sheetName: "2026-09",
+          rowNumber: 7,
+        };
+      },
+      now: () => "2026-09-21T09:00:00.000Z",
+    });
+    await recorderStarted;
+
+    let cancellationFinished = false;
+    const cancellationPromise = cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: fixture.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-21T09:01:00.000Z",
+      sheetDeleter,
+    });
+    cancellationPromise.then(() => { cancellationFinished = true; }, () => { cancellationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(cancellationFinished, false);
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+
+    releaseRecorder();
+    const [syncResult, cancellationResult] = await Promise.allSettled([syncPromise, cancellationPromise]);
+    assert.equal(syncResult.status, "fulfilled");
+    assert.equal(syncResult.value.syncStatus, "synced");
+    const sheetMetadata = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "sheet-sync.json"), "utf8"));
+    assert.equal(sheetMetadata.spreadsheetId, "sheet-lease");
+    assert.equal(cancellationResult.status, "fulfilled");
+    let finalCancellation = cancellationResult.value;
+    if (finalCancellation.status === "cancellation_pending") {
+      finalCancellation = await cancelWorkflowTransaction({
+        rootDir,
+        transactionNo: fixture.transactionNo,
+        confirmed: true,
+        cancelledBy: "ผู้ทดสอบ",
+        requestedAt: "2026-09-21T09:01:00.000Z",
+        sheetDeleter,
+      });
+    }
+    assert.equal(finalCancellation.status, "cancelled");
+    assert.deepEqual(deleted.sort(), ["expense_request:REQ-2026-09-0042", "workflow_transaction:TXN-2026-09-0042"].sort());
+  } finally { await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
+});
+
+test("cancelWorkflowTransaction reverses a completed stock receipt while retaining native completed status and parent JSON", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "CANCEL-STOCK", name: "สินค้า cancel", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "CANCEL-STOCK-M", defaultUnitCost: "100" });
+    const template = await makeCancellationTemplate(rootDir, "substitute_receipt", "stock_purchase");
+    const transaction = await startWorkflowTransaction({
+      rootDir,
+      templateId: template.templateId,
+      accountingMonth: "2026-09",
+      title: "ยกเลิก stock workflow",
+      now: () => "2026-09-21T08:00:00.000Z",
+    });
+    const receipt = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({
+        receiptType: "stock_purchase",
+        transactionNo: transaction.transactionNo,
+        workflowTemplateId: template.templateId,
+        workflowStepId: "step-001",
+        lines: [{ stockSkuId: String(sku.id), sku: sku.sku, description: "สินค้า cancel", quantity: "2", unitCost: "100" }],
+      }),
+      uploads: validSlipUpload(),
+    });
+    await approveSubstituteReceipt({ rootDir, receiptNo: receipt.receiptNo, approvedBy: "บัญชี" });
+    await receiveSubstituteReceiptStock({ rootDir, receiptNo: receipt.receiptNo, receivedDate: "2026-09-21", receivedBy: "คลัง" });
+    await completeSubstituteReceipt({ rootDir, receiptNo: receipt.receiptNo, completedBy: "บัญชี" });
+    const completedTransaction = await completeWorkflowTransaction({ rootDir, transactionNo: transaction.transactionNo, completedBy: "ผู้อนุมัติ", now: () => "2026-09-21T08:00:00.000Z", packetGenerator: async () => {} });
+
+    const transactionPath = join(rootDir, transaction.folderPath, "data", "workflow-transaction.json");
+    const before = await readFile(transactionPath, "utf8");
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo: transaction.transactionNo,
+      confirmed: true,
+      cancelledBy: "ผู้ทดสอบ",
+      requestedAt: "2026-09-22T09:00:00.000Z",
+      sheetDeleter: async ({ sourceKey }) => ({ sourceKey, status: "not_found", deletedCount: 0, checkedLocations: [] }),
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.baseStatus, "completed");
+    assert.equal(result.completedAt, completedTransaction.completedAt);
+    assert.equal(await readFile(transactionPath, "utf8"), before, "parent JSON remains byte-equivalent");
+    const reloaded = await getSubmittedSubstituteReceipt(rootDir, receipt.receiptNo);
+    assert.equal(reloaded.payload.status, "completed");
+    assert.equal(reloaded.payload.completedAt, receipt.payload?.completedAt || reloaded.payload.completedAt);
+    assert.equal(reloaded.payload.statusHistory.filter((entry) => entry.parentCancellation).length, 1);
+    assert.equal(listStockMovementsByReference(rootDir, "substitute_receipt", receipt.receiptNo).length, 1);
+    assert.equal(getStockCard(rootDir, sku.id).balance.quantityOnHand, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+
+test("cancelWorkflowTransaction fails closed when an expected in-progress child is missing", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-missing-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const transactionPath = join(rootDir, fixture.transactionFolder, "data", "workflow-transaction.json");
+    const transaction = JSON.parse(await readFile(transactionPath, "utf8"));
+    transaction.steps = transaction.steps.map((step) => ({ ...step, workflowStatus: "in_progress" }));
+    await writeFile(transactionPath, JSON.stringify(transaction));
+    await rm(join(rootDir, fixture.requestFolder, "data", "submission.json"));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects frozen child relation drift and keeps pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-drift-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    const first = await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    assert.equal(first.status, "cancellation_pending");
+    const childPath = join(rootDir, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.transactionNo = "TXN-2026-09-0099";
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    const sidecar = JSON.parse(await readFile(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json"), "utf8"));
+    assert.equal(sidecar.status, "cancellation_pending");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects tampered Sheet effect keys and mismatched prior child cancellation", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-tamper-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    const pendingDelete = async () => { throw new Error("temporary Sheets outage"); };
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete });
+    const sidecarPath = join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json");
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+    sidecar.sheetEffects[0].sourceKey = "expense_request:REQ-2026-09-0099";
+    await writeFile(sidecarPath, JSON.stringify(sidecar));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: pendingDelete }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+
+  const auditRoot = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-audit-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(auditRoot);
+    const childPath = join(auditRoot, fixture.requestFolder, "data", "submission.json");
+    const child = JSON.parse(await readFile(childPath, "utf8"));
+    child.status = "cancelled";
+    child.statusHistory = [];
+    await writeFile(childPath, JSON.stringify(child));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir: auditRoot, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+  } finally { await rm(auditRoot, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction blocks forward parent and child actions after durable pending sidecar", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-barrier-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir);
+    await cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true, sheetDeleter: async () => { throw new Error("temporary Sheets outage"); } });
+    await assert.rejects(
+      () => completeWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+    await assert.rejects(
+      () => approveExpenseRequest({ rootDir, requestNo: "REQ-2026-09-0042" }),
+      (error) => error.code === "WORKFLOW_CANCELLATION_IN_PROGRESS" && error.statusCode === 409,
+    );
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("cancelWorkflowTransaction rejects received stock child without persisted movement evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-cancel-stock-evidence-"));
+  try {
+    const fixture = await seedWorkflowSheetsFixture(rootDir, { includeSr: true });
+    const receiptPath = join(rootDir, fixture.receiptFolder, "data", "substitute-receipt.json");
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    receipt.receiptType = "stock_purchase";
+    receipt.status = "received";
+    receipt.stockReceipt = { movementIds: [] };
+    await writeFile(receiptPath, JSON.stringify(receipt));
+    await assert.rejects(
+      () => cancelWorkflowTransaction({ rootDir, transactionNo: fixture.transactionNo, confirmed: true }),
+      (error) => error.code === "CANCELLATION_SOURCE_INVALID" && error.statusCode === 409,
+    );
+    assert.equal(existsSync(join(rootDir, fixture.transactionFolder, "data", "workflow-cancellation.json")), false);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
 });

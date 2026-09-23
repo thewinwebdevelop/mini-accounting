@@ -19,7 +19,7 @@ const path = require("node:path");
 
 const { openInventoryDatabase } = require("./inventory-db.logic.js");
 
-const DOCUMENT_INDEX_SCHEMA_VERSION = 1;
+const DOCUMENT_INDEX_SCHEMA_VERSION = 2;
 
 // เจ็ดชนิดเอกสารตามที่ระบุใน spec บวก workflow_transaction (ธุรกรรมที่รวม
 // เอกสารหลายชนิดเข้าด้วยกัน) — ปิดชุดค่าด้วย CHECK เพื่อกันค่าพิมพ์ผิดหลุด
@@ -59,6 +59,7 @@ const DOCUMENT_STATUSES = [
   "cancelled",
   "voided",
   "in_progress",
+  "cancellation_pending",
 ];
 
 const CANONICAL_DOCUMENT_FILE_NAMES = new Set([
@@ -118,6 +119,38 @@ function ensureDocumentIndexSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_document_number_allocations_kind_month
       ON document_number_allocations (document_kind, accounting_month, sequence);
   `);
+
+  const currentVersion = db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM document_index_schema_migrations").get().version;
+  if (currentVersion < 2) {
+    db.exec("DROP INDEX IF EXISTS idx_documents_kind_month; DROP INDEX IF EXISTS idx_documents_transaction_no; DROP INDEX IF EXISTS idx_documents_kind_status;");
+    db.exec(`
+      ALTER TABLE documents RENAME TO documents_before_cancellation_overlay;
+      CREATE TABLE documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_kind TEXT NOT NULL,
+        document_no TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        accounting_month TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT '',
+        folder_path TEXT NOT NULL,
+        transaction_no TEXT NOT NULL DEFAULT '',
+        workflow_template_id TEXT NOT NULL DEFAULT '',
+        workflow_step_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT '',
+        UNIQUE (document_kind, document_no),
+        CHECK (document_kind IN (${DOCUMENT_KINDS.map((kind) => `'${kind}'`).join(", ")})),
+        CHECK (status IN (${DOCUMENT_STATUSES.map((status) => `'${status}'`).join(", ")}))
+      );
+      INSERT INTO documents (id, document_kind, document_no, sequence, accounting_month, status, folder_path, transaction_no, workflow_template_id, workflow_step_id, created_at, updated_at)
+        SELECT id, document_kind, document_no, sequence, accounting_month, status, folder_path, transaction_no, workflow_template_id, workflow_step_id, created_at, updated_at
+        FROM documents_before_cancellation_overlay;
+      DROP TABLE documents_before_cancellation_overlay;
+      CREATE INDEX idx_documents_kind_month ON documents (document_kind, accounting_month, sequence);
+      CREATE INDEX idx_documents_transaction_no ON documents (transaction_no);
+      CREATE INDEX idx_documents_kind_status ON documents (document_kind, status);
+    `);
+  }
 
   db.prepare(`
     INSERT OR IGNORE INTO document_index_schema_migrations (version, applied_at)

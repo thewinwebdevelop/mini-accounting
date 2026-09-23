@@ -344,6 +344,7 @@
       <h1 class="brand-title" id="pageTitle">เอกสารประกอบ Workflow</h1>
       <p class="brand-subtitle" id="pageSubtitle">ใบสั่งซื้อ / ใบสำคัญจ่าย / ใบรับรองการจ่ายเงินสด / ใบสำคัญรับเงิน / ใบรับของ</p>
     </div>
+    <a class="return-link" id="workflowDocumentListLink" href="/workflow-documents">กลับไปรายการเอกสาร</a>
     <a class="return-link" id="workflowReturnLink" href="/" hidden>&larr; กลับไปยัง Workflow</a>
   </header>
 
@@ -398,6 +399,12 @@
               <input id="requesterName" name="requesterName">
               <span class="field-badge" data-badge-for="requesterName" hidden></span>
             </div>
+            <div class="field span-12">
+              <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
+              <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable aria-describedby="vendorPresetHint"><option value="">กรอกเอง / ไม่ใช้ preset</option></select>
+              <span class="hint" id="vendorPresetHint">เลือกข้อมูลผู้ขายเดิม หรือกรอกข้อมูลใหม่เอง</span>
+              <label class="choice"><input type="checkbox" id="saveVendorPreset" name="saveVendorPreset"> บันทึกผู้ขายรายนี้ไว้ใช้ครั้งต่อไป</label>
+            </div>
             <div class="field span-6">
               <label for="payeeName">ผู้รับเงิน/คู่ค้า</label>
               <input id="payeeName" name="payeeName">
@@ -439,6 +446,8 @@
 
       <div class="actions">
         <button class="button secondary" type="button" id="saveWorkflowDocument">บันทึกเอกสาร</button>
+        <button class="button primary" type="button" id="submitWorkflowDocument" hidden>ส่งตรวจอนุมัติ</button>
+        <button class="button primary" type="button" id="approveWorkflowDocument" hidden>อนุมัติ</button>
         <button class="button primary" type="button" id="completeWorkflowDocument" hidden>เสร็จสิ้นเอกสาร</button>
       </div>
       <div class="status-box" id="workflowDocumentStatus"></div>
@@ -491,8 +500,11 @@
     </div>
   </template>
 
+  <script src="./searchable-select.logic.browser.js"></script>
   <script src="./workflow.logic.js"></script>
   <script src="./workflow-document.logic.js"></script>
+  <script src="./vendor-picker.logic.browser.js"></script>
+  <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>

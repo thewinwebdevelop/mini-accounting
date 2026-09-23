@@ -77,11 +77,9 @@ test("template validation gives a Thai fallback message for a step with no docum
   assert.ok(!errors.some((message) => message.includes("undefined")), "must never interpolate the literal 'undefined' into a Thai-only error message");
 });
 
-// A free-form receiptType dropdown on the substitute_receipt form decides,
-// all by itself, whether a workflow step can ever complete (stock_purchase
-// only completes at native "received"; general_expense completes at
-// "approved" -- see deriveChildWorkflowStatus). So every template step whose
-// documentKind is substitute_receipt must be able to declare which receipt
+// receiptType controls whether a substitute_receipt needs stock receiving;
+// native "completed" alone unlocks the next workflow step. Every template
+// step whose documentKind is substitute_receipt must be able to declare which receipt
 // type that step means, and every one of the six shipped templates must
 // declare it correctly -- not just a sample: an earlier task on this branch
 // shipped a six-entry seed table with only one entry asserted and five
@@ -337,42 +335,25 @@ test("normalizeDocumentWorkflowStatus maps completed child documents", () => {
   });
 });
 
-test("normalizeDocumentWorkflowStatus reports substitute_receipt completion by receiptType", () => {
-  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
-    documentKind: "substitute_receipt",
-    receiptNo: "SR-2026-09-0001",
-    transactionNo: "TXN-2026-09-0001",
-    receiptType: "stock_purchase",
-    status: "received",
-    statusLabel: "รับสินค้าแล้ว",
-  }).workflowStatus, "completed");
+test("normalizeDocumentWorkflowStatus requires native completed for substitute receipts regardless of receipt type", () => {
+  const cases = [
+    { receiptType: "stock_purchase", status: "approved", expected: "in_progress" },
+    { receiptType: "stock_purchase", status: "received", expected: "in_progress" },
+    { receiptType: "stock_purchase", status: "completed", expected: "completed" },
+    { receiptType: "general_expense", status: "approved", expected: "in_progress" },
+    { receiptType: "general_expense", status: "received", expected: "in_progress" },
+    { receiptType: "general_expense", status: "completed", expected: "completed" },
+  ];
 
-  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
-    documentKind: "substitute_receipt",
-    receiptNo: "SR-2026-09-0002",
-    transactionNo: "TXN-2026-09-0001",
-    receiptType: "general_expense",
-    status: "approved",
-    statusLabel: "อนุมัติแล้ว",
-  }).workflowStatus, "completed");
-
-  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
-    documentKind: "substitute_receipt",
-    receiptNo: "SR-2026-09-0003",
-    transactionNo: "TXN-2026-09-0001",
-    receiptType: "stock_purchase",
-    status: "approved",
-    statusLabel: "อนุมัติแล้ว",
-  }).workflowStatus, "in_progress");
-
-  assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
-    documentKind: "substitute_receipt",
-    receiptNo: "SR-2026-09-0004",
-    transactionNo: "TXN-2026-09-0001",
-    receiptType: "general_expense",
-    status: "received",
-    statusLabel: "รับสินค้าแล้ว",
-  }).workflowStatus, "in_progress");
+  for (const { receiptType, status, expected } of cases) {
+    assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
+      documentKind: "substitute_receipt",
+      receiptNo: "SR-2026-09-0001",
+      transactionNo: "TXN-2026-09-0001",
+      receiptType,
+      status,
+    }).workflowStatus, expected, `${receiptType} ${status} should be ${expected}`);
+  }
 });
 
 test("normalizeDocumentWorkflowStatus treats missing or unknown native status as in_progress", () => {
@@ -389,7 +370,7 @@ test("normalizeDocumentWorkflowStatus treats missing or unknown native status as
 });
 
 test("normalizeDocumentWorkflowStatus only reports completed for lightweight document kinds on native completed", () => {
-  for (const documentKind of ["purchase_order", "payment_voucher", "goods_receipt", "cash_spend_declaration", "payee_acknowledgement"]) {
+  for (const documentKind of ["purchase_order", "payment_voucher", "goods_receipt", "expense_request", "cash_spend_declaration", "payee_acknowledgement"]) {
     assert.equal(workflowLogic.normalizeDocumentWorkflowStatus({
       documentKind,
       documentNo: "DOC-0001",

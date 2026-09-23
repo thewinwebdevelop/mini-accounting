@@ -18,17 +18,21 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  approveWorkflowDocument,
   completeExpenseRequest,
   completeSubstituteReceipt,
   completeWorkflowDocument,
   completeWorkflowTransaction,
+  cancelWorkflowTransaction,
   getNextExpenseRequestInfo,
   getNextSubstituteReceiptInfo,
   getNextWorkflowDocumentInfo,
   getNextWorkflowTransactionInfo,
   getExpenseDraft,
+  getLegacyExpenseDraftFile,
   getExpenseRequestFile,
   getSubstituteReceiptDraft,
+  getLegacySubstituteReceiptDraftFile,
   getSubstituteReceiptFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
@@ -53,6 +57,7 @@ const {
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
+  submitWorkflowDocument,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   receiveSubstituteReceiptStock,
@@ -62,6 +67,7 @@ const {
   syncSubstituteReceiptToDrive,
   syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
+  syncWorkflowTransactionToSheets,
 } = require("./forms/local-server.logic.js");
 const {
   buildWorkflowDocumentPayload,
@@ -99,6 +105,14 @@ const {
   listSubstituteReceiptVendors,
   updateSubstituteReceiptVendor,
 } = require("./forms/substitute-receipt-vendors.logic.js");
+const {
+  createVendor,
+  findVendorMatches,
+  getVendorById,
+  listVendors,
+  updateVendor,
+  vendorCandidateFingerprint,
+} = require("./forms/vendor.logic.js");
 const {
   generateCurrentStockPdf,
 } = require("./forms/inventory-report.logic.js");
@@ -141,7 +155,22 @@ const mimeTypes = {
 
 function sendJson(response, statusCode, data) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(data));
+  response.end(JSON.stringify(data, (key, value) => (
+    key === "absolutePath" || key === "absoluteFolderPath" ? undefined : value
+  )));
+}
+
+function sendOperationError(response, error, fallback) {
+  sendJson(response, error.statusCode || (error.code === "LEGACY_DRAFT_READ_ONLY" || error.code === "DOCUMENT_NOT_DRAFT" ? 409 : 400), {
+    ...(error.code ? { code: error.code } : {}),
+    error: error.code === "LEGACY_DRAFT_READ_ONLY" ? "แบบร่างเก่านี้เปิดอ่านได้อย่างเดียว" : (error.message || fallback),
+  });
+}
+
+function sendWorkflowMutationError(response, error, fallback, defaultStatus = 400) {
+  const barrier = new Set(["WORKFLOW_CANCELLATION_IN_PROGRESS", "WORKFLOW_CANCELLED"]);
+  const status = barrier.has(error?.code) ? 409 : (Number.isInteger(error?.statusCode) ? error.statusCode : defaultStatus);
+  sendJson(response, status, { ...(error?.code ? { code: error.code } : {}), error: error?.message || fallback });
 }
 
 function safeStaticPath(urlPath) {
@@ -247,6 +276,13 @@ function parseExpenseRequestFileRoute(urlPath) {
   };
 }
 
+function parseLegacyDraftFileRoute(urlPath, prefix) {
+  if (!urlPath.startsWith(prefix)) return null;
+  const segments = urlPath.slice(prefix.length).split("/");
+  if (segments.length !== 4 || segments[1] !== "files" || segments[2] !== "raw" || !segments[0] || !segments[3]) return null;
+  return { draftId: decodeURIComponent(segments[0]), section: segments[2], fileName: decodeURIComponent(segments[3]) };
+}
+
 function parseWorkflowDocumentFileRoute(urlPath) {
   const prefix = "/workflow-documents/";
   if (!urlPath.startsWith(prefix)) return null;
@@ -320,9 +356,7 @@ async function handleExpenseSubmission(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save expense request",
-    });
+    sendOperationError(response, error, "Cannot save expense request");
   }
 }
 
@@ -339,9 +373,7 @@ async function handleSubstituteReceiptSubmission(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save substitute receipt",
-    });
+    sendOperationError(response, error, "Cannot save substitute receipt");
   }
 }
 
@@ -358,9 +390,7 @@ async function handleSubstituteReceiptDraftSave(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save substitute receipt draft",
-    });
+    sendOperationError(response, error, "Cannot save substitute receipt draft");
   }
 }
 
@@ -374,9 +404,7 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot approve substitute receipt",
-    });
+    sendWorkflowMutationError(response, error, "Cannot approve substitute receipt");
   }
 }
 
@@ -390,9 +418,7 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot approve expense request",
-    });
+    sendWorkflowMutationError(response, error, "Cannot approve expense request");
   }
 }
 
@@ -413,17 +439,13 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete expense request",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete expense request");
   }
 }
 
-// substitute_receipt already reaches workflow-completed through the existing
-// approve/receive-stock routes (deriveChildWorkflowStatus's hybrid rule), so
-// this route is not load-bearing for the workflow the way the expense-request
-// one above is. Wired anyway for consistency: completeSubstituteReceipt is
-// implemented and unit-tested but was otherwise unreachable over HTTP.
+// Approval and stock receiving remain native substitute_receipt transitions,
+// but only this explicit completion route reaches native "completed" and
+// unlocks the next workflow step under owner decision O7.
 async function handleSubstituteReceiptComplete(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -434,9 +456,7 @@ async function handleSubstituteReceiptComplete(receiptNo, request, response) {
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete substitute receipt",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete substitute receipt");
   }
 }
 
@@ -451,9 +471,7 @@ async function handleSubstituteReceiptReceiveStock(receiptNo, request, response)
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot receive substitute receipt stock",
-    });
+    sendWorkflowMutationError(response, error, "Cannot receive substitute receipt stock");
   }
 }
 
@@ -466,9 +484,7 @@ async function handleExpenseDriveSync(requestNo, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot sync expense request to Google Drive",
-    });
+    sendWorkflowMutationError(response, error, "Cannot sync expense request to Google Drive");
   }
 }
 
@@ -481,9 +497,7 @@ async function handleSubstituteReceiptDriveSync(receiptNo, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot sync substitute receipt to Google Drive",
-    });
+    sendWorkflowMutationError(response, error, "Cannot sync substitute receipt to Google Drive");
   }
 }
 
@@ -580,6 +594,10 @@ async function handleWorkflowDocumentSubmission(request, response) {
         folderPath: existingDocument.folderPath,
         status: existingDocument.status,
         statusHistory: existingDocument.payload?.statusHistory ?? [],
+        submittedAt: existingDocument.payload?.submittedAt ?? "",
+        submittedBy: existingDocument.payload?.submittedBy ?? "",
+        approvedAt: existingDocument.payload?.approvedAt ?? "",
+        approvedBy: existingDocument.payload?.approvedBy ?? "",
         completedAt: existingDocument.payload?.completedAt ?? "",
         completedBy: existingDocument.payload?.completedBy ?? "",
         createdAt: existingDocument.payload?.createdAt ?? "",
@@ -597,6 +615,10 @@ async function handleWorkflowDocumentSubmission(request, response) {
         sequence: nextInfo.sequence,
         status: "draft",
         statusHistory: [],
+        submittedAt: "",
+        submittedBy: "",
+        approvedAt: "",
+        approvedBy: "",
         completedAt: "",
         completedBy: "",
         createdAt: "",
@@ -608,9 +630,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถบันทึกเอกสารได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถบันทึกเอกสารได้");
   }
 }
 
@@ -625,9 +645,20 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
     });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot complete workflow document",
-    });
+    sendWorkflowMutationError(response, error, "Cannot complete workflow document");
+  }
+}
+
+async function handleWorkflowDocumentAction(action, documentKind, documentNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const actions = {
+      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: body.submittedBy }),
+      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: body.approvedBy }),
+    };
+    sendJson(response, 200, await actions[action]());
+  } catch (error) {
+    sendWorkflowMutationError(response, error, "ไม่สามารถเปลี่ยนสถานะเอกสารได้");
   }
 }
 
@@ -850,9 +881,7 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "ไม่สามารถรีเฟรชธุรกรรมได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
   }
 }
 
@@ -870,8 +899,35 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
     });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถปิดงานธุรกรรมได้",
+    sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
+  }
+}
+
+async function handleWorkflowTransactionCancel(transactionNo, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const result = await cancelWorkflowTransaction({
+      rootDir,
+      transactionNo,
+      confirmed: body.confirmed,
+      cancelledBy: body.cancelledBy,
+    });
+    const statusCode = result.httpStatus || 200;
+    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
+  } catch (error) {
+    const stableCodes = new Set([
+      "CANCELLATION_CONFIRMATION_REQUIRED", "INVALID_DOCUMENT_NUMBER", "INVALID_CANCELLATION_REQUEST",
+      "WORKFLOW_NOT_FOUND", "WORKFLOW_CANCELLATION_IN_PROGRESS", "WORKFLOW_CANCELLED",
+      "INSUFFICIENT_STOCK_FOR_CANCELLATION", "CANCELLATION_SOURCE_INVALID", "WORKFLOW_CANCELLATION_PENDING",
+      "MONTHLY_EXPENSE_DELETE_FAILED", "STOCK_REVERSAL_FAILED",
+    ]);
+    const safeError = error?.safeCancellationError === true;
+    const code = safeError && stableCodes.has(error.code) ? error.code : "WORKFLOW_CANCELLATION_FAILED";
+    const statusCode = safeError && Number.isInteger(error.statusCode) ? error.statusCode : 409;
+    sendJson(response, statusCode, {
+      error: safeError ? (error.message || "ไม่สามารถยกเลิก Workflow ได้") : "ไม่สามารถยกเลิก Workflow ได้",
+      code,
+      ...(safeError && error.code === "INSUFFICIENT_STOCK_FOR_CANCELLATION" && Array.isArray(error.details?.items) ? { items: error.details.items } : {}),
     });
   }
 }
@@ -884,9 +940,25 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
     const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้",
-    });
+    sendWorkflowMutationError(response, error, "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้");
+  }
+}
+
+async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
+  try {
+    const result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
+    if (result.syncStatus === "blocked_child_rows") {
+      sendJson(response, 409, { error: result.error, code: result.code, conflicts: result.conflicts });
+      return;
+    }
+    sendJson(response, 200, result);
+  } catch (error) {
+    if (["WORKFLOW_CANCELLATION_IN_PROGRESS", "WORKFLOW_CANCELLED"].includes(error?.code)) {
+      sendJson(response, 409, { error: error.message, code: error.code });
+      return;
+    }
+    const safeErrors = new Set(["ไม่พบธุรกรรม", "ข้อมูลธุรกรรมไม่ตรงกับเลขที่ที่ร้องขอ", "ต้องปิดงาน Workflow ให้เสร็จสิ้นก่อนจึงจะซิงก์ Google Sheets ได้", "ไม่สามารถตรวจสอบ Google Sheets ก่อนซิงก์ได้", "ไม่สามารถซิงก์ Google Sheets ได้"]);
+    sendJson(response, 400, { error: safeErrors.has(error.message) ? error.message : "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Sheets ได้", code: "workflow_sheet_sync_failed" });
   }
 }
 
@@ -1092,9 +1164,7 @@ async function handleDraftSave(request, response) {
 
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
-      error: error.message || "Cannot save draft",
-    });
+    sendOperationError(response, error, "Cannot save draft");
   }
 }
 
@@ -1136,9 +1206,7 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
     const result = await getSubmittedExpenseRequest(rootDir, requestNo);
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "Cannot load expense request",
-    });
+    sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load expense request" });
   }
 }
 
@@ -1147,9 +1215,7 @@ async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
     const result = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 404, {
-      error: error.message || "Cannot load substitute receipt",
-    });
+    sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load substitute receipt" });
   }
 }
 
@@ -1172,6 +1238,19 @@ async function handleSubstituteReceiptDraftGet(draftId, response) {
     sendJson(response, 404, {
       error: error.message || "Cannot load substitute receipt draft",
     });
+  }
+}
+
+async function handleLegacyDraftFile(file, response, kind) {
+  try {
+    const resolver = kind === "substitute_receipt" ? getLegacySubstituteReceiptDraftFile : getLegacyExpenseDraftFile;
+    const result = await resolver(file);
+    const body = await readFile(result.absolutePath);
+    const contentType = mimeTypes[path.extname(result.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, { "content-type": contentType });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 404, { error: error.message || "Cannot open legacy draft file" });
   }
 }
 
@@ -1389,7 +1468,132 @@ async function handleSubstituteReceiptVendorList(url, response) {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
     sendJson(response, 200, { vendors: await listSubstituteReceiptVendors(rootDir, { includeInactive }) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot list substitute receipt vendors" });
+    sendVendorError(response, error, "Cannot list substitute receipt vendors");
+  }
+}
+
+function invalidVendorIdError() {
+  const error = new Error("รหัสผู้ขายไม่ถูกต้อง");
+  error.code = "INVALID_VENDOR_ID";
+  error.statusCode = 400;
+  return error;
+}
+
+function decodeVendorId(rawId) {
+  let id;
+  try {
+    id = decodeURIComponent(String(rawId || ""));
+  } catch {
+    throw invalidVendorIdError();
+  }
+  // IDs are opaque to clients, but accepting path separators or arbitrary
+  // strings here makes malformed requests ambiguous and risks path-like data
+  // leaking into storage adapters. Keep compatibility with generated shared
+  // and legacy substitute-receipt IDs only.
+  if (!/^(?:VENDOR|SRV)-[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(id)) throw invalidVendorIdError();
+  return id;
+}
+
+function sendVendorError(response, error, fallback) {
+  const safeMessages = {
+    INVALID_VENDOR_ID: "รหัสผู้ขายไม่ถูกต้อง",
+    INVALID_VENDOR: "ข้อมูลผู้ขายไม่ถูกต้อง",
+    INVALID_VENDOR_STATUS: "สถานะผู้ขายไม่ถูกต้อง",
+    VENDOR_NOT_FOUND: "ไม่พบผู้ขาย",
+    VENDOR_INACTIVE: "ผู้ขายถูกปิดใช้งาน",
+    VENDOR_DUPLICATE_CONFIRMATION_REQUIRED: "พบผู้ขายที่อาจซ้ำ กรุณายืนยันก่อนบันทึก",
+  };
+  const knownCode = Object.prototype.hasOwnProperty.call(safeMessages, error?.code) ? error.code : undefined;
+  const body = {
+    ...(knownCode ? { code: knownCode } : {}),
+    error: knownCode ? safeMessages[knownCode] : fallback,
+  };
+  if (knownCode === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED") {
+    body.candidateFingerprint = error.candidateFingerprint;
+    body.matches = Array.isArray(error.matches) ? error.matches.map((match) => ({
+      id: match.id,
+      name: match.name,
+      taxId: match.taxId,
+      matchedFields: Array.isArray(match.matchedFields) ? [...match.matchedFields] : [],
+    })) : [];
+  }
+  sendJson(response, Number.isInteger(error?.statusCode) ? error.statusCode : 400, body);
+}
+
+async function handleVendorList(url, response) {
+  try {
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
+    sendJson(response, 200, { vendors: await listVendors(rootDir, { includeInactive }) });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot list vendors");
+  }
+}
+
+async function handleVendorGet(vendorId, response) {
+  try {
+    const id = decodeVendorId(vendorId);
+    const vendor = await getVendorById(rootDir, id);
+    if (!vendor) {
+      const error = new Error("ไม่พบผู้ขาย");
+      error.code = "VENDOR_NOT_FOUND";
+      error.statusCode = 404;
+      throw error;
+    }
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot load vendor");
+  }
+}
+
+async function handleVendorMatches(url, response) {
+  try {
+    const candidate = Object.fromEntries([
+      "name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo",
+      "paymentChannel", "paymentReference", "defaultBusinessPurpose", "note",
+    ].map((field) => [field, url.searchParams.get(field) || ""]));
+    const matches = findVendorMatches(candidate, await listVendors(rootDir, { includeInactive: true }));
+    sendJson(response, 200, {
+      matches: matches.map((match) => ({
+        id: match.id,
+        name: match.name,
+        taxId: match.taxId,
+        status: match.status,
+        matchedFields: [...match.matchedFields],
+      })),
+      candidateFingerprint: vendorCandidateFingerprint(candidate),
+    });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot match vendors");
+  }
+}
+
+function vendorMutationOptions(payload = {}) {
+  const options = payload?.options && typeof payload.options === "object" ? payload.options : {};
+  return {
+    confirmDuplicate: payload.confirmDuplicate === true || options.confirmDuplicate === true,
+    expectedMatchIds: Array.isArray(payload.expectedMatchIds) ? payload.expectedMatchIds : options.expectedMatchIds,
+    expectedCandidateFingerprint: payload.expectedCandidateFingerprint || options.expectedCandidateFingerprint,
+  };
+}
+
+async function handleVendorCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const vendor = await createVendor(rootDir, payload, vendorMutationOptions(payload));
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot create vendor");
+  }
+}
+
+async function handleVendorUpdate(vendorId, request, response) {
+  try {
+    const id = decodeVendorId(vendorId);
+    const payload = await readJsonBody(request);
+    const vendor = await updateVendor(rootDir, id, { ...payload, options: vendorMutationOptions(payload) });
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot update vendor");
   }
 }
 
@@ -1398,7 +1602,7 @@ async function handleSubstituteReceiptVendorCreate(request, response) {
     const payload = await readJsonBody(request);
     sendJson(response, 200, { vendor: await createSubstituteReceiptVendor(rootDir, payload) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot create substitute receipt vendor" });
+    sendVendorError(response, error, "Cannot create substitute receipt vendor");
   }
 }
 
@@ -1407,7 +1611,7 @@ async function handleSubstituteReceiptVendorUpdate(vendorId, request, response) 
     const payload = await readJsonBody(request);
     sendJson(response, 200, { vendor: await updateSubstituteReceiptVendor(rootDir, vendorId, payload) });
   } catch (error) {
-    sendJson(response, 400, { error: error.message || "Cannot update substitute receipt vendor" });
+    sendVendorError(response, error, "Cannot update substitute receipt vendor");
   }
 }
 
@@ -1596,6 +1800,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/vendors") {
+    await handleVendorCreate(request, response);
+    return;
+  }
+
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
     const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
     await handleInventoryProductUpdate(productId, request, response);
@@ -1626,6 +1835,12 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "PATCH" && url.pathname.startsWith("/api/vendors/")) {
+    const vendorId = url.pathname.slice("/api/vendors/".length);
+    await handleVendorUpdate(vendorId, request, response);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/expense-requests") {
     await handleExpenseSubmission(request, response);
     return;
@@ -1638,6 +1853,14 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && request.url === "/api/workflow-documents") {
     await handleWorkflowDocumentSubmission(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve"))) {
+    const action = url.pathname.endsWith("/submit") ? "submit" : "approve";
+    const remainder = url.pathname.replace("/api/workflow-documents/", "").replace(new RegExp(`/${action}$`), "");
+    const [documentKind, documentNo] = remainder.split("/");
+    await handleWorkflowDocumentAction(action, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
 
@@ -1681,11 +1904,27 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/cancel")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/cancel", ""));
+    await handleWorkflowTransactionCancel(transactionNo, request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/sync-drive")) {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-drive", ""));
     await handleWorkflowTransactionDriveSync(transactionNo, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-transactions/") && url.pathname.endsWith("/sync-sheets")) {
+    const transactionNo = decodeURIComponent(url.pathname
+      .replace("/api/workflow-transactions/", "")
+      .replace("/sync-sheets", ""));
+    await handleWorkflowTransactionSheetsSync(transactionNo, response);
     return;
   }
 
@@ -1884,6 +2123,22 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === "/api/vendors") {
+      await handleVendorList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/vendors/matches") {
+      await handleVendorMatches(url, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/vendors/")) {
+      const vendorId = url.pathname.slice("/api/vendors/".length);
+      await handleVendorGet(vendorId, response);
+      return;
+    }
+
     if (url.pathname.startsWith("/api/inventory/sale-skus/")) {
       const saleSkuId = decodeURIComponent(url.pathname.replace("/api/inventory/sale-skus/", ""));
       await handleInventorySaleSkuGet(saleSkuId, response);
@@ -2001,6 +2256,12 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const legacyExpenseFile = parseLegacyDraftFileRoute(url.pathname, "/api/expense-drafts/");
+    if (legacyExpenseFile) {
+      await handleLegacyDraftFile({ rootDir, ...legacyExpenseFile }, response, "expense_request");
+      return;
+    }
+
     if (url.pathname.startsWith("/api/expense-drafts/")) {
       const draftId = decodeURIComponent(url.pathname.replace("/api/expense-drafts/", ""));
       await handleDraftGet(draftId, response);
@@ -2008,6 +2269,11 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname.startsWith("/api/substitute-receipt-drafts/")) {
+      const legacySubstituteFile = parseLegacyDraftFileRoute(url.pathname, "/api/substitute-receipt-drafts/");
+      if (legacySubstituteFile) {
+        await handleLegacyDraftFile({ rootDir, ...legacySubstituteFile }, response, "substitute_receipt");
+        return;
+      }
       const draftId = decodeURIComponent(url.pathname.replace("/api/substitute-receipt-drafts/", ""));
       await handleSubstituteReceiptDraftGet(draftId, response);
       return;

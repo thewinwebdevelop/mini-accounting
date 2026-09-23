@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,6 +16,158 @@ test("lightweight workflow documents expose required standalone kinds", () => {
     "payee_acknowledgement",
     "goods_receipt",
   ]);
+});
+
+test("submitWorkflowDocument moves a draft to pending approval with an immutable audit stamp", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06",
+      title: "ส่งตรวจ", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    }, { now: () => "2026-09-06T12:00:00.000Z" });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    const first = await serverLogic.submitWorkflowDocument({
+      rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "ผู้ส่ง",
+      now: () => "2026-09-06T13:00:00.000Z",
+    });
+    assert.equal(first.status, "pending_approval");
+    assert.equal(first.submittedAt, "2026-09-06T13:00:00.000Z");
+    assert.equal(first.submittedBy, "ผู้ส่ง");
+    assert.deepEqual((await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo)).payload.statusHistory, [{
+      fromStatus: "draft", toStatus: "pending_approval", changedAt: "2026-09-06T13:00:00.000Z", note: "submitted", actor: "ผู้ส่ง",
+    }]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("every lightweight kind requires submit and approval before completion", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    for (const documentKind of docLogic.LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const payload = docLogic.buildWorkflowDocumentPayload({
+        documentKind, sequence: String(docLogic.LIGHTWEIGHT_DOCUMENT_KINDS.indexOf(documentKind) + 1), accountingMonth: "2026-09", documentDate: "2026-09-06",
+        title: documentKind, businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+      });
+      const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+      const dataPath = join(rootDir, saved.folderPath, "data", "workflow-document.json");
+      const draftDisk = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), draftDisk, "rejected draft approval must not write disk");
+      await assert.rejects(() => serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), draftDisk, "rejected draft completion must not write disk");
+      const submitted = await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, submittedBy: "ผู้ส่ง", now: () => "2026-09-06T13:00:00.000Z" });
+      const submitMetadata = submitted.pdfFiles.map(({ name, url }) => ({ name, url }));
+      const afterSubmit = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const submitPdf = await readFile(submitted.pdfFiles[0].absolutePath);
+      const repeatedSubmit = await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, submittedBy: "คนอื่น", now: () => "2026-09-06T13:30:00.000Z" });
+      const afterRepeatedSubmit = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeatedSubmit.pdfFiles[0].absolutePath), submitPdf);
+      assert.deepEqual(repeatedSubmit.pdfFiles.map(({ name, url }) => ({ name, url })), submitMetadata);
+      assert.equal(submitted.submittedAt, "2026-09-06T13:00:00.000Z");
+      assert.equal(repeatedSubmit.submittedAt, submitted.submittedAt);
+      const beforePendingComplete = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), beforePendingComplete, "rejected pending completion must not write disk");
+      const approved = await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, approvedBy: "ผู้อนุมัติ", now: () => "2026-09-06T14:00:00.000Z" });
+      const approveMetadata = approved.pdfFiles.map(({ name, url }) => ({ name, url }));
+      const afterApprove = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const approvePdf = await readFile(approved.pdfFiles[0].absolutePath);
+      const repeatedApprove = await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, approvedBy: "คนอื่น", now: () => "2026-09-06T14:30:00.000Z" });
+      const afterRepeatedApprove = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeatedApprove.pdfFiles[0].absolutePath), approvePdf);
+      assert.deepEqual(repeatedApprove.pdfFiles.map(({ name, url }) => ({ name, url })), approveMetadata);
+      assert.equal(approved.approvedAt, "2026-09-06T14:00:00.000Z");
+      assert.equal(repeatedApprove.approvedAt, approved.approvedAt);
+      const approvedDisk = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), approvedDisk, "rejected approved submit must not write disk");
+      const completed = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "ผู้ปิด", now: () => "2026-09-06T15:00:00.000Z" });
+      const completeMetadata = completed.pdfFiles.map(({ name, url }) => ({ name, url }));
+      const afterComplete = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const completePdf = await readFile(completed.pdfFiles[0].absolutePath);
+      assert.equal(submitted.status, "pending_approval");
+      assert.equal(repeatedSubmit.submittedBy, "ผู้ส่ง");
+      assert.equal(approved.status, "approved");
+      assert.equal(repeatedApprove.approvedBy, "ผู้อนุมัติ");
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.submittedBy, "ผู้ส่ง");
+      assert.equal(completed.approvedBy, "ผู้อนุมัติ");
+      assert.equal(completed.completedBy, "ผู้ปิด");
+      const repeated = await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo, completedBy: "คนอื่น" });
+      assert.equal(repeated.completedBy, "ผู้ปิด");
+      const afterRepeatedComplete = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      assert.deepEqual(await readFile(repeated.pdfFiles[0].absolutePath), completePdf);
+      assert.deepEqual(repeated.pdfFiles.map(({ name, url }) => ({ name, url })), completeMetadata);
+      assert.equal(completed.completedAt, "2026-09-06T15:00:00.000Z");
+      assert.equal(repeated.completedAt, completed.completedAt);
+      for (const [before, after] of [[afterSubmit, afterRepeatedSubmit], [afterApprove, afterRepeatedApprove], [afterComplete, afterRepeatedComplete]]) {
+        assert.equal(after.payload.updatedAt, before.payload.updatedAt, "idempotent action must not update timestamp");
+        assert.deepEqual(after.payload.statusHistory, before.payload.statusHistory, "idempotent action must not append history");
+      }
+      const completedDisk = await readFile(dataPath, "utf8");
+      await assert.rejects(() => serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      await assert.rejects(() => serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo: saved.documentNo }), /ไม่อนุญาต/);
+      assert.equal(await readFile(dataPath, "utf8"), completedDisk, "completed rejections must not write disk");
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent identical lifecycle actions keep one winner stamp and one index status", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({ documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06", title: "แข่งกันส่ง", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }] });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    const [first, second] = await Promise.all([
+      serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "แรก", now: () => "2026-09-06T13:00:00.000Z" }),
+      serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "สอง", now: () => "2026-09-06T14:00:00.000Z" }),
+    ]);
+    assert.equal(first.status, "pending_approval");
+    assert.equal(second.status, "pending_approval");
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.equal(stored.payload.statusHistory.length, 1);
+    assert.equal(stored.payload.submittedBy, "แรก");
+    const indexed = await serverLogic.listWorkflowDocumentSummaries(rootDir, { documentKind: "purchase_order" });
+    assert.equal(indexed[0].status, "pending_approval");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("concurrent same-status multipart saves append distinct raw files", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({ documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06", title: "แข่งแนบ", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }] });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    const record = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    const [first, second] = await Promise.all([
+      serverLogic.saveWorkflowDocument({ rootDir, payload: { ...record.payload, title: "A" }, uploads: [{ evidenceKey: "evidence", originalName: "a.txt", buffer: Buffer.from("A"), type: "text/plain" }] }),
+      serverLogic.saveWorkflowDocument({ rootDir, payload: { ...record.payload, title: "B" }, uploads: [{ evidenceKey: "evidence", originalName: "b.txt", buffer: Buffer.from("B"), type: "text/plain" }] }),
+    ]);
+    assert.deepEqual(first.rawFiles, ["evidence_001.txt"]);
+    assert.deepEqual(second.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.deepEqual(stored.payload.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("an approval winning an edit race refuses the stale upload without an orphan", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({ documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06", title: "แข่งแก้ไข", businessPurpose: "ทดสอบ", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }] });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    const staleEdit = { ...stored.payload, title: "ต้องไม่ทับ", updatedAt: "later" };
+    const approval = serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    const edit = serverLogic.saveWorkflowDocument({ rootDir, payload: staleEdit, uploads: [{ evidenceKey: "evidence", originalName: "race.txt", buffer: Buffer.from("race"), type: "text/plain" }] });
+    await approval;
+    await assert.rejects(() => edit, /เอกสารถูกเปลี่ยนสถานะแล้ว/);
+    const after = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.equal(after.status, "approved");
+    assert.equal(after.payload.title, payload.title);
+    assert.deepEqual(after.payload.rawFiles, []);
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
 
 test("buildWorkflowDocumentPayload creates document numbers by kind", () => {
@@ -276,6 +428,8 @@ test("completeWorkflowDocument stamps completedAt/completedBy once and is idempo
       lines: [{ description: "ค่าขนส่ง", quantity: "1", unitCost: "300" }],
     }, { now: () => "2026-09-06T12:00:00.000Z" });
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "cash_spend_declaration", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "cash_spend_declaration", documentNo: saved.documentNo });
 
     const first = await serverLogic.completeWorkflowDocument({
       rootDir,
@@ -422,6 +576,8 @@ test("saveWorkflowDocument works without any workflow context (transactionNo abs
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
     const record = await serverLogic.getWorkflowDocument(rootDir, "payee_acknowledgement", saved.documentNo);
     assert.equal(record.payload.transactionNo, "");
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "payee_acknowledgement", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "payee_acknowledgement", documentNo: saved.documentNo });
 
     const completed = await serverLogic.completeWorkflowDocument({
       rootDir,
@@ -480,10 +636,10 @@ test("Critical 3 exploit: saveWorkflowDocument refuses a folderPath that resolve
   }
 });
 
-test("completeWorkflowDocument refuses to complete a cancelled document but allows every other origin status", async () => {
+test("completeWorkflowDocument only accepts approved documents", async () => {
   const statusOutcomes = {
-    draft: "accepted",
-    pending_approval: "accepted",
+    draft: "rejected",
+    pending_approval: "rejected",
     approved: "accepted",
     cancelled: "rejected",
   };
@@ -541,6 +697,8 @@ test("completeWorkflowDocument stays idempotent even though completed is not in 
       lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
     }, { now: () => "2026-09-06T12:00:00.000Z" });
     const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload, uploads: [] });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo });
 
     await serverLogic.completeWorkflowDocument({
       rootDir,

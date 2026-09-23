@@ -1,10 +1,8 @@
 // The only two values a substitute_receipt template step's receiptType may
 // declare. Meaningful only when that step's documentKind is
-// "substitute_receipt" -- deriveChildWorkflowStatus's hybrid completion rule
-// keys on the *document's own* receiptType (stock_purchase completes at
-// native "received", general_expense completes at "approved"), so a template
-// that declares the wrong one for its use case strands the workflow or, worse,
-// reports done while skipping stock receiving entirely.
+// "substitute_receipt". Under owner decision O7, receiptType controls whether
+// stock receiving applies, while every document kind must reach native
+// "completed" before its workflow step unlocks the next step.
 const SUBSTITUTE_RECEIPT_TEMPLATE_TYPES = ["stock_purchase", "general_expense"];
 
 const DOCUMENT_TYPE_DEFINITIONS = {
@@ -259,20 +257,7 @@ function buildWorkflowTransactionPayload(data = {}, options = {}) {
 }
 
 function deriveChildWorkflowStatus(documentRecord = {}) {
-  if (documentRecord.status === "completed") {
-    return "completed";
-  }
-
-  if (documentRecord.documentKind === "substitute_receipt") {
-    if (documentRecord.receiptType === "stock_purchase" && documentRecord.status === "received") {
-      return "completed";
-    }
-    if (documentRecord.receiptType === "general_expense" && documentRecord.status === "approved") {
-      return "completed";
-    }
-  }
-
-  return "in_progress";
+  return documentRecord.status === "completed" ? "completed" : "in_progress";
 }
 
 function normalizeDocumentWorkflowStatus(documentRecord = {}) {

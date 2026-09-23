@@ -72,6 +72,11 @@ async function requestJsonOk(baseUrl, route, options = {}) {
   return body;
 }
 
+async function advanceToApproved(baseUrl, documentKind, documentNo) {
+  await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+  await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
+}
+
 function purchaseOrderFormData(overrides = {}) {
   const formData = new FormData();
   formData.append("payload", JSON.stringify({
@@ -134,6 +139,7 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
     assert.equal(list.documents.length, 2);
     assert.ok(list.documents.every((doc) => !("absoluteFolderPath" in doc)), "list must not leak the server's absolute filesystem path");
 
+    await advanceToApproved(baseUrl, "purchase_order", submitted.documentNo);
     const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -258,6 +264,7 @@ test("Critical 3: editing an existing document carries its documentNo/folderPath
     const allDocs = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");
     assert.equal(allDocs.documents.length, 1, "editing must not orphan a second folder under the same documentNo");
 
+    await advanceToApproved(baseUrl, "purchase_order", created.documentNo);
     await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/complete`, {
       method: "POST",
       body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -363,6 +370,74 @@ test("Critical 1: editing a workflow document with existing evidence must not de
   }
 });
 
+test("O9 HTTP edits preserve pending and approved lifecycle authority while appending evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const create = purchaseOrderFormData({ transactionNo: "TXN-2026-09-0001", workflowTemplateId: "template", workflowStepId: "step" });
+    create.append("evidence_evidence", new Blob(["original"], { type: "text/plain" }), "original.txt");
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: create });
+    const submitted = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({ submittedBy: "ผู้ส่ง" }) });
+    const pendingEdit = purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขรออนุมัติ", status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged", completedAt: "forged", submittedBy: "forged", folderPath: "forged", transactionNo: "forged", workflowTemplateId: "forged", workflowStepId: "forged" });
+    pendingEdit.append("evidence_evidence", new Blob(["appended"], { type: "text/plain" }), "appended.txt");
+    const pendingSaved = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: pendingEdit });
+    assert.equal(pendingSaved.status, "pending_approval");
+    assert.deepEqual(pendingSaved.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+    const approved = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "ผู้อนุมัติ" }) });
+    const approvedSaved = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentNo: created.documentNo, title: "แก้ไขอนุมัติแล้ว", status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged", completedAt: "forged", submittedBy: "forged", approvedBy: "forged", transactionNo: "forged", workflowTemplateId: "forged", workflowStepId: "forged" }) });
+    assert.equal(approvedSaved.status, "approved");
+    const stored = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(stored.payload.title, "แก้ไขอนุมัติแล้ว");
+    assert.equal(stored.payload.submittedAt, submitted.submittedAt);
+    assert.equal(stored.payload.submittedBy, "ผู้ส่ง");
+    assert.equal(stored.payload.approvedAt, approved.approvedAt);
+    assert.equal(stored.payload.approvedBy, "ผู้อนุมัติ");
+    assert.equal(stored.payload.statusHistory.length, 2);
+    assert.equal(stored.payload.transactionNo, "TXN-2026-09-0001");
+    assert.equal(await (await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_001.txt`)).text(), "original");
+    assert.equal(await (await fetch(`${baseUrl}/workflow-documents/purchase_order/${created.documentNo}/raw/evidence_002.txt`)).text(), "appended");
+    const listed = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");
+    assert.equal(listed.documents[0].status, "approved");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("O9 HTTP edits retain lifecycle audit fields for every lightweight kind", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    for (const documentKind of workflowDocumentLogic.LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const createForm = purchaseOrderFormData({ documentKind, title: `${documentKind} draft` });
+      createForm.append("evidence_evidence", new Blob([`original-${documentKind}`], { type: "text/plain" }), "original.txt");
+      const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: createForm });
+      const submitted = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({ submittedBy: "ผู้ส่ง" }) });
+      const pendingForm = purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} pending edit`, status: "draft", statusHistory: [], submittedAt: "forged" });
+      pendingForm.append("evidence_evidence", new Blob([`new-${documentKind}`], { type: "text/plain" }), "new.txt");
+      const pending = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: pendingForm });
+      assert.equal(pending.status, "pending_approval");
+      assert.deepEqual(pending.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+      assert.equal(await (await fetch(`${baseUrl}/workflow-documents/${documentKind}/${created.documentNo}/raw/evidence_001.txt`)).text(), `original-${documentKind}`);
+      assert.equal(await (await fetch(`${baseUrl}/workflow-documents/${documentKind}/${created.documentNo}/raw/evidence_002.txt`)).text(), `new-${documentKind}`);
+      const approved = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/approve`, { method: "POST", body: JSON.stringify({ approvedBy: "ผู้อนุมัติ" }) });
+      const final = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData({ documentKind, documentNo: created.documentNo, title: `${documentKind} approved edit`, status: "draft", statusHistory: [], submittedAt: "forged", approvedAt: "forged" }) });
+      assert.equal(final.status, "approved");
+      const stored = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}`);
+      assert.equal(stored.payload.submittedAt, submitted.submittedAt);
+      assert.equal(stored.payload.approvedAt, approved.approvedAt);
+      assert.equal(stored.payload.statusHistory.length, 2);
+      assert.deepEqual(final.rawFiles.slice().sort(), ["evidence_001.txt", "evidence_002.txt"]);
+      const completed = await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, { method: "POST", body: JSON.stringify({ completedBy: "ผู้ปิด" }) });
+      assert.equal(completed.status, "completed");
+    }
+  } finally { await stopServer(child); await rm(rootDir, { recursive: true, force: true }); }
+});
+
 test("editing a workflow document cannot forge transactionNo/workflowTemplateId/workflowStepId to move it to a different workflow step", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
   const child = spawnLocalServer(rootDir);
@@ -457,6 +532,7 @@ test("every lightweight workflow document kind serves its PDF and raw files from
       // Complete once (first-time path), then again (the idempotent repeat-
       // completion no-op) — the repeat branch is the one that used to hand
       // back the wrong URL (forms/local-server.logic.js, completeWorkflowDocument).
+      await advanceToApproved(baseUrl, documentKind, created.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -551,6 +627,7 @@ test("GET /workflow-documents serves the list page and GET /api/workflow-documen
           title: `เอกสารเดือนสิงหาคม ${documentKind}`,
         }),
       });
+      await advanceToApproved(baseUrl, documentKind, august.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${august.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),
@@ -718,6 +795,8 @@ async function createLightweightDocument(rootDir, documentKind, { complete = tru
   });
   await serverLogic.saveWorkflowDocument({ rootDir, payload });
   if (complete) {
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind, documentNo });
+    await serverLogic.approveWorkflowDocument({ rootDir, documentKind, documentNo });
     await serverLogic.completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy: "บัญชี" });
   }
   return serverLogic.getWorkflowDocument(rootDir, documentKind, documentNo);
@@ -855,6 +934,7 @@ test("POST /api/workflow-documents/:kind/:documentNo/sync-drive exists for every
       assert.equal(draftAttempt.status, 400, `${documentKind}: a draft must be refused`);
       assert.match(draftAttempt.body.error, /เสร็จสิ้น/, `${documentKind}: the refusal must say, in Thai, that the document must be completed first`);
 
+      await advanceToApproved(baseUrl, documentKind, created.documentNo);
       await requestJsonOk(baseUrl, `/api/workflow-documents/${documentKind}/${created.documentNo}/complete`, {
         method: "POST",
         body: JSON.stringify({ completedBy: "คุณต้า" }),

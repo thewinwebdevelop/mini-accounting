@@ -13,6 +13,84 @@ function cleanText(value) {
   return String(value ?? "").trim();
 }
 
+function reversalError(code, details = {}) {
+  const error = new Error(code);
+  error.code = code;
+  error.details = details;
+  error.safeReversalError = true;
+  return error;
+}
+
+function isCanonicalIsoDate(value) {
+  const text = value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [year, month, day] = text.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
+function canonicalReversalTimestamp(value) {
+  if (typeof value === "function") return String(value());
+  if (typeof value === "string" && value.trim()) return value;
+  return new Date().toISOString();
+}
+
+function assertCanonicalReversalRequest(data = {}) {
+  if (data.referenceType !== "substitute_receipt"
+    || typeof data.referenceNo !== "string"
+    || !/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(data.referenceNo)) {
+    throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  }
+  if (typeof data.cancellationReference !== "string"
+    || !/^workflow_transaction:TXN-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(data.cancellationReference)) {
+    throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  }
+  if (typeof data.reversalDate !== "string" || !isCanonicalIsoDate(data.reversalDate)) {
+    throw reversalError("INVALID_STOCK_REVERSAL_REQUEST");
+  }
+}
+
+function normalizeExpectedMovementIds(data = {}) {
+  const supplied = data.expectedOriginalMovementIds ?? data.expectedMovementIds;
+  if (supplied === undefined) throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  if (!Array.isArray(supplied)) throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  const ids = supplied.map((value) => value);
+  if (ids.some((value) => !Number.isInteger(value) || value <= 0)) {
+    throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  }
+  if (new Set(ids).size !== ids.length) throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  return ids;
+}
+
+function assertMovementSetMatches(actualRows, expectedIds) {
+  const actualIds = actualRows.map((row) => row.id);
+  if (actualIds.length !== expectedIds.length
+    || actualIds.some((id) => !expectedIds.includes(id))) {
+    throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+  }
+}
+
+function mapReversalResult(originalRows, reversalRows, status, referenceType, referenceNo) {
+  return {
+    status,
+    referenceType,
+    referenceNo,
+    reversals: originalRows.map((original) => {
+      const reversal = reversalRows.get(original.id);
+      return {
+        originalMovementId: original.id,
+        reversalMovementId: reversal.id,
+        movementNo: reversal.movement_no,
+        movementDate: reversal.movement_date,
+        stockSkuId: original.stock_sku_id,
+        quantity: original.quantity,
+      };
+    }),
+  };
+}
+
 function parseQuantity(value) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -718,6 +796,184 @@ function createPurchaseInMovement(rootDir, data = {}, options = {}) {
   });
 }
 
+function reversePurchaseInMovementsByReference(rootDirOrRequest, data = {}) {
+  const rootDir = arguments.length === 1 && rootDirOrRequest && typeof rootDirOrRequest === "object"
+    ? rootDirOrRequest.rootDir
+    : rootDirOrRequest;
+  const request = arguments.length === 1 && rootDirOrRequest && typeof rootDirOrRequest === "object"
+    ? rootDirOrRequest
+    : data;
+  assertCanonicalReversalRequest(request);
+  const expectedMovementIds = normalizeExpectedMovementIds(request);
+  const referenceType = request.referenceType;
+  const referenceNo = request.referenceNo;
+  const cancellationReference = request.cancellationReference;
+  const reversalDate = request.reversalDate;
+  const timestamp = canonicalReversalTimestamp(request.now);
+
+  return withInventoryDatabase(rootDir, (db) => {
+    let transactionOpen = false;
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      transactionOpen = true;
+
+      const referenceRows = db.prepare(`
+        SELECT *
+        FROM stock_movements
+        WHERE reference_type = ?
+          AND reference_no = ?
+        ORDER BY id ASC
+      `).all(referenceType, referenceNo);
+      if (referenceRows.some((row) => row.movement_type !== "purchase_in")) {
+        throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+      }
+      const originalRows = referenceRows;
+      const resolvedExpectedIds = expectedMovementIds || originalRows.map((row) => row.id);
+      assertMovementSetMatches(originalRows, resolvedExpectedIds);
+
+      if (!originalRows.length) {
+        db.exec("COMMIT");
+        transactionOpen = false;
+        return {
+          status: "not_required",
+          referenceType,
+          referenceNo,
+          reversals: [],
+        };
+      }
+
+      const relationByOriginal = new Map();
+      const reversalByOriginal = new Map();
+      for (const original of originalRows) {
+        const relation = db.prepare(`
+          SELECT *
+          FROM stock_movement_reversals
+          WHERE original_movement_id = ?
+        `).get(original.id);
+        if (!relation) continue;
+
+        const reversal = db.prepare("SELECT * FROM stock_movements WHERE id = ?").get(relation.reversal_movement_id);
+        if (!reversal
+          || relation.cancellation_reference !== cancellationReference
+          || reversal.movement_type !== "adjustment_out"
+          || reversal.stock_sku_id !== original.stock_sku_id
+          || reversal.quantity !== original.quantity
+          || Number(reversal.unit_cost) !== Number(original.unit_cost)
+          || Number(reversal.total_cost) !== Number(original.total_cost)
+          || reversal.movement_date !== reversalDate
+          || reversal.reference_type !== "workflow_cancellation"
+          || reversal.reference_no !== cancellationReference) {
+          throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+        }
+        relationByOriginal.set(original.id, relation);
+        reversalByOriginal.set(original.id, reversal);
+      }
+
+      const groupedCancellationRows = db.prepare(`
+        SELECT
+          stock_movements.*,
+          stock_movement_reversals.original_movement_id,
+          stock_movement_reversals.cancellation_reference
+        FROM stock_movements
+        LEFT JOIN stock_movement_reversals
+          ON stock_movement_reversals.reversal_movement_id = stock_movements.id
+        WHERE stock_movements.reference_type = 'workflow_cancellation'
+          AND stock_movements.reference_no = ?
+      `).all(cancellationReference);
+      for (const groupedReversal of groupedCancellationRows) {
+        const groupedOriginal = groupedReversal.original_movement_id
+          ? db.prepare("SELECT * FROM stock_movements WHERE id = ?").get(groupedReversal.original_movement_id)
+          : null;
+        if (!groupedOriginal
+          || groupedOriginal.movement_type !== "purchase_in"
+          || groupedReversal.cancellation_reference !== cancellationReference
+          || groupedReversal.movement_type !== "adjustment_out"
+          || groupedReversal.stock_sku_id !== groupedOriginal.stock_sku_id
+          || groupedReversal.quantity !== groupedOriginal.quantity
+          || Number(groupedReversal.unit_cost) !== Number(groupedOriginal.unit_cost)
+          || Number(groupedReversal.total_cost) !== Number(groupedOriginal.total_cost)
+          || groupedReversal.movement_date !== reversalDate) {
+          throw reversalError("STOCK_REVERSAL_SOURCE_INVALID");
+        }
+      }
+
+      const unreversedRows = originalRows.filter((row) => !relationByOriginal.has(row.id));
+      const requiredBySku = new Map();
+      for (const original of unreversedRows) {
+        requiredBySku.set(original.stock_sku_id, (requiredBySku.get(original.stock_sku_id) || 0) + original.quantity);
+      }
+
+      const insufficient = [];
+      for (const [stockSkuId, requiredQuantity] of requiredBySku.entries()) {
+        const movementRows = db.prepare(`
+          SELECT movement_type, quantity
+          FROM stock_movements
+          WHERE stock_sku_id = ?
+          ORDER BY movement_date ASC, id ASC
+        `).all(stockSkuId);
+        const availableQuantity = calculateBalanceFromRows(movementRows).quantityOnHand;
+        if (availableQuantity < requiredQuantity) {
+          const sku = db.prepare("SELECT sku FROM stock_skus WHERE id = ?").get(stockSkuId);
+          insufficient.push({
+            sku: sku?.sku || `SKU-${stockSkuId}`,
+            availableQuantity,
+            requiredQuantity,
+          });
+        }
+      }
+      if (insufficient.length) {
+        throw reversalError("INSUFFICIENT_STOCK_FOR_CANCELLATION", { items: insufficient });
+      }
+
+      const insertMovement = db.prepare(`
+        INSERT INTO stock_movements (
+          movement_no, stock_sku_id, movement_type, movement_date, quantity,
+          unit_cost, total_cost, reference_type, reference_no, note, created_at
+        )
+        VALUES (?, ?, 'adjustment_out', ?, ?, ?, ?, 'workflow_cancellation', ?, ?, ?)
+        RETURNING *
+      `);
+      const insertRelation = db.prepare(`
+        INSERT INTO stock_movement_reversals (
+          original_movement_id, reversal_movement_id, cancellation_reference, created_at
+        )
+        VALUES (?, ?, ?, ?)
+      `);
+      for (const original of unreversedRows) {
+        const movementNo = createMovementNo(reversalDate, db);
+        const reversal = insertMovement.get(
+          movementNo,
+          original.stock_sku_id,
+          reversalDate,
+          original.quantity,
+          original.unit_cost,
+          original.total_cost,
+          cancellationReference,
+          "Workflow cancellation stock reversal",
+          timestamp,
+        );
+        insertRelation.run(original.id, reversal.id, cancellationReference, timestamp);
+        reversalByOriginal.set(original.id, reversal);
+      }
+
+      const result = mapReversalResult(
+        originalRows,
+        reversalByOriginal,
+        unreversedRows.length ? "reversed" : "already_reversed",
+        referenceType,
+        referenceNo,
+      );
+      db.exec("COMMIT");
+      transactionOpen = false;
+      return result;
+    } catch (error) {
+      if (transactionOpen) db.exec("ROLLBACK");
+      if (error?.safeReversalError) throw error;
+      throw reversalError("STOCK_REVERSAL_FAILED");
+    }
+  });
+}
+
 function calculateBalanceFromRows(rows = []) {
   let quantityOnHand = 0;
   let purchaseQuantity = 0;
@@ -1100,6 +1356,7 @@ module.exports = {
   createProductCategory,
   createProduct,
   createPurchaseInMovement,
+  reversePurchaseInMovementsByReference,
   createSaleSku,
   createStockSku,
   getInventoryProductDetail,

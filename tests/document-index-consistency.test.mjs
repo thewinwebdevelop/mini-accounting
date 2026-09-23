@@ -17,6 +17,8 @@ const {
   completeSubstituteReceipt,
   startWorkflowTransaction,
   saveWorkflowDocument,
+  submitWorkflowDocument,
+  approveWorkflowDocument,
   completeWorkflowDocument,
   refreshWorkflowTransaction,
   completeWorkflowTransaction,
@@ -41,6 +43,27 @@ async function withTempRoot(callback) {
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+}
+
+function validExpensePayload(overrides = {}) {
+  return {
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าใช้จ่ายทดสอบดัชนี",
+    requestType: "reimbursement",
+    requesterName: "คุณทดสอบ",
+    businessPurpose: "ทดสอบความสอดคล้องของดัชนี",
+    paymentTargetName: "คุณทดสอบ",
+    expenseLines: [{
+      date: "2026-09-05",
+      category: "ค่าใช้จ่ายทั่วไป",
+      description: "รายการทดสอบดัชนี",
+      vendor: "ผู้ขายตัวอย่าง",
+      amountBeforeVat: "100",
+      vatAmount: "7",
+      withholdingTax: "0",
+    }],
+    ...overrides,
+  };
 }
 
 // Read the full `documents` table exactly as queryDocumentIndexRows shapes
@@ -143,6 +166,8 @@ test("the write-through documents index matches a full from-disk rebuild after a
       }),
       uploads: [],
     });
+    await submitWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo });
+    await approveWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo });
     await completeWorkflowDocument({ rootDir, documentKind: "payment_voucher", documentNo: voucher.documentNo, completedBy: "บัญชี" });
 
     await refreshWorkflowTransaction({ rootDir, transactionNo: txn.transactionNo, regeneratePacket: false });
@@ -153,13 +178,11 @@ test("the write-through documents index matches a full from-disk rebuild after a
     // documents alike.
     const standaloneExpense = await saveExpenseSubmission({
       rootDir,
-      payload: {
+      payload: validExpensePayload({
         accountingMonth: "2026-10",
         requestTitle: "ค่าน้ำเดือนตุลาคม",
-        requestType: "reimbursement",
-        requesterName: "คุณทดสอบ",
-        expenseLines: [],
-      },
+        businessPurpose: "ค่าน้ำเดือนตุลาคม",
+      }),
     });
 
     // Sanity: everything above really did land on disk and in the index
@@ -194,23 +217,11 @@ test("rebuildDocumentIndex repairs a deliberately corrupted index back to matchi
   await withTempRoot(async (rootDir) => {
     const first = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        accountingMonth: "2026-09",
-        requestTitle: "ทดสอบซ่อมดัชนี 1",
-        requestType: "reimbursement",
-        requesterName: "คุณทดสอบ",
-        expenseLines: [],
-      },
+      payload: validExpensePayload({ requestTitle: "ทดสอบซ่อมดัชนี 1" }),
     });
     const second = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        accountingMonth: "2026-09",
-        requestTitle: "ทดสอบซ่อมดัชนี 2",
-        requestType: "reimbursement",
-        requesterName: "คุณทดสอบ",
-        expenseLines: [],
-      },
+      payload: validExpensePayload({ requestTitle: "ทดสอบซ่อมดัชนี 2" }),
     });
 
     withDocumentIndexDatabase(rootDir, (db) => {
@@ -218,7 +229,7 @@ test("rebuildDocumentIndex repairs a deliberately corrupted index back to matchi
       // through insert had silently failed, or the row was manually deleted).
       db.prepare("DELETE FROM documents WHERE document_no = ?").run(first.requestNo);
       // Corruption 2: give `second`'s indexed status a value that disagrees
-      // with what its real submission.json says (still "submitted").
+      // with what its real submission.json says (still "pending_approval").
       db.prepare("UPDATE documents SET status = 'approved' WHERE document_no = ?").run(second.requestNo);
     });
 
@@ -229,7 +240,7 @@ test("rebuildDocumentIndex repairs a deliberately corrupted index back to matchi
     const firstRow = rows.find((row) => row.documentNo === first.requestNo);
     const secondRow = rows.find((row) => row.documentNo === second.requestNo);
     assert.ok(firstRow, "the deleted row must be restored by the rebuild");
-    assert.equal(secondRow.status, "submitted", "the corrupted status must be overwritten back to what the file on disk actually says");
+    assert.equal(secondRow.status, "pending_approval", "the corrupted status must be overwritten back to what the file on disk actually says");
   });
 });
 
@@ -246,13 +257,7 @@ test("a document deleted from disk after being indexed is reported as not found,
   await withTempRoot(async (rootDir) => {
     const request = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        accountingMonth: "2026-09",
-        requestTitle: "จะถูกลบออกจากดิสก์",
-        requestType: "reimbursement",
-        requesterName: "คุณทดสอบ",
-        expenseLines: [],
-      },
+      payload: validExpensePayload({ requestTitle: "จะถูกลบออกจากดิสก์" }),
     });
 
     // The index still has a row pointing at this folder (write-through set
@@ -280,13 +285,7 @@ test("a document whose index row is missing but whose file is still on disk is s
   await withTempRoot(async (rootDir) => {
     const request = await saveExpenseSubmission({
       rootDir,
-      payload: {
-        accountingMonth: "2026-09",
-        requestTitle: "ดัชนีหายไปแต่ไฟล์ยังอยู่",
-        requestType: "reimbursement",
-        requesterName: "คุณทดสอบ",
-        expenseLines: [],
-      },
+      payload: validExpensePayload({ requestTitle: "ดัชนีหายไปแต่ไฟล์ยังอยู่" }),
     });
 
     // Simulate the index having no idea this document exists, while the

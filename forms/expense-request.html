@@ -910,6 +910,12 @@
           </div>
           <div class="section-body">
             <div class="grid">
+              <div class="field span-12">
+                <label for="vendorPresetSelect">เลือกผู้ขายที่บันทึกไว้</label>
+                <select id="vendorPresetSelect" name="vendorPresetSelect" data-searchable aria-describedby="vendorPresetHint"><option value="">กรอกเอง / ไม่ใช้ preset</option></select>
+                <span class="hint" id="vendorPresetHint">เลือกข้อมูลผู้ขายเดิม หรือกรอกข้อมูลใหม่เอง</span>
+                <label class="choice"><input type="checkbox" id="saveVendorPreset" name="saveVendorPreset"> บันทึกผู้ขายรายนี้ไว้ใช้ครั้งต่อไป</label>
+              </div>
               <div class="field span-4">
                 <label for="paymentTargetName">ชื่อผู้รับเงิน/ผู้ขาย *</label>
                 <input id="paymentTargetName" name="paymentTargetName" placeholder="เช่น คุณสวีท / ร้านแพ็คกิ้งตัวอย่าง" required>
@@ -924,6 +930,10 @@
                 <label for="paymentAccountNo">เลขบัญชี/รายละเอียดบัญชี</label>
                 <input id="paymentAccountNo" name="paymentAccountNo" placeholder="เช่น 123-4-56789-0">
                 <span class="field-badge" data-badge-for="paymentAccountNo" hidden></span>
+              </div>
+              <div class="field span-4">
+                <label for="paymentChannel">ช่องทางชำระเงิน</label>
+                <input id="paymentChannel" name="paymentChannel" placeholder="เช่น โอนผ่านบัญชีบริษัท / พร้อมเพย์">
               </div>
             </div>
           </div>
@@ -1010,6 +1020,7 @@
           </div>
           <div class="errors" id="errors"></div>
           <div class="status-box" id="saveStatus"></div>
+          <button class="button secondary" type="button" id="reloadSavedRequest" hidden>โหลดรายละเอียดซ้ำ</button>
           <div class="hint">เปิดผ่าน http://localhost:8787/expense-request แล้วกด บันทึกใบเบิกจ่าย เพื่อเก็บข้อมูล PDF และ raw files ลงโฟลเดอร์มาตรฐาน ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น</div>
         </div>
       </aside>
@@ -1072,6 +1083,7 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./expense-request.logic.js"></script>
+  <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
@@ -1091,6 +1103,16 @@
     const output = document.querySelector("#output");
     const errorsBox = document.querySelector("#errors");
     const saveStatus = document.querySelector("#saveStatus");
+    const reloadSavedRequestButton = document.querySelector("#reloadSavedRequest");
+    const vendorPresetSelect = document.querySelector("#vendorPresetSelect");
+    const saveVendorPresetCheckbox = document.querySelector("#saveVendorPreset");
+    const vendorPicker = window.SharedVendorPicker?.create({
+      form,
+      select: vendorPresetSelect,
+      checkbox: saveVendorPresetCheckbox,
+      mapping: { name: ["paymentTargetName"], taxId: ["paymentTargetTaxId"], bankName: ["paymentBankName"], accountNo: ["paymentAccountNo"], paymentChannel: ["paymentChannel"], defaultBusinessPurpose: ["businessPurpose"] },
+      onError: (error) => setSaveStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+    });
 
     // --- Workflow context (Task 9) -----------------------------------
     // transactionNo/workflowTemplateId/workflowStepId/returnTo arrive as
@@ -1157,6 +1179,9 @@
     let currentFolderPath = "";
     let currentCreatedAt = "";
     let nextRequestInfo = { sequence: "1", requestNo: "REQ-0000-00-0001" };
+    let legacyReadOnly = false;
+    let mutationInFlight = false;
+    let currentStatus = "draft";
     const moneyIds = {
       amountBeforeVat: document.querySelector("#sumBeforeVat"),
       vatAmount: document.querySelector("#sumVat"),
@@ -1171,6 +1196,12 @@
       const month = String(now.getMonth() + 1).padStart(2, "0");
       const day = String(now.getDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>\"']/g, (character) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+      })[character]);
     }
 
     function currentMonthInputValue() {
@@ -1211,6 +1242,7 @@
     }
 
     function addLine() {
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
       lineItems.querySelectorAll(".line-row").forEach((row) => {
         row.open = false;
       });
@@ -1245,7 +1277,7 @@
       card.querySelector("[data-upload-count]").textContent = `${savedFiles.length + files.length} ไฟล์`;
       const fileList = card.querySelector("[data-file-list]");
       const savedHtml = savedFiles.map((file) => (
-        `<div class="file-pill"><div class="file-icon">RAW</div><div><div class="file-name" title="${file.originalName || file.storedName}">${file.storedName}</div><div class="file-meta">บันทึกในแบบร่างแล้ว</div></div></div>`
+        `<div class="file-pill"><div class="file-icon">RAW</div><div><div class="file-name" title="${escapeHtml(file.originalName || file.storedName)}">${file.url ? `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName)}</a>` : escapeHtml(file.storedName)}</div><div class="file-meta">บันทึกในแบบร่างแล้ว</div></div></div>`
       )).join("");
       const pendingHtml = files.map((file, index) => {
         const storedName = buildRawFileName(evidenceKey, file.name, savedFiles.length + index);
@@ -1304,8 +1336,11 @@
         expenseDate: fields.expenseDate.value,
         businessPurpose: fields.businessPurpose.value,
         paymentTargetName: fields.paymentTargetName.value,
+        vendorId: form.dataset.vendorId || "",
+        vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
         paymentBankName: fields.paymentBankName.value,
         paymentAccountNo: fields.paymentAccountNo.value,
+        paymentChannel: fields.paymentChannel.value,
         transactionNo: fields.transactionNo.value,
         workflowTemplateId: fields.workflowTemplateId.value,
         workflowStepId: fields.workflowStepId.value,
@@ -1379,6 +1414,58 @@
       saveStatus.textContent = message;
     }
 
+    function showReloadSavedRequest(show) {
+      if (reloadSavedRequestButton) reloadSavedRequestButton.hidden = !show;
+    }
+
+    async function reloadSavedRequest() {
+      if (!currentRequestNo || !reloadSavedRequestButton) return;
+      reloadSavedRequestButton.disabled = true;
+      try {
+        await loadSubmittedRequest(currentRequestNo);
+        showReloadSavedRequest(false);
+      } catch (error) {
+        setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error");
+        showReloadSavedRequest(true);
+      } finally {
+        reloadSavedRequestButton.disabled = false;
+      }
+    }
+
+    function setReadOnlyMode(readOnly) {
+      legacyReadOnly = !!readOnly;
+      const locked = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
+      controls.forEach((control) => { if (control) control.disabled = locked; });
+      lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = locked; });
+      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft"; });
+      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+    }
+
+    async function runMutation(work) {
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      mutationInFlight = true;
+      setReadOnlyMode(legacyReadOnly);
+      try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
+    }
+
+    function adoptNumberedResult(result, expectedStatus) {
+      const requestNo = String(result?.requestNo || "");
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(requestNo) || (currentRequestNo && requestNo !== currentRequestNo) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+      if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
+      currentRequestNo = result.requestNo;
+      return result.requestNo;
+    }
+
+    function replaceNumberedUrl(requestNo) {
+      if (window.history?.replaceState) {
+        const params = new URLSearchParams({ requestNo });
+        for (const key of ["transactionNo", "workflowTemplateId", "workflowStepId", "returnTo"]) if (workflowContext[key]) params.set(key, workflowContext[key]);
+        window.history.replaceState({}, "", `?${params}`);
+      }
+    }
+
     function appendUploadsToFormData(formData) {
       for (const [evidenceKey, files] of Object.entries(uploadedFileState)) {
         for (const file of files) {
@@ -1395,7 +1482,14 @@
         return;
       }
 
+      if (draft.legacyReadOnly !== true) {
+        setSaveStatus("ข้อมูลแบบร่างเก่าไม่ครบถ้วน", "error");
+        return;
+      }
+
       currentDraftId = draft.draftId;
+      legacyReadOnly = true;
+      currentStatus = "draft";
       currentRequestNo = "";
       currentFolderPath = "";
       currentCreatedAt = "";
@@ -1408,8 +1502,11 @@
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
       form.elements.paymentTargetName.value = payload.paymentTargetName || "";
+      if (payload.vendorId) form.dataset.vendorId = payload.vendorId; else delete form.dataset.vendorId;
+      if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot); else delete form.dataset.vendorSnapshot;
       form.elements.paymentBankName.value = payload.paymentBankName || "";
       form.elements.paymentAccountNo.value = payload.paymentAccountNo || "";
+      form.elements.paymentChannel.value = payload.paymentChannel || "";
       const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
       if (requestTypeInput) requestTypeInput.checked = true;
 
@@ -1429,23 +1526,30 @@
       for (const key of Object.keys(uploadedFileState)) {
         uploadedFileState[key] = [];
         savedEvidenceFileState[key] = draft.evidenceFiles?.[key] ?? [];
+        if (key === "otherEvidence" && Array.isArray(draft.rawFiles)) savedEvidenceFileState[key] = [...savedEvidenceFileState[key], ...draft.rawFiles];
       }
       uploadCards.forEach(renderUploadCard);
+      setReadOnlyMode(true);
       await updateNextRequestNo();
       updatePreview();
-      setSaveStatus(`โหลดแบบร่างแล้ว: ${draft.draftId}`, "success");
+      setSaveStatus(`แบบร่างเก่า ${draft.draftId} เปิดอ่านได้อย่างเดียว`, "success");
     }
 
     async function loadSubmittedRequest(requestNo) {
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(requestNo || ""))) {
+        throw new Error("เลขใบเบิกจ่ายไม่ถูกต้อง");
+      }
       const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}`);
       const request = await response.json();
       if (!response.ok) {
-        setSaveStatus(request.error || "โหลดใบเบิกจ่ายไม่ได้", "error");
-        return;
+        throw new Error(request.error || "โหลดใบเบิกจ่ายไม่ได้");
       }
+      if (request.requestNo !== requestNo || !["draft", "pending_approval", "approved", "completed", "cancelled"].includes(request.status)) throw new Error("ข้อมูลใบเบิกจ่ายไม่ถูกต้อง");
 
       currentDraftId = "";
+      legacyReadOnly = false;
       currentRequestNo = request.requestNo;
+      currentStatus = request.status || request.payload?.status || "pending_approval";
       currentFolderPath = request.folderPath || request.payload?.folderPath || "";
       currentCreatedAt = request.payload?.createdAt || "";
       const payload = request.payload ?? {};
@@ -1457,8 +1561,11 @@
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
       form.elements.paymentTargetName.value = payload.paymentTargetName || "";
+      if (payload.vendorId) form.dataset.vendorId = payload.vendorId; else delete form.dataset.vendorId;
+      if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot); else delete form.dataset.vendorSnapshot;
       form.elements.paymentBankName.value = payload.paymentBankName || "";
       form.elements.paymentAccountNo.value = payload.paymentAccountNo || "";
+      form.elements.paymentChannel.value = payload.paymentChannel || "";
       const requestTypeInput = form.querySelector(`[name="requestType"][value="${payload.requestType || "reimbursement"}"]`);
       if (requestTypeInput) requestTypeInput.checked = true;
 
@@ -1479,6 +1586,8 @@
       }
       uploadCards.forEach(renderUploadCard);
       await updateNextRequestNo();
+      setReadOnlyMode(false);
+      showReloadSavedRequest(false);
       updatePreview();
       setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
     }
@@ -1509,8 +1618,24 @@
         return;
       }
 
-      await loadDraft(result.draftId);
-      setSaveStatus(`บันทึกแบบร่างแล้ว: ${result.draftId}`, "success");
+      adoptNumberedResult(result, "draft");
+      let vendorPresetError = "";
+      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
+      currentStatus = "draft";
+      currentDraftId = "";
+      currentFolderPath = result.folderPath || currentFolderPath;
+      currentCreatedAt = result.createdAt || currentCreatedAt;
+      for (const key of Object.keys(uploadedFileState)) {
+        uploadedFileState[key] = [];
+        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
+      }
+      uploadCards.forEach(renderUploadCard);
+      replaceNumberedUrl(currentRequestNo);
+      setReadOnlyMode(false);
+      try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
+      // The detail reload updates the status panel; restore the preset result
+      // afterward so a failed optional vendor save remains visible.
+      setSaveStatus(vendorPresetError || `บันทึกแบบร่างแล้ว: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
     }
 
     async function submitRequest() {
@@ -1541,33 +1666,38 @@
         return;
       }
 
-      const pdfCount = result.pdfFiles?.length || 0;
-      setSaveStatus(`บันทึกแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์ และเก็บ raw files ${result.rawFiles.length} ไฟล์`, "success");
-      output.value = JSON.stringify(result, null, 2);
-      if (currentRequestNo) {
-        await loadSubmittedRequest(result.requestNo);
-        return;
-      }
-
+      adoptNumberedResult(result, "pending_approval");
+      let vendorPresetError = "";
+      try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
+      currentStatus = "pending_approval";
       currentDraftId = "";
-      currentRequestNo = "";
-      currentFolderPath = "";
-      currentCreatedAt = "";
+      currentFolderPath = result.folderPath || currentFolderPath;
+      currentCreatedAt = result.createdAt || currentCreatedAt;
       for (const key of Object.keys(uploadedFileState)) {
         uploadedFileState[key] = [];
-        savedEvidenceFileState[key] = [];
+        savedEvidenceFileState[key] = result.evidenceFiles?.[key] ?? savedEvidenceFileState[key] ?? [];
       }
-      await updateNextRequestNo();
+      uploadCards.forEach(renderUploadCard);
+      replaceNumberedUrl(currentRequestNo);
+      setReadOnlyMode(false);
+      const pdfCount = result.pdfFiles?.length || 0;
+      output.value = JSON.stringify(result, null, 2);
+      try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
+      setSaveStatus(vendorPresetError || `ส่งตรวจอนุมัติแล้ว: ${result.requestNo} - สร้าง PDF ${pdfCount} ไฟล์`, vendorPresetError ? "error" : "success");
+      updatePreview();
     }
 
     document.querySelector("#addLine").addEventListener("click", addLine);
     document.querySelector("#copyMarkdown").addEventListener("click", () => copyOutput("markdown"));
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
-    document.querySelector("#saveDraft").addEventListener("click", saveDraft);
-    document.querySelector("#submitRequest").addEventListener("click", submitRequest);
+    document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
+    document.querySelector("#submitRequest").addEventListener("click", () => runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error")));
+    reloadSavedRequestButton?.addEventListener("click", reloadSavedRequest);
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
     document.querySelector("#resetForm").addEventListener("click", () => {
+      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      legacyReadOnly = false;
       currentDraftId = "";
       currentRequestNo = "";
       currentFolderPath = "";
@@ -1587,7 +1717,7 @@
     uploadCards.forEach((card) => {
       const evidenceKey = card.dataset.evidenceCard;
       const input = card.querySelector(".file-input");
-      input.addEventListener("change", () => setFiles(evidenceKey, input.files));
+      input.addEventListener("change", () => { if (!legacyReadOnly && !mutationInFlight) setFiles(evidenceKey, input.files); });
       card.addEventListener("dragover", (event) => {
         event.preventDefault();
         card.classList.add("dragging");
@@ -1597,6 +1727,7 @@
       });
       card.addEventListener("drop", (event) => {
         event.preventDefault();
+        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
         card.classList.remove("dragging");
         setFiles(evidenceKey, event.dataTransfer.files);
       });
@@ -1607,6 +1738,7 @@
     form.addEventListener("change", updatePreview);
     lineItems.addEventListener("click", (event) => {
       if (event.target.matches("[data-remove-line]")) {
+        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
         event.target.closest(".line-row").remove();
         updatePreview();
       }
@@ -1616,6 +1748,7 @@
     applyWorkflowReturnLink();
 
     setDateDefaults();
+    vendorPicker?.load();
     await updateNextRequestNo();
     const draftIdFromUrl = new URLSearchParams(location.search).get("draftId");
     const requestNoFromUrl = new URLSearchParams(location.search).get("requestNo");

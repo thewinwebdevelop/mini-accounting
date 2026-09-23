@@ -1,0 +1,160 @@
+# Step 4 — ข้อกำหนดเพิ่มเติมจากเจ้าของงาน
+
+เอกสารนี้บันทึกคำตอบของเจ้าของงานหลัง PM และทีมรีวิว handoff เดิม ไม่ใช่แผน implementation ที่เสร็จสมบูรณ์ ข้อกำหนดล่าสุดนี้มีลำดับเหนือ handoff เมื่อขัดกัน จุดที่ยังไม่ชัดเจนต้องถามเจ้าของงานก่อน implement
+
+ต้นทาง: `docs/superpowers/plans/2026-09-11-step4-document-lifecycle-handoff.md`
+
+## คำตัดสินที่ได้รับแล้ว
+
+### O1 — void ต้องคืนยอดสต๊อก
+
+เจ้าของงาน: “ควรจะต้อง หักสต๊อกคืนด้วย”
+
+การ void SR ที่รับสต๊อกแล้วต้องหักสต๊อกที่เคยรับเข้า ไม่ใช่เปลี่ยนสถานะเอกสารอย่างเดียว นโยบายกรณีสต๊อกถูกใช้ไปแล้วหรือไม่พอหักคืนยังต้องถาม
+
+### O2 — cancel ต้องลบรายการ Sheets
+
+เจ้าของงาน: “ลบรายการ”
+
+การยกเลิกเอกสารที่เคยลงรายจ่ายใน Sheets แล้วต้องลบรายการนั้น แทนการคงยอดไว้หรือสร้างรายการกลับยอด ต้องระบุรายการด้วยข้อมูลอ้างอิงที่เชื่อถือได้และไม่ลบแถวของเอกสารอื่น
+
+### O3 — ไม่ย้อนขั้นที่ complete แล้ว; ยกเลิกทั้ง workflow
+
+เจ้าของงาน: “ถ้าเคยกด complete step ก่อนหน้าไปแล้วจะย้อนไม่ได้ ทำได้แค่ cancel transaction workflow นั้นทิ้งไปเลย”
+
+ห้ามย้อนแก้ขั้นก่อนหน้าที่กด complete แล้ว ต้องมีการ cancel transaction workflow เป็นทางเลือก ขอบเขตการคืนสต๊อก/ลบ Sheets/สถานะเอกสารลูกเมื่อ cancel ทั้ง transaction ยังต้องตกลง ไม่อนุมานว่าคำว่า cancel อนุญาตลบไฟล์เอกสารหรือประวัติ
+
+### O4 — modal ก่อน complete SR ที่ยังไม่รับสต๊อก
+
+เจ้าของงาน: “เอาเป็นตอนจะกด complete โดยยังไม่รับสต๊อก ให้ขึ้น modal ถามuser ก่อน ว่ายังไม่ได้ทำการ move เข้าสต๊อกนะ ต้องการ move เข้าสต๊อกก่อนหรือไม่”
+
+เมื่อกด complete SR ซื้อสต๊อกที่ยังไม่รับเข้า ต้องมี modal ถามการรับสต๊อกก่อน เจ้าของงานยืนยันผลเมื่อเลือกไม่รับสต๊อกแล้วตาม O10: กลับหน้าเอกสารโดยยังไม่ complete
+
+### O5 — manual sync แยกจากสถานะ และ workflow เป็นเจ้าของการ sync
+
+เจ้าของงาน: “แยกเป็น 2 case 1.standalone เราจะมีเมนูให้เค้า manual sync ลงsheet/drive อยู่แล้วหนิ ไม่เกี่ยวกับ status 2.แบบ workflow โดยปกติ 1 workflow เอกสารทั้งหมดจะเกี่ยวข้องกับยอดค่าใช้จ่ายเดียวกันอยู่แล้ว เลยอยากให้มี manual sync drive/sheet เป็นระดับ workflow แทน”
+
+- Standalone: มี manual sync Sheets/Drive ซึ่งแยกจากสถานะ lifecycle; การ sync สำเร็จไม่ใช่เงื่อนไขของ completed
+- Workflow: ย้ายการสั่ง manual sync Sheets/Drive มาอยู่ระดับ transaction โดยพิจารณาว่าเอกสารใน workflow เกี่ยวข้องกับรายจ่ายเดียวกัน
+- แทนที่ D6 เดิมที่ห้าม workflow เขียน Sheets และต้องทบทวน D3 auto Drive sync ตาม template toggle ให้ตรงกับ manual sync ที่เจ้าของงานระบุ
+- O12 ยืนยันหนึ่งแถวต่อ workflow ใช้ REQ เป็นหลักและใช้ SR เมื่อไม่มี REQ ไม่รวมยอดทุกเอกสารเข้าด้วยกัน
+- ต้องวางแผนรองรับ metadata/แถวที่เอกสารลูกเดิมเคย sync แล้วก่อนเปลี่ยนเจ้าของการ sync ไม่แก้ข้อมูลภายนอกจริงระหว่างพัฒนา
+
+### O6 — ห้ามย้อนกลับเป็น draft หลังบันทึกแล้ว
+
+เจ้าของงาน: “ถ้าเคยบันทึกไปแล้ว จะกลับมา state `draft` ไม่ได้อีก”
+
+เจ้าของงานยืนยันเพิ่มเติม: แบบร่างที่มีเลขแล้วสามารถแก้ไขและบันทึกซ้ำได้จนกว่าจะกด “ส่งตรวจอนุมัติ” หลังส่งตรวจแล้วห้ามย้อนกลับเป็น draft ซึ่งแทนที่ข้อกำหนดเดิมที่บังคับคง SR pending_approval -> draft
+
+### O7 — ทุกชนิดต้อง explicit complete ก่อนปลดล็อกขั้นถัดไป
+
+เจ้าของงานยืนยันให้เปลี่ยนเป็นทุกชนิดต้องกด `complete` เองก่อนจึงปลดล็อกขั้นถัดไป
+
+- แทนที่ D2 hybrid completion เดิม: SR general_expense ที่ approved และ stock_purchase ที่ received ยังไม่ถือว่าขั้น workflow เสร็จ
+- ต้องเป็น native completed จึงถือว่า child workflow step completed
+- การรับสต๊อกและการอนุมัติยังเป็น action ของเอกสาร แต่ไม่ปลดล็อกขั้นถัดไปด้วยตัวมันเอง
+- เอกสารขั้นที่ complete แล้วไม่ย้อนกลับ; การยกเลิกใช้ O3 (cancel ทั้ง workflow)
+- Assertion/test เดิมที่คาดว่า approved/received จบขั้นอัตโนมัติต้องเปลี่ยนตามคำตัดสินนี้และรายงานก่อน/หลัง
+
+### O8 — ยืนยันสถาปัตยกรรมและฟอร์มเดิม (D-A / D-F / D-G)
+
+เจ้าของงานตอบ “ใช่” ต่อการใช้ state machine กลางหนึ่งชุด, คง receiptType lock ตาม workflow และคงฟอร์มร่วมของ lightweight ทั้ง 5 ชนิดตาม handoff ยืนยันทั้งสามข้อแล้ว ไม่ต้องถามซ้ำ
+
+### O9 — แก้ไขหลังส่งตรวจได้โดยคงสถานะเดิม
+
+เจ้าของงาน: “ยังคงแก้ไขได้ แต่ไม่ใช่ status draft” ตอบคำถามเรื่องเนื้อหาและไฟล์แนบหลังส่งตรวจอนุมัติ
+
+หลัง Submit ยังแก้เนื้อหาและไฟล์แนบได้ การบันทึกการแก้ไขต้องคงสถานะปัจจุบัน ไม่ทำให้เอกสารกลับเป็น draft และไม่ล้างประวัติการเปลี่ยนสถานะ ข้อนี้ไม่ยกเลิก O3 ที่ห้ามย้อนแก้ขั้น workflow ที่ complete แล้ว
+
+### O10 — ไม่รับสต๊อกตอนนี้ต้องไม่ complete
+
+เจ้าของงาน: “กลับหน้าเอกสารโดยยังไม่ complete” ตอบคำถามผลของตัวเลือกไม่รับสต๊อกใน modal ก่อน complete SR ซื้อสต๊อก
+
+เมื่อเลือกไม่รับ ให้ปิด modal และอยู่หน้าเอกสาร โดยไม่เรียกการรับสต๊อกหรือ complete ไม่เปลี่ยนสถานะเอกสารและไม่ปลดล็อกขั้นถัดไป
+
+### O11 — รับสต๊อกแล้วต้องกด complete เองอีกครั้ง
+
+เจ้าของงาน: “กดเอง” ตอบคำถามว่าหลังยืนยันรับสต๊อกใน modal และรับสำเร็จจะ complete ต่อทันทีหรือรอกดอีกครั้ง
+
+หลัง receive-stock สำเร็จ ให้คงสถานะ received และแสดงปุ่ม complete เพื่อให้ผู้ใช้กดเองอีกครั้ง ห้ามเรียก complete อัตโนมัติจากการยืนยันรับสต๊อกครั้งนั้น ขั้น workflow ยังไม่ปลดล็อกจนกด complete สำเร็จตาม O7
+
+### O12 — Sheets หนึ่งแถวต่อ workflow ใช้ REQ ก่อน SR
+
+เจ้าของงานตอบ “ใช่” ต่อคำถาม: หนึ่งแถวต่อ workflow ใช้ยอดจาก REQ ก่อน และใช้ SR เมื่อไม่มี REQ
+
+Manual sync Sheets ที่ระดับ transaction ต้องใช้ข้อมูลรายจ่ายจาก REQ เป็นหลัก ถ้าไม่มี REQ จึงใช้ SR ไม่บวกรวมยอดจากเอกสารลูกหลายชนิดที่อ้างถึงรายจ่ายเดียวกัน ใช้ตัวอ้างอิงระดับ workflow เพื่อให้การ sync ซ้ำไม่สร้างแถวรายจ่ายซ้ำ
+
+### O13 — workflow ต้อง complete ก่อน sync Sheets
+
+เจ้าของงานเลือก “กดได้เฉพาะเมื่อ workflow complete” สำหรับปุ่ม sync Sheets ระดับ workflow
+
+ทั้งหน้าฟอร์มและ backend ต้องบังคับว่า workflow complete แล้วจึง manual sync Sheets ได้ การมี REQ หรือ SR อยู่เพียงอย่างเดียวไม่ทำให้ sync ได้ก่อน workflow เสร็จ เงื่อนไขนี้เป็นของ workflow; ไม่เปลี่ยน O5 สำหรับ standalone
+
+### O14 — พบแถว Sheets ของเอกสารลูกเดิม ให้หยุดและแจ้งเตือน
+
+เจ้าของงานเลือก “ไม่ ให้หยุด sync และแจ้งเตือนก่อน” สำหรับ workflow ที่มีแถว REQ/SR เดิมแยกอยู่ใน Sheets
+
+ก่อนสร้างหรืออัปเดตแถว workflow ต้องตรวจแถวของเอกสารลูกที่เกี่ยวข้อง ถ้าพบให้หยุด sync และแสดงคำเตือน ไม่สร้างแถว workflow เพิ่ม ไม่ลบหรือรวมแถวเดิมอัตโนมัติ ข้อนี้เป็นนโยบายย้ายการ sync ของข้อมูลเดิม ไม่เปลี่ยน O2 เรื่องลบรายการเมื่อ cancel
+
+### O15 — แบบร่างเก่าเก็บไว้อ่านอย่างเดียว
+
+เจ้าของงานเลือก “เก็บแบบเก่าไว้อ่านอย่างเดียว” สำหรับ DRAFT-/SR-DRAFT- ที่มีอยู่ก่อนเปลี่ยนระบบ
+
+เก็บแบบร่างและไฟล์แนบเดิมไว้อ่านได้ ไม่แปลงเป็นเลข REQ-/SR- และไม่แก้ไขหรือ submit แบบร่างเก่าผ่านทางเขียนเดิม แบบร่างที่สร้างใหม่ใช้ numbered records ตาม C3/D-J การย้ายสถานะของเอกสารที่ออกเลขแล้วเป็นคนละส่วน และการ migration ข้อมูลจริงยังต้องแสดง dry-run ให้เจ้าของงานดูก่อน
+
+## คำถามที่ยังรอคำตอบ
+
+ไม่มีคำถามด้าน cancellation ที่บล็อกการออกแบบแล้ว; O16 ด้านล่างเป็นข้อสรุปที่ผูกพันการ implement
+
+### O16 — นโยบายยกเลิก Workflow และชดเชยผลกระทบ
+
+เจ้าของงานยืนยันแนวทางที่ PM เสนอ:
+
+- อนุญาตยกเลิกทั้ง Workflow ได้ก่อนหรือหลัง `completedAt` แต่ต้องยืนยันการยกเลิกทั้งธุรกรรม และห้ามเปิดขั้นที่ complete แล้วกลับมาแก้
+- เอกสารที่ complete แล้วคงสถานะเดิมและเก็บบันทึกว่า parent ถูกยกเลิก; เอกสารที่ยังไม่ complete เปลี่ยนเป็น `cancelled`; SR ที่รับสต๊อกแล้วแต่ยังไม่ complete เปลี่ยนเป็น `voided`
+- ลบแถว Sheets ด้วย exact source key ของ parent และเอกสารลูกที่ผูกกับ Workflow รวม legacy child rows เมื่อ fresh revalidation ยืนยัน key ตรงกัน; ถ้าตรวจสอบไม่ได้ให้หยุด
+- ถ้าชดเชยบางส่วนสำเร็จ ให้ parent อยู่ `cancellation_pending` และ retry ได้ จะแสดง `cancelled` เมื่อชดเชยครบเท่านั้น การ retry ต้องไม่สร้าง reversal ซ้ำ
+- ถ้าสต๊อกไม่พอ ให้หยุดการยกเลิกและแจ้งเตือน ห้ามทำให้สต๊อกติดลบอัตโนมัติ
+- ใช้วันที่ยกเลิก/void เป็นวันที่ movement คืนสต๊อก และเก็บ reference ไปยัง movement รับเข้าเดิม
+
+## การจัดทีมล่าสุด (ปรับตามคำสั่งเจ้าของงานหลังงาน sync Sheets)
+
+เจ้าของงานเปลี่ยนโมเดลสำหรับงานถัดไป โดย PM ยังคงจัดงานและถามเมื่อข้อกำหนดไม่ชัดเจน:
+
+- Architecture & Security review: GPT-5.6 Sol, Medium
+- Senior backend developer: GPT-5.6 Luna, High
+- Senior frontend developer: GPT-5.6 Luna, Medium
+- Junior backend / frontend developer: GPT-5.5 สำหรับงานตาม spec หรืองานง่าย; ไม่ระบุ reasoning จึงใช้ค่าเริ่มต้น Medium
+- งานและผลรีวิวที่เสร็จแล้วคงหลักฐานโมเดลเดิม; งานรีวิวที่ค้างส่งต่อให้ทีมตามการตั้งค่าใหม่นี้
+
+## ประเด็นที่ต้องทบทวนในแผน
+
+- D2 hybrid completion ถูกแทนที่ด้วย O7 แล้ว ไม่ต้องถามซ้ำ
+- ยกเลิก transaction ที่มีเอกสารลูก completed แล้วโดยไม่แก้ย้อนหลังประวัติการ complete
+- แยกการบันทึกสถานะจากงาน sync ภายนอก และการ retry ที่ไม่สร้างสต๊อก/แถว/ไฟล์ซ้ำ
+- Assertion เดิมที่ขัดกับ O1–O6 ต้องปรับตามคำสั่งล่าสุดและรายงานก่อน/หลัง; ไม่คงข้อห้ามจาก handoff เพื่อขัดคำสั่งใหม่
+- คำถามเดิมเรื่อง legacy draft policy และ D-H ยังไม่ได้รับการตัดสิน; D-A/D-F/D-G ยืนยันแล้วตาม O8
+- การ migration ข้อมูลจริงยังไม่เริ่ม ต้องผ่านรายงาน dry-run ให้เจ้าของงานดูก่อน
+
+## ความคืบหน้าที่แยกทำได้โดยไม่ต้องเดาคำตอบ
+
+- `82c3690`: เพิ่มลิงก์จากฟอร์ม lightweight กลับรายการเอกสารตามชนิด; ผ่านการทดสอบและ Architecture/Security review
+- `17418fd`: สำรอง drafts/ พร้อมไฟล์แนบด้วยกลไก copy-and-verify เดิม; ผ่านการทดสอบและ Architecture/Security review
+- `4dd2c05`: เปลี่ยน derived workflow status เป็น explicit completed เท่านั้นตาม O7; ชุดทดสอบที่เกี่ยวข้อง 173 รายการและชุดเต็ม 515 Node + 19 Python ผ่าน; Architecture/Security review ผ่านโดยไม่มี Critical/Important findings
+- `93e1530`: lifecycle กลางพร้อมชุดทดสอบ matrix และ browser/CommonJS ผ่าน Architecture/Security review
+- `49b631b`: กรอง absolutePath/absoluteFolderPath ที่ JSON response กลาง; ชุดเต็มผ่าน 531 Node + 19 Python; Architecture/Security (Sol Medium) review ผ่าน ไม่มี findings และ reviewer ยืนยัน RED/GREEN ซ้ำ
+- `52d2bbc` ถึง `e235372`: backend lightweight ทั้ง 5 ชนิดเชื่อม submit/approve/complete เข้ากฎกลาง และแก้เนื้อหา/เพิ่มไฟล์หลังส่งตรวจโดยคงสถานะตาม O9; ผ่าน Architecture/Security review หลังแก้ race ไฟล์แนบและเพิ่ม coverage ครบ ผล production ชุดเต็ม 538 Node + 19 Python ผ่าน; test-only รอบท้ายผ่านชุด logic 28 รายการและชุดที่เกี่ยวข้องก่อนหน้า 57 รายการ
+- `a59b425` และ `f6a6040`: หน้าฟอร์ม lightweight ทั้ง 5 ชนิดใช้ปุ่มส่งตรวจ/อนุมัติ/complete จากกฎกลาง คงการบันทึกหลังส่งตรวจตาม O9 ป้องกันคำสั่งซ้อน และไม่ส่งไฟล์แนบเดิมซ้ำหลังบันทึกสำเร็จ; Architecture/Security review ผ่าน ชุด production เต็ม 542 Node + 19 Python ผ่าน และชุดหน้าฟอร์มหลังเพิ่ม test-only รอบท้ายผ่าน 27 รายการ
+- `8612a7a` และ `8ab1298`: SR มีปุ่ม complete และ modal ก่อนรับสต๊อกตาม O10/O11; ไม่รับแล้วไม่ complete, รับสำเร็จคง received จนผู้ใช้กด complete อีกครั้ง; backend ปฏิเสธการข้ามรับสต๊อก ผ่าน Architecture/Security review ทั้งสองส่วนหลังแก้ความเข้ากันได้กับ API แบบร่างและคีย์บอร์ด modal ผลเต็ม 553 Node + 19 Python และชุดหน้าฟอร์ม 31 รายการผ่าน
+- งาน lifecycle สำหรับ lightweight ในขอบเขต submit/approve/complete และแก้ไขหลังส่งตรวจ รวมถึง SR explicit complete/modal ผ่านรีวิวแล้ว; migration, cancel/void, manual sync และส่วนที่เหลือของ retrofit ER/SR (รวม O9 editing) ยังไม่เสร็จ ไม่ถือว่าความคืบหน้าข้างต้นเป็นการส่งมอบ Step 4 ทั้งหมด
+
+- `6d1cbf3`: ตัวเลือกข้อมูลรายจ่ายและตัวสร้างแถว Sheets ระดับ workflow ตาม O12 ผ่าน Architecture/Security review; ชุดเต็ม 562 Node + 19 Python ผ่าน ยังไม่มีการเขียน Sheets จากส่วนนี้
+- `90cbd31`: ตัวตรวจแถว REQ/SR เดิมตาม O14 อ่านจากปลายทางปัจจุบันและตำแหน่งเดิมโดยไม่แก้ Sheets; เมื่ออ่านไม่สำเร็จต้องหยุด ผ่าน Architecture/Security review ชุดเฉพาะ 8 และชุดเต็ม 568 Node + 19 Python ผ่าน ส่วน API และปุ่ม sync ระดับ workflow กำลังดำเนินการ
+
+- `7de53e0` ถึง `464c9ed`: API sync Sheets ระดับ workflow ตาม O12–O14 พร้อมตรวจเอกสารและพาธก่อนใช้งาน เก็บสถานะ sync แยกจากข้อมูล workflow และหยุดสร้างแถวลูกเมื่ออนุมัติ REQ/SR ใน workflow; ผ่าน Architecture/Security review หลังแก้สองรอบ ชุดเต็มหลังแก้ production ผ่าน 579 Node + 19 Python และชุด logic หลังเพิ่ม tests ผ่าน 56 รายการ ส่วนปุ่มหน้าเว็บและเงื่อนไข Complete ของ REQ กำลังดำเนินการ
+
+- `7307729`: ปุ่ม manual sync Sheets ระดับ workflow แสดงหลังปิดงานจริง ตรวจผลตอบกลับก่อนแสดงสำเร็จ รักษาผลเดิมเมื่อ retry ล้มเหลว และป้องกันคำสั่ง Sheets/Drive ซ้อนกัน; REQ ใน workflow กด Complete ได้โดยไม่ต้องมีแถวลูก พร้อมรักษาพฤติกรรม standalone ผ่าน Architecture/Security review ไม่มี findings ชุดเต็มหลังแก้ production ผ่าน 587 Node + 19 Python และชุด frontend หลังเพิ่ม tests ผ่าน 81 รายการ
+- งาน sync Sheets ระดับ workflow ตาม O12–O14 ผ่านรีวิวครบทั้ง backend/frontend แล้ว ไม่มีการเรียกแก้ข้อมูล Google จริงระหว่างพัฒนา; Step 4 ยังเหลือ cancel/void, numbered drafts/migration, retrofit ER/SR และนโยบาย Drive ตามประเด็นที่ระบุข้างต้น
+
+- `2f9147c` และ `93a9aab`: primitive ลบแถวรายจ่ายตาม exact source key ผ่าน Architecture/Security review หลังแก้ numeric key grammar และเพิ่ม preflight failure coverage; focused 22 รายการ และชุดเต็มที่เกี่ยวข้อง 603 Node + 19 Python ผ่าน ไม่มี route หรือการเรียก Google จริง
+- `2d15fc0`: สคริปต์ migration สถานะเอกสารที่ออกเลขแล้วแบบ fixture-only และ dry-run ผ่าน Architecture/Security review; focused 20 รายการ และชุดเต็มหลังแก้ production 624 Node + 19 Python ผ่าน ครอบคลุม REQ/SR mapping, O15 legacy draft read-only, apply backup gate, retry, stale-plan/backup containment และ boundary ของเลขเอกสาร ยังไม่อนุญาต live apply จนกว่าเจ้าของงานจะตรวจ dry-run และ backup ใหม่

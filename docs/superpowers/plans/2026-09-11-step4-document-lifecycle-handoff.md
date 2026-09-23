@@ -1,5 +1,7 @@
 # Step 4 Handoff — Unified Document Lifecycle (Approval + Central State Machine)
 
+> **Owner updates after handoff:** Read [`../specs/2026-09-11-step4-owner-decisions.md`](../specs/2026-09-11-step4-owner-decisions.md) before using this plan. O1–O15 override conflicting text below, including cancellation/stock effects, workflow-level manual Sheets/Drive sync, returning to draft, and hybrid workflow completion. All document kinds now require explicit `complete` before unlocking the next step. D-A/D-F/D-G are confirmed by O8. O9 permits content and attachment edits after submission while retaining current status. O10/O11 keep SR completion manual after the stock modal. O12–O14 require one parent Sheet row (REQ first, otherwise SR), explicit workflow completion before sync, and stopping with a warning when related legacy child rows exist. O15 retains legacy DRAFT-/SR-DRAFT- records as read-only without conversion. Unresolved behavior in the addendum must be clarified with the owner before implementing dependent tasks. This handoff is retained as the original reference and is not yet a reconciled implementation plan.
+
 Audience: an implementing agent (Codex) picking this up cold. Everything you need is in this file.
 Author: PM/orchestrator of the workflow MVP, 2026-09-11.
 
