@@ -27,6 +27,7 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /name="stockSkuId"/);
   assert.match(html, /name="quantity"/);
   assert.match(html, /name="unitCost"/);
+  assert.match(html, /name="paymentNote"/);
   assert.match(html, /name="evidence_paymentSlip"/);
   assert.match(html, /name="evidence_purchaseOrder"/);
   assert.match(html, /name="evidence_goodsReceived"/);
@@ -356,6 +357,16 @@ test("substitute receipt browser controller includes workflow fields in the save
   assert.match(browserLogic, /transactionNo: form\.elements\.transactionNo\.value/);
   assert.match(browserLogic, /workflowTemplateId: form\.elements\.workflowTemplateId\.value/);
   assert.match(browserLogic, /workflowStepId: form\.elements\.workflowStepId\.value/);
+});
+
+test("substitute receipt browser controller submits the optional payment note", async () => {
+  const { elements, capturedPost } = await setupSubstituteReceiptSandbox();
+  elements.paymentNote.value = "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท";
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(capturedPost.payload.paymentNote, "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท");
 });
 
 // --- Genuine execution: the real controller module actually runs --------

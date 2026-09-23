@@ -61,6 +61,23 @@ test("buildSubstituteReceiptPayload creates SR document number, evidence checkli
   assert.deepEqual(payload.rawFiles, ["B1_payment-slip_001.jpg", "B2_purchase-order_001.pdf"]);
 });
 
+test("buildSubstituteReceiptPayload preserves an optional payment note", () => {
+  const payload = buildSubstituteReceiptPayload({
+    accountingMonth: "2026-09",
+    sequence: "8",
+    receiptDate: "2026-09-04",
+    receiptType: "general_expense",
+    payeeName: "ร้านตัวอย่าง",
+    businessPurpose: "ค่าใช้จ่ายตัวอย่าง",
+    paymentNote: "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท",
+    lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "2500" }],
+  });
+
+  assert.equal(payload.paymentNote, "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท");
+  assert.match(formatSubstituteReceiptMarkdown(payload), /จ่ายเงินสด 500 บาท/);
+  assert.match(formatSubstituteReceiptMarkdown(payload), /โอนเงิน 2,000 บาท/);
+});
+
 test("validateSubstituteReceipt requires traceable evidence and valid stock purchase lines", () => {
   assert.deepEqual(validateSubstituteReceipt({
     receiptType: "stock_purchase",

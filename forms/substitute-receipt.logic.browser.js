@@ -417,6 +417,7 @@ window.addEventListener("DOMContentLoaded", () => {
       vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       paymentChannel: form.elements.paymentChannel.value,
       paymentReference: form.elements.paymentReference.value,
+      paymentNote: form.elements.paymentNote.value,
       businessPurpose: form.elements.businessPurpose.value,
       transactionNo: form.elements.transactionNo.value,
       workflowTemplateId: form.elements.workflowTemplateId.value,
@@ -574,6 +575,7 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
     form.elements.paymentReference.value = payload.paymentReference || "";
+    form.elements.paymentNote.value = payload.paymentNote || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
     if (vendorPresetSelect) vendorPresetSelect.value = "";
     // A draft/receipt saved earlier from within a workflow already carries

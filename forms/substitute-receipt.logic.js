@@ -274,6 +274,7 @@ function buildSubstituteReceiptPayload(data = {}) {
     payeeTaxId: cleanText(data.payeeTaxId),
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
+    paymentNote: cleanText(data.paymentNote),
     vendorId: cleanText(data.vendorId),
     vendorSnapshot: buildVendorSnapshot(data),
     businessPurpose: cleanText(data.businessPurpose),
@@ -320,6 +321,7 @@ function formatSubstituteReceiptMarkdown(payload = {}) {
 ผู้ขาย/ผู้รับเงิน: ${payload.payeeName || ""}
 ช่องทางชำระเงิน: ${payload.paymentChannel || ""}
 เลขอ้างอิงชำระเงิน: ${payload.paymentReference || ""}
+หมายเหตุการจ่ายเงิน: ${payload.paymentNote || ""}
 วัตถุประสงค์ทางธุรกิจ: ${payload.businessPurpose || ""}
 โฟลเดอร์: ${payload.folderPath || ""}
 

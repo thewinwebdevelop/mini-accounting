@@ -1,6 +1,11 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
-from substitute_receipt_pdf import baht_text, thai_date
+import pdfplumber
+
+from substitute_receipt_pdf import baht_text, build_substitute_receipt_outputs, thai_date
 
 
 class BahtTextTests(unittest.TestCase):
@@ -42,6 +47,32 @@ class ThaiDateTests(unittest.TestCase):
 
     def test_unparseable_returns_original(self):
         self.assertEqual(thai_date("not-a-date"), "not-a-date")
+
+
+class SubstituteReceiptPdfTests(unittest.TestCase):
+    def test_pdf_includes_payment_note(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0008",
+            "receiptDate": "2026-09-04",
+            "receiptType": "general_expense",
+            "payeeName": "ร้านตัวอย่าง",
+            "paymentNote": "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท",
+            "businessPurpose": "ค่าใช้จ่ายตัวอย่าง",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": "1", "unitCost": "2500", "lineTotal": "2500.00"}],
+            "totals": {"totalAmount": "2500.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            self.assertTrue(os.path.exists(output_paths[0]))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertIn("จ่ายเงินสด 500 บาท", rendered)
+        self.assertIn("โอนเงิน 2,000 บาท", rendered)
 
 
 if __name__ == "__main__":

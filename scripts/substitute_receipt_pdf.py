@@ -264,6 +264,11 @@ def build_substitute_receipt_story(payload):
         styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols, header_shade=False),
         Spacer(1, 4),
         _totals_box(total_amount),
+        Spacer(1, 6),
+        Paragraph(
+            f"หมายเหตุ: {paragraph_text(payload.get('paymentNote')) or '-'}",
+            styles["DocBody"],
+        ),
         Spacer(1, 10),
         Paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}", styles["DocBody"]),
         Spacer(1, 6),
