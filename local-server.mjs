@@ -106,6 +106,13 @@ const {
   updateSubstituteReceiptVendor,
 } = require("./forms/substitute-receipt-vendors.logic.js");
 const {
+  createVendor,
+  findVendorMatches,
+  getVendorById,
+  listVendors,
+  updateVendor,
+} = require("./forms/vendor.logic.js");
+const {
   generateCurrentStockPdf,
 } = require("./forms/inventory-report.logic.js");
 const {
@@ -1464,6 +1471,121 @@ async function handleSubstituteReceiptVendorList(url, response) {
   }
 }
 
+function invalidVendorIdError() {
+  const error = new Error("รหัสผู้ขายไม่ถูกต้อง");
+  error.code = "INVALID_VENDOR_ID";
+  error.statusCode = 400;
+  return error;
+}
+
+function decodeVendorId(rawId) {
+  let id;
+  try {
+    id = decodeURIComponent(String(rawId || ""));
+  } catch {
+    throw invalidVendorIdError();
+  }
+  // IDs are opaque to clients, but accepting path separators or arbitrary
+  // strings here makes malformed requests ambiguous and risks path-like data
+  // leaking into storage adapters. Keep compatibility with generated shared
+  // and legacy substitute-receipt IDs only.
+  if (!/^(?:VENDOR|SRV)-[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(id)) throw invalidVendorIdError();
+  return id;
+}
+
+function sendVendorError(response, error, fallback) {
+  const body = {
+    ...(error?.code ? { code: error.code } : {}),
+    error: error?.message || fallback,
+  };
+  if (error?.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED") {
+    body.candidateFingerprint = error.candidateFingerprint;
+    body.matches = Array.isArray(error.matches) ? error.matches.map((match) => ({
+      id: match.id,
+      name: match.name,
+      taxId: match.taxId,
+      matchedFields: Array.isArray(match.matchedFields) ? [...match.matchedFields] : [],
+    })) : [];
+  }
+  sendJson(response, Number.isInteger(error?.statusCode) ? error.statusCode : 400, body);
+}
+
+async function handleVendorList(url, response) {
+  try {
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
+    sendJson(response, 200, { vendors: await listVendors(rootDir, { includeInactive }) });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot list vendors");
+  }
+}
+
+async function handleVendorGet(vendorId, response) {
+  try {
+    const id = decodeVendorId(vendorId);
+    const vendor = await getVendorById(rootDir, id);
+    if (!vendor) {
+      const error = new Error("ไม่พบผู้ขาย");
+      error.code = "VENDOR_NOT_FOUND";
+      error.statusCode = 404;
+      throw error;
+    }
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot load vendor");
+  }
+}
+
+async function handleVendorMatches(url, response) {
+  try {
+    const candidate = Object.fromEntries([
+      "name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo",
+      "paymentChannel", "paymentReference", "defaultBusinessPurpose", "note",
+    ].map((field) => [field, url.searchParams.get(field) || ""]));
+    const matches = findVendorMatches(candidate, await listVendors(rootDir, { includeInactive: true }));
+    sendJson(response, 200, {
+      matches: matches.map((match) => ({
+        id: match.id,
+        name: match.name,
+        taxId: match.taxId,
+        status: match.status,
+        matchedFields: [...match.matchedFields],
+      })),
+    });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot match vendors");
+  }
+}
+
+function vendorMutationOptions(payload = {}) {
+  const options = payload?.options && typeof payload.options === "object" ? payload.options : {};
+  return {
+    confirmDuplicate: payload.confirmDuplicate === true || options.confirmDuplicate === true,
+    expectedMatchIds: Array.isArray(payload.expectedMatchIds) ? payload.expectedMatchIds : options.expectedMatchIds,
+    expectedCandidateFingerprint: payload.expectedCandidateFingerprint || options.expectedCandidateFingerprint,
+  };
+}
+
+async function handleVendorCreate(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const vendor = await createVendor(rootDir, payload, vendorMutationOptions(payload));
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot create vendor");
+  }
+}
+
+async function handleVendorUpdate(vendorId, request, response) {
+  try {
+    const id = decodeVendorId(vendorId);
+    const payload = await readJsonBody(request);
+    const vendor = await updateVendor(rootDir, id, { ...payload, options: vendorMutationOptions(payload) });
+    sendJson(response, 200, { vendor });
+  } catch (error) {
+    sendVendorError(response, error, "Cannot update vendor");
+  }
+}
+
 async function handleSubstituteReceiptVendorCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
@@ -1667,6 +1789,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/vendors") {
+    await handleVendorCreate(request, response);
+    return;
+  }
+
   if (request.method === "PUT" && url.pathname.startsWith("/api/inventory/products/")) {
     const productId = decodeURIComponent(url.pathname.replace("/api/inventory/products/", ""));
     await handleInventoryProductUpdate(productId, request, response);
@@ -1694,6 +1821,12 @@ const server = createServer(async (request, response) => {
   if (request.method === "PUT" && url.pathname.startsWith("/api/substitute-receipt-vendors/")) {
     const vendorId = decodeURIComponent(url.pathname.replace("/api/substitute-receipt-vendors/", ""));
     await handleSubstituteReceiptVendorUpdate(vendorId, request, response);
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname.startsWith("/api/vendors/")) {
+    const vendorId = url.pathname.slice("/api/vendors/".length);
+    await handleVendorUpdate(vendorId, request, response);
     return;
   }
 
@@ -1976,6 +2109,22 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/substitute-receipt-vendors") {
       await handleSubstituteReceiptVendorList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/vendors") {
+      await handleVendorList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/vendors/matches") {
+      await handleVendorMatches(url, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/vendors/")) {
+      const vendorId = url.pathname.slice("/api/vendors/".length);
+      await handleVendorGet(vendorId, response);
       return;
     }
 
