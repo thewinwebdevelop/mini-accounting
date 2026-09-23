@@ -35,7 +35,7 @@ window.addEventListener("DOMContentLoaded", () => {
     form,
     select: vendorPresetSelect,
     checkbox: saveVendorPresetCheckbox,
-    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], address: ["payeeAddress"], bankName: ["paymentBankName", "bankName"], accountNo: ["paymentAccountNo", "accountNo"] },
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], address: ["payeeAddress"], bankName: ["paymentBankName", "bankName"], accountNo: ["paymentAccountNo", "accountNo"], defaultBusinessPurpose: ["businessPurpose"] },
     onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
   });
   let mutationInFlight = false;

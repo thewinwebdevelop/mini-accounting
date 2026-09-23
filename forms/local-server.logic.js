@@ -1451,6 +1451,7 @@ function preserveNumberedServerMetadata(nextPayload, storedPayload, fields) {
 // snapshot is then rebuilt from the master plus the document's submitted
 // editable fields; a client cannot attach an arbitrary ID or snapshot.
 async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPayload = {}) {
+  const hasSubmittedVendorId = Object.prototype.hasOwnProperty.call(payload, "vendorId");
   const requestedId = String(payload.vendorId ?? "").trim();
   const existingId = String(existingPayload.vendorId ?? "").trim();
   const existingSnapshot = existingPayload.vendorSnapshot && typeof existingPayload.vendorSnapshot === "object"
@@ -1458,10 +1459,16 @@ async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPaylo
     : {};
 
   if (!requestedId) {
+    // An explicit empty vendorId means the user switched an existing master
+    // selection back to document-only entry. Start from a blank snapshot in
+    // that case so fields from the old master (tax/address/bank/payment) do
+    // not survive invisibly. Existing document-only vendors have no master
+    // identity, so their snapshot remains editable and is preserved here.
+    const snapshotSource = existingId && hasSubmittedVendorId ? {} : existingSnapshot;
     return {
       ...payload,
       vendorId: "",
-      vendorSnapshot: buildVendorSnapshot({ ...payload, vendorSnapshot: existingSnapshot }),
+      vendorSnapshot: buildVendorSnapshot({ ...payload, vendorSnapshot: snapshotSource }),
     };
   }
 

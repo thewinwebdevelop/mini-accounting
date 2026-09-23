@@ -423,6 +423,7 @@ test("real workflow shell selects one active vendor and submits it for every lig
     name: "ผู้ขาย Workflow จาก preset",
     taxId: "0105552468135",
     address: "99 ถนนสุขุมวิท",
+    defaultBusinessPurpose: "วัตถุประสงค์จากผู้ขาย preset",
     status: "active",
   };
 
@@ -442,6 +443,7 @@ test("real workflow shell selects one active vendor and submits it for every lig
     vendorPresetSelect.value = savedVendor.id;
     vendorPresetSelect.dispatch("change");
     assert.equal(form.elements.payeeName.value, savedVendor.name, `${documentKind}: picker fills payee`);
+    assert.equal(form.elements.businessPurpose.value, savedVendor.defaultBusinessPurpose, `${documentKind}: picker fills business purpose`);
     assert.equal(form.dataset.vendorId, savedVendor.id, `${documentKind}: picker stores vendor identity`);
 
     form.elements.title.value = `เอกสาร ${documentKind}`;

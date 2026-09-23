@@ -1110,7 +1110,7 @@
       form,
       select: vendorPresetSelect,
       checkbox: saveVendorPresetCheckbox,
-      mapping: { name: ["paymentTargetName"], taxId: ["paymentTargetTaxId"], bankName: ["paymentBankName"], accountNo: ["paymentAccountNo"], paymentChannel: ["paymentChannel"] },
+      mapping: { name: ["paymentTargetName"], taxId: ["paymentTargetTaxId"], bankName: ["paymentBankName"], accountNo: ["paymentAccountNo"], paymentChannel: ["paymentChannel"], defaultBusinessPurpose: ["businessPurpose"] },
       onError: (error) => setSaveStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
     });
 

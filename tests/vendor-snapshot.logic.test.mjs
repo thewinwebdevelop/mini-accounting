@@ -218,3 +218,80 @@ test("server revalidates vendor IDs, isolates document edits, and permits an old
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("clearing a saved vendor switches to a document-only snapshot without stale master fields", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-vendor-switch-"));
+  try {
+    const savedVendor = await vendors.createVendor(rootDir, vendor, { idSuffix: "SWITCH" });
+    const expenseDraft = await server.saveExpenseDraft({ rootDir, payload: expenseInput(savedVendor.id) });
+    await server.saveExpenseDraft({
+      rootDir,
+      payload: {
+        ...expenseInput(savedVendor.id),
+        requestNo: expenseDraft.requestNo,
+        vendorId: "",
+        paymentTargetName: "ผู้ขายกรอกเอง expense",
+        paymentTargetTaxId: "",
+        paymentBankName: "",
+        paymentAccountNo: "",
+        paymentChannel: "",
+        paymentReference: "",
+      },
+    });
+    const expenseDisk = JSON.parse(await readFile(join(rootDir, expenseDraft.folderPath, "data", "submission.json"), "utf8"));
+    assert.equal(expenseDisk.vendorId, "");
+    assert.equal(expenseDisk.vendorSnapshot.name, "ผู้ขายกรอกเอง expense");
+    assert.equal(expenseDisk.vendorSnapshot.taxId, "");
+    assert.equal(expenseDisk.vendorSnapshot.address, "");
+    assert.equal(expenseDisk.vendorSnapshot.bankName, "");
+    assert.equal(expenseDisk.vendorSnapshot.defaultBusinessPurpose, "");
+
+    const substituteDraft = await server.saveSubstituteReceiptDraft({ rootDir, payload: substituteInput(savedVendor.id) });
+    await server.saveSubstituteReceiptDraft({
+      rootDir,
+      payload: {
+        ...substituteInput(savedVendor.id),
+        receiptNo: substituteDraft.receiptNo,
+        vendorId: "",
+        payeeName: "ผู้ขายกรอกเอง SR",
+        payeeTaxId: "",
+        paymentChannel: "",
+        paymentReference: "",
+      },
+    });
+    const substituteDisk = JSON.parse(await readFile(join(rootDir, substituteDraft.folderPath, "data", "substitute-receipt.json"), "utf8"));
+    assert.equal(substituteDisk.vendorId, "");
+    assert.equal(substituteDisk.vendorSnapshot.name, "ผู้ขายกรอกเอง SR");
+    assert.equal(substituteDisk.vendorSnapshot.taxId, "");
+    assert.equal(substituteDisk.vendorSnapshot.paymentReference, "");
+    assert.equal(substituteDisk.vendorSnapshot.defaultBusinessPurpose, "");
+
+    for (const kind of workflow.LIGHTWEIGHT_DOCUMENT_KINDS) {
+      const firstPayload = workflow.buildWorkflowDocumentPayload({
+        documentKind: kind, accountingMonth: "2026-09", documentDate: "2026-09-01",
+        title: kind, businessPurpose: "ซื้อวัสดุ", payeeName: vendor.name,
+        vendorId: savedVendor.id, lines: [{ description: "ของ", quantity: "1", unitCost: "100" }],
+      });
+      const saved = await server.saveWorkflowDocument({ rootDir, payload: firstPayload });
+      await server.saveWorkflowDocument({
+        rootDir,
+        payload: {
+          ...firstPayload,
+          documentNo: saved.documentNo,
+          folderPath: saved.folderPath,
+          status: "draft",
+          vendorId: "",
+          payeeName: `ผู้ขายกรอกเอง ${kind}`,
+        },
+      });
+      const disk = JSON.parse(await readFile(join(rootDir, saved.folderPath, "data", "workflow-document.json"), "utf8"));
+      assert.equal(disk.vendorId, "", kind);
+      assert.equal(disk.vendorSnapshot.name, `ผู้ขายกรอกเอง ${kind}`, kind);
+      assert.equal(disk.vendorSnapshot.taxId, "", kind);
+      assert.equal(disk.vendorSnapshot.bankName, "", kind);
+      assert.equal(disk.vendorSnapshot.defaultBusinessPurpose, "", kind);
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

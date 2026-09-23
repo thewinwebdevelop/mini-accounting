@@ -472,6 +472,7 @@ test("real expense controller selects an active vendor and submits its identity 
     bankName: "ธนาคารตัวอย่าง",
     accountNo: "1234567890",
     paymentChannel: "โอนผ่านบัญชีบริษัท",
+    defaultBusinessPurpose: "ค่าใช้จ่ายจากผู้ขาย preset",
     status: "active",
   };
   const { elements, form, capturedPayloads } = await setupExpenseRequestSandbox({
@@ -484,6 +485,7 @@ test("real expense controller selects an active vendor and submits its identity 
   elements.vendorPresetSelect.dispatch("change");
   assert.equal(form.elements.paymentTargetName.value, savedVendor.name);
   assert.equal(form.elements.paymentBankName.value, savedVendor.bankName);
+  assert.equal(form.elements.businessPurpose.value, savedVendor.defaultBusinessPurpose);
   assert.equal(form.dataset.vendorId, savedVendor.id);
 
   form.elements.requestTitle.value = "เอกสารจาก expense picker";
