@@ -202,6 +202,33 @@ test("workflow document shell provides the generic document form", async () => {
   assert.match(html, /src="\.\/workflow-document\.logic\.browser\.js"/);
 });
 
+test("workflow document line items render as collapsible details with live summaries", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "",
+    fetchHandler() {
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  const { lineItems, addLine } = elements;
+  const first = lineItems.querySelector(".line-item");
+  assert.equal(first.tagName, "DETAILS", "each item uses a native details disclosure");
+  assert.ok(first.querySelector(".line-item-summary"), "each item has a clickable summary");
+  assert.match(first.querySelector("[data-line-title]").textContent, /รายการ 1 - ยังไม่ได้กรอก/);
+
+  first.querySelector('input[name="description"]').value = "สินค้า A";
+  first.querySelector('input[name="quantity"]').value = "2";
+  first.querySelector('input[name="unitCost"]').value = "150";
+  first.dispatch("input");
+  assert.equal(first.querySelector("[data-line-title]").textContent, "รายการ 1 - สินค้า A");
+  assert.equal(first.querySelector("[data-line-total]").textContent, "300.00 บาท");
+
+  addLine.dispatch("click");
+  const second = lineItems.querySelectorAll(".line-item")[1];
+  assert.match(second.querySelector("[data-line-title]").textContent, /รายการ 2 - ยังไม่ได้กรอก/);
+});
+
 test("workflow document shell validates returnTo before showing the return link", async () => {
   const html = await readFile(htmlPath, "utf8");
   assert.match(html, /workflow-return-link\.browser\.js/);

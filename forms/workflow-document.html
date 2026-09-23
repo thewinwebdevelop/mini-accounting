@@ -174,14 +174,57 @@
     input[type="hidden"] { display: none; }
 
     .line-item {
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+    }
+
+    .line-item-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 42px;
+      padding: 9px 10px;
+      color: var(--brand-strong);
+      cursor: pointer;
+      list-style: none;
+      font-weight: 800;
+    }
+
+    .line-item-summary::-webkit-details-marker { display: none; }
+
+    .line-item-summary::before {
+      content: "▾";
+      color: var(--accent);
+      font-size: 16px;
+    }
+
+    .line-item:not([open]) .line-item-summary::before { content: "▸"; }
+
+    .line-item-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .line-item-total {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .line-item-fields {
       display: grid;
       grid-template-columns: minmax(220px, 1.6fr) 110px 140px 38px;
       gap: 8px;
       align-items: end;
-      padding: 10px;
+      padding: 0 10px 10px;
       border: 1px solid #d9e2ec;
-      border-radius: 8px;
-      background: #ffffff;
+      border-width: 1px 0 0;
     }
 
     .line-item + .line-item {
@@ -334,7 +377,7 @@
       .span-4,
       .span-6,
       .span-8 { grid-column: span 12; }
-      .line-item { grid-template-columns: 1fr; }
+      .line-item-fields { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -483,21 +526,27 @@
   </main>
 
   <template id="lineTemplate">
-    <div class="line-item">
-      <div class="field">
-        <label>รายละเอียด</label>
-        <input name="description">
+    <details class="line-item" open>
+      <summary class="line-item-summary">
+        <span class="line-item-title" data-line-title>รายการ 1 - ยังไม่ได้กรอก</span>
+        <span class="line-item-total" data-line-total>0.00 บาท</span>
+      </summary>
+      <div class="line-item-fields">
+        <div class="field">
+          <label>รายละเอียด</label>
+          <input name="description">
+        </div>
+        <div class="field">
+          <label>จำนวน *</label>
+          <input name="quantity" inputmode="numeric" required>
+        </div>
+        <div class="field">
+          <label>ราคา/หน่วย *</label>
+          <input name="unitCost" inputmode="decimal" required>
+        </div>
+        <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
       </div>
-      <div class="field">
-        <label>จำนวน *</label>
-        <input name="quantity" inputmode="numeric" required>
-      </div>
-      <div class="field">
-        <label>ราคา/หน่วย *</label>
-        <input name="unitCost" inputmode="decimal" required>
-      </div>
-      <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
-    </div>
+    </details>
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>

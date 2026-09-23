@@ -93,22 +93,42 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function updateLineSummary(row) {
+    const index = [...lineItems.querySelectorAll(".line-item")].indexOf(row) + 1;
+    const description = row.querySelector('input[name="description"]')?.value.trim() || "ยังไม่ได้กรอก";
+    const quantity = toNumber(row.querySelector('input[name="quantity"]')?.value);
+    const unitCost = toNumber(row.querySelector('input[name="unitCost"]')?.value);
+    const title = row.querySelector("[data-line-title]");
+    const total = row.querySelector("[data-line-total]");
+    if (title) title.textContent = `รายการ ${index} - ${description}`;
+    if (total) total.textContent = `${money(quantity * unitCost)} บาท`;
+  }
+
+  function updateLineSummaries() {
+    lineItems.querySelectorAll(".line-item").forEach(updateLineSummary);
+  }
+
   function addLine(initial = {}) {
     const fragment = lineTemplate.content.cloneNode(true);
     const row = fragment.querySelector(".line-item");
     row.querySelector('input[name="description"]').value = initial.description || "";
     row.querySelector('input[name="quantity"]').value = initial.quantity || "";
     row.querySelector('input[name="unitCost"]').value = initial.unitCost || "";
-    row.addEventListener("input", updatePreview);
+    row.addEventListener("input", () => {
+      updateLineSummary(row);
+      updatePreview();
+    });
     row.querySelector("[data-remove-line]").addEventListener("click", () => {
       if (lineItems.children.length === 1) {
         row.querySelectorAll("input").forEach((field) => { field.value = ""; });
       } else {
         row.remove();
       }
+      updateLineSummaries();
       updatePreview();
     });
     lineItems.appendChild(fragment);
+    updateLineSummary(row);
   }
 
   function collectLineRows() {
@@ -183,6 +203,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const total = lines.reduce((sum, line) => sum + (toNumber(line.quantity) * toNumber(line.unitCost)), 0);
     lineCountPreview.textContent = String(lines.length);
     totalAmountPreview.textContent = money(total);
+    updateLineSummaries();
     setDocumentState(state.status);
   }
 
