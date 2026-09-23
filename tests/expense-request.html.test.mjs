@@ -9,6 +9,7 @@ const returnLinkPath = new URL("../forms/workflow-return-link.browser.js", impor
 const prefillLogicPath = new URL("../forms/workflow-prefill.logic.js", import.meta.url);
 const prefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const expenseLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
+const vendorPickerPath = new URL("../forms/vendor-picker.logic.browser.js", import.meta.url);
 
 test("expense form keeps copy/export controls in the backup tools section", async () => {
   const html = await readFile(htmlPath, "utf8");
@@ -189,7 +190,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -216,13 +217,18 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   }
 
   const fetchLog = [];
-  const stubFetch = async (url) => {
+  const capturedPayloads = [];
+  const stubFetch = async (url, options = {}) => {
     fetchLog.push(url);
+    if (options.body?.get?.("payload")) capturedPayloads.push(JSON.parse(options.body.get("payload")));
     if (url.includes("/prefill")) {
       return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
     }
     if (url.includes("/api/expense-requests/next")) {
       return { ok: true, json: async () => ({ sequence: "1", requestNo: nextRequestNo }) };
+    }
+    if (url === "/api/vendors") {
+      return { ok: true, json: async () => ({ vendors: vendorPickerVendors }) };
     }
     if (url.includes("/api/expense-requests/REQ-")) {
       if (detailFailureCount > 0) {
@@ -241,6 +247,8 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   };
 
   const window = {};
+  window.document = fakeDocument;
+  window.fetch = stubFetch;
   window.addEventListener = (type, handler) => {
     (window._handlers ??= {})[type] = handler;
   };
@@ -257,6 +265,8 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     navigator: {},
   });
 
+  vm.runInContext(await readFile(expenseLogicPath, "utf8"), context);
+  vm.runInContext(await readFile(vendorPickerPath, "utf8"), context);
   if (vendorPickerFailure) {
     window.SharedVendorPicker = {
       create: () => ({
@@ -265,8 +275,6 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
       }),
     };
   }
-
-  vm.runInContext(await readFile(expenseLogicPath, "utf8"), context);
   vm.runInContext(await readFile(returnLinkPath, "utf8"), context);
   // workflow-return-link.browser.js is a plain classic script (no
   // `window.` assignment, per its own test coverage) — in a real browser,
@@ -286,7 +294,7 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   // microtask chain fully settle before the test touches the DOM.
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  return { context, elements: elementsById, form, fetchLog };
+  return { context, elements: elementsById, form, fetchLog, capturedPayloads };
 }
 
 function getPrefillCheckbox(container, group) {
@@ -454,4 +462,81 @@ test("expense submit keeps vendor preset failure warning after successful detail
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.match(elements.saveStatus.textContent, /บันทึกผู้ขายไม่สำเร็จ/);
   assert.match(elements.saveStatus.textContent, /vendor API unavailable/);
+});
+
+test("real expense controller selects an active vendor and submits its identity with the edited fields", async () => {
+  const savedVendor = {
+    id: "VENDOR-E2E-EXPENSE",
+    name: "ผู้ขายจาก preset",
+    taxId: "0105551234567",
+    bankName: "ธนาคารตัวอย่าง",
+    accountNo: "1234567890",
+    paymentChannel: "โอนผ่านบัญชีบริษัท",
+    status: "active",
+  };
+  const { elements, form, capturedPayloads } = await setupExpenseRequestSandbox({
+    vendorPickerVendors: [savedVendor],
+    saveResponse: { requestNo: "REQ-2026-09-0001", status: "draft", pdfFiles: [] },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  elements.vendorPresetSelect.value = savedVendor.id;
+  elements.vendorPresetSelect.dispatch("change");
+  assert.equal(form.elements.paymentTargetName.value, savedVendor.name);
+  assert.equal(form.elements.paymentBankName.value, savedVendor.bankName);
+  assert.equal(form.dataset.vendorId, savedVendor.id);
+
+  form.elements.requestTitle.value = "เอกสารจาก expense picker";
+  form.elements.requesterName.value = "ผู้ทดสอบ";
+  form.elements.businessPurpose.value = "ทดสอบ picker";
+  const line = form.querySelector('input[name="lineDescription"]');
+  const amount = form.querySelector('input[name="lineBeforeVat"]');
+  line.value = "สินค้า";
+  amount.value = "100";
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(capturedPayloads.at(-1).vendorId, savedVendor.id);
+  assert.equal(capturedPayloads.at(-1).paymentTargetName, savedVendor.name);
+});
+
+test("expense controller renders an old inactive vendor snapshot when no active preset is available", async () => {
+  const oldSnapshot = {
+    name: "ผู้ขายเก่าจาก snapshot",
+    taxId: "0105550000001",
+    bankName: "ธนาคารเดิม",
+    accountNo: "0001112222",
+    paymentChannel: "โอนบัญชีเดิม",
+  };
+  const { elements, form } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0099",
+    vendorPickerVendors: [],
+    saveResponse: {
+      requestNo: "REQ-2026-09-0099",
+      status: "draft",
+      payload: {
+        requestNo: "REQ-2026-09-0099",
+        status: "draft",
+        accountingMonth: "2026-09",
+        requestType: "direct_payment",
+        requesterName: "ผู้ทดสอบ",
+        requestTitle: "เอกสารเก่า",
+        businessPurpose: "ทดสอบ snapshot",
+        paymentTargetName: oldSnapshot.name,
+        paymentBankName: oldSnapshot.bankName,
+        paymentAccountNo: oldSnapshot.accountNo,
+        paymentChannel: oldSnapshot.paymentChannel,
+        vendorId: "VENDOR-INACTIVE",
+        vendorSnapshot: oldSnapshot,
+        expenseLines: [{ description: "สินค้าเก่า", amountBeforeVat: "100" }],
+      },
+      evidenceFiles: {},
+    },
+  });
+
+  assert.equal(form.elements.paymentTargetName.value, oldSnapshot.name);
+  assert.equal(form.elements.paymentBankName.value, oldSnapshot.bankName);
+  assert.equal(form.elements.paymentAccountNo.value, oldSnapshot.accountNo);
+  assert.equal(form.dataset.vendorId, "VENDOR-INACTIVE");
+  assert.equal(elements.vendorPresetSelect.value, "", "inactive vendor is not offered as a new selection");
 });

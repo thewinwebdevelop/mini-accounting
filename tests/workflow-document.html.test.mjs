@@ -14,6 +14,7 @@ const workflowPrefillLogicPath = new URL("../forms/workflow-prefill.logic.js", i
 const workflowPrefillBannerPath = new URL("../forms/workflow-prefill-banner.browser.js", import.meta.url);
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const expenseRequestLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
+const vendorPickerPath = new URL("../forms/vendor-picker.logic.browser.js", import.meta.url);
 
 // Runs a dual-mode "*.logic.js" file the way an actual browser would: no
 // require, no module — just a window global to hang the export off of. This is
@@ -112,15 +113,17 @@ async function setupWorkflowDocumentLifecycleSandbox({
   documentNo = "PO-2026-09-0001",
   status = "draft",
   fetchHandler,
+  vendorPickerVendors = [],
 } = {}) {
   const realHtml = await readFile(htmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
   const calls = [];
   const stubFetch = async (route, options = {}) => {
     calls.push({ route, options });
+    if (route === "/api/vendors") return jsonResponse({ vendors: vendorPickerVendors });
     return fetchHandler(route, options, calls);
   };
-  const window = { fetch: stubFetch };
+  const window = { fetch: stubFetch, document: fakeDocument };
   window.addEventListener = (type, handler) => {
     (window._handlers ??= {})[type] = handler;
   };
@@ -137,6 +140,7 @@ async function setupWorkflowDocumentLifecycleSandbox({
   vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
   vm.runInContext(await readFile(documentLifecycleLogicPath, "utf8"), context);
   vm.runInContext(await readFile(workflowPrefillBannerPath, "utf8"), context);
+  vm.runInContext(await readFile(vendorPickerPath, "utf8"), context);
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
   context.window._handlers.DOMContentLoaded();
   await settleBrowserWork();
@@ -410,6 +414,95 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
     assert.equal(save.hidden, true, `${documentKind}: completed document remains locked`);
     assert.equal(submit.hidden, true, `${documentKind}: completed hides lifecycle actions`);
   }
+});
+
+test("real workflow shell selects one active vendor and submits it for every lightweight kind", async () => {
+  const kinds = ["purchase_order", "payment_voucher", "cash_spend_declaration", "payee_acknowledgement", "goods_receipt"];
+  const savedVendor = {
+    id: "VENDOR-E2E-WORKFLOW",
+    name: "ผู้ขาย Workflow จาก preset",
+    taxId: "0105552468135",
+    address: "99 ถนนสุขุมวิท",
+    status: "active",
+  };
+
+  for (const documentKind of kinds) {
+    const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+      documentKind,
+      documentNo: "",
+      vendorPickerVendors: [savedVendor],
+      fetchHandler(route, options) {
+        if (options.method !== "POST") return jsonResponse({ status: "draft", payload: lifecyclePayload("draft", documentKind) });
+        if (route === "/api/workflow-documents") return jsonResponse({ documentNo: "DOC-2026-09-0001", status: "draft", pdfFiles: [] });
+        return jsonResponse({ documentNo: "DOC-2026-09-0001", status: "draft", pdfFiles: [] });
+      },
+    });
+    await settleBrowserWork();
+    const { workflowDocumentForm: form, vendorPresetSelect, saveWorkflowDocument: save, lineItems } = elements;
+    vendorPresetSelect.value = savedVendor.id;
+    vendorPresetSelect.dispatch("change");
+    assert.equal(form.elements.payeeName.value, savedVendor.name, `${documentKind}: picker fills payee`);
+    assert.equal(form.dataset.vendorId, savedVendor.id, `${documentKind}: picker stores vendor identity`);
+
+    form.elements.title.value = `เอกสาร ${documentKind}`;
+    form.elements.businessPurpose.value = "ทดสอบ workflow vendor picker";
+    const line = lineItems.querySelector(".line-item");
+    line.querySelector('input[name="description"]').value = "รายการทดสอบ";
+    line.querySelector('input[name="quantity"]').value = "1";
+    line.querySelector('input[name="unitCost"]').value = "100";
+    save.dispatch("click");
+    await settleBrowserWork();
+
+    const body = calls.find((call) => call.route === "/api/workflow-documents" && call.options.method === "POST")?.options.body;
+    const payloadEntry = body?.entries.find((entry) => entry.name === "payload");
+    assert.ok(payloadEntry, `${documentKind}: save posts multipart payload`);
+    const payload = JSON.parse(payloadEntry.value);
+    assert.equal(payload.vendorId, savedVendor.id, `${documentKind}: submitted vendor ID`);
+    assert.equal(payload.payeeName, savedVendor.name, `${documentKind}: submitted payee snapshot source`);
+  }
+});
+
+test("workflow shell renders an old inactive vendor snapshot when no active preset is available", async () => {
+  const oldSnapshot = {
+    name: "ผู้ขาย Workflow เก่าจาก snapshot",
+    taxId: "0105550000003",
+    address: "ที่อยู่เดิม",
+    bankName: "ธนาคารเดิม",
+  };
+  const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0099",
+    vendorPickerVendors: [],
+    fetchHandler(route, options) {
+      if (options.method !== "POST") {
+        return jsonResponse({
+          documentNo: "PO-2026-09-0099",
+          status: "draft",
+          payload: {
+            documentKind: "purchase_order",
+            documentNo: "PO-2026-09-0099",
+            status: "draft",
+            accountingMonth: "2026-09",
+            documentDate: "2026-09-20",
+            title: "ใบสั่งซื้อเก่า",
+            requesterName: "ผู้ทดสอบ",
+            payeeName: oldSnapshot.name,
+            vendorId: "VENDOR-INACTIVE-WORKFLOW",
+            vendorSnapshot: oldSnapshot,
+            businessPurpose: "ทดสอบ snapshot",
+            lines: [{ description: "สินค้าเก่า", quantity: "1", unitCost: "100" }],
+          },
+        });
+      }
+      return jsonResponse({ documentNo: "PO-2026-09-0099", status: "draft", pdfFiles: [] });
+    },
+  });
+  await settleBrowserWork();
+  const { workflowDocumentForm: form, vendorPresetSelect } = elements;
+  assert.equal(form.elements.payeeName.value, oldSnapshot.name);
+  assert.equal(form.dataset.vendorId, "VENDOR-INACTIVE-WORKFLOW");
+  assert.equal(vendorPresetSelect.value, "", "inactive vendor is not offered as a new selection");
+  assert.ok(calls.some((call) => call.route.includes("/api/workflow-documents/purchase_order/PO-2026-09-0099")), "old document detail is loaded through the controller");
 });
 
 test("workflow document mutations validate authoritative status, prevent overlap, and preserve upload retry semantics", async () => {
