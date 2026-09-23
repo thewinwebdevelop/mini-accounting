@@ -1445,6 +1445,42 @@ function preserveNumberedServerMetadata(nextPayload, storedPayload, fields) {
   return nextPayload;
 }
 
+// Vendor identity is server-owned. A document may retain a snapshot for a
+// vendor that was deactivated after the document was created, but a new or
+// changed selection must resolve to an existing active master record. The
+// snapshot is then rebuilt from the master plus the document's submitted
+// editable fields; a client cannot attach an arbitrary ID or snapshot.
+async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPayload = {}) {
+  const requestedId = String(payload.vendorId ?? "").trim();
+  const existingId = String(existingPayload.vendorId ?? "").trim();
+  const existingSnapshot = existingPayload.vendorSnapshot && typeof existingPayload.vendorSnapshot === "object"
+    ? existingPayload.vendorSnapshot
+    : {};
+
+  if (!requestedId) {
+    return {
+      ...payload,
+      vendorId: "",
+      vendorSnapshot: buildVendorSnapshot({ ...payload, vendorSnapshot: existingSnapshot }),
+    };
+  }
+
+  const vendor = await getVendorById(rootDir, requestedId);
+  if (vendor?.status === "inactive" && requestedId === existingId && Object.keys(existingSnapshot).length) {
+    return {
+      ...payload,
+      vendorId: requestedId,
+      vendorSnapshot: buildVendorSnapshot({ ...payload, vendorSnapshot: existingSnapshot }),
+    };
+  }
+  assertVendorSelection(vendor, { allowInactive: false });
+  return {
+    ...payload,
+    vendorId: requestedId,
+    vendorSnapshot: buildVendorSnapshot({ ...payload, vendorSnapshot: vendorSnapshotFromRecord(vendor) }),
+  };
+}
+
 async function validateWorkflowRelation(rootDir, payload = {}, documentKind) {
   const fields = [payload.transactionNo, payload.workflowTemplateId, payload.workflowStepId];
   if (!fields.some(Boolean)) return { transactionNo: "", workflowTemplateId: "", workflowStepId: "" };
@@ -1525,7 +1561,8 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const draftPayload = buildSubstituteReceiptPayload({ ...base, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload);
+    const draftPayload = buildSubstituteReceiptPayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
     draftPayload.status = "draft";
     draftPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.draft;
     draftPayload.statusHistory = Array.isArray(existingPayload.statusHistory) ? existingPayload.statusHistory : [];
@@ -1564,7 +1601,8 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const draftPayload = buildExpensePayload({ ...base, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload);
+    const draftPayload = buildExpensePayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
     draftPayload.status = "draft";
     draftPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.draft;
     draftPayload.statusHistory = Array.isArray(existingPayload.statusHistory) ? existingPayload.statusHistory : [];
@@ -1654,9 +1692,14 @@ async function saveExpenseSubmissionLegacy({ rootDir, payload, uploads = [] }) {
       }
     : await allocateExpenseRequestNumber(rootDir, payload.accountingMonth);
   const company = await getCompanySettings(rootDir);
+  const vendorPayload = await prepareDocumentVendorPayload(rootDir, {
+    ...existingRequest?.payload,
+    ...payload,
+  }, existingRequest?.payload || draft?.payload || {});
   const expensePayload = buildExpensePayload({
     ...existingRequest?.payload,
     ...payload,
+    ...vendorPayload,
     company,
     requestNo: existingRequest?.requestNo || payload.requestNo,
     folderPath: existingRequest?.folderPath || payload.folderPath,
@@ -1782,8 +1825,10 @@ async function saveSubstituteReceiptSubmissionLegacy({
 
   const company = await getCompanySettings(rootDir);
   const now = new Date().toISOString();
+  const vendorPayload = await prepareDocumentVendorPayload(rootDir, submissionPayload, draft?.payload || {});
   const receiptPayload = buildSubstituteReceiptPayload({
     ...submissionPayload,
+    ...vendorPayload,
     company,
     receiptNo: nextReceipt.receiptNo,
     sequence: nextReceipt.sequence,
@@ -1916,7 +1961,8 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromRequestNo(existing.requestNo);
-    const nextPayload = buildExpensePayload({ ...stored, ...payload, accountingMonth, transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "", company, requestNo: existing.requestNo, folderPath: existing.folderPath, sequence: existing.requestNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval", statusHistory: stored.statusHistory || [] });
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload }, stored);
+    const nextPayload = buildExpensePayload({ ...vendorPayload, accountingMonth, transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "", company, requestNo: existing.requestNo, folderPath: existing.folderPath, sequence: existing.requestNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval", statusHistory: stored.statusHistory || [] });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.pending_approval;
     nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
@@ -1981,7 +2027,8 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromReceiptNo(existing.receiptNo);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const nextPayload = buildSubstituteReceiptPayload({ ...stored, ...payload, ...authoritative, accountingMonth, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload, ...authoritative }, stored);
+    const nextPayload = buildSubstituteReceiptPayload({ ...vendorPayload, ...authoritative, accountingMonth, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.pending_approval;
     nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
@@ -2863,7 +2910,7 @@ function assertPathWithinDirectory(baseDir, targetPath, message) {
 const WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE = "ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้";
 const WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE = "เอกสารถูกเปลี่ยนสถานะแล้ว กรุณาลองใหม่";
 
-async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [] }) {
+async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], existingPayload = null }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
     throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
   }
@@ -2901,8 +2948,9 @@ async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [] }) 
   const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
   const rawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
 
+  const vendorPayload = await prepareDocumentVendorPayload(rootDir, payload, existingPayload || {});
   const finalPayload = {
-    ...payload,
+    ...vendorPayload,
     evidenceFiles,
     rawFiles: rawFiles.length ? rawFiles : payload.rawFiles ?? [],
   };
@@ -2995,8 +3043,10 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
       transactionNo: stored.transactionNo ?? "",
       workflowTemplateId: stored.workflowTemplateId ?? "",
       workflowStepId: stored.workflowStepId ?? "",
+      vendorId: Object.prototype.hasOwnProperty.call(payload, "vendorId") ? payload.vendorId : (stored.vendorId ?? ""),
+      vendorSnapshot: Object.prototype.hasOwnProperty.call(payload, "vendorSnapshot") ? payload.vendorSnapshot : (stored.vendorSnapshot ?? {}),
     };
-    return saveWorkflowDocumentUnlocked({ rootDir, payload: authoritativePayload, uploads });
+    return saveWorkflowDocumentUnlocked({ rootDir, payload: authoritativePayload, uploads, existingPayload: stored });
   });
 }
 
