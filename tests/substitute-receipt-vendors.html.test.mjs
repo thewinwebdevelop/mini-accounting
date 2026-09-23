@@ -75,6 +75,8 @@ test("substitute receipt vendor settings page manages the shared vendor master",
   assert.match(html, /id="vendorPaymentChannel"/);
   assert.match(html, /id="vendorPaymentReference"/);
   assert.match(html, /id="vendorDefaultBusinessPurpose"/);
+  assert.match(html, /id="vendorStatusBox"[^>]*role="status"/);
+  assert.match(html, /id="vendorStatusBox"[^>]*aria-live="polite"/);
   assert.match(html, /id="vendorRows"/);
   assert.match(html, /src="\.\/substitute-receipt-vendors\.logic\.browser\.js"/);
 });
@@ -225,4 +227,77 @@ test("shared vendor settings deactivates an active vendor from the list", async 
   assert.equal(confirmations, 1);
   assert.equal(deactivateRequest.options.method, "PATCH");
   assert.deepEqual(JSON.parse(deactivateRequest.options.body), { status: "inactive" });
+});
+
+test("shared vendor settings edits and reactivates a full inactive vendor record", async () => {
+  const requests = [];
+  const vendor = {
+    id: "VENDOR-2",
+    name: "ร้านรอเปิดใช้",
+    taxId: "",
+    address: "12/34",
+    contactName: "คุณบี",
+    phone: "0820000000",
+    email: "inactive@example.test",
+    bankName: "SCB",
+    accountNo: "2223334445",
+    paymentChannel: "โอนผ่านบัญชีบริษัท",
+    paymentReference: "SCB 222",
+    defaultBusinessPurpose: "ซื้อวัสดุ",
+    note: "หยุดใช้ชั่วคราว",
+    status: "inactive",
+  };
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === "/api/vendors?includeInactive=1") {
+      return { ok: true, json: async () => ({ vendors: [vendor] }) };
+    }
+    return { ok: true, json: async () => ({ vendor: { ...vendor, status: "active" } }) };
+  };
+  const { elements } = await setupVendorSettingsSandbox({ fetchImpl });
+
+  await elements.vendorRows.listeners.click[0]({
+    target: {
+      closest(selector) {
+        if (selector === "[data-edit-vendor]") return { dataset: { editVendor: "VENDOR-2" } };
+        return null;
+      },
+    },
+  });
+
+  assert.equal(elements.vendorForm.elements.id.value, "VENDOR-2");
+  assert.equal(elements.vendorForm.elements.name.value, vendor.name);
+  assert.equal(elements.vendorForm.elements.taxId.value, "");
+  assert.equal(elements.vendorForm.elements.address.value, vendor.address);
+  assert.equal(elements.vendorForm.elements.contactName.value, vendor.contactName);
+  assert.equal(elements.vendorForm.elements.phone.value, vendor.phone);
+  assert.equal(elements.vendorForm.elements.email.value, vendor.email);
+  assert.equal(elements.vendorForm.elements.bankName.value, vendor.bankName);
+  assert.equal(elements.vendorForm.elements.accountNo.value, vendor.accountNo);
+  assert.equal(elements.vendorForm.elements.paymentChannel.value, vendor.paymentChannel);
+  assert.equal(elements.vendorForm.elements.paymentReference.value, vendor.paymentReference);
+  assert.equal(elements.vendorForm.elements.defaultBusinessPurpose.value, vendor.defaultBusinessPurpose);
+  assert.equal(elements.vendorForm.elements.note.value, vendor.note);
+  assert.equal(elements.vendorForm.elements.status.value, "inactive");
+
+  elements.vendorForm.elements.status.value = "active";
+  await elements.vendorForm.listeners.submit[0]({ preventDefault() {} });
+
+  const updateRequest = requests.find((request) => request.url === "/api/vendors/VENDOR-2");
+  assert.equal(updateRequest.options.method, "PATCH");
+  assert.deepEqual(JSON.parse(updateRequest.options.body), {
+    name: vendor.name,
+    taxId: "",
+    address: vendor.address,
+    contactName: vendor.contactName,
+    phone: vendor.phone,
+    email: vendor.email,
+    bankName: vendor.bankName,
+    accountNo: vendor.accountNo,
+    paymentChannel: vendor.paymentChannel,
+    paymentReference: vendor.paymentReference,
+    defaultBusinessPurpose: vendor.defaultBusinessPurpose,
+    note: vendor.note,
+    status: "active",
+  });
 });
