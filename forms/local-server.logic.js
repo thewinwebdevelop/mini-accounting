@@ -67,6 +67,7 @@ const {
   assertVendorSelection,
   createVendor,
   findVendorMatches,
+  buildVendorSnapshot,
   getVendorById,
   listVendors,
   normalizeVendorInput,
@@ -1157,6 +1158,8 @@ async function buildSubmittedExpenseRequestRecord(rootDir, folderPath) {
     workflowStepId: payload.workflowStepId || "",
     completedAt: payload.completedAt || "",
     completedBy: payload.completedBy || "",
+    vendorId: payload.vendorId || "",
+    vendorSnapshot: payload.vendorSnapshot || {},
   };
 }
 
@@ -1883,6 +1886,8 @@ function numberedSubmissionResult(payload, pdfFiles, rawFiles) {
     pdfFiles,
     rawFiles,
     evidenceFiles: payload.evidenceFiles || {},
+    vendorId: payload.vendorId || "",
+    vendorSnapshot: payload.vendorSnapshot || {},
     stockMovements: [],
   };
 }
@@ -2086,6 +2091,8 @@ async function buildSubmittedSubstituteReceiptRecord(rootDir, folderPath) {
     accountingMonth: payload.accountingMonth || getAccountingMonthFromReceiptNo(payload.receiptNo),
     updatedAt: payload.updatedAt || payload.createdAt || "",
     totalAmount: payload.totals?.totalAmount || "0.00",
+    vendorId: payload.vendorId || "",
+    vendorSnapshot: payload.vendorSnapshot || {},
     rawFileCount: rawFiles.length,
     rawFiles,
     pdfFiles,
@@ -3033,6 +3040,8 @@ function workflowDocumentTransitionResult(payload, pdfFiles) {
     submittedAt: payload.submittedAt || "", submittedBy: payload.submittedBy || "",
     approvedAt: payload.approvedAt || "", approvedBy: payload.approvedBy || "",
     completedAt: payload.completedAt || "", completedBy: payload.completedBy || "",
+    vendorId: payload.vendorId || "",
+    vendorSnapshot: payload.vendorSnapshot || {},
     folderPath: payload.folderPath, pdfFiles,
   };
 }
@@ -5133,6 +5142,7 @@ module.exports = {
   approveWorkflowDocument,
   assertPathWithinDirectory,
   assertVendorSelection,
+  buildVendorSnapshot,
   buildWorkflowTransactionSheetEntry,
   cancelWorkflowTransaction,
   describeDriveSyncError,

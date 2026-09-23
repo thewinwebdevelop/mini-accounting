@@ -57,6 +57,33 @@ function vendorSnapshotFromRecord(record = {}) {
   return Object.fromEntries(SNAPSHOT_FIELDS.map((field) => [field, cleanText(record?.[field])]));
 }
 
+// Projects submitted document fields into the canonical vendor snapshot. The
+// document owns this copy: a later edit must never write back to the vendor
+// master. Existing snapshot values are retained for fields that a particular
+// form does not expose, while submitted aliases override them when present.
+function buildVendorSnapshot(payload = {}) {
+  const aliases = {
+    name: ["vendorName", "payeeName", "paymentTargetName"],
+    taxId: ["vendorTaxId", "payeeTaxId", "paymentTargetTaxId"],
+    address: ["vendorAddress", "payeeAddress", "paymentAddress"],
+    contactName: ["vendorContactName", "payeeContactName", "paymentContactName"],
+    phone: ["vendorPhone", "payeePhone", "paymentPhone"],
+    email: ["vendorEmail", "payeeEmail", "paymentEmail"],
+    bankName: ["vendorBankName", "bankName", "paymentBankName"],
+    accountNo: ["vendorAccountNo", "accountNo", "paymentAccountNo"],
+    paymentChannel: ["vendorPaymentChannel", "paymentChannel"],
+    paymentReference: ["vendorPaymentReference", "paymentReference"],
+    defaultBusinessPurpose: ["vendorDefaultBusinessPurpose", "defaultBusinessPurpose"],
+  };
+  const snapshot = vendorSnapshotFromRecord(payload.vendorSnapshot || {});
+  for (const field of SNAPSHOT_FIELDS) {
+    const source = aliases[field] || [];
+    const key = source.find((candidate) => Object.prototype.hasOwnProperty.call(payload, candidate));
+    if (key) snapshot[field] = cleanText(payload[key]);
+  }
+  return snapshot;
+}
+
 function vendorCandidateFingerprint(input = {}) {
   const normalized = normalizeVendorInput(input);
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
@@ -316,6 +343,7 @@ module.exports = {
   vendorCandidateFingerprint,
   normalizeVendorInput,
   vendorSnapshotFromRecord,
+  buildVendorSnapshot,
   findVendorMatches,
   assertVendorSelection,
   listVendors,
