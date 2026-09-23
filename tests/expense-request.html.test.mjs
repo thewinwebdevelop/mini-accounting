@@ -189,7 +189,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0 } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -234,6 +234,9 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     if (url.includes("/api/expense-drafts")) {
       return { ok: true, json: async () => saveResponse ?? {} };
     }
+    if (url.includes("/api/expense-requests")) {
+      return { ok: true, json: async () => saveResponse ?? {} };
+    }
     return { ok: true, json: async () => ({}) };
   };
 
@@ -253,6 +256,15 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     fetch: stubFetch,
     navigator: {},
   });
+
+  if (vendorPickerFailure) {
+    window.SharedVendorPicker = {
+      create: () => ({
+        load: async () => [],
+        saveVendorPresetIfRequested: async () => { throw new Error("vendor API unavailable"); },
+      }),
+    };
+  }
 
   vm.runInContext(await readFile(expenseLogicPath, "utf8"), context);
   vm.runInContext(await readFile(returnLinkPath, "utf8"), context);
@@ -412,4 +424,34 @@ test("REQ POST success keeps committed identity when detail GET fails, then relo
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(elements.reloadSavedRequest.hidden, true);
   assert.equal(fetchLog.filter((url) => url.includes("/api/expense-drafts")).length, 1, "reload must not repost");
+});
+
+test("expense submit keeps vendor preset failure warning after successful detail reload", async () => {
+  const saved = {
+    requestNo: "REQ-2026-09-0001",
+    status: "pending_approval",
+    evidenceFiles: {},
+    rawFiles: [],
+    payload: {
+      accountingMonth: "2026-09",
+      requestType: "reimbursement",
+      requesterName: "ผู้ขอ",
+      businessPurpose: "ทดสอบ",
+      paymentTargetName: "ร้านทดสอบ",
+      expenseLines: [{ description: "ของทดสอบ", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+    },
+  };
+  const { elements, form } = await setupExpenseRequestSandbox({ saveResponse: saved, vendorPickerFailure: true });
+  form.elements.accountingMonth.value = "2026-09";
+  form.elements.requesterName.value = "ผู้ขอ";
+  form.elements.businessPurpose.value = "ทดสอบ";
+  form.elements.paymentTargetName.value = "ร้านทดสอบ";
+  elements.addLine.dispatch("click");
+  const row = elements.lineItems.querySelector(".line-row");
+  row.querySelector('[name="lineDescription"]').value = "ของทดสอบ";
+  row.querySelector('[name="lineBeforeVat"]').value = "10";
+  elements.submitRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(elements.saveStatus.textContent, /บันทึกผู้ขายไม่สำเร็จ/);
+  assert.match(elements.saveStatus.textContent, /vendor API unavailable/);
 });
