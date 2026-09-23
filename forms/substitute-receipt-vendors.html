@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ตั้งค่าผู้ขายใบรับรองแทนใบเสร็จ - หจก.สวีทเฮาส์</title>
+  <title>ตั้งค่าผู้ขายกลาง - หจก.สวีทเฮาส์</title>
   <style>
     :root {
       --ink: #1f2933;
@@ -172,7 +172,7 @@
       border-radius: 8px;
       background: #ffffff;
     }
-    table { width: 100%; min-width: 780px; border-collapse: collapse; }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; }
     th, td { padding: 8px 9px; border-bottom: 1px solid #eef2f6; text-align: left; vertical-align: top; }
     th { color: #ffffff; background: var(--brand); font-size: 12px; }
     .muted { color: var(--muted); font-size: 12px; }
@@ -235,6 +235,14 @@
           <a class="menu-item" href="/substitute-receipt-vendors">ตั้งค่าผู้ขายใบรับรอง</a>
         </div>
         <div class="menu-group">
+          <div class="menu-group-title">เอกสารจัดซื้อ / จ่ายเงิน</div>
+          <a class="menu-item" href="/workflow-documents?documentKind=purchase_order">ใบสั่งซื้อ</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payment_voucher">ใบสำคัญจ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=cash_spend_declaration">ใบรับรองการจ่ายเงินสดส่วนตัว</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=payee_acknowledgement">ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย</a>
+          <a class="menu-item" href="/workflow-documents?documentKind=goods_receipt">ใบรับของ/ใบรับสินค้าเข้าคลัง</a>
+        </div>
+        <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
@@ -243,8 +251,8 @@
       </nav>
     </details>
     <div>
-      <h1 class="brand-title">ตั้งค่าผู้ขายใบรับรอง</h1>
-      <p class="brand-subtitle">บันทึกข้อมูลผู้ขายที่ใช้ซ้ำในใบรับรองแทนใบเสร็จรับเงิน</p>
+      <h1 class="brand-title">ตั้งค่าผู้ขายกลาง</h1>
+      <p class="brand-subtitle">บันทึกข้อมูลผู้ขายที่ใช้ซ้ำได้กับเอกสารทุกประเภท</p>
     </div>
   </header>
 
@@ -280,6 +288,30 @@
             <input id="vendorPaymentReference" name="paymentReference">
           </div>
           <div class="field span-12">
+            <label for="vendorAddress">ที่อยู่ผู้ขาย</label>
+            <textarea id="vendorAddress" name="address"></textarea>
+          </div>
+          <div class="field span-6">
+            <label for="vendorContactName">ผู้ติดต่อ</label>
+            <input id="vendorContactName" name="contactName">
+          </div>
+          <div class="field span-6">
+            <label for="vendorPhone">เบอร์โทร</label>
+            <input id="vendorPhone" name="phone">
+          </div>
+          <div class="field span-6">
+            <label for="vendorEmail">อีเมล</label>
+            <input id="vendorEmail" name="email" type="email">
+          </div>
+          <div class="field span-6">
+            <label for="vendorBankName">ธนาคาร</label>
+            <input id="vendorBankName" name="bankName">
+          </div>
+          <div class="field span-6">
+            <label for="vendorAccountNo">เลขบัญชี</label>
+            <input id="vendorAccountNo" name="accountNo">
+          </div>
+          <div class="field span-12">
             <label for="vendorDefaultBusinessPurpose">วัตถุประสงค์เริ่มต้น</label>
             <textarea id="vendorDefaultBusinessPurpose" name="defaultBusinessPurpose"></textarea>
           </div>
@@ -292,7 +324,7 @@
           <button class="button primary" type="submit" id="vendorSubmitLabel">บันทึกผู้ขาย</button>
           <button class="button secondary" type="button" id="cancelVendorEdit">ยกเลิกแก้ไข</button>
         </div>
-        <div class="status-box" id="vendorStatusBox"></div>
+        <div class="status-box" id="vendorStatusBox" role="status" aria-live="polite"></div>
       </form>
     </section>
 
@@ -307,6 +339,7 @@
             <thead>
               <tr>
                 <th>ผู้ขาย</th>
+                <th>ติดต่อ</th>
                 <th>การชำระเงิน</th>
                 <th>วัตถุประสงค์เริ่มต้น</th>
                 <th>สถานะ</th>

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import inventory from "../forms/inventory.logic.js";
+import inventoryDb from "../forms/inventory-db.logic.js";
 
 const {
   createProductCategory,
@@ -24,7 +25,389 @@ const {
   updateProduct,
   updateSaleSku,
   updateStockSku,
+  reversePurchaseInMovementsByReference,
 } = inventory;
+
+test("reversePurchaseInMovementsByReference reverses every original purchase atomically, including an inactive SKU", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-A", name: "สินค้า reversal", category: "เสื้อ" });
+    const firstSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "REV-A-BLACK-M",
+      color: "ดำ",
+      size: "M",
+      defaultUnitCost: "120",
+    });
+    const secondSku = createStockSku(rootDir, {
+      productId: product.id,
+      sku: "REV-A-WHITE-M",
+      color: "ขาว",
+      size: "M",
+      defaultUnitCost: "130",
+    });
+    const first = createPurchaseInMovement(rootDir, {
+      stockSkuId: firstSku.id,
+      movementDate: "2026-09-20",
+      quantity: 2,
+      unitCost: "120.50",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0001",
+    }, { now: () => "2026-09-20T01:00:00.000Z" });
+    const second = createPurchaseInMovement(rootDir, {
+      stockSkuId: secondSku.id,
+      movementDate: "2026-09-20",
+      quantity: 3,
+      unitCost: "130.25",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0001",
+    }, { now: () => "2026-09-20T01:01:00.000Z" });
+
+    updateStockSku(rootDir, secondSku.id, {
+      productId: product.id,
+      sku: secondSku.sku,
+      color: secondSku.color,
+      size: secondSku.size,
+      barcode: secondSku.barcode,
+      defaultUnitCost: secondSku.defaultUnitCost,
+      status: "inactive",
+    });
+
+    const result = reversePurchaseInMovementsByReference({
+      rootDir,
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0001",
+      expectedOriginalMovementIds: [first.id, second.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0001",
+      now: () => "2026-09-21T02:00:00.000Z",
+    });
+
+    assert.equal(result.status, "reversed");
+    assert.deepEqual(result.reversals.map((item) => ({
+      originalMovementId: item.originalMovementId,
+      stockSkuId: item.stockSkuId,
+      quantity: item.quantity,
+      movementDate: item.movementDate,
+    })), [
+      { originalMovementId: first.id, stockSkuId: firstSku.id, quantity: 2, movementDate: "2026-09-21" },
+      { originalMovementId: second.id, stockSkuId: secondSku.id, quantity: 3, movementDate: "2026-09-21" },
+    ]);
+    assert.deepEqual(result.reversals.map((item) => item.reversalMovementId).sort((a, b) => a - b), result.reversals.map((item) => item.reversalMovementId).sort((a, b) => a - b));
+
+    const reversalDb = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(reversalDb);
+    const reversalRows = reversalDb.prepare(`
+      SELECT stock_sku_id, quantity, unit_cost, total_cost, movement_date, reference_type, reference_no
+      FROM stock_movements
+      WHERE movement_type = 'adjustment_out'
+      ORDER BY id ASC
+    `).all();
+    assert.deepEqual(reversalRows.map((row) => ({
+      stockSkuId: row.stock_sku_id,
+      quantity: row.quantity,
+      unitCost: row.unit_cost,
+      totalCost: row.total_cost,
+      movementDate: row.movement_date,
+      referenceType: row.reference_type,
+      referenceNo: row.reference_no,
+    })), [
+      { stockSkuId: firstSku.id, quantity: 2, unitCost: 120.5, totalCost: 241, movementDate: "2026-09-21", referenceType: "workflow_cancellation", referenceNo: "workflow_transaction:TXN-2026-09-0001" },
+      { stockSkuId: secondSku.id, quantity: 3, unitCost: 130.25, totalCost: 390.75, movementDate: "2026-09-21", referenceType: "workflow_cancellation", referenceNo: "workflow_transaction:TXN-2026-09-0001" },
+    ]);
+    reversalDb.close();
+
+    const originals = inventory.listStockMovementsByReference(rootDir, "substitute_receipt", "SR-2026-09-0001");
+    assert.deepEqual(originals.map((item) => ({ id: item.id, movementType: item.movementType, quantity: item.quantity })), [
+      { id: first.id, movementType: "purchase_in", quantity: 2 },
+      { id: second.id, movementType: "purchase_in", quantity: 3 },
+    ]);
+    assert.deepEqual(inventory.listInventoryBalances(rootDir).map((item) => item.quantityOnHand), [0, 0]);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("reversePurchaseInMovementsByReference retries without duplicates and completes only missing originals", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-retry-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-B", name: "สินค้า retry", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "REV-B-BLACK-M", defaultUnitCost: "100" });
+    const first = createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-20",
+      quantity: 2,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0002",
+    });
+    const firstResult = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0002",
+      expectedOriginalMovementIds: [first.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0002",
+      now: () => "2026-09-21T02:00:00.000Z",
+    });
+    const retry = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0002",
+      expectedOriginalMovementIds: [first.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0002",
+      now: () => "2026-09-21T03:00:00.000Z",
+    });
+
+    assert.equal(retry.status, "already_reversed");
+    assert.deepEqual(retry.reversals, firstResult.reversals);
+
+    const second = createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-20",
+      quantity: 1,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0002",
+    });
+    const mixed = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0002",
+      expectedOriginalMovementIds: [first.id, second.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0002",
+      now: () => "2026-09-21T04:00:00.000Z",
+    });
+
+    assert.equal(mixed.status, "reversed");
+    assert.deepEqual(mixed.reversals.map((item) => item.originalMovementId), [first.id, second.id]);
+    const db = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(db);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM stock_movement_reversals").get().count, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM stock_movements WHERE movement_type = 'adjustment_out'").get().count, 2);
+    db.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("reversePurchaseInMovementsByReference preflights all SKUs and rolls back every reversal when one balance is insufficient", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-insufficient-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-C", name: "สินค้า insufficient", category: "เสื้อ" });
+    const firstSku = createStockSku(rootDir, { productId: product.id, sku: "REV-C-BLACK-M", defaultUnitCost: "100" });
+    const secondSku = createStockSku(rootDir, { productId: product.id, sku: "REV-C-WHITE-M", defaultUnitCost: "100" });
+    const first = createPurchaseInMovement(rootDir, {
+      stockSkuId: firstSku.id,
+      movementDate: "2026-09-20",
+      quantity: 2,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0003",
+    });
+    const second = createPurchaseInMovement(rootDir, {
+      stockSkuId: secondSku.id,
+      movementDate: "2026-09-20",
+      quantity: 2,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0003",
+    });
+    const db = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(db);
+    db.prepare(`
+      INSERT INTO stock_movements (
+        movement_no, stock_sku_id, movement_type, movement_date, quantity,
+        unit_cost, total_cost, reference_type, reference_no, note, created_at
+      ) VALUES ('MOV-20260920-99999', ?, 'sale_out', '2026-09-20', 2, 100, 200, 'platform_order', 'SHOP-1', '', '2026-09-20T02:00:00.000Z')
+    `).run(firstSku.id);
+    db.close();
+
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0003",
+      expectedOriginalMovementIds: [first.id, second.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0003",
+      now: () => "2026-09-21T02:00:00.000Z",
+    }), (error) => {
+      assert.equal(error.code, "INSUFFICIENT_STOCK_FOR_CANCELLATION");
+      assert.deepEqual(error.details.items, [{ sku: "REV-C-BLACK-M", availableQuantity: 0, requiredQuantity: 2 }]);
+      assert.equal(String(error.message).includes(rootDir), false);
+      return true;
+    });
+
+    const after = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(after);
+    assert.equal(after.prepare("SELECT COUNT(*) AS count FROM stock_movement_reversals").get().count, 0);
+    assert.equal(after.prepare("SELECT COUNT(*) AS count FROM stock_movements WHERE movement_type = 'adjustment_out'").get().count, 0);
+    after.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("reversePurchaseInMovementsByReference fails closed for mismatched IDs and malformed prior reversal", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-invalid-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-D", name: "สินค้า invalid", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "REV-D-BLACK-M", defaultUnitCost: "100" });
+    const original = createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-20",
+      quantity: 1,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0004",
+    });
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0004",
+      expectedOriginalMovementIds: [original.id, original.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0004",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0004",
+      expectedOriginalMovementIds: [original.id + 999],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0004",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+
+    const result = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0004",
+      expectedOriginalMovementIds: [original.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0004",
+    });
+    const db = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(db);
+    db.prepare("UPDATE stock_movements SET movement_type = 'purchase_in' WHERE id = ?").run(result.reversals[0].reversalMovementId);
+    db.close();
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0004",
+      expectedOriginalMovementIds: [original.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0004",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("reversePurchaseInMovementsByReference permits multiple SRs under one parent cancellation reference", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-shared-parent-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-E", name: "สินค้า shared parent", category: "เสื้อ" });
+    const firstSku = createStockSku(rootDir, { productId: product.id, sku: "REV-E-BLACK-M", defaultUnitCost: "100" });
+    const secondSku = createStockSku(rootDir, { productId: product.id, sku: "REV-E-WHITE-M", defaultUnitCost: "200" });
+    const first = createPurchaseInMovement(rootDir, {
+      stockSkuId: firstSku.id,
+      movementDate: "2026-09-20",
+      quantity: 1,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0005",
+    });
+    const second = createPurchaseInMovement(rootDir, {
+      stockSkuId: secondSku.id,
+      movementDate: "2026-09-20",
+      quantity: 1,
+      unitCost: "200",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0006",
+    });
+    const cancellationReference = "workflow_transaction:TXN-2026-09-0005";
+
+    const firstResult = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0005",
+      expectedOriginalMovementIds: [first.id],
+      reversalDate: "2026-09-21",
+      cancellationReference,
+      now: () => "2026-09-21T02:00:00.000Z",
+    });
+    const secondResult = reversePurchaseInMovementsByReference(rootDir, {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0006",
+      expectedOriginalMovementIds: [second.id],
+      reversalDate: "2026-09-21",
+      cancellationReference,
+      now: () => "2026-09-21T02:00:00.000Z",
+    });
+
+    assert.equal(firstResult.status, "reversed");
+    assert.equal(secondResult.status, "reversed");
+    assert.equal(inventory.listInventoryBalances(rootDir).every((item) => item.quantityOnHand === 0), true);
+    const db = inventoryDb.openInventoryDatabase(rootDir);
+    inventoryDb.ensureInventorySchema(db);
+    assert.equal(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM stock_movement_reversals
+      WHERE cancellation_reference = ?
+    `).get(cancellationReference).count, 2);
+    db.close();
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("reversePurchaseInMovementsByReference requires exact persisted movement IDs, canonical identifiers, and reversal date on retry", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-reversal-canonical-"));
+
+  try {
+    const product = createProduct(rootDir, { productCode: "REV-F", name: "สินค้า canonical", category: "เสื้อ" });
+    const sku = createStockSku(rootDir, { productId: product.id, sku: "REV-F-BLACK-M", defaultUnitCost: "100" });
+    const original = createPurchaseInMovement(rootDir, {
+      stockSkuId: sku.id,
+      movementDate: "2026-09-20",
+      quantity: 1,
+      unitCost: "100",
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0007",
+    });
+    const baseRequest = {
+      referenceType: "substitute_receipt",
+      referenceNo: "SR-2026-09-0007",
+      expectedOriginalMovementIds: [original.id],
+      reversalDate: "2026-09-21",
+      cancellationReference: "workflow_transaction:TXN-2026-09-0007",
+    };
+
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      ...baseRequest,
+      expectedOriginalMovementIds: undefined,
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      ...baseRequest,
+      referenceNo: " SR-2026-09-0007",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      ...baseRequest,
+      cancellationReference: "workflow_transaction:TXN-2026-09-0007 ",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      ...baseRequest,
+      reversalDate: "2026-09-21 ",
+    }), (error) => error.code === "INVALID_STOCK_REVERSAL_REQUEST");
+
+    const result = reversePurchaseInMovementsByReference(rootDir, baseRequest);
+    assert.equal(result.status, "reversed");
+    assert.throws(() => reversePurchaseInMovementsByReference(rootDir, {
+      ...baseRequest,
+      reversalDate: "2026-09-22",
+    }), (error) => error.code === "STOCK_REVERSAL_SOURCE_INVALID");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
 
 test("product category config seeds defaults and controls allowed product categories", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-inventory-"));

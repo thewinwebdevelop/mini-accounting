@@ -4,6 +4,7 @@ import test from "node:test";
 import substituteReceipt from "../forms/substitute-receipt.logic.js";
 
 const {
+  SUBSTITUTE_RECEIPT_STATUSES,
   SUBSTITUTE_RECEIPT_STATUS_LABELS,
   buildSubstituteReceiptPayload,
   buildSubstituteReceiptRawFileName,
@@ -141,6 +142,42 @@ test("substitute receipt state helpers validate transitions and lock stock lines
   }), /Stock lines cannot be edited/);
 });
 
+test("completed is a valid substitute receipt status reachable only from approved or received", () => {
+  assert.deepEqual(SUBSTITUTE_RECEIPT_STATUSES, [
+    "draft",
+    "pending_approval",
+    "approved",
+    "received",
+    "completed",
+    "cancelled",
+    "voided",
+  ]);
+  assert.equal(SUBSTITUTE_RECEIPT_STATUS_LABELS.completed, "เสร็จสิ้น");
+  assert.equal(normalizeSubstituteReceiptStatus("completed"), "completed");
+
+  // Reachable from approved (general_expense terminal state) and received (stock_purchase terminal state).
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("approved", "completed"));
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("received", "completed"));
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("completed", "completed"));
+
+  // Every other starting state is rejected.
+  assert.throws(() => assertSubstituteReceiptTransition("draft", "completed"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("pending_approval", "completed"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("cancelled", "completed"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("voided", "completed"), /Invalid substitute receipt status transition/);
+
+  // Completed is terminal: it cannot move on to any other status.
+  assert.throws(() => assertSubstituteReceiptTransition("completed", "approved"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("completed", "received"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("completed", "cancelled"), /Invalid substitute receipt status transition/);
+  assert.throws(() => assertSubstituteReceiptTransition("completed", "voided"), /Invalid substitute receipt status transition/);
+
+  // Existing approved/received transitions still work unchanged.
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("approved", "received"));
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("approved", "cancelled"));
+  assert.doesNotThrow(() => assertSubstituteReceiptTransition("received", "voided"));
+});
+
 test("formatSubstituteReceiptMarkdown includes stock lines and raw evidence names", () => {
   const payload = buildSubstituteReceiptPayload({
     accountingMonth: "2026-09",
@@ -181,4 +218,48 @@ test("formatSubstituteReceiptMarkdown labels general expense rows without Stock 
   assert.doesNotMatch(markdown, /\| ลำดับ \| Stock SKU \|/);
   assert.match(markdown, /ค่าส่งสินค้า Shopee/);
   assert.match(markdown, /ยอดรวม \| 85.00/);
+});
+
+test("buildSubstituteReceiptPayload preserves workflow relation fields and completed status", () => {
+  const payload = buildSubstituteReceiptPayload({
+    sequence: "1",
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-06",
+    receiptType: "general_expense",
+    payeeName: "ร้านค้า",
+    businessPurpose: "ค่าใช้จ่ายบริษัท",
+    transactionNo: "TXN-2026-09-0001",
+    workflowTemplateId: "director_expense_transfer",
+    workflowStepId: "step-002",
+    status: "completed",
+    completedAt: "2026-09-06T14:00:00.000Z",
+    completedBy: "บัญชี",
+    lines: [{ description: "ค่าอุปกรณ์", quantity: "1", unitCost: "100" }],
+  });
+
+  assert.equal(payload.transactionNo, "TXN-2026-09-0001");
+  assert.equal(payload.workflowTemplateId, "director_expense_transfer");
+  assert.equal(payload.workflowStepId, "step-002");
+  assert.equal(payload.status, "completed");
+  assert.equal(payload.completedAt, "2026-09-06T14:00:00.000Z");
+  assert.equal(payload.completedBy, "บัญชี");
+});
+
+test("buildSubstituteReceiptPayload defaults workflow relation fields to empty strings for standalone receipts", () => {
+  const payload = buildSubstituteReceiptPayload({
+    sequence: "2",
+    accountingMonth: "2026-09",
+    receiptDate: "2026-09-06",
+    receiptType: "general_expense",
+    payeeName: "ร้านค้า",
+    businessPurpose: "ค่าใช้จ่ายบริษัท",
+    lines: [{ description: "ค่าอุปกรณ์", quantity: "1", unitCost: "100" }],
+  });
+
+  assert.equal(payload.transactionNo, "");
+  assert.equal(payload.workflowTemplateId, "");
+  assert.equal(payload.workflowStepId, "");
+  assert.equal(payload.completedAt, "");
+  assert.equal(payload.completedBy, "");
+  assert.equal(payload.status, "draft");
 });

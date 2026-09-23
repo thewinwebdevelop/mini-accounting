@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -90,6 +90,20 @@ function ensureInventorySchema(db) {
 
     CREATE INDEX IF NOT EXISTS idx_stock_movements_reference
       ON stock_movements (reference_type, reference_no);
+
+    CREATE TABLE IF NOT EXISTS stock_movement_reversals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_movement_id INTEGER NOT NULL UNIQUE,
+      reversal_movement_id INTEGER NOT NULL UNIQUE,
+      cancellation_reference TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (original_movement_id) REFERENCES stock_movements(id),
+      FOREIGN KEY (reversal_movement_id) REFERENCES stock_movements(id),
+      CHECK (original_movement_id <> reversal_movement_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_stock_movement_reversals_reference
+      ON stock_movement_reversals (cancellation_reference);
 
     CREATE TABLE IF NOT EXISTS sale_skus (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
