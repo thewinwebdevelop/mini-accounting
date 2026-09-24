@@ -26,7 +26,7 @@ test("expense_request adapter extracts payee, purpose, parties, and lines mapped
   assert.deepEqual(context.purpose, { title: "เบิกค่าส่งของ", businessPurpose: "ค่าส่งสินค้า" });
   assert.deepEqual(context.parties, { requesterName: "คุณต้า", requesterRole: "ผู้จัดการ" });
   assert.deepEqual(context.lines, [
-    { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "" },
+    { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "", vatMode: "manual", vatRate: null, amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
   ]);
 });
 
@@ -94,7 +94,7 @@ test("applyWorkflowContextToExpenseRequest maps payee/purpose fields and one exp
   assert.equal(patch.requestTitle, "เบิกค่าส่ง");
   assert.equal(patch.businessPurpose, "ค่าส่งสินค้า");
   assert.deepEqual(patch.expenseLines, [
-    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
+    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "100.00", vatAmount: "", withholdingTax: "0.00", vatConfirmationRequired: true },
   ]);
 });
 
@@ -114,8 +114,8 @@ test("expense_request lines round-trip: sourcing maps gross (amountBeforeVat + v
   });
 
   assert.deepEqual(sourceContext.lines, [
-    { description: "ค่าขนส่งเข้าคลัง", quantity: "1", unitCost: "267.50", lineTotal: "267.50", stockSkuId: "" },
-    { description: "ค่าบรรจุภัณฑ์", quantity: "1", unitCost: "80.00", lineTotal: "80.00", stockSkuId: "" },
+    { description: "ค่าขนส่งเข้าคลัง", quantity: "1", unitCost: "250.00", lineTotal: "267.50", stockSkuId: "", vatMode: "manual", vatRate: null, amountBeforeVat: "250.00", vatAmount: "17.50", withholdingTax: "5.00" },
+    { description: "ค่าบรรจุภัณฑ์", quantity: "1", unitCost: "80.00", lineTotal: "80.00", stockSkuId: "", vatMode: "manual", vatRate: null, amountBeforeVat: "80.00", vatAmount: "0.00", withholdingTax: "0.00" },
   ]);
 
   const patch = workflowPrefillLogic.applyWorkflowContextToExpenseRequest({ lines: sourceContext.lines }, ["lines"]);
@@ -127,7 +127,7 @@ test("expense_request lines round-trip: sourcing maps gross (amountBeforeVat + v
   // canonical line's (gross) lineTotal, per the receiving-direction mapping,
   // which is unchanged by the sourcing-side correction.
   assert.deepEqual(patch.expenseLines, [
-    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "267.50", vatAmount: "0.00", withholdingTax: "0.00" },
+    { description: "ค่าขนส่งเข้าคลัง", amountBeforeVat: "250.00", vatAmount: "17.50", withholdingTax: "5.00" },
     { description: "ค่าบรรจุภัณฑ์", amountBeforeVat: "80.00", vatAmount: "0.00", withholdingTax: "0.00" },
   ]);
 });
@@ -428,7 +428,7 @@ test("buildWorkflowPrefillContext groups never carry excluded fields like docume
   // The canonical line shape has no room for vatAmount/withholdingTax or any
   // extra per-line field the source document happened to carry (e.g.
   // vendorInvoiceNo).
-  assert.deepEqual(Object.keys(context.lines[0]).sort(), ["description", "lineTotal", "quantity", "stockSkuId", "unitCost"]);
+  assert.deepEqual(Object.keys(context.lines[0]).sort(), ["amountBeforeVat", "description", "lineTotal", "quantity", "stockSkuId", "unitCost", "vatAmount", "vatMode", "vatRate", "withholdingTax"]);
 });
 
 test("RECEIVABLE_PREFILL_GROUPS: every kind can receive payee, purpose, and lines; totals is not a group at all (D10)", () => {
@@ -584,7 +584,10 @@ for (const kind of ALL_KINDS) {
     assert.ok(context.purpose, `${kind} must be able to source purpose`);
     assert.ok(Array.isArray(context.lines) && context.lines.length > 0, `${kind} must be able to source lines`);
     for (const line of context.lines) {
-      assert.deepEqual(Object.keys(line).sort(), ["description", "lineTotal", "quantity", "stockSkuId", "unitCost"]);
+      const expectedLineKeys = kind === "expense_request"
+        ? ["amountBeforeVat", "description", "lineTotal", "quantity", "stockSkuId", "unitCost", "vatAmount", "vatMode", "vatRate", "withholdingTax"]
+        : ["description", "lineTotal", "quantity", "stockSkuId", "unitCost"];
+      assert.deepEqual(Object.keys(line).sort(), expectedLineKeys);
     }
 
     if (kind === "expense_request" || kind === "purchase_order" || kind === "payment_voucher"

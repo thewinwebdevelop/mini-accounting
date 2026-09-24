@@ -3,28 +3,20 @@ import tempfile
 from decimal import Decimal
 
 from pypdf import PdfWriter
-from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
-from reportlab.platypus.flowables import HRFlowable
+from reportlab.platypus import Spacer
 
 from pdf_common import (
-    FONT,
-    LINE,
+    document_header, detail_grid, totals_table, signature_table as shared_signatures,
     amount,
     append_pdf,
     append_raw_annex,
-    baht,
-    blank_paragraph,
     build_doc,
     company_info,
     money_paragraph,
     paragraph,
-    signature_cell,
     styled_table,
-    styles,
 )
 
 RECEIPT_TYPE_LABELS = {
@@ -32,8 +24,6 @@ RECEIPT_TYPE_LABELS = {
     "general_expense": "รายจ่ายทั่วไป",
 }
 
-styles.add(ParagraphStyle(name="DocRight", parent=styles["DocBody"], alignment=TA_RIGHT))
-styles.add(ParagraphStyle(name="DocCompanyName", parent=styles["DocBody"], fontSize=11.5, leading=15))
 
 THAI_MONTHS = [
     "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
@@ -107,60 +97,9 @@ def baht_text(value):
     return ("ลบ" if negative else "") + result
 
 
-def _preparer_signature_cell(name=""):
-    name_line = f"({name})" if name else "(........................................)"
-    return [
-        Paragraph("ลงชื่อผู้จ่ายเงิน/ผู้รับรอง", styles["DocBody"]),
-        Spacer(1, 8 * mm),
-        Paragraph("........................................", styles["DocBody"]),
-        blank_paragraph(name_line, "DocSmall"),
-        blank_paragraph("ตำแหน่ง........................................", "DocSmall"),
-        Paragraph("วันที่ ........../........../..........", styles["DocSmall"]),
-    ]
-
-
 def _substitute_signature_table(payload):
     prepared_by = payload.get("preparedBy") or payload.get("requesterName") or ""
-    rows = [[
-        _preparer_signature_cell(prepared_by),
-        signature_cell("ผู้อนุมัติ"),
-    ]]
-    table = Table(rows, colWidths=[91 * mm, 91 * mm], rowHeights=[40 * mm], hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.35, LINE),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    return table
-
-
-def _header_table(payload, company):
-    receipt_type = payload.get("receiptType") or "stock_purchase"
-    left = Paragraph(
-        f"{company['name']}<br/>{company['address']}<br/>"
-        f"เลขประจำตัวผู้เสียภาษี {company['tax_id']} ({company['branch']})",
-        styles["DocCompanyName"],
-    )
-    right = Paragraph(
-        f"เลขที่&nbsp;&nbsp;{paragraph_text(payload.get('receiptNo'))}<br/>"
-        f"วันที่&nbsp;&nbsp;{thai_date(payload.get('receiptDate'))}<br/>"
-        f"ประเภท&nbsp;&nbsp;{payload.get('receiptTypeLabel') or RECEIPT_TYPE_LABELS.get(receipt_type, receipt_type)}",
-        styles["DocRight"],
-    )
-    table = Table([[left, right]], colWidths=[122 * mm, 60 * mm])
-    table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    return table
+    return shared_signatures([("ผู้จ่ายเงิน/ผู้รับรอง", prepared_by), ("ผู้อนุมัติ", "")], preparer_position=True)
 
 
 def paragraph_text(value):
@@ -168,51 +107,18 @@ def paragraph_text(value):
 
 
 def _payee_table(payload):
-    rows = [
-        [
-            paragraph("ชื่อผู้รับเงิน/ผู้ขาย"), paragraph(payload.get("payeeName")),
-            paragraph("เลขประจำตัวผู้เสียภาษี"), paragraph(payload.get("payeeTaxId")),
-        ],
-        [paragraph("ที่อยู่"), blank_paragraph(""), "", ""],
-        [
-            paragraph("ช่องทางชำระเงิน"), paragraph(payload.get("paymentChannel")),
-            paragraph("เลขอ้างอิงชำระเงิน"), paragraph(payload.get("paymentReference")),
-        ],
-    ]
-    table = Table(rows, colWidths=[34 * mm, 62 * mm, 34 * mm, 52 * mm], hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.35, LINE),
-        ("SPAN", (1, 1), (3, 1)),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    return table
+    return detail_grid([
+        ("ชื่อผู้รับเงิน/ผู้ขาย", payload.get("payeeName")),
+        ("เลขประจำตัวผู้เสียภาษี", payload.get("payeeTaxId")),
+        ("ที่อยู่", "........................................................................................"),
+        ("ประเภท", payload.get("receiptTypeLabel") or RECEIPT_TYPE_LABELS.get(payload.get("receiptType"), "ซื้อสต๊อกสินค้า")),
+        ("ช่องทางชำระเงิน", payload.get("paymentChannel")),
+        ("เลขอ้างอิงชำระเงิน", payload.get("paymentReference")),
+    ])
 
 
 def _totals_box(total_amount):
-    rows = [
-        [paragraph("รวมทั้งสิ้น"), money_paragraph(total_amount)],
-        [Paragraph(f"(ตัวอักษร) {baht_text(total_amount)}", styles["DocBody"]), ""],
-    ]
-    table = Table(rows, colWidths=[122 * mm, 60 * mm], hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BOX", (0, 0), (-1, -1), 0.6, LINE),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.35, LINE),
-        ("SPAN", (0, 1), (1, 1)),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    return table
+    return totals_table([("รวมทั้งสิ้น (บาท)", total_amount)], note=f"(ตัวอักษร) {baht_text(total_amount)}")
 
 
 def build_substitute_receipt_story(payload):
@@ -223,13 +129,9 @@ def build_substitute_receipt_story(payload):
     is_stock_purchase = receipt_type == "stock_purchase"
 
     story = [
-        _header_table(payload, company),
-        Spacer(1, 6),
-        HRFlowable(width="100%", thickness=0.6, color=LINE, spaceBefore=2, spaceAfter=4),
-        Paragraph("ใบรับรองแทนใบเสร็จรับเงิน", styles["DocTitle"]),
-        HRFlowable(width="100%", thickness=0.6, color=LINE, spaceBefore=0, spaceAfter=8),
+        document_header(payload, "ใบรับรองแทนใบเสร็จรับเงิน", date=thai_date(payload.get("receiptDate"))),
         _payee_table(payload),
-        Spacer(1, 8),
+        paragraph("รายการ", "DocHeading"),
     ]
 
     if is_stock_purchase:
@@ -243,7 +145,7 @@ def build_substitute_receipt_story(payload):
                 paragraph(line.get("quantity")), money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
                 paragraph("-"),
             ])
-        col_widths = [12 * mm, 32 * mm, 58 * mm, 14 * mm, 22 * mm, 24 * mm, 20 * mm]
+        col_widths = [12 * mm, 40 * mm, 40 * mm, 18 * mm, 25 * mm, 27 * mm, 20 * mm]
         align_right_cols = [3, 4, 5]
     else:
         item_rows = [[
@@ -261,33 +163,30 @@ def build_substitute_receipt_story(payload):
 
     total_amount = totals.get("totalAmount")
     story.extend([
-        styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols, header_shade=False),
+        styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols, header_shade=True),
         Spacer(1, 4),
         _totals_box(total_amount),
         Spacer(1, 6),
-        Paragraph(
-            f"หมายเหตุ: {paragraph_text(payload.get('paymentNote')) or '-'}",
-            styles["DocBody"],
-        ),
+        paragraph(f"หมายเหตุ: {paragraph_text(payload.get('paymentNote')) or '-'}"),
         Spacer(1, 10),
-        Paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}", styles["DocBody"]),
+        paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}"),
     ])
 
     additional_note = paragraph_text(payload.get("additionalNote"))
     if additional_note:
         story.extend([
             Spacer(1, 4),
-            Paragraph(f"หมายเหตุเพิ่มเติม: {additional_note}", styles["DocBody"]),
+            paragraph(f"หมายเหตุเพิ่มเติม: {additional_note}"),
         ])
 
     story.extend([
         Spacer(1, 6),
-        Paragraph(
+        paragraph(
             f"ข้าพเจ้าขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ "
             f"และข้าพเจ้าได้จ่ายไปในงานของทาง {company['name']} โดยแท้ "
             f"ตั้งแต่วันที่ {thai_date(payload.get('receiptDate'))} ถึงวันที่ {thai_date(payload.get('receiptDate'))} "
             "ทั้งนี้ ได้แนบหลักฐานการชำระเงิน/การสั่งซื้อประกอบไว้ในชุดเอกสารนี้แล้ว",
-            styles["DocBody"],
+            "DocSmall",
         ),
         Spacer(1, 12),
         _substitute_signature_table(payload),

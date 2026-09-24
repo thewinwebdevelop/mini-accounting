@@ -1,0 +1,71 @@
+{
+  "documentKind": "payee_acknowledgement",
+  "documentKindLabel": "ใบสำคัญรับเงิน/ใบรับเงินคืนค่าใช้จ่าย",
+  "documentNo": "PAR-2026-09-0001",
+  "folderPath": "documents/2026/09/payee_acknowledgement/PAR-2026-09-0001_รับเงินค่าส่งสินค้า",
+  "title": "รับเงินค่าส่งสินค้า",
+  "status": "draft",
+  "statusLabel": "แบบร่าง",
+  "accountingMonth": "2026-09",
+  "documentDate": "2026-09-24",
+  "requesterName": "คุณต้า",
+  "payeeName": "ผู้รับเงินตัวอย่าง",
+  "vendorId": "",
+  "vendorSnapshot": {
+    "name": "ผู้รับเงินตัวอย่าง",
+    "taxId": "",
+    "address": "",
+    "contactName": "",
+    "phone": "",
+    "email": "",
+    "bankName": "",
+    "accountNo": "",
+    "paymentChannel": "",
+    "paymentReference": "",
+    "defaultBusinessPurpose": ""
+  },
+  "businessPurpose": "รับรองการรับเงิน",
+  "transactionNo": "",
+  "workflowTemplateId": "",
+  "workflowStepId": "",
+  "submittedAt": "",
+  "submittedBy": "",
+  "approvedAt": "",
+  "approvedBy": "",
+  "completedAt": "",
+  "completedBy": "",
+  "company": {
+    "legalName": "หจก.สวีทเฮาส์ เดซี่",
+    "taxId": "0105552468135",
+    "branch": "สำนักงานใหญ่",
+    "address": "99 ถนนสุขุมวิท กรุงเทพฯ"
+  },
+  "lines": [
+    {
+      "description": "ค่าขนส่ง",
+      "quantity": 1,
+      "unitCost": "100.00",
+      "lineTotal": "107.00",
+      "stockSkuId": "",
+      "vatMode": "manual",
+      "vatRate": null,
+      "amountBeforeVat": "100.00",
+      "vatAmount": "7.00",
+      "withholdingTax": "0.00",
+      "netPayment": "107.00"
+    }
+  ],
+  "totals": {
+    "amountBeforeVat": "100.00",
+    "vatAmount": "7.00",
+    "grossAmount": "107.00",
+    "withholdingTax": "0.00",
+    "netPayment": "107.00",
+    "vatStatus": "specified"
+  },
+  "evidenceFiles": {},
+  "rawFiles": [],
+  "statusHistory": [],
+  "createdAt": "2026-09-24T09:00:00.000Z",
+  "updatedAt": "2026-09-24T09:00:00.000Z"
+}

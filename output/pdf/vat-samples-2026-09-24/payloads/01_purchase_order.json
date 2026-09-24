@@ -1,0 +1,71 @@
+{
+  "documentKind": "purchase_order",
+  "documentKindLabel": "ใบสั่งซื้อ",
+  "documentNo": "PO-2026-09-0001",
+  "folderPath": "documents/2026/09/purchase_order/PO-2026-09-0001_สั่งซื้อเสื้อยืดตัวอย่าง",
+  "title": "สั่งซื้อเสื้อยืดตัวอย่าง",
+  "status": "draft",
+  "statusLabel": "แบบร่าง",
+  "accountingMonth": "2026-09",
+  "documentDate": "2026-09-24",
+  "requesterName": "คุณต้า",
+  "payeeName": "ร้านค้าตัวอย่าง",
+  "vendorId": "",
+  "vendorSnapshot": {
+    "name": "ร้านค้าตัวอย่าง",
+    "taxId": "",
+    "address": "",
+    "contactName": "",
+    "phone": "",
+    "email": "",
+    "bankName": "",
+    "accountNo": "",
+    "paymentChannel": "",
+    "paymentReference": "",
+    "defaultBusinessPurpose": ""
+  },
+  "businessPurpose": "ซื้อสินค้าเพื่อจำหน่าย",
+  "transactionNo": "",
+  "workflowTemplateId": "",
+  "workflowStepId": "",
+  "submittedAt": "",
+  "submittedBy": "",
+  "approvedAt": "",
+  "approvedBy": "",
+  "completedAt": "",
+  "completedBy": "",
+  "company": {
+    "legalName": "หจก.สวีทเฮาส์ เดซี่",
+    "taxId": "0105552468135",
+    "branch": "สำนักงานใหญ่",
+    "address": "99 ถนนสุขุมวิท กรุงเทพฯ"
+  },
+  "lines": [
+    {
+      "description": "เสื้อยืดสีขาว M",
+      "quantity": 2,
+      "unitCost": "100.00",
+      "lineTotal": "214.00",
+      "stockSkuId": "",
+      "vatMode": "exclusive",
+      "vatRate": "7.00",
+      "amountBeforeVat": "200.00",
+      "vatAmount": "14.00",
+      "withholdingTax": "0.00",
+      "netPayment": "214.00"
+    }
+  ],
+  "totals": {
+    "amountBeforeVat": "200.00",
+    "vatAmount": "14.00",
+    "grossAmount": "214.00",
+    "withholdingTax": "0.00",
+    "netPayment": "214.00",
+    "vatStatus": "specified"
+  },
+  "evidenceFiles": {},
+  "rawFiles": [],
+  "statusHistory": [],
+  "createdAt": "2026-09-24T09:00:00.000Z",
+  "updatedAt": "2026-09-24T09:00:00.000Z"
+}

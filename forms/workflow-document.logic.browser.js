@@ -26,6 +26,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const documentNoPreview = document.querySelector("#documentNoPreview");
   const lineCountPreview = document.querySelector("#lineCountPreview");
   const totalAmountPreview = document.querySelector("#totalAmountPreview");
+  const amountBeforeVatPreview = document.querySelector("#amountBeforeVatPreview");
+  const vatAmountPreview = document.querySelector("#vatAmountPreview");
+  const withholdingTaxPreview = document.querySelector("#withholdingTaxPreview");
+  const netPaymentPreview = document.querySelector("#netPaymentPreview");
   const pageTitle = document.querySelector("#pageTitle");
   const documentListLink = document.querySelector("#workflowDocumentListLink");
   const mutationButtons = [saveButton, submitButton, approveButton, completeButton].filter(Boolean);
@@ -96,12 +100,25 @@ window.addEventListener("DOMContentLoaded", () => {
   function updateLineSummary(row) {
     const index = [...lineItems.querySelectorAll(".line-item")].indexOf(row) + 1;
     const description = row.querySelector('input[name="description"]')?.value.trim() || "ยังไม่ได้กรอก";
-    const quantity = toNumber(row.querySelector('input[name="quantity"]')?.value);
-    const unitCost = toNumber(row.querySelector('input[name="unitCost"]')?.value);
     const title = row.querySelector("[data-line-title]");
     const total = row.querySelector("[data-line-total]");
+    const summary = row.querySelector("[data-line-tax-summary]");
+    const line = collectLineRow(row);
+    const rated = ["exclusive", "inclusive"].includes(line.vatMode);
+    row.querySelector("[data-vat-rate]").hidden = !rated;
+    row.querySelector("[data-vat-manual]").hidden = line.vatMode !== "manual";
+    row.querySelector("[data-unit-cost-label]").textContent = line.vatMode === "inclusive"
+      ? "ราคา/หน่วยรวม VAT *"
+      : ["exclusive", "manual"].includes(line.vatMode) ? "ราคา/หน่วยก่อน VAT *" : "ราคา/หน่วย *";
     if (title) title.textContent = `รายการ ${index} - ${description}`;
-    if (total) total.textContent = `${money(quantity * unitCost)} บาท`;
+    try {
+      const amounts = calculatePreviewTotals(hasLineContent(line) ? [line] : []);
+      if (total) total.textContent = `${money(amounts.grossAmount)} บาท`;
+      summary.textContent = `ก่อน VAT ${vatMoney(amounts.amountBeforeVat)} · VAT ${vatMoney(amounts.vatAmount)} · หัก ณ ที่จ่าย ${money(amounts.withholdingTax)} · สุทธิ ${money(amounts.netPayment)} บาท`;
+    } catch {
+      if (total) total.textContent = "ตรวจสอบจำนวนเงิน";
+      summary.textContent = "ตรวจสอบจำนวน ราคา และข้อมูลภาษีของรายการ";
+    }
   }
 
   function updateLineSummaries() {
@@ -114,13 +131,19 @@ window.addEventListener("DOMContentLoaded", () => {
     row.querySelector('input[name="description"]').value = initial.description || "";
     row.querySelector('input[name="quantity"]').value = initial.quantity || "";
     row.querySelector('input[name="unitCost"]').value = initial.unitCost || "";
-    row.addEventListener("input", () => {
-      updateLineSummary(row);
-      updatePreview();
-    });
+    row.dataset.stockSkuId = initial.stockSkuId || "";
+    row.querySelector('[name="vatMode"]').value = initial.vatMode || "unspecified";
+    row.querySelector('[name="vatRate"]').value = initial.vatRate ?? "7";
+    row.querySelector('[name="vatAmount"]').value = initial.vatAmount ?? "";
+    row.querySelector('[name="withholdingTax"]').value = initial.withholdingTax ?? "";
+    row.addEventListener("input", updatePreview);
+    row.addEventListener("change", updatePreview);
     row.querySelector("[data-remove-line]").addEventListener("click", () => {
       if (lineItems.children.length === 1) {
         row.querySelectorAll("input").forEach((field) => { field.value = ""; });
+        row.querySelector('[name="vatMode"]').value = "unspecified";
+        row.querySelector('[name="vatRate"]').value = "7";
+        row.dataset.stockSkuId = "";
       } else {
         row.remove();
       }
@@ -131,16 +154,26 @@ window.addEventListener("DOMContentLoaded", () => {
     updateLineSummary(row);
   }
 
-  function collectLineRows() {
-    return [...lineItems.querySelectorAll(".line-item")].map((row) => ({
+  function collectLineRow(row) {
+    const vatMode = row.querySelector('[name="vatMode"]').value;
+    return {
       description: row.querySelector('input[name="description"]').value,
       quantity: row.querySelector('input[name="quantity"]').value,
       unitCost: row.querySelector('input[name="unitCost"]').value,
-    }));
+      stockSkuId: row.dataset.stockSkuId || "",
+      vatMode,
+      vatRate: ["exclusive", "inclusive"].includes(vatMode) ? row.querySelector('[name="vatRate"]').value : null,
+      vatAmount: vatMode === "manual" ? row.querySelector('[name="vatAmount"]').value : null,
+      withholdingTax: row.querySelector('[name="withholdingTax"]').value,
+    };
+  }
+
+  function hasLineContent(line) {
+    return line.description || line.quantity || line.unitCost || line.stockSkuId || line.vatMode !== "unspecified" || line.withholdingTax;
   }
 
   function collectLines() {
-    return collectLineRows().filter((line) => line.description || line.quantity || line.unitCost);
+    return [...lineItems.querySelectorAll(".line-item")].map(collectLineRow).filter(hasLineContent);
   }
 
   function appendUploads(formData) {
@@ -200,11 +233,32 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function updatePreview() {
     const lines = collectLines();
-    const total = lines.reduce((sum, line) => sum + (toNumber(line.quantity) * toNumber(line.unitCost)), 0);
     lineCountPreview.textContent = String(lines.length);
-    totalAmountPreview.textContent = money(total);
+    try {
+      const totals = calculatePreviewTotals(lines);
+      amountBeforeVatPreview.textContent = vatMoney(totals.amountBeforeVat);
+      vatAmountPreview.textContent = vatMoney(totals.vatAmount);
+      totalAmountPreview.textContent = money(totals.grossAmount);
+      withholdingTaxPreview.textContent = money(totals.withholdingTax);
+      netPaymentPreview.textContent = money(totals.netPayment);
+    } catch {
+      // Transient input (e.g. a decimal separator while typing) must not
+      // break the form or leave a stale, apparently authoritative total.
+      [amountBeforeVatPreview, vatAmountPreview, totalAmountPreview, withholdingTaxPreview, netPaymentPreview]
+        .forEach((field) => { field.textContent = "ตรวจสอบจำนวนเงิน"; });
+    }
     updateLineSummaries();
     setDocumentState(state.status);
+  }
+
+  function vatMoney(value) {
+    return value == null ? "ยังไม่ระบุครบ" : money(value);
+  }
+
+  function calculatePreviewTotals(lines) {
+    const errors = logic.validateWorkflowAmounts(lines);
+    if (errors.length) throw new Error(errors.join("\n"));
+    return logic.calculateWorkflowAmounts(lines).totals;
   }
 
   // Cross-document prefill (Task 4/Task 6/Task 7, Item 4 followup): the

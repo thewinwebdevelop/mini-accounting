@@ -4,12 +4,11 @@ import json
 import os
 
 from reportlab.lib.units import mm
-from reportlab.platypus import Spacer
 
 from generate_workflow_document_pdf import DOCUMENT_KIND_LABELS
 from pdf_common import (
+    document_header, detail_grid,
     build_doc,
-    kv_table,
     paragraph,
     pdf_page_count,
     styled_table,
@@ -70,7 +69,7 @@ def build_step_table(steps):
         ])
     if len(rows) == 1:
         rows.append([paragraph("-"), paragraph("ไม่มีขั้นตอนใน Workflow นี้"), paragraph("-")])
-    return styled_table(rows, col_widths=[16 * mm, 120 * mm, 46 * mm])
+    return styled_table(rows, compact=True, col_widths=[16 * mm, 120 * mm, 46 * mm])
 
 
 def build_child_document_table(child_documents):
@@ -85,7 +84,7 @@ def build_child_document_table(child_documents):
         ])
     if len(rows) == 1:
         rows.append([paragraph("-"), paragraph("ยังไม่มีเอกสารในธุรกรรมนี้"), paragraph("-")])
-    return styled_table(rows, col_widths=[70 * mm, 56 * mm, 56 * mm])
+    return styled_table(rows, compact=True, col_widths=[70 * mm, 56 * mm, 56 * mm])
 
 
 def build_file_table(child_documents, file_field, empty_message):
@@ -100,7 +99,7 @@ def build_file_table(child_documents, file_field, empty_message):
             ])
     if len(rows) == 1:
         rows.append([paragraph("-"), paragraph("-"), paragraph(empty_message)])
-    return styled_table(rows, col_widths=[56 * mm, 40 * mm, 86 * mm])
+    return styled_table(rows, compact=True, col_widths=[56 * mm, 40 * mm, 86 * mm])
 
 
 def build_packet_story(transaction, child_documents):
@@ -108,24 +107,19 @@ def build_packet_story(transaction, child_documents):
     steps = transaction.get("steps") or []
 
     story = [
-        paragraph("ชุดรวมเอกสาร Workflow", "DocTitle"),
-        kv_table([
-            ("เลขที่ธุรกรรม", transaction.get("transactionNo")),
+        document_header({**transaction, "documentNo": transaction.get("transactionNo")}, "ชุดรวมเอกสาร Workflow"),
+        detail_grid([
             ("ชื่อธุรกรรม", transaction.get("title")),
             ("Template", template_snapshot.get("name")),
             ("เดือนบัญชี", transaction.get("accountingMonth")),
             ("สถานะธุรกรรม", transaction_status_label(transaction.get("status"))),
         ]),
-        Spacer(1, 8),
         paragraph("ขั้นตอนเอกสารตามลำดับ", "DocHeading"),
         build_step_table(steps),
-        Spacer(1, 10),
         paragraph("เอกสารย่อยของธุรกรรมนี้", "DocHeading"),
         build_child_document_table(child_documents),
-        Spacer(1, 10),
         paragraph("ไฟล์ PDF ของเอกสารย่อย", "DocHeading"),
         build_file_table(child_documents, "pdfFiles", "ยังไม่มีไฟล์ PDF"),
-        Spacer(1, 10),
         paragraph("ไฟล์ต้นฉบับ (raw) ของเอกสารย่อย", "DocHeading"),
         build_file_table(child_documents, "rawFiles", "ยังไม่มีไฟล์ต้นฉบับ"),
     ]

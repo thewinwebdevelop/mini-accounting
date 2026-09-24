@@ -70,6 +70,23 @@ test("validateExpenseRequest rejects an empty placeholder expense line", () => {
   assert.deepEqual(errors, ["กรอกรายละเอียดและยอดเงินของรายการค่าใช้จ่ายอย่างน้อย 1 รายการ"]);
 });
 
+test("validateExpenseRequest requires VAT confirmation for an unknown-tax prefill line", () => {
+  const errors = validateExpenseRequest({
+    requestType: "reimbursement",
+    accountingMonth: "2026-09",
+    requesterName: "คุณผู้ขอ",
+    businessPurpose: "ซื้อวัสดุ",
+    paymentTargetName: "ร้านค้า",
+    expenseLines: [{ description: "วัสดุ", amountBeforeVat: "100.00", vatAmount: "", withholdingTax: "0.00", vatConfirmationRequired: true }],
+  });
+  assert.deepEqual(errors, ["รายการจากเอกสารที่ยังไม่ระบุ VAT: ตรวจสอบยอดก่อน VAT และกรอก VAT (กรอก 0 หากไม่มี)"]);
+  assert.deepEqual(validateExpenseRequest({
+    requestType: "reimbursement", accountingMonth: "2026-09", requesterName: "คุณผู้ขอ",
+    businessPurpose: "ซื้อวัสดุ", paymentTargetName: "ร้านค้า",
+    expenseLines: [{ description: "วัสดุ", amountBeforeVat: "100.00", vatAmount: "0", withholdingTax: "0.00", vatConfirmationRequired: true }],
+  }), []);
+});
+
 test("buildExpensePayload creates standard document IDs and folder paths for a valid request", () => {
   const payload = buildExpensePayload({
     sequence: "7",

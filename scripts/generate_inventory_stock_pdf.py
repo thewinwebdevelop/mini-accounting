@@ -1,151 +1,29 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
-from decimal import Decimal, InvalidOperation
-
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
-
-BRAND = colors.HexColor("#102a43")
-BRAND_2 = colors.HexColor("#334e68")
-LINE = colors.HexColor("#cbd2d9")
-SOFT = colors.HexColor("#f5f7fa")
-
-
-def register_font():
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Thonburi.ttc",
-        "/System/Library/Fonts/ThonburiUI.ttc",
-    ]
-    for font_path in candidates:
-        if os.path.exists(font_path):
-            pdfmetrics.registerFont(TTFont("DocThai", font_path))
-            return "DocThai"
-    return "Helvetica"
-
-
-FONT = register_font()
-styles = getSampleStyleSheet()
-styles.add(ParagraphStyle(
-    name="DocTitle",
-    fontName=FONT,
-    fontSize=18,
-    leading=24,
-    textColor=BRAND,
-    alignment=TA_CENTER,
-    spaceAfter=8,
-))
-styles.add(ParagraphStyle(
-    name="DocBody",
-    fontName=FONT,
-    fontSize=8,
-    leading=11,
-))
-styles.add(ParagraphStyle(
-    name="DocSmall",
-    fontName=FONT,
-    fontSize=7,
-    leading=10,
-    textColor=colors.HexColor("#52606d"),
-))
-styles.add(ParagraphStyle(
-    name="DocHeader",
-    fontName=FONT,
-    fontSize=8,
-    leading=11,
-    textColor=colors.white,
-))
-styles.add(ParagraphStyle(
-    name="DocMoney",
-    fontName=FONT,
-    fontSize=8,
-    leading=11,
-    alignment=TA_RIGHT,
-))
-
-
-def text(value, fallback="-"):
-    value = "" if value is None else str(value).strip()
-    return value or fallback
-
-
-def amount(value):
-    try:
-        return Decimal(str(value or "0").replace(",", ""))
-    except InvalidOperation:
-        return Decimal("0")
-
-
-def baht(value):
-    return f"{amount(value):,.2f}"
-
-
-def paragraph(value, style="DocBody"):
-    return Paragraph(text(value), styles[style])
-
-
-def money_paragraph(value):
-    return Paragraph(baht(value), styles["DocMoney"])
+from reportlab.platypus import TableStyle
+from pdf_common import (
+    SOFT, ACCENT, build_doc, document_header, detail_grid, paragraph,
+    money_paragraph, styled_table, text, baht,
+)
 
 
 def build_pdf(payload, output_path):
-    company = payload.get("company") or {}
     summary = payload.get("summary") or {}
     balances = payload.get("balances") or []
     page_size = landscape(A4)
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=page_size,
-        rightMargin=10 * mm,
-        leftMargin=10 * mm,
-        topMargin=10 * mm,
-        bottomMargin=10 * mm,
-        title="รายงานสต๊อกสินค้าคงเหลือ",
-        author=text(company.get("legalName"), "หจก.สวีทเฮาส์"),
-    )
-
-    def footer(canvas, document):
-        width, _ = page_size
-        canvas.saveState()
-        canvas.setFont(FONT, 7)
-        canvas.setFillColor(colors.HexColor("#52606d"))
-        canvas.drawString(10 * mm, 7 * mm, f"ออกรายงานวันที่ {text(summary.get('asOfDate'))}")
-        canvas.drawRightString(width - (10 * mm), 7 * mm, f"หน้า {document.page}")
-        canvas.restoreState()
-
     story = [
-        Paragraph("รายงานสต๊อกสินค้าคงเหลือ", styles["DocTitle"]),
-        paragraph(text(company.get("legalName"), "หจก.สวีทเฮาส์")),
-        paragraph(f"เลขผู้เสียภาษี: {text(company.get('taxId'))} | สาขา: {text(company.get('branch'), 'สำนักงานใหญ่')}"),
-        paragraph(text(company.get("address"), ""), "DocSmall"),
-        Spacer(1, 5 * mm),
+        document_header(payload, "รายงานสต๊อกสินค้าคงเหลือ", width=269 * mm, date=summary.get("asOfDate")),
+        detail_grid([
+            ("จำนวน Stock SKU", summary.get("stockSkuCount")),
+            ("มูลค่าสต๊อกรวม (บาท)", baht(summary.get("totalInventoryValue"))),
+            ("จำนวนคงเหลือรวม", summary.get("totalQuantityOnHand")),
+            ("SKU ที่คงเหลือ 0", summary.get("zeroQuantitySkuCount")),
+        ], width=269 * mm),
+        paragraph("รายการสินค้าคงเหลือ", "DocHeading"),
     ]
-
-    summary_rows = [
-        [paragraph("วันที่ออกรายงาน"), paragraph(summary.get("asOfDate"))],
-        [paragraph("จำนวน Stock SKU"), paragraph(summary.get("stockSkuCount"))],
-        [paragraph("จำนวนคงเหลือรวม"), paragraph(summary.get("totalQuantityOnHand"))],
-        [paragraph("SKU ที่คงเหลือ 0"), paragraph(summary.get("zeroQuantitySkuCount"))],
-        [paragraph("มูลค่าสต๊อกรวม"), money_paragraph(summary.get("totalInventoryValue"))],
-    ]
-    summary_table = Table(summary_rows, colWidths=[42 * mm, 48 * mm], hAlign="LEFT")
-    summary_table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
-        ("BACKGROUND", (0, 0), (0, -1), SOFT),
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("PADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.extend([summary_table, Spacer(1, 5 * mm)])
 
     table_data = [[
         paragraph("ลำดับ", "DocHeader"),
@@ -182,19 +60,16 @@ def build_pdf(payload, output_path):
         money_paragraph(summary.get("totalInventoryValue")),
     ])
 
-    table = Table(table_data, colWidths=[12 * mm, 26 * mm, 38 * mm, 52 * mm, 22 * mm, 18 * mm, 20 * mm, 25 * mm, 28 * mm], repeatRows=1)
+    table = styled_table(table_data,
+        col_widths=[12 * mm, 26 * mm, 38 * mm, 70 * mm, 22 * mm, 18 * mm, 25 * mm, 28 * mm, 30 * mm],
+        align_right_cols=[6, 7, 8])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), BRAND_2),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.35, LINE),
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (0, 1), (0, -1), "RIGHT"),
         ("BACKGROUND", (0, -1), (-1, -1), SOFT),
-        ("PADDING", (0, 0), (-1, -1), 4),
+        ("LINEABOVE", (0, -1), (-1, -1), .8, ACCENT),
     ]))
     story.append(table)
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    build_doc(output_path, "รายงานสต๊อกสินค้าคงเหลือ", payload, story, page_size=page_size,
+              footer_label=f"ออกรายงานวันที่ {text(summary.get('asOfDate'))}")
 
 
 def main():

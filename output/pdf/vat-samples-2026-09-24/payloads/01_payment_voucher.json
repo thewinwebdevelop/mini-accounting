@@ -1,0 +1,71 @@
+{
+  "documentKind": "payment_voucher",
+  "documentKindLabel": "ใบสำคัญจ่าย",
+  "documentNo": "PV-2026-09-0001",
+  "folderPath": "documents/2026/09/payment_voucher/PV-2026-09-0001_จ่ายค่าสินค้าตัวอย่าง",
+  "title": "จ่ายค่าสินค้าตัวอย่าง",
+  "status": "draft",
+  "statusLabel": "แบบร่าง",
+  "accountingMonth": "2026-09",
+  "documentDate": "2026-09-24",
+  "requesterName": "คุณต้า",
+  "payeeName": "ร้านค้าตัวอย่าง",
+  "vendorId": "",
+  "vendorSnapshot": {
+    "name": "ร้านค้าตัวอย่าง",
+    "taxId": "",
+    "address": "",
+    "contactName": "",
+    "phone": "",
+    "email": "",
+    "bankName": "",
+    "accountNo": "",
+    "paymentChannel": "",
+    "paymentReference": "",
+    "defaultBusinessPurpose": ""
+  },
+  "businessPurpose": "ชำระค่าสินค้า",
+  "transactionNo": "",
+  "workflowTemplateId": "",
+  "workflowStepId": "",
+  "submittedAt": "",
+  "submittedBy": "",
+  "approvedAt": "",
+  "approvedBy": "",
+  "completedAt": "",
+  "completedBy": "",
+  "company": {
+    "legalName": "หจก.สวีทเฮาส์ เดซี่",
+    "taxId": "0105552468135",
+    "branch": "สำนักงานใหญ่",
+    "address": "99 ถนนสุขุมวิท กรุงเทพฯ"
+  },
+  "lines": [
+    {
+      "description": "ค่าสินค้ารวม VAT",
+      "quantity": 1,
+      "unitCost": "107.00",
+      "lineTotal": "107.00",
+      "stockSkuId": "",
+      "vatMode": "inclusive",
+      "vatRate": "7.00",
+      "amountBeforeVat": "100.00",
+      "vatAmount": "7.00",
+      "withholdingTax": "3.00",
+      "netPayment": "104.00"
+    }
+  ],
+  "totals": {
+    "amountBeforeVat": "100.00",
+    "vatAmount": "7.00",
+    "grossAmount": "107.00",
+    "withholdingTax": "3.00",
+    "netPayment": "104.00",
+    "vatStatus": "specified"
+  },
+  "evidenceFiles": {},
+  "rawFiles": [],
+  "statusHistory": [],
+  "createdAt": "2026-09-24T09:00:00.000Z",
+  "updatedAt": "2026-09-24T09:00:00.000Z"
+}

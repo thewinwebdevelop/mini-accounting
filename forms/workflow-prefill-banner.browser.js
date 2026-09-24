@@ -158,9 +158,20 @@
     applyButton?.addEventListener("click", () => {
       if (!prefill) return;
       const checkedGroups = [...groupsContainer.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
-      const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(prefill.context, documentKind, checkedGroups) || {};
-      applyPrefillPatch(patch, checkedGroups);
-      banner.hidden = true;
+      try {
+        const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(prefill.context, documentKind, checkedGroups) || {};
+        applyPrefillPatch(patch, checkedGroups);
+        banner.hidden = true;
+      } catch (error) {
+        let notice = banner.querySelector("[data-prefill-error]");
+        if (!notice) {
+          notice = document.createElement("p");
+          notice.dataset.prefillError = "true";
+          notice.setAttribute("role", "alert");
+          banner.appendChild(notice);
+        }
+        notice.textContent = error.message || "ไม่สามารถนำข้อมูลรายการมาใช้ได้ กรุณาตรวจสอบยอดเงิน";
+      }
     });
 
     dismissButton?.addEventListener("click", () => {

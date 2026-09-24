@@ -1,0 +1,39 @@
+{
+  "companyName": "หจก.สวีทเฮาส์ เดซี่",
+  "companyAddress": "99 ถนนสุขุมวิท กรุงเทพฯ",
+  "companyTaxId": "0105552468135",
+  "companyBranch": "สำนักงานใหญ่",
+  "documentKind": "substitute_receipt",
+  "receiptNo": "SR-2026-09-0001",
+  "receiptDate": "2026-09-23",
+  "receiptType": "stock_purchase",
+  "receiptTypeLabel": "ซื้อสต๊อกสินค้า",
+  "preparedBy": "คุณตัวอย่าง",
+  "requesterName": "คุณตัวอย่าง",
+  "payeeName": "ร้านค้าตัวอย่าง",
+  "payeeTaxId": "",
+  "paymentChannel": "โอนเงิน",
+  "paymentReference": "TRANSFER-EXAMPLE-001",
+  "businessPurpose": "ซื้อสินค้าตัวอย่างเข้าสต๊อก",
+  "lines": [
+    {
+      "sku": "SKU-EXAMPLE-001",
+      "description": "เสื้อยืดตัวอย่าง",
+      "quantity": "5",
+      "unitCost": "200.00",
+      "lineTotal": "1000.00"
+    },
+    {
+      "sku": "SKU-EXAMPLE-002",
+      "description": "กางเกงตัวอย่าง",
+      "quantity": "2",
+      "unitCost": "350.00",
+      "lineTotal": "700.00"
+    }
+  ],
+  "totals": {
+    "totalAmount": "1700.00"
+  },
+  "rawFiles": [],
+  "paymentNote": "จ่ายเงินสด 500 บาท\nโอนเงิน 1,200 บาท"
+}

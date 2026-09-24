@@ -125,20 +125,95 @@ function buildWorkflowDocumentRawFileName(evidenceKey, originalName, index = 0) 
   return `${slug}_${sequence}${getFileExtension(originalName)}`;
 }
 
+const WORKFLOW_VAT_MODES = Object.freeze({
+  unspecified: "ยังไม่ระบุ VAT",
+  exclusive: "ราคาไม่รวม VAT",
+  inclusive: "ราคารวม VAT",
+  none: "ไม่มี VAT",
+  manual: "ระบุยอด VAT ตามเอกสาร",
+});
+
+// Money is stored in integer satang. Tax ratios use integer arithmetic so a
+// half-satang rounds consistently in the browser and on the server.
+const MAX_WORKFLOW_CENTS = 9999999999999;
+function workflowInputCents(value) {
+  const cents = toCents(value);
+  return Number.isSafeInteger(cents) && cents >= 0 && cents <= MAX_WORKFLOW_CENTS ? cents : 0;
+}
+function workflowRoundRatio(cents, numerator, denominator) {
+  const product = BigInt(cents) * BigInt(numerator);
+  const divisor = BigInt(denominator);
+  return Number((product * 2n + divisor) / (divisor * 2n));
+}
 function normalizeLine(line = {}) {
-  const quantity = parsePositiveInteger(line.quantity);
-  const unitCostCents = toCents(line.unitCost);
-  const lineTotalCents = quantity * unitCostCents;
+  const parsedQuantity = Number(cleanText(line.quantity));
+  const quantity = Number.isSafeInteger(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 0;
+  const unitCostCents = workflowInputCents(line.unitCost);
+  const inputCents = Number.isSafeInteger(quantity * unitCostCents) ? quantity * unitCostCents : 0;
+  const vatMode = Object.hasOwn(WORKFLOW_VAT_MODES, cleanText(line.vatMode)) ? cleanText(line.vatMode) : "unspecified";
+  const usesRate = ["exclusive", "inclusive"].includes(vatMode);
+  const rateUnits = usesRate ? Math.min(10000, workflowInputCents(cleanText(line.vatRate) || "7")) : 0;
+  let base = inputCents;
+  let vat = 0;
+  if (vatMode === "exclusive") vat = workflowRoundRatio(inputCents, rateUnits, 10000);
+  if (vatMode === "inclusive") {
+    base = workflowRoundRatio(inputCents, 10000, 10000 + rateUnits);
+    vat = inputCents - base;
+  }
+  if (vatMode === "manual") vat = workflowInputCents(line.vatAmount);
+  const gross = base + vat;
+  const withholding = workflowInputCents(line.withholdingTax);
   return {
-    description: cleanText(line.description),
-    quantity,
-    unitCost: money(unitCostCents),
-    lineTotal: money(lineTotalCents),
-    // Optional stock SKU reference, the same way substitute_receipt lines
-    // already carry one — added so goods_receipt and purchase_order lines can
-    // round-trip a SKU through cross-document prefill (Task 6).
+    description: cleanText(line.description), quantity,
+    unitCost: money(unitCostCents), lineTotal: money(gross),
     stockSkuId: cleanText(line.stockSkuId),
+    vatMode, vatRate: usesRate ? money(rateUnits) : null,
+    amountBeforeVat: vatMode === "unspecified" ? null : money(base),
+    vatAmount: vatMode === "unspecified" ? null : money(vat),
+    withholdingTax: money(withholding), netPayment: money(gross - withholding),
   };
+}
+
+function calculateWorkflowAmounts(rawLines = []) {
+  const lines = (Array.isArray(rawLines) ? rawLines : []).map(normalizeLine);
+  const specified = lines.filter((line) => line.vatMode !== "unspecified").length;
+  const vatStatus = specified === 0 ? "unspecified" : specified === lines.length ? "specified" : "partial";
+  const sum = (field) => lines.reduce((value, line) => value + toCents(line[field]), 0);
+  const gross = sum("lineTotal");
+  const withholding = sum("withholdingTax");
+  return { lines, totals: {
+    amountBeforeVat: vatStatus === "specified" ? money(sum("amountBeforeVat")) : null,
+    vatAmount: vatStatus === "specified" ? money(sum("vatAmount")) : null,
+    grossAmount: money(gross), withholdingTax: money(withholding),
+    netPayment: money(gross - withholding), vatStatus,
+  } };
+}
+
+function validateWorkflowAmounts(rawLines = []) {
+  const errors = [];
+  const validMoney = (value) => {
+    const raw = cleanText(value).replace(/,/g, "");
+    return /^\d+(?:\.\d{1,2})?$/.test(raw) && Number.isSafeInteger(toCents(raw)) && toCents(raw) <= MAX_WORKFLOW_CENTS;
+  };
+  for (const [index, line] of rawLines.entries()) {
+    const prefix = `รายการ ${index + 1}: `;
+    const mode = cleanText(line.vatMode) || "unspecified";
+    if (!Object.hasOwn(WORKFLOW_VAT_MODES, mode)) errors.push(prefix + "รูปแบบ VAT ไม่ถูกต้อง");
+    if (!/^\d+$/.test(cleanText(line.quantity)) || !Number.isSafeInteger(Number(line.quantity)) || Number(line.quantity) <= 0) errors.push(prefix + "ระบุจำนวนเป็นจำนวนเต็มมากกว่า 0");
+    if (!validMoney(line.unitCost)) errors.push(prefix + "ราคา/หน่วยต้องเป็นจำนวนเงินตั้งแต่ 0 และไม่เกิน 2 ตำแหน่งทศนิยม");
+    if (["inclusive", "exclusive"].includes(mode)) {
+      const rate = cleanText(line.vatRate) || "7";
+      if (!validMoney(rate) || Number(rate.replace(/,/g, "")) > 100) errors.push(prefix + "อัตรา VAT ต้องอยู่ระหว่าง 0 ถึง 100");
+    }
+    if (mode === "manual" && !validMoney(line.vatAmount)) errors.push(prefix + "ระบุยอด VAT ตามเอกสารเป็นจำนวนเงินตั้งแต่ 0");
+    if (cleanText(line.withholdingTax) && !validMoney(line.withholdingTax)) errors.push(prefix + "ยอดหัก ณ ที่จ่ายไม่ถูกต้อง");
+    const normalized = normalizeLine(line);
+    if (toCents(normalized.withholdingTax) > toCents(normalized.lineTotal)) errors.push(prefix + "ยอดหัก ณ ที่จ่ายต้องไม่เกินยอดรวมรายการ");
+    if (!Number.isSafeInteger(Number(line.quantity) * toCents(line.unitCost)) || Number(line.quantity) * toCents(line.unitCost) > MAX_WORKFLOW_CENTS || toCents(normalized.lineTotal) > MAX_WORKFLOW_CENTS) errors.push(prefix + "ยอดเงินเกินขอบเขตที่รองรับ");
+  }
+  const totals = calculateWorkflowAmounts(rawLines).totals;
+  if (toCents(totals.grossAmount) > MAX_WORKFLOW_CENTS) errors.push("ยอดรวมเอกสารเกินขอบเขตที่รองรับ");
+  return errors;
 }
 
 function normalizeEvidenceFiles(evidenceFiles = {}) {
@@ -173,6 +248,7 @@ function validateWorkflowDocumentPayload(data = {}) {
 
   const lines = Array.isArray(data.lines) ? data.lines : [];
   if (!lines.length) errors.push("เพิ่มรายการอย่างน้อย 1 รายการ");
+  errors.push(...validateWorkflowAmounts(lines));
 
   return [...new Set(errors)];
 }
@@ -197,8 +273,10 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
   const folderTitle = safeTitle(data.title);
   const folderPath = cleanText(data.folderPath) || `documents/${year}/${month}/${documentKind}/${documentNo}_${folderTitle}`;
 
-  const lines = (Array.isArray(data.lines) ? data.lines : []).map((line) => normalizeLine(line));
-  const grossCents = lines.reduce((sum, line) => sum + toCents(line.lineTotal), 0);
+  const rawLines = Array.isArray(data.lines) ? data.lines : [];
+  const amountErrors = validateWorkflowAmounts(rawLines);
+  if (amountErrors.length) throw new Error(amountErrors.join("\n"));
+  const { lines, totals } = calculateWorkflowAmounts(rawLines);
 
   const evidenceFiles = normalizeEvidenceFiles(data.evidenceFiles);
   const uploadedRawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
@@ -237,9 +315,7 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
       address: cleanText(data.company.address),
     } : undefined,
     lines,
-    totals: {
-      grossAmount: money(grossCents),
-    },
+    totals,
     evidenceFiles,
     rawFiles: uploadedRawFiles.length ? uploadedRawFiles : (Array.isArray(data.rawFiles) ? data.rawFiles : []),
     statusHistory: Array.isArray(data.statusHistory) ? data.statusHistory : [],
@@ -251,7 +327,7 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
 function formatWorkflowDocumentMarkdown(payload = {}) {
   const lineHeader = "| ลำดับ | รายละเอียด | จำนวน | ราคา/หน่วย | ยอดรวม |\n|---:|---|---:|---:|---:|";
   const lines = (payload.lines ?? []).map((line, index) => (
-    `| ${index + 1} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
+    `| ${index + 1} | ${line.description || ""} (${WORKFLOW_VAT_MODES[line.vatMode] || WORKFLOW_VAT_MODES.unspecified}${["inclusive", "exclusive"].includes(line.vatMode) ? ` ${line.vatRate}%` : ""}) | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
   )).join("\n");
   const company = payload.company ?? {};
   const rawFiles = Array.isArray(payload.rawFiles) ? payload.rawFiles : [];
@@ -279,7 +355,11 @@ ${lines}
 
 | รายการ | ยอด |
 |---|---:|
+| ยอดก่อน VAT | ${payload.totals?.amountBeforeVat ?? "ยังไม่ระบุ VAT"} |
+| VAT | ${payload.totals?.vatAmount ?? "ยังไม่ระบุ VAT"} |
 | รวมทั้งสิ้น | ${payload.totals?.grossAmount || "0.00"} |
+| หัก ณ ที่จ่าย | ${payload.totals?.withholdingTax || "0.00"} |
+| ยอดจ่ายสุทธิ | ${payload.totals?.netPayment || payload.totals?.grossAmount || "0.00"} |
 
 ## ไฟล์แนบ raw
 
@@ -289,6 +369,9 @@ ${rawFiles.length ? rawFiles.map((name) => `- ${name}`).join("\n") : "- (ไม�
 
 const WorkflowDocumentLogic = {
   LIGHTWEIGHT_DOCUMENT_KINDS,
+  WORKFLOW_VAT_MODES,
+  calculateWorkflowAmounts,
+  validateWorkflowAmounts,
   WORKFLOW_DOCUMENT_PREFIXES,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
   assertWorkflowDocumentCompletable,

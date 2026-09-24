@@ -139,6 +139,9 @@ function validateExpenseRequest(data = {}) {
   } else if (!data.expenseLines.some((line) => String(line.description ?? "").trim() && toCents(line.amountBeforeVat) > 0)) {
     errors.push("กรอกรายละเอียดและยอดเงินของรายการค่าใช้จ่ายอย่างน้อย 1 รายการ");
   }
+  if ((data.expenseLines || []).some((line) => line.vatConfirmationRequired && !String(line.vatAmount ?? "").trim())) {
+    errors.push("รายการจากเอกสารที่ยังไม่ระบุ VAT: ตรวจสอบยอดก่อน VAT และกรอก VAT (กรอก 0 หากไม่มี)");
+  }
   return errors;
 }
 

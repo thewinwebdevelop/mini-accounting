@@ -231,6 +231,16 @@
       margin-top: 8px;
     }
 
+    .line-tax-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      padding: 0 10px 10px;
+    }
+
+    .line-tax-fields [hidden] { display: none; }
+    .line-tax-summary { margin: 0; padding: 0 10px 12px; color: var(--muted); font-size: 12px; }
+
     .icon-button {
       width: 38px;
       height: 38px;
@@ -516,8 +526,24 @@
               <dd id="lineCountPreview">0</dd>
             </div>
             <div class="summary-row">
-              <dt>ยอดรวม</dt>
+              <dt>ยอดก่อน VAT</dt>
+              <dd id="amountBeforeVatPreview">ยังไม่ระบุครบ</dd>
+            </div>
+            <div class="summary-row">
+              <dt>VAT</dt>
+              <dd id="vatAmountPreview">ยังไม่ระบุครบ</dd>
+            </div>
+            <div class="summary-row">
+              <dt>ยอดรวมก่อนหัก ณ ที่จ่าย</dt>
               <dd id="totalAmountPreview">0.00</dd>
+            </div>
+            <div class="summary-row">
+              <dt>หัก ณ ที่จ่าย</dt>
+              <dd id="withholdingTaxPreview">0.00</dd>
+            </div>
+            <div class="summary-row">
+              <dt>ยอดชำระสุทธิ</dt>
+              <dd id="netPaymentPreview">0.00</dd>
             </div>
           </dl>
         </div>
@@ -541,11 +567,33 @@
           <input name="quantity" inputmode="numeric" required>
         </div>
         <div class="field">
-          <label>ราคา/หน่วย *</label>
+          <label data-unit-cost-label>ราคา/หน่วย *</label>
           <input name="unitCost" inputmode="decimal" required>
         </div>
         <button class="icon-button" type="button" title="ลบรายการ" data-remove-line>×</button>
       </div>
+      <div class="line-tax-fields">
+        <label class="field">VAT ของรายการ
+          <select name="vatMode">
+            <option value="unspecified">ยังไม่ระบุ VAT</option>
+            <option value="exclusive">ราคาไม่รวม VAT (บวก VAT)</option>
+            <option value="inclusive">ราคารวม VAT แล้ว</option>
+            <option value="none">ไม่มี VAT</option>
+            <option value="manual">กรอกยอด VAT เอง</option>
+          </select>
+        </label>
+        <label class="field" data-vat-rate hidden>อัตรา VAT (%)
+          <input name="vatRate" inputmode="decimal" value="7" placeholder="7">
+        </label>
+        <label class="field" data-vat-manual hidden>ยอด VAT ทั้งรายการ (บาท)
+          <input name="vatAmount" inputmode="decimal" placeholder="0.00">
+        </label>
+        <label class="field">หัก ณ ที่จ่ายทั้งรายการ (บาท)
+          <input name="withholdingTax" inputmode="decimal" placeholder="0.00">
+          <small>กรอกเฉพาะเมื่อมีการหัก ณ ที่จ่าย</small>
+        </label>
+      </div>
+      <p class="line-tax-summary" data-line-tax-summary aria-live="polite"></p>
     </details>
   </template>
 

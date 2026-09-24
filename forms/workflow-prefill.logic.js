@@ -138,18 +138,16 @@ function expenseRequestToWorkflowContext(payload = {}) {
 
   const expenseLines = Array.isArray(payload.expenseLines) ? payload.expenseLines : [];
   const lines = expenseLines.map((line) => {
-    // Gross (amountBeforeVat + vatAmount), not amountBeforeVat alone: dropping
-    // VAT here would silently lose money if a user ever puts VAT on an
-    // expense line. A zero-VAT line — the normal case for these six
-    // no-tax-invoice templates — round-trips identically either way, since
-    // gross === amountBeforeVat when vatAmount is "0.00".
-    const gross = money(toCents(line.amountBeforeVat) + toCents(line.vatAmount));
+    const base = money(toCents(line.amountBeforeVat));
+    const vat = money(toCents(line.vatAmount));
+    const gross = money(toCents(base) + toCents(vat));
+    const hasVat = line.vatAmount !== undefined && line.vatAmount !== null && cleanText(line.vatAmount) !== "";
     return {
-      description: cleanText(line.description),
-      quantity: "1",
-      unitCost: gross,
-      lineTotal: gross,
-      stockSkuId: "",
+      description: cleanText(line.description), quantity: "1",
+      unitCost: base, lineTotal: gross, stockSkuId: "",
+      vatMode: hasVat ? "manual" : "unspecified", vatRate: null,
+      amountBeforeVat: hasVat ? base : null, vatAmount: hasVat ? vat : null,
+      withholdingTax: money(toCents(line.withholdingTax)),
     };
   });
   if (lines.length) context.lines = lines;
@@ -173,16 +171,16 @@ function applyWorkflowContextToExpenseRequest(context = {}, groups = []) {
   }
 
   if (groups.includes("lines") && Array.isArray(context.lines)) {
-    // One canonical line maps to one expense line. VAT/withholding are fixed
-    // at zero — these six templates are all no-tax-invoice cases, so VAT is
-    // genuinely zero on a prefilled line — and quantity/unitCost have no
-    // target field on an expense line, so they are dropped.
-    patch.expenseLines = context.lines.map((line) => ({
-      description: cleanText(line.description),
-      amountBeforeVat: line.lineTotal ?? "0.00",
-      vatAmount: "0.00",
-      withholdingTax: "0.00",
-    }));
+    patch.expenseLines = context.lines.map((line) => {
+      const known = line.vatMode && line.vatMode !== "unspecified" && line.amountBeforeVat != null && line.vatAmount != null;
+      return {
+        description: cleanText(line.description),
+        amountBeforeVat: known ? line.amountBeforeVat : (line.lineTotal ?? "0.00"),
+        vatAmount: known ? line.vatAmount : "",
+        withholdingTax: line.withholdingTax || "0.00",
+        ...(known ? {} : { vatConfirmationRequired: true }),
+      };
+    });
   }
 
   // `parties` always rides along when present, regardless of which of the
@@ -247,7 +245,21 @@ function applyWorkflowContextToSubstituteReceipt(context = {}, groups = []) {
   }
 
   if (groups.includes("lines") && Array.isArray(context.lines)) {
-    patch.lines = context.lines.map(substituteReceiptLineToCanonical);
+    patch.lines = context.lines.map((line) => {
+      const mapped = substituteReceiptLineToCanonical(line);
+      if (line.vatMode && line.vatMode !== "unspecified") {
+        const quantity = Number(line.quantity);
+        const gross = toCents(line.lineTotal);
+        // This form only has a two-decimal unit price. Never silently round
+        // away VAT or withholding when it cannot represent the source money.
+        if (!Number.isSafeInteger(quantity) || quantity <= 0 || gross % quantity !== 0 || toCents(line.withholdingTax) !== 0) {
+          throw new Error("ไม่สามารถคัดลอกรายการนี้เป็นราคาต่อหน่วยได้พอดี กรุณากรอกใบรับรองแทนใบเสร็จโดยตรวจสอบยอดจ่ายจริง หรือยกเลิกเลือกกลุ่มรายการ");
+        }
+        mapped.unitCost = money(gross / quantity);
+        mapped.lineTotal = money(gross);
+      }
+      return mapped;
+    });
   }
 
   // No requester field on substitute_receipt — `parties` is never applied.
@@ -264,13 +276,18 @@ function applyWorkflowContextToSubstituteReceipt(context = {}, groups = []) {
 // ---------------------------------------------------------------------------
 
 function workflowDocumentShellLineToCanonical(line = {}) {
-  return {
-    description: cleanText(line.description),
-    quantity: cleanText(line.quantity),
-    unitCost: cleanText(line.unitCost),
-    lineTotal: cleanText(line.lineTotal),
+  const result = {
+    description: cleanText(line.description), quantity: cleanText(line.quantity),
+    unitCost: cleanText(line.unitCost), lineTotal: cleanText(line.lineTotal),
     stockSkuId: cleanText(line.stockSkuId),
   };
+  // Absence on old documents remains absence, rather than an invented zero.
+  if (line.vatMode) {
+    for (const field of ["vatMode", "vatRate", "amountBeforeVat", "vatAmount", "withholdingTax", "netPayment"]) {
+      if (line[field] !== undefined) result[field] = line[field];
+    }
+  }
+  return result;
 }
 
 function workflowDocumentShellToContext(payload = {}) {
@@ -328,7 +345,11 @@ function applyWorkflowContextToWorkflowDocumentShell(context = {}, groups = []) 
 function applyWorkflowContextToGoodsReceipt(context = {}, groups = []) {
   const patch = applyWorkflowContextToWorkflowDocumentShell(context, groups);
   if (Array.isArray(patch.lines)) {
-    patch.lines = patch.lines.map((line) => ({ ...line, quantity: "" }));
+    patch.lines = patch.lines.map((line) => ({
+      ...line, quantity: "",
+      ...(line.vatMode ? { withholdingTax: "0.00" } : {}),
+      ...(line.vatMode === "manual" ? { vatAmount: "" } : {}),
+    }));
   }
   return patch;
 }

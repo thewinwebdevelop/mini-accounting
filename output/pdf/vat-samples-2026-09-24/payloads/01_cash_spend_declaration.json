@@ -1,0 +1,71 @@
+{
+  "documentKind": "cash_spend_declaration",
+  "documentKindLabel": "ใบรับรองการจ่ายเงินสดส่วนตัว",
+  "documentNo": "CSD-2026-09-0001",
+  "folderPath": "documents/2026/09/cash_spend_declaration/CSD-2026-09-0001_สำรองจ่ายวัสดุสำนักงาน",
+  "title": "สำรองจ่ายวัสดุสำนักงาน",
+  "status": "draft",
+  "statusLabel": "แบบร่าง",
+  "accountingMonth": "2026-09",
+  "documentDate": "2026-09-24",
+  "requesterName": "คุณต้า",
+  "payeeName": "ร้านค้าตัวอย่าง",
+  "vendorId": "",
+  "vendorSnapshot": {
+    "name": "ร้านค้าตัวอย่าง",
+    "taxId": "",
+    "address": "",
+    "contactName": "",
+    "phone": "",
+    "email": "",
+    "bankName": "",
+    "accountNo": "",
+    "paymentChannel": "",
+    "paymentReference": "",
+    "defaultBusinessPurpose": ""
+  },
+  "businessPurpose": "ซื้อวัสดุสำนักงาน",
+  "transactionNo": "",
+  "workflowTemplateId": "",
+  "workflowStepId": "",
+  "submittedAt": "",
+  "submittedBy": "",
+  "approvedAt": "",
+  "approvedBy": "",
+  "completedAt": "",
+  "completedBy": "",
+  "company": {
+    "legalName": "หจก.สวีทเฮาส์ เดซี่",
+    "taxId": "0105552468135",
+    "branch": "สำนักงานใหญ่",
+    "address": "99 ถนนสุขุมวิท กรุงเทพฯ"
+  },
+  "lines": [
+    {
+      "description": "กระดาษ A4",
+      "quantity": 3,
+      "unitCost": "50.00",
+      "lineTotal": "150.00",
+      "stockSkuId": "",
+      "vatMode": "none",
+      "vatRate": null,
+      "amountBeforeVat": "150.00",
+      "vatAmount": "0.00",
+      "withholdingTax": "0.00",
+      "netPayment": "150.00"
+    }
+  ],
+  "totals": {
+    "amountBeforeVat": "150.00",
+    "vatAmount": "0.00",
+    "grossAmount": "150.00",
+    "withholdingTax": "0.00",
+    "netPayment": "150.00",
+    "vatStatus": "specified"
+  },
+  "evidenceFiles": {},
+  "rawFiles": [],
+  "statusHistory": [],
+  "createdAt": "2026-09-24T09:00:00.000Z",
+  "updatedAt": "2026-09-24T09:00:00.000Z"
+}

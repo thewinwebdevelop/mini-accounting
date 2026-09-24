@@ -115,7 +115,11 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
     });
     assert.equal(submitted.documentNo, "PO-2026-09-0001");
     assert.equal(submitted.status, "draft");
-    assert.equal(submitted.pdfFiles.length, 1);
+    assert.equal(submitted.pdfFiles.length, 2);
+    assert.equal(submitted.pdfFiles[1].name, "02_ชุดรวมเอกสาร_audit-packet.pdf");
+    const auditPacketResponse = await fetch(`${baseUrl}${submitted.pdfFiles[1].url}`);
+    assert.equal(auditPacketResponse.status, 200);
+    assert.equal(auditPacketResponse.headers.get("content-type"), "application/pdf");
     assert.equal(submitted.rawFiles[0], "evidence_001.txt");
     assert.equal("absoluteFolderPath" in submitted, false, "POST create response must not leak the server's absolute filesystem path");
 
@@ -542,7 +546,7 @@ test("every lightweight workflow document kind serves its PDF and raw files from
         body: JSON.stringify({ completedBy: "someone-else" }),
       });
 
-      assert.equal(completedAgain.pdfFiles.length, 1, `${documentKind}: expected exactly one generated PDF`);
+      assert.equal(completedAgain.pdfFiles.length, 2, `${documentKind}: expected form PDF plus audit packet`);
       const pdfFile = completedAgain.pdfFiles[0];
       const expectedPdfUrl = `/workflow-documents/${documentKind}/${created.documentNo}/pdf/${pdfFile.name}`;
       assert.equal(pdfFile.url, expectedPdfUrl, `${documentKind}: pdfFiles[0].url must be the real workflow-document route`);
@@ -572,7 +576,7 @@ test("every lightweight workflow document kind serves its PDF and raw files from
       const record = lightweightDocuments.find((doc) => doc.documentKind === documentKind);
       assert.ok(record, `${documentKind}: findLightweightWorkflowDocuments must return this kind`);
 
-      assert.equal(record.pdfFiles.length, 1, `${documentKind}: expected one PDF from findLightweightWorkflowDocuments`);
+      assert.equal(record.pdfFiles.length, 2, `${documentKind}: expected form PDF plus audit packet from findLightweightWorkflowDocuments`);
       const pdfFile = record.pdfFiles[0];
       const expectedPdfUrl = `/workflow-documents/${documentKind}/${record.documentNo}/pdf/${pdfFile.name}`;
       assert.equal(pdfFile.url, expectedPdfUrl, `${documentKind}: findLightweightWorkflowDocuments pdfFiles[0].url must be the real route`);

@@ -1,0 +1,31 @@
+{
+  "companyName": "หจก.สวีทเฮาส์ เดซี่",
+  "companyAddress": "99 ถนนสุขุมวิท กรุงเทพฯ",
+  "companyTaxId": "0105552468135",
+  "companyBranch": "สำนักงานใหญ่",
+  "documentDate": "2026-09-23",
+  "title": "เอกสารตัวอย่างสำหรับตรวจรูปแบบ",
+  "requesterName": "คุณตัวอย่าง",
+  "payeeName": "บริษัทตัวอย่าง จำกัด",
+  "businessPurpose": "ทดสอบรูปแบบเอกสารและรายการค่าใช้จ่าย",
+  "lines": [
+    {
+      "description": "สินค้า/บริการตัวอย่าง",
+      "quantity": "2",
+      "unitCost": "150.00",
+      "lineTotal": "300.00"
+    },
+    {
+      "description": "ค่าจัดส่ง",
+      "quantity": "1",
+      "unitCost": "50.00",
+      "lineTotal": "50.00"
+    }
+  ],
+  "totals": {
+    "grossAmount": "350.00"
+  },
+  "documentKind": "cash_spend_declaration",
+  "documentNo": "CSD-2026-09-0001",
+  "transactionNo": "TXN-2026-09-0001"
+}

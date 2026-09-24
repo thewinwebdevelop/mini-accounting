@@ -5,22 +5,18 @@ import os
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, Spacer
 
 from pdf_common import (
-    FONT,
-    LINE,
+    document_header, detail_grid, totals_table, signature_table as shared_signatures,
     amount,
     baht,
     build_audit_packet_with_annexes,
     build_doc,
-    company_info,
     evidence_rows,
-    kv_table,
     money_paragraph,
     paragraph,
     pdf_page_count,
-    signature_cell,
     styled_table,
     styles,
 )
@@ -28,48 +24,23 @@ from substitute_receipt_pdf import build_substitute_receipt_outputs
 
 
 def signature_table(payload):
-    rows = [
-        [
-            signature_cell("ผู้ขอเบิก", payload.get("requesterName")),
-            signature_cell("ผู้ตรวจเอกสารบัญชี"),
-        ],
-        [
-            signature_cell("ผู้อนุมัติ"),
-            signature_cell("ผู้จ่ายเงิน"),
-        ],
-    ]
-    table = Table(rows, colWidths=[91 * mm, 91 * mm], rowHeights=[36 * mm, 36 * mm], hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.35, LINE),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    return table
+    return shared_signatures([
+        ("ผู้ขอเบิก", payload.get("requesterName")),
+        ("ผู้ตรวจเอกสารบัญชี", ""), ("ผู้อนุมัติ", ""), ("ผู้จ่ายเงิน", ""),
+    ], width=269 * mm, compact=True)
 
 
 def build_reimbursement_story(payload):
     lines = payload.get("expenseLines") or []
-    totals = payload.get("totals") or {}
-    company = company_info(payload)
     story = [
-        Paragraph("ใบเบิกจ่ายค่าใช้จ่าย", styles["DocTitle"]),
-        kv_table([
-            ("ชื่อนิติบุคคล", company["name"]),
-            ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
-            ("สำนักงานใหญ่/สาขา", company["branch"]),
-            ("ที่อยู่", company["address"]),
-            ("เลขที่เอกสาร", payload.get("requestNo")),
-            ("ประเภทคำขอ", payload.get("requestTypeLabel")),
-            ("ผู้ขอ", payload.get("requesterName")),
-            ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
+        document_header(payload, "ใบเบิกจ่ายค่าใช้จ่าย", width=269 * mm),
+        detail_grid([
+            ("ผู้ขอเบิก", payload.get("requesterName")),
             ("ผู้รับเงิน/ผู้ขาย", payload.get("paymentTargetName")),
-        ]),
-        Paragraph("รายการค่าใช้จ่าย", styles["DocHeading"]),
+            ("ประเภทคำขอ", payload.get("requestTypeLabel")),
+            ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
+        ], width=269 * mm),
+        paragraph("รายการค่าใช้จ่าย", "DocHeading"),
     ]
 
     expense_rows = [[
@@ -101,40 +72,42 @@ def build_reimbursement_story(payload):
     story.extend([
         styled_table(
             expense_rows,
-            col_widths=[11 * mm, 19 * mm, 25 * mm, 43 * mm, 30 * mm, 18 * mm, 16 * mm, 22 * mm, 20 * mm],
+            col_widths=[12 * mm, 25 * mm, 32 * mm, 64 * mm, 38 * mm, 26 * mm, 20 * mm, 26 * mm, 26 * mm],
             align_right_cols=[5, 6, 7, 8],
+            compact=True,
         ),
-        Paragraph("สรุปยอด", styles["DocHeading"]),
-        kv_table([
-            ("ยอดก่อน VAT", f"{baht(totals.get('amountBeforeVat'))} บาท"),
-            ("VAT", f"{baht(totals.get('vatAmount'))} บาท"),
-            ("ยอดรวม", f"{baht(totals.get('grossAmount'))} บาท"),
-            ("หัก ณ ที่จ่าย", f"{baht(totals.get('withholdingTax'))} บาท"),
-            ("ยอดจ่ายสุทธิ", f"{baht(totals.get('netPayment'))} บาท"),
-        ]),
-        Paragraph("Checklist หลักฐาน", styles["DocHeading"]),
+        reimbursement_summary(payload),
+        signature_table(payload),
+        PageBreak(),
+        document_header(payload, "Checklist หลักฐาน", width=269 * mm),
+        Spacer(1, 12),
         styled_table(
             [[paragraph("รหัส"), paragraph("หลักฐาน"), paragraph("สถานะ"), paragraph("ชื่อไฟล์ raw")]] + evidence_rows(payload),
-            col_widths=[16 * mm, 55 * mm, 30 * mm, 81 * mm],
+            col_widths=[20 * mm, 75 * mm, 40 * mm, 134 * mm],
+            compact=True,
         ),
-        Paragraph("การอนุมัติ", styles["DocHeading"]),
-        signature_table(payload),
     ])
     return story
+
+
+def reimbursement_summary(payload):
+    totals = payload.get("totals") or {}
+    return totals_table([
+        ("ยอดก่อน VAT", totals.get("amountBeforeVat")),
+        ("VAT", totals.get("vatAmount")),
+        ("ยอดรวม", totals.get("grossAmount")),
+        ("หัก ณ ที่จ่าย", totals.get("withholdingTax")),
+        ("ยอดจ่ายสุทธิ (บาท)", totals.get("netPayment")),
+    ], width=269 * mm, note="")
 
 
 def build_audit_story(payload, raw_dir):
     totals = payload.get("totals") or {}
     evidence = payload.get("evidence") or {}
     raw_files = payload.get("rawFiles") or []
-    company = company_info(payload)
     story = [
-        Paragraph("ชุดรวมส่งตรวจเอกสารเบิกจ่าย", styles["DocTitle"]),
-        kv_table([
-            ("ชื่อนิติบุคคล", company["name"]),
-            ("เลขประจำตัวผู้เสียภาษี", company["tax_id"]),
-            ("สำนักงานใหญ่/สาขา", company["branch"]),
-            ("เลขที่เอกสาร", payload.get("requestNo")),
+        document_header(payload, "ชุดรวมส่งตรวจเอกสารเบิกจ่าย"),
+        detail_grid([
             ("ชื่อแฟ้ม", os.path.basename(payload.get("folderPath") or "")),
             ("ประเภทคำขอ", payload.get("requestTypeLabel")),
             ("ยอดจ่ายสุทธิ", f"{baht(totals.get('netPayment'))} บาท"),

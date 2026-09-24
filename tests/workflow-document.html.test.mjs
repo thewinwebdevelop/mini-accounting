@@ -926,3 +926,116 @@ test("real workflow-prefill.logic.js never prefills goods_receipt line quantitie
     "goods_receipt quantities must never be prefilled, so a short delivery stays visible",
   );
 });
+
+// These exercise the controller against real markup and the shared amount
+// calculator: dropping tax fields or returning to quantity × price breaks them.
+test("workflow VAT choices update gross and net previews without guessing legacy VAT", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    fetchHandler: () => jsonResponse({ status: "draft", payload: lifecyclePayload("draft", "purchase_order") }),
+  });
+  const row = elements.lineItems.querySelector(".line-item");
+  const mode = row.querySelector('[name="vatMode"]');
+  assert.ok(mode, "line offers an explicit VAT choice");
+  assert.equal(mode.value, "unspecified");
+  assert.equal(elements.amountBeforeVatPreview.textContent, "ยังไม่ระบุครบ");
+  assert.equal(elements.vatAmountPreview.textContent, "ยังไม่ระบุครบ");
+  row.querySelector('[name="quantity"]').value = "2";
+  row.querySelector('[name="unitCost"]').value = "100";
+  mode.value = "exclusive";
+  row.dispatch("change");
+  assert.equal(row.querySelector('[data-vat-rate]').hidden, false);
+  assert.equal(row.querySelector('[data-vat-manual]').hidden, true);
+  assert.equal(elements.amountBeforeVatPreview.textContent, "200.00");
+  assert.equal(elements.vatAmountPreview.textContent, "14.00");
+  assert.equal(elements.totalAmountPreview.textContent, "214.00");
+  assert.equal(row.querySelector('[data-line-total]').textContent, "214.00 บาท");
+  row.querySelector('[name="withholdingTax"]').value = "6";
+  row.dispatch("input");
+  assert.equal(elements.withholdingTaxPreview.textContent, "6.00");
+  assert.equal(elements.netPaymentPreview.textContent, "208.00");
+  mode.value = "inclusive";
+  row.querySelector('[name="unitCost"]').value = "107";
+  row.dispatch("change");
+  assert.equal(elements.amountBeforeVatPreview.textContent, "200.00");
+  assert.equal(elements.vatAmountPreview.textContent, "14.00");
+  mode.value = "manual";
+  row.querySelector('[name="vatAmount"]').value = "5";
+  row.dispatch("change");
+  assert.equal(row.querySelector('[data-vat-rate]').hidden, true);
+  assert.equal(row.querySelector('[data-vat-manual]').hidden, false);
+  assert.equal(elements.totalAmountPreview.textContent, "219.00");
+  assert.equal(elements.netPaymentPreview.textContent, "213.00");
+  mode.value = "none";
+  row.dispatch("change");
+  assert.equal(elements.vatAmountPreview.textContent, "0.00");
+  assert.equal(elements.totalAmountPreview.textContent, "214.00");
+  row.querySelector('[name="unitCost"]').value = "-";
+  assert.doesNotThrow(() => row.dispatch("input"));
+  assert.equal(elements.totalAmountPreview.textContent, "ตรวจสอบจำนวนเงิน");
+  elements.saveWorkflowDocument.dispatch("click");
+  await settleBrowserWork();
+  assert.match(elements.workflowDocumentStatus.className, /error/);
+  row.querySelector('[data-remove-line]').dispatch("click");
+  assert.equal(mode.value, "unspecified");
+  assert.equal(row.querySelector('[name="withholdingTax"]').value, "");
+  assert.equal(row.querySelector('[name="vatAmount"]').value, "");
+});
+
+test("workflow loaded tax inputs and stock identity survive editing and saving all document kinds", async () => {
+  for (const documentKind of ["purchase_order", "payment_voucher", "cash_spend_declaration", "payee_acknowledgement", "goods_receipt"]) {
+    const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+      documentKind,
+      fetchHandler(route, options) {
+        if (options.method === "POST") return jsonResponse({ documentNo: "PO-2026-09-0001", status: "draft", pdfFiles: [] });
+        return jsonResponse({ status: "draft", payload: {
+          ...lifecyclePayload("draft", documentKind),
+          lines: [{ description: "สินค้า", quantity: "2", unitCost: "100.00", stockSkuId: "SKU-42", vatMode: "manual", vatAmount: "14.00", withholdingTax: "6.00" }],
+        } });
+      },
+    });
+    const row = elements.lineItems.querySelector(".line-item");
+    assert.equal(row.querySelector('[name="vatMode"]')?.value, "manual");
+    assert.equal(elements.netPaymentPreview.textContent, "208.00");
+    row.querySelector('[name="description"]').value = "สินค้าแก้ไข";
+    elements.saveWorkflowDocument.dispatch("click");
+    await settleBrowserWork();
+    const body = calls.find((call) => call.route === "/api/workflow-documents" && call.options.method === "POST")?.options.body;
+    assert.ok(body, elements.workflowDocumentStatus.textContent);
+    const line = JSON.parse(body.entries.find((entry) => entry.name === "payload").value).lines[0];
+    assert.equal(line.stockSkuId, "SKU-42");
+    assert.equal(line.vatMode, "manual");
+    assert.equal(line.vatAmount, "14.00");
+    assert.equal(line.withholdingTax, "6.00");
+    assert.equal(line.description, "สินค้าแก้ไข");
+  }
+});
+
+test("workflow prefill keeps explicit VAT rates, withholding and stock references", async () => {
+  const { elements } = await setupWorkflowDocumentPrefillSandbox({
+    availableGroups: ["lines"],
+    sources: { lines: "PO-2026-09-0001" },
+    context: { lines: [
+      { description: "ภาษีระบุแล้ว", quantity: "2", unitCost: "100", stockSkuId: "SKU-PREFILL", vatMode: "exclusive", vatRate: "10", withholdingTax: "3" },
+      { description: "ข้อมูลเก่า", quantity: "1", unitCost: "50", stockSkuId: "SKU-LEGACY" },
+    ] },
+  }, { documentKind: "payment_voucher", loadRealPrefillLogic: true });
+  getPrefillCheckbox(elements.workflowPrefillGroups, "lines").checked = true;
+  elements.workflowPrefillApply.dispatch("click");
+  const [specified, legacy] = elements.lineItems.querySelectorAll(".line-item");
+  assert.equal(specified.querySelector('[name="vatMode"]')?.value, "exclusive");
+  assert.equal(specified.querySelector('[name="vatRate"]').value, "10");
+  assert.equal(specified.querySelector('[name="withholdingTax"]').value, "3");
+  assert.equal(specified.dataset.stockSkuId, "SKU-PREFILL");
+  assert.equal(legacy.querySelector('[name="vatMode"]').value, "unspecified");
+  assert.equal(elements.totalAmountPreview.textContent, "270.00");
+  assert.equal(elements.netPaymentPreview.textContent, "267.00");
+  assert.equal(elements.vatAmountPreview.textContent, "ยังไม่ระบุครบ");
+  specified.querySelector('[name="vatRate"]').value = "7.5";
+  specified.dispatch("input");
+  assert.equal(elements.totalAmountPreview.textContent, "265.00");
+  assert.equal(elements.netPaymentPreview.textContent, "262.00");
+  legacy.querySelector('[data-remove-line]').dispatch("click");
+  specified.querySelector('[data-remove-line]').dispatch("click");
+  assert.equal(specified.dataset.stockSkuId, "");
+  assert.equal(specified.querySelector('[name="vatMode"]').value, "unspecified");
+});

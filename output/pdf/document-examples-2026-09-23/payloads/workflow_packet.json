@@ -1,0 +1,83 @@
+{
+  "transaction": {
+    "transactionNo": "TXN-2026-09-0001",
+    "title": "ธุรกรรมตัวอย่างสำหรับดูชุดรวมเอกสาร",
+    "accountingMonth": "2026-09",
+    "status": "completed",
+    "templateSnapshot": {
+      "name": "ตัวอย่าง Workflow เอกสารครบชุด"
+    },
+    "steps": [
+      {
+        "stepId": "step-001",
+        "documentKind": "purchase_order",
+        "label": "ใบสั่งซื้อ",
+        "workflowStatus": "completed"
+      },
+      {
+        "stepId": "step-002",
+        "documentKind": "substitute_receipt",
+        "label": "ใบรับรองแทนใบเสร็จรับเงิน",
+        "workflowStatus": "completed"
+      },
+      {
+        "stepId": "step-003",
+        "documentKind": "payment_voucher",
+        "label": "ใบสำคัญจ่าย",
+        "workflowStatus": "completed"
+      },
+      {
+        "stepId": "step-004",
+        "documentKind": "goods_receipt",
+        "label": "ใบรับของ/ใบรับสินค้าเข้าคลัง",
+        "workflowStatus": "completed"
+      }
+    ]
+  },
+  "childDocuments": [
+    {
+      "documentKind": "purchase_order",
+      "documentNo": "PO-2026-09-0001",
+      "statusLabel": "เสร็จสิ้น",
+      "pdfFiles": [
+        {
+          "name": "01_purchase_order.pdf"
+        }
+      ],
+      "rawFiles": []
+    },
+    {
+      "documentKind": "substitute_receipt",
+      "documentNo": "SR-2026-09-0001",
+      "statusLabel": "เสร็จสิ้น",
+      "pdfFiles": [
+        {
+          "name": "01_ใบรับรองแทนใบเสร็จรับเงิน.pdf"
+        }
+      ],
+      "rawFiles": []
+    },
+    {
+      "documentKind": "payment_voucher",
+      "documentNo": "PV-2026-09-0001",
+      "statusLabel": "เสร็จสิ้น",
+      "pdfFiles": [
+        {
+          "name": "01_payment_voucher.pdf"
+        }
+      ],
+      "rawFiles": []
+    },
+    {
+      "documentKind": "goods_receipt",
+      "documentNo": "GR-2026-09-0001",
+      "statusLabel": "เสร็จสิ้น",
+      "pdfFiles": [
+        {
+          "name": "01_goods_receipt.pdf"
+        }
+      ],
+      "rawFiles": []
+    }
+  ]
+}

@@ -1018,7 +1018,7 @@ test("getWorkflowTransactionPrefill sources payee, purpose, and lines from a com
     assert.equal(prefill.context.payee.accountNo, "1112223334");
     assert.equal(prefill.context.purpose.businessPurpose, "ค่าส่งสินค้า");
     assert.deepEqual(prefill.context.lines, [
-      { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "" },
+      { description: "ค่าขนส่ง", quantity: "1", unitCost: "100.00", lineTotal: "100.00", stockSkuId: "", vatMode: "manual", vatRate: null, amountBeforeVat: "100.00", vatAmount: "0.00", withholdingTax: "0.00" },
     ]);
     assert.equal(prefill.context.parties.requesterName, "คุณต้า");
     assert.equal(prefill.context.parties.requesterRole, "ผู้จัดการ");

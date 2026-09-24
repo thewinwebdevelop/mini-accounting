@@ -1071,6 +1071,7 @@
         <div class="field">
           <label>VAT</label>
           <input name="lineVat" inputmode="decimal" placeholder="เช่น 130.84">
+          <span class="hint" data-tax-prefill-notice hidden>ยอดจากต้นทางยังไม่ระบุ VAT โปรดตรวจสอบยอดก่อน VAT และกรอก VAT (กรอก 0 หากไม่มี)</span>
         </div>
         <div class="field">
           <label>หัก ณ ที่จ่าย</label>
@@ -1260,7 +1261,8 @@
       node.querySelector('[name="lineDescription"]').value = line.description || "";
       node.querySelector('[name="lineVendor"]').value = line.vendor || "";
       node.querySelector('[name="lineBeforeVat"]').value = line.amountBeforeVat || "";
-      node.querySelector('[name="lineVat"]').value = line.vatAmount || "";
+      node.querySelector('[name="lineVat"]').value = line.vatAmount ?? "";
+      node.dataset.vatConfirmationRequired = line.vatConfirmationRequired ? "true" : "";
       node.querySelector('[name="lineWht"]').value = line.withholdingTax || "";
       lineItems.append(node);
     }
@@ -1317,6 +1319,7 @@
         vendor: row.querySelector('[name="lineVendor"]').value,
         amountBeforeVat: row.querySelector('[name="lineBeforeVat"]').value,
         vatAmount: row.querySelector('[name="lineVat"]').value,
+        ...(row.dataset.vatConfirmationRequired === "true" ? { vatConfirmationRequired: true } : {}),
         withholdingTax: row.querySelector('[name="lineWht"]').value,
       }));
 
@@ -1370,6 +1373,10 @@
     }
 
     function updatePreview() {
+      lineItems.querySelectorAll(".line-row").forEach((row) => {
+        const notice = row.querySelector("[data-tax-prefill-notice]");
+        if (notice) notice.hidden = row.dataset.vatConfirmationRequired !== "true" || row.querySelector('[name="lineVat"]').value.trim() !== "";
+      });
       const data = collectData();
       const totals = calculateExpenseTotals(data.expenseLines);
       updateLineSummaries(data.expenseLines);

@@ -78,6 +78,7 @@ const {
 const execFileAsync = promisify(execFile);
 const pdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_expense_pdfs.py");
 const workflowDocumentPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_document_pdf.py");
+const workflowAuditPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_audit_packet_pdf.py");
 const workflowPacketPdfGeneratorPath = path.join(__dirname, "..", "scripts", "generate_workflow_packet_pdf.py");
 const workflowDocumentMutationQueues = new Map();
 const expenseRequestMutationQueues = new Map();
@@ -205,6 +206,7 @@ async function clearWorkflowCancellationIntent(rootDir, transactionNo) {
 // (there is only ever one packet per transaction) and so the transaction
 // page and API tests can reference it by a known name rather than a glob.
 const WORKFLOW_PACKET_PDF_FILE_NAME = "99_ชุดรวมเอกสาร_workflow-transaction.pdf";
+const WORKFLOW_AUDIT_PACKET_PDF_FILE_NAME = "02_ชุดรวมเอกสาร_audit-packet.pdf";
 
 function getMonthParts(accountingMonth = "") {
   const [year, month] = String(accountingMonth).split("-");
@@ -579,6 +581,29 @@ async function generateWorkflowDocumentPdf({ payloadPath, outputDir }) {
     payloadPath,
     "--output-dir",
     outputDir,
+  ], {
+    maxBuffer: 1024 * 1024,
+  });
+
+  if (stderr.trim()) {
+    console.warn(stderr.trim());
+  }
+
+  return JSON.parse(stdout);
+}
+
+async function generateWorkflowAuditPacketPdf({ payloadPath, formPath, rawDir, outputPath }) {
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const { stdout, stderr } = await execFileAsync(getPythonExecutable(), [
+    workflowAuditPacketPdfGeneratorPath,
+    "--payload",
+    payloadPath,
+    "--form",
+    formPath,
+    "--raw-dir",
+    rawDir,
+    "--output",
+    outputPath,
   ], {
     maxBuffer: 1024 * 1024,
   });
@@ -2687,6 +2712,14 @@ async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {
     payloadPath: dataPath,
     outputDir: pdfDir,
   });
+  if (Array.isArray(payload.rawFiles) && payload.rawFiles.length > 0) {
+    await generateWorkflowAuditPacketPdf({
+      payloadPath: dataPath,
+      formPath: path.join(pdfDir, `01_${payload.documentKind}.pdf`),
+      rawDir: path.join(absoluteFolderPath, "raw"),
+      outputPath: path.join(pdfDir, WORKFLOW_AUDIT_PACKET_PDF_FILE_NAME),
+    });
+  }
   // Same shape unification as writeSubmittedExpenseRequestFiles/
   // writeSubmittedSubstituteReceiptFiles above: completeWorkflowDocument's
   // idempotent repeat-completion branch already hands back the
