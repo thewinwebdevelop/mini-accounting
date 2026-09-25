@@ -160,6 +160,7 @@ const {
 } = require("./forms/authorization.logic.js");
 const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
 const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
+const { createFileAdapter } = require("./forms/storage-file.adapter.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -187,6 +188,11 @@ const inventoryDataAdapter = createInventoryDataAdapter({
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
 const documentDataAdapter = createDocumentDataAdapter({
+  env: process.env,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+const documentFileAdapter = createFileAdapter({
+  rootDir,
   env: process.env,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
@@ -321,6 +327,16 @@ async function ensureDocumentWriteAccess(request, response, {
 
 async function ensureLifecycleAccess(request, response, action, load) {
   return ensureDocumentAccess(request, response, { action, load });
+}
+
+async function loadDocumentForAuthorization({ documentKind, documentNo, localLoad }) {
+  let localRecord = null;
+  try {
+    localRecord = await localLoad();
+  } catch (error) {
+    if (error.message !== "Expense request not found" && error.message !== "Substitute receipt not found") throw error;
+  }
+  return documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
 }
 
 async function filterOwnedDocumentList(request, records, { numberField, load }) {
@@ -830,8 +846,9 @@ async function handleExpenseRequestFile(fileRoute, response) {
       section: fileRoute.section,
       fileName: fileRoute.fileName,
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch (error) {
@@ -849,8 +866,9 @@ async function handleSubstituteReceiptFile(fileRoute, response) {
       section: fileRoute.section,
       fileName: fileRoute.fileName,
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch (error) {
@@ -869,8 +887,9 @@ async function handleWorkflowDocumentFile(fileRoute, response) {
       section: fileRoute.section,
       fileName: fileRoute.fileName,
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch (error) {
@@ -2966,14 +2985,22 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname.startsWith("/api/substitute-receipts/") && !url.pathname.includes("/files/")) {
       const receiptNo = decodeURIComponent(url.pathname.replace("/api/substitute-receipts/", ""));
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "substitute_receipt",
+        documentNo: receiptNo,
+        localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+      }))) return;
       await handleSubmittedSubstituteReceiptGet(receiptNo, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/expense-requests/") && !url.pathname.includes("/files/")) {
       const requestNo = decodeURIComponent(url.pathname.replace("/api/expense-requests/", ""));
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "expense_request",
+        documentNo: requestNo,
+        localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+      }))) return;
       await handleSubmittedExpenseRequestGet(requestNo, response);
       return;
     }
@@ -2987,7 +3014,11 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith("/api/workflow-documents/")) {
       const remainder = url.pathname.replace("/api/workflow-documents/", "");
       const [documentKind, documentNo] = remainder.split("/");
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: decodeURIComponent(documentKind || ""),
+        documentNo: decodeURIComponent(documentNo || ""),
+        localLoad: () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")),
+      }))) return;
       await handleWorkflowDocumentGet(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
       return;
     }
@@ -3014,21 +3045,33 @@ const server = createServer(async (request, response) => {
 
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedExpenseRequest(rootDir, fileRoute.requestNo))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "expense_request",
+        documentNo: fileRoute.requestNo,
+        localLoad: () => getSubmittedExpenseRequest(rootDir, fileRoute.requestNo),
+      }))) return;
       await handleExpenseRequestFile(fileRoute, response);
       return;
     }
 
     const substituteReceiptFileRoute = parseSubstituteReceiptFileRoute(url.pathname);
     if (substituteReceiptFileRoute) {
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedSubstituteReceipt(rootDir, substituteReceiptFileRoute.receiptNo))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "substitute_receipt",
+        documentNo: substituteReceiptFileRoute.receiptNo,
+        localLoad: () => getSubmittedSubstituteReceipt(rootDir, substituteReceiptFileRoute.receiptNo),
+      }))) return;
       await handleSubstituteReceiptFile(substituteReceiptFileRoute, response);
       return;
     }
 
     const workflowDocumentFileRoute = parseWorkflowDocumentFileRoute(url.pathname);
     if (workflowDocumentFileRoute) {
-      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getWorkflowDocument(rootDir, workflowDocumentFileRoute.documentKind, workflowDocumentFileRoute.documentNo))) return;
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: workflowDocumentFileRoute.documentKind,
+        documentNo: workflowDocumentFileRoute.documentNo,
+        localLoad: () => getWorkflowDocument(rootDir, workflowDocumentFileRoute.documentKind, workflowDocumentFileRoute.documentNo),
+      }))) return;
       await handleWorkflowDocumentFile(workflowDocumentFileRoute, response);
       return;
     }

@@ -117,12 +117,12 @@
 - `resolveMigratedObject({ sourceKey, manifest, bucket })` returns a validated private object reference.
 - `createFileAdapter({ local, storage, mode })` supports local, shadow-verify, and Storage-read with explicit local fallback for unmigrated files.
 
-- [ ] Write failing tests for manifest lookup, path validation, authorization-before-download, changed-file hash mismatch, and local fallback only for known gaps.
-- [ ] Implement file reference lookup from `storage_migration_records`/document files and download verification through the server-only Storage client.
-- [ ] Replace authorized document file reads with the file adapter while preserving content type and download headers.
-- [ ] Ensure employee cross-owner and legacy access remains denied before either local or Storage I/O.
-- [ ] Run focused file/auth tests and existing document file tests.
-- [ ] Commit with `feat: cut over authorized document files to storage adapter`.
+- [x] Write failing tests for manifest lookup, path validation, authorization-before-download, changed-file hash mismatch, and local fallback only for known gaps.
+- [x] Implement file reference lookup from `storage_migration_records`/document files and download verification through the server-only Storage client.
+- [x] Replace authorized document file reads with the file adapter while preserving content type and download headers.
+- [x] Ensure employee cross-owner and legacy access remains denied before either local or Storage I/O.
+- [x] Run focused file/auth tests and existing document file tests.
+- [x] Commit with `feat: cut over authorized document files to storage adapter`.
 
 ### Task 6: Add cutover checks and operational documentation
 
