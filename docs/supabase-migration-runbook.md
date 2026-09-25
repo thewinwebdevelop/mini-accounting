@@ -12,7 +12,7 @@ SWEET_HOUSE_ROOT_DIR="/Users/tar/Documents/หจกสวีทเฮาส์"
 
 ## Configure
 
-Copy `.env.example` to the deployment environment and set `SUPABASE_URL`, the server-only `SUPABASE_SERVICE_ROLE_KEY`, and (unless the default is desired) `SUPABASE_STORAGE_BUCKET`. Apply migrations `supabase/migrations/20260925_001_line_auth.sql`, `supabase/migrations/20260925_002_core_data.sql`, and `supabase/migrations/20260925_003_storage.sql` in order.
+Copy `.env.example` to the deployment environment and set `SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. The storage migration creates the private standard bucket `sweet-house-files`; leave `SUPABASE_STORAGE_BUCKET` at that default unless a matching private custom bucket has already been created. Apply migrations `supabase/migrations/20260925_001_line_auth.sql`, `supabase/migrations/20260925_002_core_data.sql`, and `supabase/migrations/20260925_003_storage.sql` in order.
 
 ## Dry run
 
