@@ -143,6 +143,17 @@ const {
   resolveLineAppUser,
   verifyLineIdToken,
 } = require("./forms/line-auth.logic.js");
+const {
+  extractLineMediaEvent,
+  isSupportedLineMedia,
+  verifyLineWebhookSignature,
+} = require("./forms/line-webhook.logic.js");
+const { createConfiguredLineIntakeStore } = require("./forms/line-intake.logic.js");
+const {
+  buildIntakeReviewReply,
+  downloadLineContent,
+  replyToLine,
+} = require("./forms/line-bot.logic.js");
 const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
 const {
   SESSION_COOKIE_NAME,
@@ -182,6 +193,11 @@ const sessionTtlSeconds = Math.max(300, Number(process.env.SWEET_HOUSE_SESSION_T
 const cookieSecure = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_COOKIE_SECURE || ""))
   || String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const appPublicOrigin = String(process.env.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
+const lineChannelSecret = String(process.env.LINE_CHANNEL_SECRET || "");
+const lineChannelAccessToken = String(process.env.LINE_CHANNEL_ACCESS_TOKEN || "");
+const lineIntakeMaxBytes = Math.max(1024 * 1024, Number(process.env.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024));
+const lineMiniAppUrl = String(process.env.LINE_INTAKE_MINI_APP_URL || (process.env.APP_PUBLIC_ORIGIN ? `${String(process.env.APP_PUBLIC_ORIGIN).replace(/\/$/, "")}/line-intake` : "")).trim();
+const lineIntakeStore = createConfiguredLineIntakeStore({ rootDir, env: process.env, maxBytes: lineIntakeMaxBytes });
 const inventoryDataAdapter = createInventoryDataAdapter({
   rootDir,
   env: process.env,
@@ -226,7 +242,8 @@ function isPublicApiPath(pathname) {
     || pathname === "/api/auth/me"
     || pathname === "/api/auth/logout"
     || pathname === "/api/google-drive/oauth2callback"
-    || pathname === "/api/shopee/callback";
+    || pathname === "/api/shopee/callback"
+    || pathname === "/api/webhooks/line";
 }
 
 function originIsAllowed(request) {
@@ -454,6 +471,8 @@ function safeStaticPath(urlPath) {
     "/": "/index.html",
     "/line-auth": "/line-auth.html",
     "/line-auth/": "/line-auth.html",
+    "/line-intake": "/line-intake.html",
+    "/line-intake/": "/line-intake.html",
     "/expense-request": "/expense-request.html",
     "/expense-request/": "/expense-request.html",
     "/expense-requests": "/expense-requests.html",
@@ -545,6 +564,88 @@ async function readRequestBody(request) {
 async function readJsonBody(request) {
   const body = await readRequestBody(request);
   return body.length ? JSON.parse(body.toString("utf8")) : {};
+}
+
+function publicLineIntakeView(item) {
+  if (!item) return null;
+  const { storagePath, storageBucket, objectPath, ...safeItem } = item;
+  return safeItem;
+}
+
+async function handleLineWebhook(request, response) {
+  const rawBody = (await readRequestBody(request)).toString("utf8");
+  const signature = request.headers["x-line-signature"];
+  if (!lineChannelSecret) {
+    sendJson(response, 503, { code: "LINE_WEBHOOK_CONFIG_MISSING", error: "ระบบ webhook ยังไม่ได้ตั้งค่า channel secret" });
+    return;
+  }
+  if (!verifyLineWebhookSignature({ rawBody, channelSecret: lineChannelSecret, signature })) {
+    sendJson(response, 401, { code: "LINE_WEBHOOK_SIGNATURE_INVALID", error: "ลายเซ็น webhook ไม่ถูกต้อง" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    sendJson(response, 400, { code: "LINE_WEBHOOK_INVALID_JSON", error: "ข้อมูล webhook ไม่ถูกต้อง" });
+    return;
+  }
+
+  const accepted = [];
+  const skipped = [];
+  for (const event of Array.isArray(payload.events) ? payload.events : []) {
+    const media = extractLineMediaEvent(event);
+    if (!media) continue;
+    try {
+      const content = await downloadLineContent({
+        messageId: media.messageId,
+        accessToken: lineChannelAccessToken,
+        maxBytes: lineIntakeMaxBytes,
+      });
+      const normalized = { ...media, contentType: content.contentType };
+      if (!isSupportedLineMedia(normalized)) {
+        skipped.push({ eventId: media.eventId, code: "LINE_MEDIA_UNSUPPORTED" });
+        continue;
+      }
+      const stored = await lineIntakeStore.create({
+        ...normalized,
+        bytes: content.bytes,
+      });
+      accepted.push({ eventId: media.eventId, intakeId: stored.item.id, duplicate: !stored.created });
+      if (stored.created && media.replyToken && lineMiniAppUrl && lineChannelAccessToken) {
+        const reply = buildIntakeReviewReply({ replyToken: media.replyToken, intake: stored.item, miniAppUrl: lineMiniAppUrl });
+        try {
+          await replyToLine({ replyToken: reply.replyToken, messages: reply.messages, accessToken: lineChannelAccessToken });
+        } catch (error) {
+          console.warn(`[line-webhook] reply failed code=${error.code || "LINE_REPLY_FAILED"} intakeId=${stored.item.id}`);
+        }
+      }
+    } catch (error) {
+      skipped.push({ eventId: media.eventId, code: error.code || "LINE_WEBHOOK_PROCESSING_FAILED" });
+    }
+  }
+  sendJson(response, 200, { ok: true, accepted, skipped });
+}
+
+async function handleLineIntakeReview(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    sendJson(response, 200, { intake: publicLineIntakeView(item) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถอ่านรายการไฟล์จาก LINE ได้");
+  }
+}
+
+async function handleLineIntakeCancel(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.transition(intakeId, "cancelled", { lineUserId });
+    sendJson(response, 200, { intake: publicLineIntakeView(item) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถยกเลิกรายการไฟล์จาก LINE ได้");
+  }
 }
 
 function getOAuthRedirectUri(request) {
@@ -2422,6 +2523,21 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (!requireAuthenticatedRequest(request, response, url)) return;
+
+  if (request.method === "POST" && url.pathname === "/api/webhooks/line") {
+    await handleLineWebhook(request, response);
+    return;
+  }
+
+  const lineIntakeMatch = url.pathname.match(/^\/api\/line-intakes\/([^/]+)(\/cancel)?$/);
+  if (lineIntakeMatch && request.method === "GET" && !lineIntakeMatch[2]) {
+    await handleLineIntakeReview(request, response, decodeURIComponent(lineIntakeMatch[1]));
+    return;
+  }
+  if (lineIntakeMatch && request.method === "POST" && lineIntakeMatch[2]) {
+    await handleLineIntakeCancel(request, response, decodeURIComponent(lineIntakeMatch[1]));
+    return;
+  }
 
   if (request.method === "POST" && url.pathname === "/api/auth/line-session") {
     await handleLineSession(request, response);

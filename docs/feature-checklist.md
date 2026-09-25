@@ -52,6 +52,7 @@
 - [x] Add resource-level authorization for employee-owned documents and owner/accounting approval actions.
 - [x] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
 - [ ] Configure LINE Developing/Review/Published channels and complete production verification.
+- [ ] Configure LINE Messaging API webhook URL, channel access token, and rich-menu shortcuts for image/PDF intake.
 
 ## Requested Next
 
