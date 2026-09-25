@@ -835,11 +835,222 @@ function importPlatformOrders(rootDir, file = {}, options = {}) {
   });
 }
 
+function unixSecondsToIso(value) {
+  if (!value) return "";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return cleanText(value);
+  return new Date(numeric * 1000).toISOString();
+}
+
+function mapShopeeOrderRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    importId: row.import_id,
+    platform: row.platform,
+    source: row.source,
+    shopId: row.shop_id,
+    orderNo: row.order_no,
+    externalOrderId: row.external_order_id,
+    orderDate: row.order_date,
+    orderStatus: row.order_status,
+    shippingStatus: row.shipping_status,
+    buyerName: row.buyer_name,
+    trackingNumber: row.tracking_number,
+    shippingCarrier: row.shipping_carrier,
+    packageNumber: row.package_number,
+    shipmentArrangedAt: row.shipment_arranged_at,
+    externalUpdatedAt: row.external_updated_at,
+    lastSyncedAt: row.last_synced_at,
+    createdAt: row.created_at,
+  };
+}
+
+function mapShopeeLineRow(row) {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    lineNo: row.line_no,
+    saleSku: row.sale_sku,
+    displayName: row.display_name,
+    quantity: row.quantity,
+    saleSkuId: row.sale_sku_id,
+    externalItemId: row.external_item_id,
+    externalModelId: row.external_model_id,
+    externalModelSku: row.external_model_sku,
+    mappingStatus: row.mapping_status,
+    mappingSource: row.mapping_source,
+    mappedSaleSkuId: row.mapped_sale_sku_id,
+    issueMessage: row.issue_message,
+  };
+}
+
+function getOrCreateShopeeApiImport(db, shopId, timestamp) {
+  const importNo = `SHOPEE-API-${cleanText(shopId)}-${timestamp.replace(/\D/g, "").slice(0, 17)}`;
+  const existing = db.prepare("SELECT * FROM platform_order_imports WHERE import_no = ?").get(importNo);
+  if (existing) return existing;
+  return db.prepare(`
+    INSERT INTO platform_order_imports (
+      import_no, platform, file_name, status, row_count, matched_line_count,
+      issue_count, created_at, updated_at
+    )
+    VALUES (?, 'shopee', 'shopee-api', 'imported', 0, 0, 0, ?, ?)
+    RETURNING *
+  `).get(importNo, timestamp, timestamp);
+}
+
+function normalizeShopeeItems(payload) {
+  return (payload.items || payload.itemList || []).map((item, index) => {
+    const itemId = cleanText(item.itemId ?? item.item_id);
+    const modelId = cleanText(item.modelId ?? item.model_id ?? item.variationId ?? item.variation_id);
+    const modelSku = cleanText(item.modelSku ?? item.model_sku ?? item.sellerSku ?? item.seller_sku);
+    const itemName = cleanText(item.itemName ?? item.item_name ?? item.name);
+    const modelName = cleanText(item.modelName ?? item.model_name ?? item.variationName ?? item.variation_name);
+    const quantity = Number(item.quantity ?? item.itemQuantity ?? item.item_quantity ?? 0);
+    return {
+      lineNo: cleanText(item.lineNo ?? item.line_no ?? index + 1),
+      itemId,
+      modelId,
+      modelSku,
+      displayName: [itemName, modelName].filter(Boolean).join(" / "),
+      quantity: Number.isInteger(quantity) && quantity >= 0 ? quantity : 0,
+    };
+  });
+}
+
+function upsertShopeeOrder(rootDir, payload = {}, options = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    const timestamp = nowIso(options);
+    const shopId = cleanText(payload.shopId ?? payload.shop_id);
+    const orderSn = cleanText(payload.orderSn ?? payload.order_sn ?? payload.orderNo ?? payload.order_no);
+    if (!shopId || !orderSn) throw new Error("Shopee order ต้องมี shopId และ orderSn");
+
+    const recipient = payload.recipientAddress || payload.recipient_address || {};
+    const orderStatus = cleanText(payload.orderStatus ?? payload.order_status);
+    const shippingStatus = cleanText(payload.shippingStatus ?? payload.shipping_status ?? orderStatus);
+    const trackingNumber = cleanText(payload.trackingNumber ?? payload.tracking_number);
+    const packageNumber = cleanText(payload.packageNumber ?? payload.package_number);
+    const items = normalizeShopeeItems(payload);
+    const importRow = options.importId
+      ? db.prepare("SELECT * FROM platform_order_imports WHERE id = ?").get(Number(options.importId))
+      : getOrCreateShopeeApiImport(db, shopId, timestamp);
+    if (!importRow) throw new Error("ไม่พบ import batch ของ Shopee");
+
+    const existing = db.prepare(`
+      SELECT * FROM platform_orders
+      WHERE platform = 'shopee' AND shop_id = ? AND external_order_id = ?
+    `).get(shopId, orderSn);
+    const order = db.prepare(`
+      INSERT INTO platform_orders (
+        import_id, platform, order_no, order_date, order_status, buyer_name,
+        created_at, source, shop_id, external_order_id, external_updated_at,
+        shipping_status, tracking_number, shipping_carrier, package_number,
+        shipment_arranged_at, last_synced_at, raw_payload_json
+      ) VALUES (?, 'shopee', ?, ?, ?, ?, ?, 'shopee_api', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(platform, order_no) DO UPDATE SET
+        import_id = excluded.import_id,
+        order_date = excluded.order_date,
+        order_status = excluded.order_status,
+        buyer_name = excluded.buyer_name,
+        source = excluded.source,
+        shop_id = excluded.shop_id,
+        external_order_id = excluded.external_order_id,
+        external_updated_at = excluded.external_updated_at,
+        shipping_status = excluded.shipping_status,
+        tracking_number = excluded.tracking_number,
+        shipping_carrier = excluded.shipping_carrier,
+        package_number = excluded.package_number,
+        shipment_arranged_at = excluded.shipment_arranged_at,
+        last_synced_at = excluded.last_synced_at,
+        raw_payload_json = excluded.raw_payload_json
+      RETURNING *
+    `).get(
+      importRow.id,
+      orderSn,
+      unixSecondsToIso(payload.createTime ?? payload.create_time),
+      orderStatus,
+      cleanText(recipient.name ?? payload.buyerName ?? payload.buyer_name),
+      existing?.created_at || timestamp,
+      shopId,
+      orderSn,
+      unixSecondsToIso(payload.updateTime ?? payload.update_time),
+      shippingStatus,
+      trackingNumber,
+      cleanText(payload.logisticsChannel ?? payload.logistics_channel ?? payload.shippingCarrier ?? payload.shipping_carrier),
+      packageNumber,
+      payload.shipmentArrangedAt ?? payload.shipment_arranged_at ? cleanText(payload.shipmentArrangedAt ?? payload.shipment_arranged_at) : "",
+      timestamp,
+      JSON.stringify(payload),
+    );
+
+    const lineRows = items.map((item) => db.prepare(`
+      INSERT INTO platform_order_lines (
+        import_id, order_id, line_no, sale_sku, display_name, quantity,
+        sale_sku_id, match_status, issue_message, posted_at, created_at,
+        external_item_id, external_model_id, external_model_sku,
+        mapping_status, mapping_source, mapped_sale_sku_id
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'missing_sale_sku', '', '', ?, ?, ?, ?, 'unmapped', '', NULL)
+      ON CONFLICT(order_id, line_no, sale_sku) DO UPDATE SET
+        import_id = excluded.import_id,
+        display_name = excluded.display_name,
+        quantity = excluded.quantity,
+        external_item_id = excluded.external_item_id,
+        external_model_id = excluded.external_model_id,
+        external_model_sku = excluded.external_model_sku
+      RETURNING *
+    `).get(
+      importRow.id,
+      order.id,
+      item.lineNo,
+      item.modelSku || item.itemId,
+      item.displayName,
+      item.quantity,
+      timestamp,
+      item.itemId,
+      item.modelId,
+      item.modelSku,
+    )).map(mapShopeeLineRow);
+
+    db.prepare(`
+      UPDATE platform_order_imports
+      SET row_count = (SELECT COUNT(*) FROM platform_order_lines WHERE import_id = ?),
+          updated_at = ?
+      WHERE id = ?
+    `).run(importRow.id, timestamp, importRow.id);
+
+    return {
+      created: !existing,
+      order: mapShopeeOrderRow(order),
+      lines: lineRows,
+    };
+  });
+}
+
+function getShopeeOrder(rootDir, orderKey = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    const shopId = cleanText(orderKey.shopId ?? orderKey.shop_id);
+    const orderSn = cleanText(orderKey.orderSn ?? orderKey.order_sn ?? orderKey.orderNo ?? orderKey.order_no);
+    const order = db.prepare(`
+      SELECT * FROM platform_orders
+      WHERE platform = 'shopee' AND shop_id = ? AND external_order_id = ?
+    `).get(shopId, orderSn);
+    if (!order) return null;
+    const lines = db.prepare(`
+      SELECT * FROM platform_order_lines
+      WHERE order_id = ?
+      ORDER BY CAST(line_no AS INTEGER), id
+    `).all(order.id).map(mapShopeeLineRow);
+    return { order: mapShopeeOrderRow(order), lines };
+  });
+}
+
 module.exports = {
+  getShopeeOrder,
   getPlatformOrderImport,
   importPlatformOrders,
   listPlatformOrderImports,
   normalizePlatform,
   postPlatformOrderImport,
   parsePlatformOrderFile,
+  upsertShopeeOrder,
 };

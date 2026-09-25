@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -181,6 +181,95 @@ function ensureInventorySchema(db) {
       CHECK (match_status IN ('matched', 'missing_sale_sku', 'invalid_quantity', 'insufficient_stock', 'skipped_status'))
     );
 
+    CREATE TABLE IF NOT EXISTS shopee_connections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shop_id TEXT NOT NULL UNIQUE,
+      shop_name TEXT NOT NULL DEFAULT '',
+      partner_id TEXT NOT NULL DEFAULT '',
+      access_token TEXT NOT NULL DEFAULT '',
+      refresh_token TEXT NOT NULL DEFAULT '',
+      token_expires_at TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'connected',
+      last_sync_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('connected', 'expired', 'revoked', 'error'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shopee_sync_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shop_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL DEFAULT '',
+      cursor TEXT NOT NULL DEFAULT '',
+      orders_found INTEGER NOT NULL DEFAULT 0,
+      orders_upserted INTEGER NOT NULL DEFAULT 0,
+      orders_failed INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error_message TEXT NOT NULL DEFAULT '',
+      CHECK (status IN ('running', 'succeeded', 'partial', 'failed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shipment_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shop_id TEXT NOT NULL,
+      logistics_channel_id TEXT NOT NULL DEFAULT '',
+      product_location_id TEXT NOT NULL DEFAULT '',
+      pickup_address_id TEXT NOT NULL DEFAULT '',
+      pickup_time_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'prepared',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('prepared', 'confirmed', 'arranging', 'arranged', 'tracking_pending', 'documents_pending', 'ready_to_print', 'partially_failed', 'failed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shipment_batch_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      platform_order_id INTEGER NOT NULL,
+      package_number TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT NOT NULL DEFAULT '',
+      tracking_number TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES shipment_batches(id),
+      FOREIGN KEY (platform_order_id) REFERENCES platform_orders(id),
+      UNIQUE (batch_id, platform_order_id, package_number),
+      CHECK (status IN ('pending', 'arranging', 'arranged', 'tracking_pending', 'documents_pending', 'ready_to_print', 'failed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shipment_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform_order_id INTEGER,
+      batch_id INTEGER,
+      action_type TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      request_payload TEXT NOT NULL DEFAULT '{}',
+      response_code TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (platform_order_id) REFERENCES platform_orders(id),
+      FOREIGN KEY (batch_id) REFERENCES shipment_batches(id),
+      CHECK (action_type IN ('shipping_parameters', 'arrange_shipment', 'tracking_refresh', 'document_create', 'document_download')),
+      CHECK (status IN ('pending', 'succeeded', 'retrying', 'failed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shipping_document_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      shopee_job_id TEXT NOT NULL DEFAULT '',
+      document_type TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'created',
+      downloaded_file_path TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES shipment_batches(id),
+      CHECK (status IN ('created', 'processing', 'ready', 'failed'))
+    );
+
     CREATE TABLE IF NOT EXISTS platform_order_reservations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       import_id INTEGER NOT NULL,
@@ -213,6 +302,23 @@ function ensureInventorySchema(db) {
 
   addColumnIfMissing(db, "products", "image_path", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "stock_skus", "image_path", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "source", "TEXT NOT NULL DEFAULT 'manual'");
+  addColumnIfMissing(db, "platform_orders", "shop_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "external_order_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "external_updated_at", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "shipping_status", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "tracking_number", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "shipping_carrier", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "package_number", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "shipment_arranged_at", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "last_synced_at", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "raw_payload_json", "TEXT NOT NULL DEFAULT '{}'");
+  addColumnIfMissing(db, "platform_order_lines", "external_item_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_order_lines", "external_model_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_order_lines", "external_model_sku", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_order_lines", "mapping_status", "TEXT NOT NULL DEFAULT 'unmapped'");
+  addColumnIfMissing(db, "platform_order_lines", "mapping_source", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_order_lines", "mapped_sale_sku_id", "INTEGER");
 
   db.prepare(`
     INSERT OR IGNORE INTO inventory_schema_migrations (version, applied_at)
@@ -234,6 +340,19 @@ function ensureInventorySchema(db) {
     FROM products
     WHERE TRIM(category) <> ''
   `).run(timestamp, timestamp);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_platform_orders_shopee_key
+      ON platform_orders (platform, shop_id, external_order_id);
+    CREATE INDEX IF NOT EXISTS idx_platform_order_lines_external
+      ON platform_order_lines (external_item_id, external_model_id);
+    CREATE INDEX IF NOT EXISTS idx_shopee_sync_runs_shop_status
+      ON shopee_sync_runs (shop_id, status, started_at);
+    CREATE INDEX IF NOT EXISTS idx_shipment_batch_orders_batch_status
+      ON shipment_batch_orders (batch_id, status);
+    CREATE INDEX IF NOT EXISTS idx_shipment_actions_batch_status
+      ON shipment_actions (batch_id, status);
+  `);
 
   db.prepare(`
     INSERT INTO platform_order_reservations (
