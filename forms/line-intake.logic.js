@@ -2,7 +2,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { createSupabaseAdminClient, supabaseRequest } = require("./supabase.logic.js");
-const { createSupabaseStorageClient, uploadStorageObject } = require("./supabase-storage.logic.js");
+const { createSupabaseStorageClient, downloadStorageObject, uploadStorageObject } = require("./supabase-storage.logic.js");
 
 function intakeError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -52,7 +52,8 @@ function createLocalLineIntakeStore({ rootDir, maxBytes = 20 * 1024 * 1024 } = {
       id, eventId: String(eventId || ""), messageId: String(messageId || ""), lineUserId: String(lineUserId || ""),
       mediaKind, originalName: safeFileName(originalName), contentType: String(contentType || ""),
       byteSize: buffer.length, sha256, storagePath, status: "needs_confirmation",
-      extractedPayload: {}, duplicateSourceKeys: [], createdAt: timestamp, updatedAt: timestamp,
+      extractedPayload: {}, duplicateSourceKeys: [], ocrStatus: "pending", ocrProvider: "", ocrConfidence: 0, ocrWarnings: [], ocrError: "",
+      createdAt: timestamp, updatedAt: timestamp,
     };
     items.push(item);
     await writeIndex(items);
@@ -70,7 +71,29 @@ function createLocalLineIntakeStore({ rootDir, maxBytes = 20 * 1024 * 1024 } = {
     return item;
   }
 
-  async function transition(id, status, { lineUserId = "", privileged = false, now = () => new Date().toISOString() } = {}) {
+  async function readOriginal(item) {
+    const absolutePath = path.resolve(String(item?.storagePath || ""));
+    if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) throw intakeError("LINE_INTAKE_STORAGE_INVALID", "ที่อยู่ไฟล์ intake ไม่ถูกต้อง");
+    return { bytes: await readFile(absolutePath), contentType: item.contentType, fileName: item.originalName };
+  }
+
+  async function updateScan(id, scan = {}) {
+    const items = await readIndex();
+    const index = items.findIndex(item => item.id === id);
+    if (index < 0) throw intakeError("LINE_INTAKE_NOT_FOUND", "ไม่พบรายการไฟล์จาก LINE");
+    const updated = {
+      ...items[index], ocrStatus: String(scan.status || "failed"), ocrProvider: String(scan.provider || ""),
+      ocrConfidence: Number.isFinite(Number(scan.confidence)) ? Number(scan.confidence) : 0,
+      ocrWarnings: Array.isArray(scan.warnings) ? scan.warnings : [], ocrError: String(scan.error || ""),
+      extractedPayload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
+      updatedAt: new Date().toISOString(),
+    };
+    items[index] = updated;
+    await writeIndex(items);
+    return updated;
+  }
+
+  async function transition(id, status, { lineUserId = "", privileged = false, metadata = {}, now = () => new Date().toISOString() } = {}) {
     const items = await readIndex();
     const index = items.findIndex(item => item.id === id);
     if (index < 0) throw intakeError("LINE_INTAKE_NOT_FOUND", "ไม่พบรายการไฟล์จาก LINE");
@@ -78,13 +101,13 @@ function createLocalLineIntakeStore({ rootDir, maxBytes = 20 * 1024 * 1024 } = {
     if (!privileged && lineUserId && item.lineUserId !== lineUserId) throw intakeError("LINE_INTAKE_FORBIDDEN", "ไม่มีสิทธิ์ดำเนินการ");
     const allowed = { needs_confirmation: ["confirmed", "cancelled"], confirmed: [] };
     if (!allowed[item.status]?.includes(status)) throw intakeError("LINE_INTAKE_INVALID_TRANSITION", "สถานะรายการไม่รองรับการเปลี่ยนแปลงนี้");
-    const updated = { ...item, status, updatedAt: now(), ...(status === "cancelled" ? { cancelledAt: now() } : {}), ...(status === "confirmed" ? { confirmedAt: now() } : {}) };
+    const updated = { ...item, ...metadata, status, updatedAt: now(), ...(status === "cancelled" ? { cancelledAt: now() } : {}), ...(status === "confirmed" ? { confirmedAt: now() } : {}) };
     items[index] = updated;
     await writeIndex(items);
     return updated;
   }
 
-  return { create, get, getForUser, transition };
+  return { create, get, getForUser, readOriginal, updateScan, transition };
 }
 
 function cloudItemFromRow(row = {}) {
@@ -96,6 +119,10 @@ function cloudItemFromRow(row = {}) {
     storageBucket: String(row.storage_bucket || ""), objectPath: String(row.object_path || ""),
     status: String(row.status || ""), extractedPayload: row.extracted_payload || {},
     duplicateSourceKeys: row.duplicate_source_keys || [], createdAt: row.created_at || "", updatedAt: row.updated_at || "",
+    ocrStatus: String(row.ocr_status || "pending"), ocrProvider: String(row.ocr_provider || ""), ocrConfidence: Number(row.ocr_confidence || 0),
+    ocrWarnings: Array.isArray(row.ocr_warnings) ? row.ocr_warnings : [], ocrError: String(row.ocr_error || ""),
+    ...(row.created_document ? { createdDocument: row.created_document } : {}),
+    ...(row.created_document_no ? { createdDocumentNo: String(row.created_document_no) } : {}),
     ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
     ...(row.confirmed_at ? { confirmedAt: row.confirmed_at } : {}),
   };
@@ -108,6 +135,7 @@ function createSupabaseLineIntakeStore({
   maxBytes = 20 * 1024 * 1024,
   request = supabaseRequest,
   uploadObject = uploadStorageObject,
+  downloadObject,
   now = () => new Date().toISOString(),
 } = {}) {
   if (!client || !storageClient) throw new Error("Supabase LINE intake clients are required");
@@ -136,6 +164,7 @@ function createSupabaseLineIntakeStore({
         media_kind: mediaKind, original_name: safeFileName(originalName), content_type: contentType,
         byte_size: buffer.length, sha256, storage_bucket: bucket, object_path: objectPath,
         status: "needs_confirmation", extracted_payload: {}, duplicate_source_keys: [], created_at: timestamp, updated_at: timestamp,
+        ocr_status: "pending", ocr_provider: "", ocr_confidence: 0, ocr_warnings: [], ocr_error: "",
       },
     });
     const row = Array.isArray(response) ? response[0] : response;
@@ -154,20 +183,40 @@ function createSupabaseLineIntakeStore({
     return item;
   }
 
-  async function transition(id, status, { lineUserId = "", privileged = false } = {}) {
+  async function readOriginal(item) {
+    if (!item?.objectPath || typeof downloadObject !== "function") throw intakeError("LINE_INTAKE_STORAGE_INVALID", "ไม่พบไฟล์ต้นฉบับใน Storage");
+    return { bytes: Buffer.from(await downloadObject(storageClient, item.objectPath)), contentType: item.contentType, fileName: item.originalName };
+  }
+
+  async function updateScan(id, scan = {}) {
+    const timestamp = now();
+    const response = await request(client, `/rest/v1/line_intake_items?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { Prefer: "return=representation" },
+      body: {
+        ocr_provider: String(scan.provider || ""), ocr_status: String(scan.status || "failed"),
+        ocr_confidence: Number.isFinite(Number(scan.confidence)) ? Number(scan.confidence) : 0,
+        ocr_warnings: Array.isArray(scan.warnings) ? scan.warnings : [], ocr_error: String(scan.error || ""),
+        extracted_payload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
+        updated_at: timestamp,
+      },
+    });
+    return cloudItemFromRow(Array.isArray(response) ? response[0] : response);
+  }
+
+  async function transition(id, status, { lineUserId = "", privileged = false, metadata = {} } = {}) {
     const current = await getForUser(id, lineUserId, { privileged });
     const allowed = { needs_confirmation: ["confirmed", "cancelled"], confirmed: [] };
     if (!allowed[current.status]?.includes(status)) throw intakeError("LINE_INTAKE_INVALID_TRANSITION", "สถานะรายการไม่รองรับการเปลี่ยนแปลงนี้");
     const timestamp = now();
     const response = await request(client, `/rest/v1/line_intake_items?id=eq.${encodeURIComponent(id)}`, {
       method: "PATCH", headers: { Prefer: "return=representation" },
-      body: { status, updated_at: timestamp, ...(status === "cancelled" ? { cancelled_at: timestamp } : {}), ...(status === "confirmed" ? { confirmed_at: timestamp } : {}) },
+      body: { status, updated_at: timestamp, ...(metadata.createdDocument ? { created_document: metadata.createdDocument } : {}), ...(metadata.createdDocumentNo ? { created_document_no: metadata.createdDocumentNo } : {}), ...(status === "cancelled" ? { cancelled_at: timestamp } : {}), ...(status === "confirmed" ? { confirmed_at: timestamp } : {}) },
     });
     const row = Array.isArray(response) ? response[0] : response;
     return cloudItemFromRow(row || { ...current, status, updated_at: timestamp });
   }
 
-  return { create, get, getForUser, transition };
+  return { create, get, getForUser, readOriginal, updateScan, transition };
 }
 
 function createConfiguredLineIntakeStore({ rootDir, env = process.env, maxBytes } = {}) {
@@ -176,7 +225,7 @@ function createConfiguredLineIntakeStore({ rootDir, env = process.env, maxBytes 
   if (backend !== "supabase") throw intakeError("LINE_INTAKE_BACKEND_INVALID", "LINE intake backend ไม่ถูกต้อง");
   const client = createSupabaseAdminClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
   const storageClient = createSupabaseStorageClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY, bucket: env.SUPABASE_STORAGE_BUCKET });
-  return createSupabaseLineIntakeStore({ client, storageClient, bucket: storageClient.bucket, maxBytes });
+  return createSupabaseLineIntakeStore({ client, storageClient, bucket: storageClient.bucket, maxBytes, downloadObject: downloadStorageObject });
 }
 
 module.exports = { createConfiguredLineIntakeStore, createLocalLineIntakeStore, createSupabaseLineIntakeStore, safeFileName };

@@ -53,6 +53,7 @@
 - [x] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
 - [ ] Configure LINE Developing/Review/Published channels and complete production verification.
 - [ ] Configure LINE Messaging API webhook URL, channel access token, and rich-menu shortcuts for image/PDF intake.
+- [ ] Configure `LINE_OCR_PROVIDER=http`, OCR endpoint/API key, and apply the LINE intake OCR migration before production use.
 
 ## Requested Next
 

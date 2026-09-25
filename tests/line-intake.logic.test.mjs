@@ -26,6 +26,11 @@ test("local LINE intake store saves original bytes and is idempotent", async () 
     assert.equal(first.item.byteSize, 9);
     assert.match(first.item.sha256, /^[a-f0-9]{64}$/);
     assert.equal(await readFile(first.item.storagePath, "utf8"), "%PDF-test");
+    const scanned = await store.updateScan(first.item.id, {
+      provider: "manual", status: "needs_review", confidence: 0, fields: { vendorName: "" }, warnings: [],
+    });
+    assert.equal(scanned.ocrStatus, "needs_review");
+    assert.equal((await store.readOriginal(scanned)).bytes.toString(), "%PDF-test");
 
     const duplicate = await store.create({
       eventId: "evt-1",
@@ -74,6 +79,7 @@ test("Supabase LINE intake store writes metadata and private object identity", a
     storageClient: {},
     bucket: "sweet-house-files",
     uploadObject: async (_storageClient, input) => { calls.push({ type: "upload", input }); },
+    downloadObject: async () => Buffer.from("%PDF"),
     request: async (_client, route, options = {}) => {
       calls.push({ type: "request", route, options });
       if (options.method === "POST") {
@@ -81,7 +87,7 @@ test("Supabase LINE intake store writes metadata and private object identity", a
         rows.push(record);
         return [record];
       }
-      if (options.method === "PATCH") return [rows[0]];
+      if (options.method === "PATCH") return [{ ...rows[0], ...options.body, ocr_provider: options.body.ocr_provider, ocr_status: options.body.ocr_status }];
       if (route.includes("id=eq.cloud-intake-1")) return rows;
       return [];
     },
@@ -97,4 +103,9 @@ test("Supabase LINE intake store writes metadata and private object identity", a
   assert.match(uploadCall.input.objectPath, /^line-intakes\/[0-9a-f-]{36}\/[a-f0-9]{64}-invoice\.pdf$/);
   assert.equal(calls.find(call => call.type === "request" && call.options.method === "POST").options.method, "POST");
   assert.equal((await store.getForUser("cloud-intake-1", "U-cloud")).lineUserId, "U-cloud");
+  const scanned = await store.updateScan("cloud-intake-1", { provider: "http", status: "needs_review", confidence: 0.8, fields: { vendorName: "ร้าน" }, warnings: [] });
+  assert.equal(scanned.ocrStatus, "needs_review");
+  assert.equal(scanned.ocrProvider, "http");
+  const original = await store.readOriginal(scanned);
+  assert.equal(original.bytes.toString(), "%PDF");
 });

@@ -73,6 +73,7 @@ const {
   buildWorkflowDocumentPayload,
   validateWorkflowDocumentPayload,
 } = require("./forms/workflow-document.logic.js");
+const { validateExpenseRequest } = require("./forms/expense-request.logic.js");
 const {
   getDocumentTypeDefinition,
 } = require("./forms/workflow.logic.js");
@@ -154,6 +155,7 @@ const {
   downloadLineContent,
   replyToLine,
 } = require("./forms/line-bot.logic.js");
+const { scanLineDocument } = require("./forms/line-ocr.logic.js");
 const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
 const {
   SESSION_COOKIE_NAME,
@@ -197,6 +199,9 @@ const lineChannelSecret = String(process.env.LINE_CHANNEL_SECRET || "");
 const lineChannelAccessToken = String(process.env.LINE_CHANNEL_ACCESS_TOKEN || "");
 const lineIntakeMaxBytes = Math.max(1024 * 1024, Number(process.env.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024));
 const lineMiniAppUrl = String(process.env.LINE_INTAKE_MINI_APP_URL || (process.env.APP_PUBLIC_ORIGIN ? `${String(process.env.APP_PUBLIC_ORIGIN).replace(/\/$/, "")}/line-intake` : "")).trim();
+const lineOcrProvider = String(process.env.LINE_OCR_PROVIDER || "manual").trim().toLowerCase();
+const lineOcrEndpoint = String(process.env.LINE_OCR_API_URL || "").trim();
+const lineOcrApiKey = String(process.env.LINE_OCR_API_KEY || "").trim();
 const lineIntakeStore = createConfiguredLineIntakeStore({ rootDir, env: process.env, maxBytes: lineIntakeMaxBytes });
 const inventoryDataAdapter = createInventoryDataAdapter({
   rootDir,
@@ -572,6 +577,93 @@ function publicLineIntakeView(item) {
   return safeItem;
 }
 
+const lineIntakeOcrInFlight = new Map();
+
+async function ensureLineIntakeScanned(item) {
+  if (item.ocrStatus === "needs_review") return item;
+  const existing = lineIntakeOcrInFlight.get(item.id);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      const original = await lineIntakeStore.readOriginal(item);
+      const result = await scanLineDocument({
+        provider: lineOcrProvider,
+        endpoint: lineOcrEndpoint,
+        apiKey: lineOcrApiKey,
+        bytes: original.bytes,
+        contentType: original.contentType,
+        fileName: original.fileName,
+        maxBytes: lineIntakeMaxBytes,
+      });
+      return lineIntakeStore.updateScan(item.id, result);
+    } catch (error) {
+      return lineIntakeStore.updateScan(item.id, {
+        provider: lineOcrProvider,
+        status: "failed",
+        confidence: 0,
+        fields: {},
+        warnings: [],
+        error: error.code || "LINE_OCR_FAILED",
+      });
+    }
+  })();
+  lineIntakeOcrInFlight.set(item.id, run);
+  try { return await run; } finally { lineIntakeOcrInFlight.delete(item.id); }
+}
+
+function firstText(...values) {
+  return values.map(value => String(value ?? "").trim()).find(Boolean) || "";
+}
+
+function buildLineExpensePayload(request, item, body = {}) {
+  const fields = item.extractedPayload?.fields && typeof item.extractedPayload.fields === "object" ? item.extractedPayload.fields : {};
+  const lines = Array.isArray(body.expenseLines) && body.expenseLines.length
+    ? body.expenseLines.slice(0, 50).map(line => ({
+      date: firstText(line.date, body.expenseDate, fields.expenseDate),
+      category: firstText(line.category, "ทั่วไป"),
+      description: firstText(line.description, fields.description),
+      vendor: firstText(line.vendor, body.paymentTargetName, fields.vendorName),
+      amountBeforeVat: firstText(line.amountBeforeVat, fields.amountBeforeVat),
+      vatAmount: firstText(line.vatAmount, fields.vatAmount),
+      withholdingTax: firstText(line.withholdingTax, fields.withholdingTax, "0"),
+    }))
+    : [{
+      date: firstText(body.expenseDate, fields.expenseDate),
+      category: firstText(body.category, "ทั่วไป"),
+      description: firstText(body.description, fields.description),
+      vendor: firstText(body.paymentTargetName, fields.vendorName),
+      amountBeforeVat: firstText(body.amountBeforeVat, fields.amountBeforeVat),
+      vatAmount: firstText(body.vatAmount, fields.vatAmount),
+      withholdingTax: firstText(body.withholdingTax, fields.withholdingTax, "0"),
+    }];
+  const payload = {
+    accountingMonth: firstText(body.accountingMonth, fields.accountingMonth),
+    expenseDate: firstText(body.expenseDate, fields.expenseDate),
+    requesterName: firstText(body.requesterName, request.auth?.displayName),
+    requesterRole: String(body.requesterRole || "").trim(),
+    requestType: ["reimbursement", "direct_payment"].includes(body.requestType) ? body.requestType : "reimbursement",
+    requestTitle: firstText(body.requestTitle, fields.documentNo, fields.description, "ค่าใช้จ่ายจาก LINE"),
+    businessPurpose: firstText(body.businessPurpose, fields.description),
+    paymentTargetName: firstText(body.paymentTargetName, fields.vendorName),
+    vendorSnapshot: { name: firstText(body.paymentTargetName, fields.vendorName), taxId: firstText(body.taxId, fields.taxId) },
+    ownerUserId: authMode === "line" ? String(request.auth?.userId || "") : "",
+    expenseLines: lines,
+  };
+  return payload;
+}
+
+function lineDocumentSummary(result = {}) {
+  return {
+    requestNo: result.requestNo || "",
+    status: result.status || "draft",
+    statusLabel: result.statusLabel || "แบบร่าง",
+    folderPath: result.folderPath || "",
+    evidenceFiles: result.evidenceFiles || {},
+    rawFiles: result.rawFiles || [],
+    updatedAt: result.updatedAt || "",
+  };
+}
+
 async function handleLineWebhook(request, response) {
   const rawBody = (await readRequestBody(request)).toString("utf8");
   const signature = request.headers["x-line-signature"];
@@ -632,9 +724,57 @@ async function handleLineIntakeReview(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
     const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
-    sendJson(response, 200, { intake: publicLineIntakeView(item) });
+    const scanned = await ensureLineIntakeScanned(item);
+    sendJson(response, 200, { intake: publicLineIntakeView(scanned) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถอ่านรายการไฟล์จาก LINE ได้");
+  }
+}
+
+async function handleLineIntakeConfirm(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    if (item.status === "confirmed" && item.createdDocument) {
+      sendJson(response, 200, { intake: publicLineIntakeView(item), document: item.createdDocument, idempotent: true });
+      return;
+    }
+    if (item.status !== "needs_confirmation") {
+      sendJson(response, 409, { code: "LINE_INTAKE_NOT_CONFIRMABLE", error: "รายการนี้ไม่อยู่ในสถานะรอยืนยัน" });
+      return;
+    }
+    const body = await readJsonBody(request);
+    const scanned = await ensureLineIntakeScanned(item);
+    const payload = buildLineExpensePayload(request, scanned, body);
+    const errors = validateExpenseRequest(payload);
+    if (errors.length) {
+      sendJson(response, 400, { code: "LINE_INTAKE_CONFIRMATION_INVALID", error: errors.join(", "), errors });
+      return;
+    }
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
+      payload,
+      loadExisting: requestNo => getSubmittedExpenseRequest(rootDir, requestNo),
+    })) return;
+    const original = await lineIntakeStore.readOriginal(scanned);
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: "",
+      payload,
+      localSave: () => saveExpenseDraft({
+        rootDir,
+        payload,
+        uploads: [{ evidenceKey: "receipt", originalName: original.fileName, type: original.contentType, buffer: original.bytes }],
+      }),
+    });
+    const document = lineDocumentSummary(result);
+    const confirmed = await lineIntakeStore.transition(intakeId, "confirmed", {
+      lineUserId,
+      metadata: { createdDocument: document, createdDocumentNo: document.requestNo },
+    });
+    sendJson(response, 200, { intake: publicLineIntakeView(confirmed), document, idempotent: false });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้างแบบร่างจากไฟล์ LINE ได้");
   }
 }
 
@@ -2536,6 +2676,11 @@ const server = createServer(async (request, response) => {
   }
   if (lineIntakeMatch && request.method === "POST" && lineIntakeMatch[2]) {
     await handleLineIntakeCancel(request, response, decodeURIComponent(lineIntakeMatch[1]));
+    return;
+  }
+  const lineIntakeConfirmMatch = url.pathname.match(/^\/api\/line-intakes\/([^/]+)\/confirm$/);
+  if (lineIntakeConfirmMatch && request.method === "POST") {
+    await handleLineIntakeConfirm(request, response, decodeURIComponent(lineIntakeConfirmMatch[1]));
     return;
   }
 
