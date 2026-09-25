@@ -174,6 +174,7 @@ function buildExpensePayload(data = {}) {
   return {
     requestNo,
     folderPath,
+    ownerUserId: String(data.ownerUserId ?? "").trim(),
     requestTitle: String(data.requestTitle ?? "").trim(),
     requestType: String(data.requestType ?? "").trim(),
     company: data.company ? {

@@ -1601,8 +1601,10 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
     draftPayload.receiptNo = allocation.receiptNo;
     draftPayload.folderPath = existing?.folderPath || draftPayload.folderPath;
     draftPayload.receiptType = base.receiptType;
+    draftPayload.ownerUserId = existing ? String(existingPayload.ownerUserId || "").trim() : String(draftPayload.ownerUserId || "").trim();
     draftPayload.createdAt = existingPayload.createdAt || draftPayload.createdAt;
-    preserveNumberedServerMetadata(draftPayload, existingPayload, ["sheetSync", "driveSync", "syncMetadata", "stockReceipt", "revisions", "completedAt", "completedBy"]);
+    preserveNumberedServerMetadata(draftPayload, existingPayload, ["sheetSync", "driveSync", "syncMetadata", "stockReceipt", "revisions", "completedAt", "completedBy", "ownerUserId"]);
+    draftPayload.ownerUserId = existing ? String(existingPayload.ownerUserId || "").trim() : String(base.ownerUserId || "").trim();
     if (existingPayload.accountingMonth) draftPayload.accountingMonth = existingPayload.accountingMonth;
     const result = await writeNumberedDraftFiles(rootDir, draftPayload, "substitute-receipt.json", preparedUploads.writes);
     return { receiptNo: draftPayload.receiptNo, status: "draft", statusLabel: draftPayload.statusLabel, folderPath: draftPayload.folderPath, absoluteFolderPath: result.absoluteFolderPath, updatedAt: draftPayload.updatedAt, evidenceFiles, rawFiles: flattenEvidenceFiles(evidenceFiles) };
@@ -1640,9 +1642,11 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
     draftPayload.statusHistory = Array.isArray(existingPayload.statusHistory) ? existingPayload.statusHistory : [];
     draftPayload.requestNo = allocation.requestNo;
     draftPayload.folderPath = existing?.folderPath || draftPayload.folderPath;
+    draftPayload.ownerUserId = existing ? String(existingPayload.ownerUserId || "").trim() : String(draftPayload.ownerUserId || "").trim();
     draftPayload.createdAt = existingPayload.createdAt || draftPayload.createdAt;
     draftPayload.accountingMonth = existingPayload.accountingMonth || getAccountingMonthFromRequestNo(allocation.requestNo) || payload.accountingMonth;
-    preserveNumberedServerMetadata(draftPayload, existingPayload, ["sheetSync", "driveSync", "syncMetadata", "completedAt", "completedBy"]);
+    preserveNumberedServerMetadata(draftPayload, existingPayload, ["sheetSync", "driveSync", "syncMetadata", "completedAt", "completedBy", "ownerUserId"]);
+    draftPayload.ownerUserId = existing ? String(existingPayload.ownerUserId || "").trim() : String(base.ownerUserId || "").trim();
     const result = await writeNumberedDraftFiles(rootDir, draftPayload, "submission.json", preparedUploads.writes);
     return { requestNo: draftPayload.requestNo, status: "draft", statusLabel: draftPayload.statusLabel, folderPath: draftPayload.folderPath, absoluteFolderPath: result.absoluteFolderPath, updatedAt: draftPayload.updatedAt, evidenceFiles, rawFiles: flattenEvidenceFiles(evidenceFiles) };
   };
@@ -2001,9 +2005,11 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     nextPayload.updatedAt = now;
     nextPayload.requestNo = existing.requestNo;
     nextPayload.folderPath = existing.folderPath;
+    nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     nextPayload.createdAt = stored.createdAt;
     nextPayload.accountingMonth = accountingMonth;
-    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "completedAt", "completedBy"]);
+    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "completedAt", "completedBy", "ownerUserId"]);
+    nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     const validationErrors = validateExpenseRequest({ ...nextPayload, accountingMonth, evidenceFiles });
     if (validationErrors.length) throw new Error(validationErrors.join(", "));
     const absoluteFolderPath = assertPathWithinDirectory(rootDir, path.join(rootDir, existing.folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
@@ -2069,10 +2075,12 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     nextPayload.updatedAt = now;
     nextPayload.receiptNo = existing.receiptNo;
     nextPayload.folderPath = existing.folderPath;
+    nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     nextPayload.createdAt = stored.createdAt;
     nextPayload.receiptType = stored.receiptType;
     nextPayload.accountingMonth = accountingMonth;
-    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "stockReceipt", "revisions", "completedAt", "completedBy"]);
+    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "stockReceipt", "revisions", "completedAt", "completedBy", "ownerUserId"]);
+    nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     const errors = validateSubstituteReceipt(nextPayload);
     if (errors.length) throw new Error(errors.join(", "));
     const absoluteFolderPath = assertPathWithinDirectory(rootDir, path.join(rootDir, existing.folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
@@ -3083,6 +3091,7 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
       transactionNo: stored.transactionNo ?? "",
       workflowTemplateId: stored.workflowTemplateId ?? "",
       workflowStepId: stored.workflowStepId ?? "",
+      ownerUserId: stored.ownerUserId ?? "",
       vendorId: Object.prototype.hasOwnProperty.call(payload, "vendorId") ? payload.vendorId : (stored.vendorId ?? ""),
       vendorSnapshot: Object.prototype.hasOwnProperty.call(payload, "vendorSnapshot") ? payload.vendorSnapshot : (stored.vendorSnapshot ?? {}),
     };

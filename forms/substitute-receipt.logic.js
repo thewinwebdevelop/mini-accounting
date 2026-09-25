@@ -258,6 +258,7 @@ function buildSubstituteReceiptPayload(data = {}) {
     documentKind: "substitute_receipt",
     receiptNo,
     folderPath,
+    ownerUserId: cleanText(data.ownerUserId),
     receiptTitle: cleanText(data.receiptTitle),
     receiptType,
     receiptTypeLabel: RECEIPT_TYPE_LABELS[receiptType] ?? receiptType,

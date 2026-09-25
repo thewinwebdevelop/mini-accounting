@@ -145,6 +145,22 @@ test("buildExpensePayload creates standard document IDs and folder paths for a v
   assert.equal(payload.evidence.reimbursementSlip.status, "รอดำเนินการ");
 });
 
+test("buildExpensePayload preserves the server-bound owner user id", () => {
+  const payload = buildExpensePayload({
+    sequence: "9",
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าใช้จ่ายของผู้ใช้",
+    requestType: "reimbursement",
+    requesterName: "คุณผู้ขอ",
+    businessPurpose: "ทดสอบ owner binding",
+    paymentTargetName: "คุณผู้ขอ",
+    ownerUserId: "user-1",
+    expenseLines: [{ description: "รายการ", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.equal(payload.ownerUserId, "user-1");
+});
+
 test("buildExpensePayload does not mark evidence as attached without raw files", () => {
   const payload = buildExpensePayload({
     sequence: "8",

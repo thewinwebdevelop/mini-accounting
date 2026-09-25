@@ -18,6 +18,21 @@ test("lightweight workflow documents expose required standalone kinds", () => {
   ]);
 });
 
+test("buildWorkflowDocumentPayload preserves the server-bound owner user id", () => {
+  const payload = docLogic.buildWorkflowDocumentPayload({
+    documentKind: "purchase_order",
+    sequence: "9",
+    accountingMonth: "2026-09",
+    documentDate: "2026-09-06",
+    title: "เอกสารของผู้ใช้",
+    businessPurpose: "ทดสอบ owner binding",
+    ownerUserId: "user-1",
+    lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+  });
+
+  assert.equal(payload.ownerUserId, "user-1");
+});
+
 test("submitWorkflowDocument moves a draft to pending approval with an immutable audit stamp", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {

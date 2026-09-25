@@ -158,6 +158,7 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
+const { actorLabel } = require("./forms/authorization.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -249,6 +250,21 @@ function requireAuthenticatedRequest(request, response, url) {
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
     return false;
   }
+}
+
+function actorForRequest(request, suppliedActor) {
+  return authMode === "line" ? actorLabel(request.auth) : suppliedActor;
+}
+
+async function bindLineOwner(request, payload, { numberField, loadExisting }) {
+  if (authMode !== "line") return payload;
+  const documentNo = String(payload?.[numberField] ?? "").trim();
+  if (!documentNo) return { ...payload, ownerUserId: String(request.auth?.userId || "").trim() };
+  const existing = await loadExisting(documentNo).catch((error) => {
+    if (error.message === "Expense request not found" || error.message === "Substitute receipt not found") return null;
+    throw error;
+  });
+  return { ...payload, ownerUserId: String(existing?.payload?.ownerUserId || "").trim() };
 }
 
 async function handleLineSession(request, response) {
@@ -523,7 +539,10 @@ async function handleExpenseSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "requestNo",
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await saveExpenseSubmission({
       rootDir,
       payload,
@@ -540,7 +559,10 @@ async function handleSubstituteReceiptSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "receiptNo",
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await saveSubstituteReceiptSubmission({
       rootDir,
       payload,
@@ -557,7 +579,10 @@ async function handleSubstituteReceiptDraftSave(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "receiptNo",
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await saveSubstituteReceiptDraft({
       rootDir,
       payload,
@@ -576,7 +601,7 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
     const result = await approveSubstituteReceipt({
       rootDir,
       receiptNo,
-      approvedBy: payload.approvedBy,
+      approvedBy: actorForRequest(request, payload.approvedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -590,7 +615,7 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
     const result = await approveExpenseRequest({
       rootDir,
       requestNo,
-      approvedBy: payload.approvedBy,
+      approvedBy: actorForRequest(request, payload.approvedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -611,7 +636,7 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
     const result = await completeExpenseRequest({
       rootDir,
       requestNo,
-      completedBy: payload.completedBy,
+      completedBy: actorForRequest(request, payload.completedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -628,7 +653,7 @@ async function handleSubstituteReceiptComplete(receiptNo, request, response) {
     const result = await completeSubstituteReceipt({
       rootDir,
       receiptNo,
-      completedBy: payload.completedBy,
+      completedBy: actorForRequest(request, payload.completedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -643,7 +668,7 @@ async function handleSubstituteReceiptReceiveStock(receiptNo, request, response)
       rootDir,
       receiptNo,
       receivedDate: payload.receivedDate,
-      receivedBy: payload.receivedBy,
+      receivedBy: actorForRequest(request, payload.receivedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -776,6 +801,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
         approvedBy: existingDocument.payload?.approvedBy ?? "",
         completedAt: existingDocument.payload?.completedAt ?? "",
         completedBy: existingDocument.payload?.completedBy ?? "",
+        ownerUserId: existingDocument.payload?.ownerUserId ?? "",
         createdAt: existingDocument.payload?.createdAt ?? "",
         evidenceFiles: existingDocument.payload?.evidenceFiles ?? {},
         rawFiles: existingDocument.payload?.rawFiles ?? [],
@@ -797,6 +823,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
         approvedBy: "",
         completedAt: "",
         completedBy: "",
+        ownerUserId: String(request.auth?.userId || "").trim(),
         createdAt: "",
       };
     }
@@ -817,7 +844,7 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
       rootDir,
       documentKind,
       documentNo,
-      completedBy: body.completedBy,
+      completedBy: actorForRequest(request, body.completedBy),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -829,8 +856,8 @@ async function handleWorkflowDocumentAction(action, documentKind, documentNo, re
   try {
     const body = await readJsonBody(request);
     const actions = {
-      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: body.submittedBy }),
-      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: body.approvedBy }),
+      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: actorForRequest(request, body.submittedBy) }),
+      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: actorForRequest(request, body.approvedBy) }),
     };
     sendJson(response, 200, await actions[action]());
   } catch (error) {
@@ -1071,7 +1098,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
     const result = await completeWorkflowTransaction({
       rootDir,
       transactionNo,
-      completedBy: body.completedBy,
+      completedBy: actorForRequest(request, body.completedBy),
     });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
   } catch (error) {
@@ -1086,7 +1113,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
       rootDir,
       transactionNo,
       confirmed: body.confirmed,
-      cancelledBy: body.cancelledBy,
+      cancelledBy: actorForRequest(request, body.cancelledBy),
     });
     const statusCode = result.httpStatus || 200;
     sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
@@ -1331,7 +1358,10 @@ async function handleDraftSave(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "requestNo",
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await saveExpenseDraft({
       rootDir,
       payload,

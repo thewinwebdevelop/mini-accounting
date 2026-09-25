@@ -289,6 +289,7 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
     documentKindLabel: documentTypeDefinition?.label || documentKind,
     documentNo,
     folderPath,
+    ownerUserId: cleanText(data.ownerUserId),
     title: cleanText(data.title),
     status,
     statusLabel: WORKFLOW_DOCUMENT_STATUS_LABELS[status] || status,

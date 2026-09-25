@@ -78,6 +78,21 @@ test("buildSubstituteReceiptPayload preserves an optional payment note", () => {
   assert.match(formatSubstituteReceiptMarkdown(payload), /โอนเงิน 2,000 บาท/);
 });
 
+test("buildSubstituteReceiptPayload preserves the server-bound owner user id", () => {
+  const payload = buildSubstituteReceiptPayload({
+    accountingMonth: "2026-09",
+    sequence: "9",
+    receiptDate: "2026-09-04",
+    receiptType: "general_expense",
+    payeeName: "ร้านตัวอย่าง",
+    businessPurpose: "ทดสอบ owner binding",
+    ownerUserId: "user-1",
+    lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "100" }],
+  });
+
+  assert.equal(payload.ownerUserId, "user-1");
+});
+
 test("validateSubstituteReceipt requires traceable evidence and valid stock purchase lines", () => {
   assert.deepEqual(validateSubstituteReceipt({
     receiptType: "stock_purchase",

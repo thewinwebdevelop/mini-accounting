@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -160,6 +160,84 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
     });
     assert.equal(tampered.status, 401);
     assert.equal((await tampered.json()).code, "AUTH_REQUIRED");
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("line session owns new numbered documents and supplies lifecycle actors", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-owner-"));
+  const upstream = await startUpstream();
+  const app = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${upstream.url}/oauth2/v2.1/verify`,
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const login = await fetch(`${app.baseUrl}/api/auth/line-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idToken: "valid-token" }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const payload = {
+      accountingMonth: "2026-09",
+      requestTitle: "คำขอจาก LINE",
+      requestType: "reimbursement",
+      requesterName: "ผู้ขอ",
+      businessPurpose: "ทดสอบ owner binding",
+      paymentTargetName: "ผู้ขอ",
+      ownerUserId: "attacker-user",
+      expenseLines: [{
+        date: "2026-09-05",
+        category: "ทดสอบ",
+        description: "รายการทดสอบ",
+        vendor: "ร้านค้า",
+        amountBeforeVat: "100",
+        vatAmount: "0",
+        withholdingTax: "0",
+      }],
+    };
+
+    const draftForm = new FormData();
+    draftForm.append("payload", JSON.stringify(payload));
+    const draftResponse = await fetch(`${app.baseUrl}/api/expense-drafts`, {
+      method: "POST",
+      headers: { cookie },
+      body: draftForm,
+    });
+    assert.equal(draftResponse.status, 200);
+    const draft = await draftResponse.json();
+    const draftPath = join(rootDir, draft.folderPath, "data", "submission.json");
+    const storedDraft = JSON.parse(await readFile(draftPath, "utf8"));
+    assert.equal(storedDraft.ownerUserId, "user-1");
+
+    const submitForm = new FormData();
+    submitForm.append("payload", JSON.stringify({ requestNo: draft.requestNo, ownerUserId: "attacker-user" }));
+    const submitResponse = await fetch(`${app.baseUrl}/api/expense-requests`, {
+      method: "POST",
+      headers: { cookie },
+      body: submitForm,
+    });
+    assert.equal(submitResponse.status, 200);
+
+    const approveResponse = await fetch(`${app.baseUrl}/api/expense-requests/${draft.requestNo}/approve`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ approvedBy: "attacker" }),
+    });
+    assert.equal(approveResponse.status, 200);
+    const storedApproved = JSON.parse(await readFile(draftPath, "utf8"));
+    assert.equal(storedApproved.ownerUserId, "user-1");
+    assert.equal(storedApproved.approvedBy, "ผู้ใช้จริง");
+    assert.equal(storedApproved.statusHistory.at(-1).actor, "ผู้ใช้จริง");
   } finally {
     await stopApp(app.child);
     await new Promise(resolve => upstream.server.close(resolve));
