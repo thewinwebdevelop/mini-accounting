@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -194,6 +194,14 @@ function ensureInventorySchema(db) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (status IN ('connected', 'expired', 'revoked', 'error'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shopee_oauth_states (
+      state TEXT PRIMARY KEY,
+      return_url TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS shopee_sync_runs (

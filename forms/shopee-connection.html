@@ -16,12 +16,12 @@
   </header>
   <main class="page two-column">
     <section class="section"><div class="section-header"><h2 class="section-title">Shopee automation</h2></div><div class="section-body">
-      <label class="field" for="shopeeShopId"><span>Shop ID</span><input id="shopeeShopId" placeholder="เช่น 123456789" autocomplete="off"></label>
+      <label class="field" for="shopeeShopId"><span>Shop ID <span class="muted">(เว้นว่างได้ตอน Connect ครั้งแรก)</span></span><input id="shopeeShopId" placeholder="เช่น 123456789" autocomplete="off"></label>
       <div class="actions"><button class="button secondary" id="shopeeConnectButton" type="button">Connect Shopee</button><button class="button primary" id="syncShopeeOrdersButton" type="button">Sync orders</button></div>
       <div id="shopeeConnectionStatus" class="status-box active">ยังไม่ได้ตรวจสอบการเชื่อมต่อ</div>
     </div></section>
     <section class="section"><div class="section-header"><h2 class="section-title">ขั้นตอนถัดไป</h2></div><div class="section-body">
-      <div>1. Connect ร้าน Shopee และอนุมัติสิทธิ์</div><div>2. กด Sync orders เพื่อบันทึก order เข้าในระบบ</div><div>3. ไปเลือก order, map Stock SKU, นัดรับ และสร้างใบปะหน้า</div>
+      <div>1. กด Connect แล้ว Login/อนุมัติสิทธิ์ที่หน้า Shopee</div><div>2. ระบบจะรับ code แลก token และบันทึก connection ให้อัตโนมัติ</div><div>3. กด Sync orders แล้วไปเลือก order, map Stock SKU, นัดรับ และสร้างใบปะหน้า</div>
       <div class="actions"><a class="button primary" href="/shopee-orders">ไปหน้า Shopee Orders</a></div>
     </div></section>
   </main>

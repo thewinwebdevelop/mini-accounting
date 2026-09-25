@@ -113,7 +113,34 @@ function createShopeeClient({ partnerId, partnerKey, fetchImpl = globalThis.fetc
     };
   }
 
-  return { buildAuthorizationUrl, request, refreshAccessToken };
+  async function exchangeAuthorizationCode({ code, shopId }) {
+    const path = "/api/v2/auth/token/get";
+    const timestamp = unixNow(now);
+    const url = makeUrl(baseUrl, path, {
+      partner_id: partnerId,
+      timestamp,
+      sign: signature({ partnerId, partnerKey, path, timestamp }),
+    });
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        partner_id: Number(partnerId) || partnerId,
+        code,
+        shop_id: Number(shopId) || shopId,
+      }),
+    });
+    const body = await readJson(response);
+    if (!response.ok) throw apiError(response, body);
+    const tokenBody = body.response || body;
+    return {
+      accessToken: tokenBody.access_token || "",
+      refreshToken: tokenBody.refresh_token || "",
+      expireIn: Number(tokenBody.expire_in || 0),
+    };
+  }
+
+  return { buildAuthorizationUrl, request, refreshAccessToken, exchangeAuthorizationCode };
 }
 
 module.exports = { createShopeeClient, signature };

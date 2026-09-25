@@ -127,8 +127,10 @@ const {
 } = require("./forms/platform-orders.logic.js");
 const { openInventoryDatabase, ensureInventorySchema } = require("./forms/inventory-db.logic.js");
 const {
+  completeShopeeAuthorization,
+  consumeShopeeOAuthState,
+  createShopeeOAuthState,
   getShopeeConnection,
-  saveShopeeConnection,
 } = require("./forms/shopee-auth.logic.js");
 const { createShopeeClient } = require("./forms/shopee-client.logic.js");
 const { syncShopeeOrders } = require("./forms/shopee-orders.logic.js");
@@ -1538,9 +1540,16 @@ async function handleShopeeAuthorize(request, response) {
   try {
     const payload = await readJsonBody(request);
     const client = shopeeClientFromEnvironment();
-    const redirectUrl = payload.redirectUrl || `${payload.origin || "http://127.0.0.1:8787"}/api/shopee/callback`;
+    const appOrigin = process.env.SHOPEE_APP_ORIGIN
+      || request.headers.origin
+      || payload.origin
+      || `http://127.0.0.1:${port}`;
+    const returnUrl = `${appOrigin.replace(/\/$/, "")}/shopee-connection`;
+    const stateRecord = createShopeeOAuthState(rootDir, { returnUrl });
+    const redirectUrl = process.env.SHOPEE_CALLBACK_URL
+      || `${appOrigin.replace(/\/$/, "")}/api/shopee/callback`;
     sendJson(response, 200, {
-      authorizationUrl: client.buildAuthorizationUrl({ redirectUrl, state: payload.state || "" }),
+      authorizationUrl: client.buildAuthorizationUrl({ redirectUrl, state: stateRecord.state }),
     });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถสร้าง Shopee authorization URL ได้");
@@ -1548,25 +1557,46 @@ async function handleShopeeAuthorize(request, response) {
 }
 
 async function handleShopeeCallback(url, response) {
+  let stateRecord = null;
   try {
-    const shopId = url.searchParams.get("shop_id") || url.searchParams.get("shopId");
-    const accessToken = url.searchParams.get("access_token") || "";
-    const refreshToken = url.searchParams.get("refresh_token") || "";
-    if (!shopId || !accessToken || !refreshToken) {
-      sendJson(response, 400, { error: "Shopee callback ต้องมี shop_id, access_token และ refresh_token" });
+    stateRecord = consumeShopeeOAuthState(rootDir, url.searchParams.get("state") || "");
+    if (!stateRecord) {
+      sendJson(response, 400, { error: "Shopee callback state ไม่ถูกต้องหรือหมดอายุแล้ว" });
       return;
     }
-    const expireIn = Number(url.searchParams.get("expire_in") || 0);
-    const connection = saveShopeeConnection(rootDir, {
+    const callbackError = url.searchParams.get("error") || url.searchParams.get("error_code");
+    if (callbackError) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", url.searchParams.get("error_description") || callbackError);
+      redirect(response, target.toString());
+      return;
+    }
+    const shopId = url.searchParams.get("shop_id") || url.searchParams.get("shopId");
+    const code = url.searchParams.get("code") || "";
+    if (!shopId || !code) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", "Shopee callback ต้องมี code และ shop_id");
+      redirect(response, target.toString());
+      return;
+    }
+    const connection = await completeShopeeAuthorization(rootDir, {
       shopId,
       shopName: url.searchParams.get("shop_name") || "",
       partnerId: process.env.SHOPEE_PARTNER_ID || "",
-      accessToken,
-      refreshToken,
-      tokenExpiresAt: expireIn ? new Date(Date.now() + expireIn * 1000).toISOString() : "",
+      code,
+      client: shopeeClientFromEnvironment(),
     });
-    sendJson(response, 200, { connection: publicShopeeConnection(connection) });
+    const target = new URL(stateRecord.returnUrl);
+    target.searchParams.set("connected", "1");
+    target.searchParams.set("shopId", connection.shopId);
+    redirect(response, target.toString());
   } catch (error) {
+    if (stateRecord?.returnUrl) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", error.message || "ไม่สามารถบันทึก Shopee connection ได้");
+      redirect(response, target.toString());
+      return;
+    }
     sendOperationError(response, error, "ไม่สามารถบันทึก Shopee connection ได้");
   }
 }
