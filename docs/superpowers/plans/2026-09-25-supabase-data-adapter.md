@@ -42,12 +42,12 @@
 - `createDataAdapter({ local, cloud, mode, domain, logger })` exposes normalized read/write dispatch and safe fallback rules.
 - `stableSourceKey(kind, id)` and `canonicalHash(value)` provide deterministic identity/comparison primitives.
 
-- [ ] Write failing unit tests for defaults, invalid modes, per-domain overrides, missing cloud configuration, stable key/hash ordering, shadow comparison redaction, and authoritative-write failure.
-- [ ] Run the focused tests and verify the new modules are missing.
-- [ ] Implement pure configuration/dispatch helpers with no filesystem or network side effects.
-- [ ] Run focused tests and verify local mode never calls the cloud adapter while shadow/dual modes follow the contract.
-- [ ] Update `.env.example` and runbook with `DATA_BACKEND`, `DATA_BACKEND_INVENTORY`, and `DATA_BACKEND_DOCUMENTS`.
-- [ ] Commit with `feat: add data backend adapter contract`.
+- [x] Write failing unit tests for defaults, invalid modes, per-domain overrides, missing cloud configuration, stable key/hash ordering, shadow comparison redaction, and authoritative-write failure.
+- [x] Run the focused tests and verify the new modules are missing.
+- [x] Implement pure configuration/dispatch helpers with no filesystem or network side effects.
+- [x] Run focused tests and verify local mode never calls the cloud adapter while shadow/dual modes follow the contract.
+- [x] Update `.env.example` and runbook with `DATA_BACKEND`, `DATA_BACKEND_INVENTORY`, and `DATA_BACKEND_DOCUMENTS`.
+- [x] Commit with `feat: add data backend adapter contract`.
 
 ### Task 2: Add Supabase document schema and normalized repositories
 

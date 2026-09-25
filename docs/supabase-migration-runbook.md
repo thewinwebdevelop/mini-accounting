@@ -67,4 +67,6 @@ The server returns `403` with code `AUTH_FORBIDDEN` for denied resource and life
 
 ## Cutover
 
-The current branch establishes the migration contract, core data slice, and file-storage migration command. A later cutover task must add a dual-read/dual-write or frozen-write switch, change application file reads to use authorized Storage objects, verify every domain, and only then set `DATA_BACKEND=supabase`.
+The application data adapter supports `local`, `shadow`, `dual-write`, and `supabase-read`. Keep the global default at `DATA_BACKEND=local` until the target project has passed backup, dry-run, apply, row/hash comparison, and authorization checks. Use `DATA_BACKEND_INVENTORY` and `DATA_BACKEND_DOCUMENTS` to cut over domains independently. Shadow mode returns local results while recording redacted differences; dual-write returns a retryable error when the cloud write is not verified. A later production step may set `DATA_BACKEND=supabase-read` only after the observation window is clean.
+
+The current branch establishes the adapter contract and migration boundary. The real target project still requires a reviewed file migration, document-data migration, authorized Storage-read verification, and LINE Developing/Review/Published production checks before any cloud mode is enabled in deployment.
