@@ -12,6 +12,7 @@ fi
 
 if [ -x "$PYTHON_BIN" ]; then
   (cd "$SCRIPT_DIR" && "$PYTHON_BIN" -m unittest test_substitute_receipt_pdf test_workflow_document_pdf test_workflow_packet_pdf -v)
+  "$PYTHON_BIN" "$SCRIPT_DIR/../tests/shipping-label-overlay.test.py" -v
 else
   echo "Bundled Python runtime not found: $PYTHON_BIN — skipping PDF helper tests" >&2
 fi
