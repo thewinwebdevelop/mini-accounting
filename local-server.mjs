@@ -119,8 +119,10 @@ const {
 const {
   getPlatformOrderImport,
   importPlatformOrders,
+  listShopeeOrders,
   listPlatformOrderImports,
   postPlatformOrderImport,
+  saveShopeeOrderLineMapping,
   getShopeeOrder,
 } = require("./forms/platform-orders.logic.js");
 const { openInventoryDatabase, ensureInventorySchema } = require("./forms/inventory-db.logic.js");
@@ -1479,6 +1481,30 @@ async function handlePlatformOrderImportPost(importId, response) {
   }
 }
 
+async function handleShopeeOrderList(url, response) {
+  try {
+    sendJson(response, 200, {
+      orders: listShopeeOrders(rootDir, {
+        shopId: url.searchParams.get("shopId") || url.searchParams.get("connectionId") || "",
+        status: url.searchParams.get("status") || "",
+        limit: url.searchParams.get("limit") || 100,
+      }),
+    });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถแสดงรายการ Shopee orders ได้");
+  }
+}
+
+async function handleShopeeOrderLineMapping(lineId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const line = saveShopeeOrderLineMapping(rootDir, lineId, payload);
+    sendJson(response, 200, { line });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถบันทึก mapping Stock SKU ได้");
+  }
+}
+
 function shopeeClientFromEnvironment() {
   return createShopeeClient({
     partnerId: process.env.SHOPEE_PARTNER_ID || "",
@@ -2022,6 +2048,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname.startsWith("/api/platform-orders/") && url.pathname.endsWith("/sku-mapping")) {
+    const lineId = decodeURIComponent(url.pathname
+      .replace("/api/platform-orders/", "")
+      .replace("/sku-mapping", ""));
+    await handleShopeeOrderLineMapping(lineId, request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/shopee/authorize") {
     await handleShopeeAuthorize(request, response);
     return;
@@ -2409,6 +2443,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/platform-orders/imports") {
       await handlePlatformOrderImportList(response);
+      return;
+    }
+
+    if (url.pathname === "/api/platform-orders") {
+      await handleShopeeOrderList(url, response);
       return;
     }
 

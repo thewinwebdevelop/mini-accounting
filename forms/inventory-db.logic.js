@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -321,6 +321,7 @@ function ensureInventorySchema(db) {
   addColumnIfMissing(db, "platform_order_lines", "mapping_status", "TEXT NOT NULL DEFAULT 'unmapped'");
   addColumnIfMissing(db, "platform_order_lines", "mapping_source", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_order_lines", "mapped_sale_sku_id", "INTEGER");
+  addColumnIfMissing(db, "platform_order_lines", "mapped_stock_sku_id", "INTEGER");
 
   db.prepare(`
     INSERT OR IGNORE INTO inventory_schema_migrations (version, applied_at)

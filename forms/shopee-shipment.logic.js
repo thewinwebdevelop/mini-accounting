@@ -480,6 +480,10 @@ async function arrangeShipmentBatch(rootDir, batchId, selection = {}, { client, 
         SET status = ?, error_message = ?, updated_at = ?
         WHERE id = ?
       `).run(result.success ? "arranged" : "failed", result.error || "", timestamp, order.id);
+      if (result.success) {
+        db.prepare("UPDATE platform_orders SET shipment_arranged_at = ?, shipping_status = ? WHERE id = ?")
+          .run(timestamp, "ARRANGED", order.platformOrderId);
+      }
     }
     const refreshedOrders = listBatchOrders(db, batch.id);
     const hasFailed = refreshedOrders.some((order) => order.status === "failed");

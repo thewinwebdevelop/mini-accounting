@@ -883,6 +883,8 @@ function mapShopeeLineRow(row) {
     mappingStatus: row.mapping_status,
     mappingSource: row.mapping_source,
     mappedSaleSkuId: row.mapped_sale_sku_id,
+    mappedStockSkuId: row.mapped_stock_sku_id,
+    mappedStockSku: row.mapped_stock_sku || "",
     issueMessage: row.issue_message,
   };
 }
@@ -1043,11 +1045,84 @@ function getShopeeOrder(rootDir, orderKey = {}) {
     `).get(shopId, orderSn);
     if (!order) return null;
     const lines = db.prepare(`
-      SELECT * FROM platform_order_lines
-      WHERE order_id = ?
-      ORDER BY CAST(line_no AS INTEGER), id
+      SELECT platform_order_lines.*, stock_skus.sku AS mapped_stock_sku
+      FROM platform_order_lines
+      LEFT JOIN stock_skus ON stock_skus.id = platform_order_lines.mapped_stock_sku_id
+      WHERE platform_order_lines.order_id = ?
+      ORDER BY CAST(platform_order_lines.line_no AS INTEGER), platform_order_lines.id
     `).all(order.id).map(mapShopeeLineRow);
     return { order: mapShopeeOrderRow(order), lines };
+  });
+}
+
+function listShopeeOrders(rootDir, filters = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    const shopId = cleanText(filters.shopId ?? filters.shop_id);
+    const status = cleanText(filters.status).toUpperCase();
+    const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
+    const orders = db.prepare(`
+      SELECT platform_orders.*,
+        latest_shipment.status AS shipment_action_status,
+        latest_shipment.tracking_number AS shipment_tracking_number
+      FROM platform_orders
+      LEFT JOIN shipment_batch_orders AS latest_shipment
+        ON latest_shipment.id = (
+          SELECT candidate.id
+          FROM shipment_batch_orders AS candidate
+          WHERE candidate.platform_order_id = platform_orders.id
+          ORDER BY candidate.id DESC
+          LIMIT 1
+        )
+      WHERE platform_orders.platform = 'shopee'
+        AND (? = '' OR platform_orders.shop_id = ?)
+        AND (? = '' OR UPPER(platform_orders.shipping_status) = ? OR UPPER(platform_orders.order_status) = ?)
+      ORDER BY platform_orders.external_updated_at DESC, platform_orders.id DESC
+      LIMIT ?
+    `).all(shopId, shopId, status, status, status, limit);
+    return orders.map((order) => {
+      const lines = db.prepare(`
+        SELECT platform_order_lines.*, stock_skus.sku AS mapped_stock_sku
+        FROM platform_order_lines
+        LEFT JOIN stock_skus ON stock_skus.id = platform_order_lines.mapped_stock_sku_id
+        WHERE platform_order_lines.order_id = ?
+        ORDER BY CAST(line_no AS INTEGER), platform_order_lines.id
+      `).all(order.id).map(mapShopeeLineRow);
+      return {
+        ...mapShopeeOrderRow(order),
+        shipmentActionStatus: order.shipment_action_status || "",
+        shipmentTrackingNumber: order.shipment_tracking_number || "",
+        mappingStatus: lines.length && lines.every((line) => line.mappingStatus === "mapped") ? "mapped" : "mapping_required",
+        lines,
+      };
+    });
+  });
+}
+
+function saveShopeeOrderLineMapping(rootDir, lineId, data = {}, options = {}) {
+  return withPlatformDb(rootDir, (db) => {
+    const id = Number(lineId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ไม่พบรายการ Order");
+    const line = db.prepare(`
+      SELECT platform_order_lines.*, platform_orders.platform
+      FROM platform_order_lines
+      JOIN platform_orders ON platform_orders.id = platform_order_lines.order_id
+      WHERE platform_order_lines.id = ? AND platform_orders.platform = 'shopee'
+    `).get(id);
+    if (!line) throw new Error("ไม่พบรายการ Order ของ Shopee");
+    const rawStockSkuId = data.stockSkuId ?? data.stock_sku_id;
+    const stockSkuId = rawStockSkuId === null || rawStockSkuId === "" || rawStockSkuId === undefined ? null : Number(rawStockSkuId);
+    if (stockSkuId !== null) {
+      if (!Number.isInteger(stockSkuId) || stockSkuId <= 0) throw new Error("Stock SKU ไม่ถูกต้อง");
+      const stockSku = db.prepare("SELECT id FROM stock_skus WHERE id = ? AND status = 'active'").get(stockSkuId);
+      if (!stockSku) throw new Error("ไม่พบ Stock SKU ที่ใช้งานอยู่");
+    }
+    const saved = db.prepare(`
+      UPDATE platform_order_lines
+      SET mapped_stock_sku_id = ?, mapping_status = ?, mapping_source = ?, issue_message = ''
+      WHERE id = ?
+      RETURNING *, (SELECT sku FROM stock_skus WHERE stock_skus.id = mapped_stock_sku_id) AS mapped_stock_sku
+    `).get(stockSkuId, stockSkuId ? "mapped" : "unmapped", stockSkuId ? "manual" : "", id);
+    return mapShopeeLineRow(saved);
   });
 }
 
@@ -1056,8 +1131,10 @@ module.exports = {
   getPlatformOrderImport,
   importPlatformOrders,
   listPlatformOrderImports,
+  listShopeeOrders,
   normalizePlatform,
   postPlatformOrderImport,
   parsePlatformOrderFile,
   upsertShopeeOrder,
+  saveShopeeOrderLineMapping,
 };

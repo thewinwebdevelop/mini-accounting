@@ -111,6 +111,10 @@ test("arrangeShipmentBatch isolates partial success and never resubmits arranged
 
     const retry = await arrangeShipmentBatch(rootDir, prepared.batches[0].id, { addressId: "A1", pickupTimeId: "T1" }, { client });
     assert.deepEqual(retry.orders.map((order) => order.status), ["arranged", "arranged"]);
+    await assert.rejects(
+      prepareShipmentBatch(rootDir, [first.order.id, second.order.id], { client }),
+      /ไม่พร้อมจัดส่ง|eligible/i,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
