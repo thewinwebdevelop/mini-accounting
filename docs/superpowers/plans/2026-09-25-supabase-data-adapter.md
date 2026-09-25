@@ -63,12 +63,12 @@
 - `createDocumentCloudRepository({ client, now })` exposes document list/get/upsert and file-reference operations.
 - `toCloudDocumentRecord`/`fromCloudDocumentRecord` preserve existing payload fields and owner/status semantics.
 
-- [ ] Write failing schema-text and fake-REST tests for document rows, file references, source-key uniqueness, owner persistence, and redacted provider failures.
-- [ ] Run focused tests and confirm missing schema/repository failures.
-- [ ] Add RLS-protected `documents` and `document_files` tables with service-role-only first-phase access, indexes for kind/number/owner/status, and migration ledger linkage.
-- [ ] Implement normalized REST repository operations using `supabaseRequest`, with source-key upsert and response verification by hash.
-- [ ] Run focused tests and verify retries update the same logical row.
-- [ ] Commit with `feat: add supabase document and data repositories`.
+- [x] Write failing schema-text and fake-REST tests for document rows, file references, source-key uniqueness, owner persistence, and redacted provider failures.
+- [x] Run focused tests and confirm missing schema/repository failures.
+- [x] Add RLS-protected `documents` and `document_files` tables with service-role-only first-phase access, indexes for kind/number/owner/status, and migration ledger linkage.
+- [x] Implement normalized REST repository operations using `supabaseRequest`, with source-key upsert and response verification by hash.
+- [x] Run focused tests and verify retries update the same logical row.
+- [x] Commit with `feat: add supabase document and data repositories`.
 
 ### Task 3: Wrap local persistence and integrate inventory adapter modes
 
