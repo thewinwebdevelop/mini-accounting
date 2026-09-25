@@ -209,7 +209,7 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     listProducts,
     listStockSkus,
     saveProduct: record => upsertTable("inventory_products", {
-      source_key: stableSourceKey("inventory_product", record.id),
+      source_key: stableSourceKey("product", record.id),
       source_id: record.id,
       product_code: record.productCode ?? "",
       name: record.name ?? "",
@@ -223,7 +223,7 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
       source_payload: record,
     }, mapCloudProduct, "inventory product"),
     saveStockSku: record => upsertTable("inventory_stock_skus", {
-      source_key: stableSourceKey("inventory_stock_sku", record.id),
+      source_key: stableSourceKey("stock_sku", record.id),
       source_id: record.id,
       product_source_id: record.productId,
       sku: record.sku ?? "",

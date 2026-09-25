@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 const { createSupabaseAdminClient } = require("../forms/supabase.logic.js");
 const { createSupabaseDataRepository } = require("../forms/supabase-data.logic.js");
 
-function fakeClient(calls, responseFactory = () => [{ source_key: "inventory_product:1", source_hash: "hash-1" }]) {
+function fakeClient(calls, responseFactory = () => [{ source_key: "product:1", source_hash: "hash-1" }]) {
   return createSupabaseAdminClient({
     url: "https://project.supabase.co",
     serviceRoleKey: "server-secret",
@@ -21,25 +21,25 @@ test("inventory repository upserts by source key and verifies the returned row",
   const calls = [];
   const repository = createSupabaseDataRepository({ client: fakeClient(calls) });
   const row = await repository.upsertInventoryProduct({
-    sourceKey: "inventory_product:1",
+    sourceKey: "product:1",
     sourceId: 1,
     productCode: "P-1",
     name: "Product",
     sourceHash: "hash-1",
     sourcePayload: { name: "Product" },
   });
-  assert.equal(row.sourceKey, "inventory_product:1");
+  assert.equal(row.sourceKey, "product:1");
   assert.match(calls[0].url, /\/rest\/v1\/inventory_products\?on_conflict=source_key$/);
   assert.equal(calls[0].options.headers.Prefer, "resolution=merge-duplicates,return=representation");
-  assert.equal(JSON.parse(calls[0].options.body).source_key, "inventory_product:1");
+  assert.equal(JSON.parse(calls[0].options.body).source_key, "product:1");
 });
 
 test("inventory repository rejects a provider response for a different source hash", async () => {
   const repository = createSupabaseDataRepository({
-    client: fakeClient([], () => [{ source_key: "inventory_product:1", source_hash: "wrong" }]),
+    client: fakeClient([], () => [{ source_key: "product:1", source_hash: "wrong" }]),
   });
   await assert.rejects(
-    () => repository.upsertInventoryProduct({ sourceKey: "inventory_product:1", sourceHash: "expected" }),
+    () => repository.upsertInventoryProduct({ sourceKey: "product:1", sourceHash: "expected" }),
     error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
   );
 });

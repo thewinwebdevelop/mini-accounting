@@ -42,7 +42,7 @@ test("inventory dual-write sends the local result with its stable numeric identi
     });
     const product = await adapter.write("saveProduct", { productCode: "ADAPTER-2", name: "Adapter Product 2", category: "เสื้อ" });
     assert.equal(product.productCode, "ADAPTER-2");
-    assert.equal(cloudCalls[0].source_key, `inventory_product:${product.id}`);
+    assert.equal(cloudCalls[0].source_key, `product:${product.id}`);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
