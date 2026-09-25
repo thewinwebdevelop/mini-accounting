@@ -136,6 +136,7 @@ const {
   pollShippingDocumentJob,
   prepareShipmentBatch,
   refreshBatchTracking,
+  renderBatchLabels,
 } = require("./forms/shopee-shipment.logic.js");
 const {
   rebuildDocumentIndex,
@@ -1677,6 +1678,40 @@ async function handleShopeeShippingDocumentDownload(jobId, response) {
   }
 }
 
+async function handleShopeeBatchOverlay(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await renderBatchLabels(rootDir, batchId, payload.mappings || payload.orders || {}, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+    });
+    const { filePath, ...publicResult } = result;
+    sendJson(response, 200, publicResult);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง custom shipping labels ได้");
+  }
+}
+
+async function handleShopeeBatchPrintPreview(batchId, response) {
+  const documentsRoot = path.resolve(rootDir, "data", "shipping-labels");
+  const absolutePath = path.resolve(documentsRoot, `shipment-batch-${Number(batchId)}.pdf`);
+  if (!absolutePath.startsWith(`${documentsRoot}${path.sep}`)) {
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+  try {
+    const body = await readFile(absolutePath);
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="shipment-batch-${Number(batchId)}.pdf"`,
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -2028,6 +2063,22 @@ const server = createServer(async (request, response) => {
       .replace("/api/shopee/shipment-batches/", "")
       .replace("/create-documents", ""));
     await handleShopeeShippingDocumentCreate(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/overlay-labels")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/overlay-labels", ""));
+    await handleShopeeBatchOverlay(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/print-preview")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/print-preview", ""));
+    await handleShopeeBatchPrintPreview(batchId, response);
     return;
   }
 

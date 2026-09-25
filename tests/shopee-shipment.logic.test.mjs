@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +18,11 @@ const {
   groupEligibleShopeePackages,
   pollShippingDocumentJob,
   prepareShipmentBatch,
+  renderBatchLabels,
   refreshBatchTracking,
 } = shipment;
+
+const execFileAsync = promisify(execFile);
 
 function payload(orderSn, overrides = {}) {
   return {
@@ -193,6 +198,49 @@ test("shipping document job is created only after Tracking and downloads once re
     const retry = await pollShippingDocumentJob(rootDir, job.id, { client });
     assert.equal(retry.status, "ready");
     assert.equal(documentCalls, 1);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("renderBatchLabels overlays mapped Stock SKU onto the downloaded batch PDF", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-shipment-label-"));
+  try {
+    const sourcePath = join(rootDir, "source.pdf");
+    const python = process.env.SWEET_HOUSE_PYTHON_BIN || "/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
+    await execFileAsync(python, ["-c", `from reportlab.pdfgen import canvas
+c=canvas.Canvas(${JSON.stringify(sourcePath)}, pagesize=(400,600))
+c.drawString(20,20,'Shopee label')
+c.save()`]);
+    const source = await readFile(sourcePath);
+    const order = upsertShopeeOrder(rootDir, payload("SP-LABEL"));
+    const client = {
+      request: async ({ path }) => {
+        if (path.endsWith("get_mass_shipping_parameter")) {
+          return { response: { pickup: { addressList: [{ addressId: "A1", timeSlotList: [{ pickupTimeId: "T1" }] }] } } };
+        }
+        if (path.endsWith("mass_ship_order")) {
+          return { response: { result: [{ packageNumber: "PKG-SP-LABEL", success: true }] } };
+        }
+        if (path.endsWith("get_mass_tracking_number")) {
+          return { response: { result: [{ packageNumber: "PKG-SP-LABEL", trackingNumber: "TH-LABEL-1" }] } };
+        }
+        if (path.endsWith("create_shipping_document_job")) return { response: { jobId: "JOB-LABEL" } };
+        if (path.endsWith("get_shipping_document_job_status")) return { response: { status: "READY" } };
+        return { response: { fileBase64: source.toString("base64") } };
+      },
+    };
+    const prepared = await prepareShipmentBatch(rootDir, [order.order.id], { client });
+    const batchId = prepared.batches[0].id;
+    await arrangeShipmentBatch(rootDir, batchId, { addressId: "A1", pickupTimeId: "T1" }, { client });
+    await refreshBatchTracking(rootDir, batchId, { client });
+    const job = await createShippingDocumentJob(rootDir, batchId, { client });
+    await pollShippingDocumentJob(rootDir, job.id, { client });
+    const rendered = await renderBatchLabels(rootDir, batchId, {
+      [order.order.id]: { textLines: ["Stock SKU", "STOCK-001"], protectedRegions: [] },
+    }, { pythonBin: python });
+    assert.equal(rendered.pages.length, 1);
+    assert.equal((await readFile(rendered.filePath)).length > source.length, true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

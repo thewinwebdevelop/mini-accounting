@@ -1,6 +1,10 @@
-const { mkdir, writeFile } = require("node:fs/promises");
+const { mkdtemp, mkdir, rm, writeFile } = require("node:fs/promises");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const path = require("node:path");
 const { ensureInventorySchema, openInventoryDatabase } = require("./inventory-db.logic.js");
+
+const execFileAsync = promisify(execFile);
 
 function nowIso(options = {}) {
   return options.now ? options.now() : new Date().toISOString();
@@ -151,6 +155,34 @@ function documentJobId(body) {
 function documentFileBase64(body) {
   const response = bodyData(body);
   return response.fileBase64 || response.file_base64 || response.file || response.dataBase64 || response.data_base64 || "";
+}
+
+function mappingForOrder(mappings, order) {
+  if (Array.isArray(mappings)) {
+    return mappings.find((item) => String(item.orderId ?? item.order_id ?? item.platformOrderId ?? item.platform_order_id) === String(order.platformOrderId))
+      || mappings.find((item) => cleanText(item.orderNo ?? item.order_no) === cleanText(order.orderNo));
+  }
+  return mappings?.[String(order.platformOrderId)] || mappings?.[String(order.orderNo)] || null;
+}
+
+function buildBatchOverlays(orders, mappings) {
+  return orders.map((order, index) => {
+    const mapping = mappingForOrder(mappings, order) || {};
+    const textLines = mapping?.textLines || mapping?.text_lines || mapping?.stockSkus || mapping?.stock_skus || [];
+    if (!Array.isArray(textLines) || !textLines.length) {
+      throw new Error(`ยังไม่ได้ map Stock SKU สำหรับ Order ${order.orderNo}`);
+    }
+    return {
+      page: index + 1,
+      x: mapping.x ?? 24,
+      y: mapping.y ?? 24,
+      width: mapping.width ?? 190,
+      height: mapping.height ?? 36,
+      text_lines: textLines,
+      font_size: mapping.fontSize ?? mapping.font_size ?? 10,
+      protected_regions: mapping.protectedRegions || mapping.protected_regions || [],
+    };
+  });
 }
 
 async function refreshBatchTracking(rootDir, batchId, { client, now = () => new Date().toISOString() } = {}) {
@@ -310,6 +342,47 @@ async function pollShippingDocumentJob(rootDir, jobId, { client, now = () => new
   }
 }
 
+async function renderBatchLabels(rootDir, batchId, mappings, { pythonBin, overlayScript } = {}) {
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  let tempDir = "";
+  try {
+    const batch = db.prepare("SELECT * FROM shipment_batches WHERE id = ?").get(Number(batchId));
+    if (!batch) throw new Error("ไม่พบ shipment batch");
+    const job = db.prepare(`
+      SELECT * FROM shipping_document_jobs
+      WHERE batch_id = ? AND status = 'ready' AND downloaded_file_path <> ''
+      ORDER BY id DESC LIMIT 1
+    `).get(batch.id);
+    if (!job) throw new Error("ยังไม่มี Shopee shipping document ที่พร้อมพิมพ์");
+    const orders = listBatchOrders(db, batch.id);
+    const overlays = buildBatchOverlays(orders, mappings);
+    const documentsRoot = path.resolve(rootDir, "data", "shipping-documents");
+    const inputPath = path.resolve(job.downloaded_file_path);
+    if (!inputPath.startsWith(`${documentsRoot}${path.sep}`)) throw new Error("shipping document path ไม่ถูกต้อง");
+    const outputDir = path.join(rootDir, "data", "shipping-labels");
+    await mkdir(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, `shipment-batch-${batch.id}.pdf`);
+    tempDir = await mkdtemp(path.join(rootDir, "tmp-shipping-overlay-"));
+    const overlayJsonPath = path.join(tempDir, "overlay.json");
+    await writeFile(overlayJsonPath, JSON.stringify(overlays), "utf8");
+    await execFileAsync(
+      pythonBin || process.env.SWEET_HOUSE_PYTHON_BIN || "python3",
+      [overlayScript || path.join(__dirname, "..", "scripts", "overlay_shipping_label.py"), "--input", inputPath, "--output", outputPath, "--overlay-json", overlayJsonPath],
+      { maxBuffer: 1024 * 1024 },
+    );
+    return {
+      batchId: batch.id,
+      filePath: outputPath,
+      downloadUrl: `/api/shopee/shipment-batches/${encodeURIComponent(batch.id)}/print-preview`,
+      pages: orders.map((order, index) => ({ page: index + 1, orderId: order.platformOrderId, orderNo: order.orderNo })),
+    };
+  } finally {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true });
+    db.close();
+  }
+}
+
 async function prepareShipmentBatch(rootDir, orderIds = [], { client, now = () => new Date().toISOString() } = {}) {
   if (!client?.request) throw new Error("prepareShipmentBatch ต้องมี client");
   const db = openInventoryDatabase(rootDir);
@@ -423,10 +496,12 @@ async function arrangeShipmentBatch(rootDir, batchId, selection = {}, { client, 
 
 module.exports = {
   arrangeShipmentBatch,
+  buildBatchOverlays,
   createShippingDocumentJob,
   groupEligibleShopeePackages,
   normalizePickup,
   pollShippingDocumentJob,
   prepareShipmentBatch,
   refreshBatchTracking,
+  renderBatchLabels,
 };
