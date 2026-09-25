@@ -7,6 +7,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const { createProduct, createPurchaseInMovement, createStockSku } = require("../forms/inventory.logic.js");
+const { openInventoryDatabase } = require("../forms/inventory-db.logic.js");
 const { applyMigration, planMigration } = await import("../scripts/migrate-local-to-supabase.mjs");
 
 async function makeFixture() {
@@ -65,10 +66,16 @@ function fakeSupabase() {
 test("migration dry run reports deterministic counts without writing", async () => {
   const rootDir = await makeFixture();
   try {
+    const db = openInventoryDatabase(rootDir);
+    db.prepare("DELETE FROM inventory_schema_migrations").run();
+    db.close();
     const result = await planMigration({ rootDir, now: () => "2026-09-25T00:00:00.000Z" });
     assert.deepEqual(result.counts, { companySettings: 1, vendors: 2, products: 1, stockSkus: 2, stockMovements: 3 });
     assert.equal(result.mode, "dry-run");
     assert.equal(result.writes, 0);
+    const after = openInventoryDatabase(rootDir);
+    assert.equal(after.prepare("SELECT COUNT(*) AS count FROM inventory_schema_migrations").get().count, 0);
+    after.close();
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

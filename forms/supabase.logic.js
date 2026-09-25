@@ -51,10 +51,10 @@ async function supabaseRequest(client, path, options = {}) {
 
   const headers = {
     Accept: "application/json",
-    apikey: client.serviceRoleKey,
-    Authorization: `Bearer ${client.serviceRoleKey}`,
     ...(options.body !== undefined ? { "content-type": "application/json" } : {}),
     ...(options.headers || {}),
+    apikey: client.serviceRoleKey,
+    Authorization: `Bearer ${client.serviceRoleKey}`,
   };
   const response = await client.fetchImpl(`${client.url}${route}`, {
     ...options,

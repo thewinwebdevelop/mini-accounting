@@ -232,7 +232,9 @@ function readRequestSession(request) {
 
 function requireAuthenticatedRequest(request, response, url) {
   if (authMode !== "line" || !url.pathname.startsWith("/api/") || isPublicApiPath(url.pathname)) return true;
-  if (!sessionSecret) {
+  const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+  const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
     sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
     return false;
   }

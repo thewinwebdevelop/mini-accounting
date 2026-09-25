@@ -30,6 +30,23 @@ test("supabaseRequest sends the server key and returns JSON", async () => {
   assert.equal(calls[0].options.headers.Prefer, "return=representation");
 });
 
+test("supabaseRequest does not allow caller headers to override server authentication", async () => {
+  let headers;
+  const client = createSupabaseAdminClient({
+    url: "https://project.supabase.co",
+    serviceRoleKey: "server-secret",
+    fetchImpl: async (_url, options) => {
+      headers = options.headers;
+      return new Response("[]", { status: 200 });
+    },
+  });
+  await supabaseRequest(client, "/rest/v1/app_users", {
+    headers: { apikey: "attacker-key", Authorization: "Bearer attacker-token" },
+  });
+  assert.equal(headers.apikey, "server-secret");
+  assert.equal(headers.Authorization, "Bearer server-secret");
+});
+
 test("supabaseRequest redacts provider response details on error", async () => {
   const client = createSupabaseAdminClient({
     url: "https://project.supabase.co",

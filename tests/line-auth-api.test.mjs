@@ -166,3 +166,31 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("production line auth rejects unsafe requests when public origin is missing", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-origin-"));
+  const upstream = await startUpstream();
+  const app = await startApp({
+    NODE_ENV: "production",
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+    APP_PUBLIC_ORIGIN: "",
+  });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/company-settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ legalName: "ไม่ควรผ่าน" }),
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, "AUTH_CONFIG_MISSING");
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

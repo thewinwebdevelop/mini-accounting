@@ -3,9 +3,10 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite");
 const { getCompanySettings } = require("../forms/company-settings.logic.js");
 const { listVendors } = require("../forms/vendor.logic.js");
-const { ensureInventorySchema, openInventoryDatabase } = require("../forms/inventory-db.logic.js");
+const { getInventoryDbPath } = require("../forms/inventory-db.logic.js");
 const { createSupabaseAdminClient, supabaseRequest } = require("../forms/supabase.logic.js");
 
 export const MIGRATION_NAME = "core-local-data-20260925";
@@ -40,9 +41,14 @@ function snakeVendor(vendor) {
 async function collectRecords(rootDir) {
   const company = await getCompanySettings(rootDir);
   const vendors = await listVendors(rootDir, { includeInactive: true });
-  const db = openInventoryDatabase(rootDir);
+  let db;
   try {
-    ensureInventorySchema(db);
+    db = new DatabaseSync(getInventoryDbPath(rootDir), { readOnly: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  try {
     const products = db.prepare("SELECT * FROM products ORDER BY id ASC").all();
     const stockSkus = db.prepare("SELECT * FROM stock_skus ORDER BY id ASC").all();
     const movements = db.prepare("SELECT * FROM stock_movements ORDER BY id ASC").all();
