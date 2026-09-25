@@ -59,6 +59,12 @@ The command uploads to the private bucket, downloads each object back for byte/h
 
 Compare the migration output counts with the local dry-run counts and query the Supabase tables by `source_key`. Confirm that product, SKU, and stock movement source IDs are complete before switching the application data backend.
 
+## LINE resource authorization
+
+When `SWEET_HOUSE_AUTH_MODE=line`, new expense requests, substitute receipts, and lightweight workflow documents are stamped with the authenticated Supabase app-user ID in `ownerUserId`. Edits preserve the stored owner; client-supplied owner or audit actor fields are ignored. Employees can read and submit only their own documents. Approval, completion, stock receiving, Drive/Sheets sync, and settings require the corresponding privileged role. Legacy numbered records without `ownerUserId` remain available only to owner/accounting/admin users until an ownership backfill is reviewed.
+
+The server returns `403` with code `AUTH_FORBIDDEN` for denied resource and lifecycle actions, including file downloads. Keep `SWEET_HOUSE_AUTH_MODE=disabled` only for local compatibility/testing; it intentionally preserves the previous unauthenticated behavior and does not enforce ownership.
+
 ## Cutover
 
 The current branch establishes the migration contract, core data slice, and file-storage migration command. A later cutover task must add a dual-read/dual-write or frozen-write switch, change application file reads to use authorized Storage objects, verify every domain, and only then set `DATA_BACKEND=supabase`.

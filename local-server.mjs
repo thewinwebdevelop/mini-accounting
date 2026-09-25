@@ -158,7 +158,12 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
-const { actorLabel } = require("./forms/authorization.logic.js");
+const {
+  ACTIONS,
+  actorLabel,
+  assertDocumentAccess,
+  assertPermission,
+} = require("./forms/authorization.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -232,7 +237,8 @@ function readRequestSession(request) {
 }
 
 function requireAuthenticatedRequest(request, response, url) {
-  if (authMode !== "line" || !url.pathname.startsWith("/api/") || isPublicApiPath(url.pathname)) return true;
+  const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
+  if (authMode !== "line" || !isProtectedApiPath || isPublicApiPath(url.pathname)) return true;
   const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
   const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
@@ -254,6 +260,78 @@ function requireAuthenticatedRequest(request, response, url) {
 
 function actorForRequest(request, suppliedActor) {
   return authMode === "line" ? actorLabel(request.auth) : suppliedActor;
+}
+
+function denyForbidden(response) {
+  sendJson(response, 403, { code: "AUTH_FORBIDDEN", error: "ไม่มีสิทธิ์ดำเนินการ" });
+  return false;
+}
+
+function ensurePermission(request, response, action) {
+  if (authMode !== "line") return true;
+  try {
+    assertPermission(request.auth, action);
+    return true;
+  } catch (error) {
+    if (error.code === "AUTH_FORBIDDEN") return denyForbidden(response);
+    throw error;
+  }
+}
+
+async function ensureDocumentAccess(request, response, { action, load }) {
+  if (authMode !== "line") return true;
+  let record;
+  try {
+    record = await load();
+  } catch (error) {
+    if (error.message === "Expense request not found" || error.message === "Substitute receipt not found") return true;
+    sendJson(response, 404, { error: "ไม่พบเอกสาร" });
+    return false;
+  }
+  if (!record) return true;
+  try {
+    assertDocumentAccess(request.auth, record.payload || record, action);
+    return true;
+  } catch (error) {
+    if (error.code === "AUTH_FORBIDDEN") return denyForbidden(response);
+    throw error;
+  }
+}
+
+async function ensureDocumentWriteAccess(request, response, {
+  numberField,
+  payload,
+  loadExisting,
+  existingAction = ACTIONS.DOCUMENT_EDIT,
+}) {
+  if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return false;
+  if (authMode !== "line") return true;
+  const documentNo = String(payload?.[numberField] ?? "").trim();
+  if (!documentNo) return true;
+  return ensureDocumentAccess(request, response, {
+    action: existingAction,
+    load: () => loadExisting(documentNo),
+  });
+}
+
+async function ensureLifecycleAccess(request, response, action, load) {
+  return ensureDocumentAccess(request, response, { action, load });
+}
+
+async function filterOwnedDocumentList(request, records, { numberField, load }) {
+  if (authMode !== "line" || request.auth?.role !== "employee") return records;
+  const visible = [];
+  for (const record of records) {
+    const documentNo = String(record?.[numberField] || "").trim();
+    if (!documentNo) continue;
+    try {
+      const full = await load(documentNo);
+      if (String(full?.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim()) visible.push(record);
+    } catch (error) {
+      if (error.message !== "Expense request not found" && error.message !== "Substitute receipt not found") throw error;
+    }
+  }
+  return visible;
 }
 
 async function bindLineOwner(request, payload, { numberField, loadExisting }) {
@@ -543,6 +621,12 @@ async function handleExpenseSubmission(request, response) {
       numberField: "requestNo",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
+      payload,
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+      existingAction: ACTIONS.DOCUMENT_SUBMIT,
+    })) return;
     const result = await saveExpenseSubmission({
       rootDir,
       payload,
@@ -563,6 +647,12 @@ async function handleSubstituteReceiptSubmission(request, response) {
       numberField: "receiptNo",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "receiptNo",
+      payload,
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+      existingAction: ACTIONS.DOCUMENT_SUBMIT,
+    })) return;
     const result = await saveSubstituteReceiptSubmission({
       rootDir,
       payload,
@@ -583,6 +673,11 @@ async function handleSubstituteReceiptDraftSave(request, response) {
       numberField: "receiptNo",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "receiptNo",
+      payload,
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    })) return;
     const result = await saveSubstituteReceiptDraft({
       rootDir,
       payload,
@@ -784,6 +879,15 @@ async function handleWorkflowDocumentSubmission(request, response) {
       ? await getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo)
       : null;
 
+    if (existingDocument) {
+      if (!await ensureDocumentAccess(request, response, {
+        action: ACTIONS.DOCUMENT_EDIT,
+        load: async () => existingDocument,
+      })) return;
+    } else if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) {
+      return;
+    }
+
     if (existingDocument?.status === "completed") {
       throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
     }
@@ -925,11 +1029,14 @@ function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
 // listWorkflowDocumentSummaries already strips absolutePath from every file
 // entry; omitAbsoluteFolderPath stays here as the same last line of defence
 // the other workflow-document routes use.
-async function handleWorkflowDocumentList(url, response) {
+async function handleWorkflowDocumentList(request, url, response) {
   try {
     const filters = parseWorkflowDocumentListFilters(url.searchParams);
     const documents = await listWorkflowDocumentSummaries(rootDir, filters);
-    sendJson(response, 200, { documents: documents.map(omitAbsoluteFolderPath) });
+    const visible = authMode === "line" && request.auth?.role === "employee"
+      ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
+      : documents;
+    sendJson(response, 200, { documents: visible.map(omitAbsoluteFolderPath) });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถแสดงรายการเอกสารได้",
@@ -1362,6 +1469,11 @@ async function handleDraftSave(request, response) {
       numberField: "requestNo",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
+      payload,
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    })) return;
     const result = await saveExpenseDraft({
       rootDir,
       payload,
@@ -1385,10 +1497,14 @@ async function handleDraftList(response) {
   }
 }
 
-async function handleExpenseRequestList(response) {
+async function handleExpenseRequestList(request, response) {
   try {
     const result = await listExpenseRequests(rootDir);
-    sendJson(response, 200, { requests: result });
+    const visible = await filterOwnedDocumentList(request, result, {
+      numberField: "requestNo",
+      load: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    sendJson(response, 200, { requests: visible });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot list expense requests",
@@ -1396,10 +1512,14 @@ async function handleExpenseRequestList(response) {
   }
 }
 
-async function handleSubstituteReceiptList(response) {
+async function handleSubstituteReceiptList(request, response) {
   try {
     const result = await listSubstituteReceipts(rootDir);
-    sendJson(response, 200, { receipts: result });
+    const visible = await filterOwnedDocumentList(request, result, {
+      numberField: "receiptNo",
+      load: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    sendJson(response, 200, { receipts: visible });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot list substitute receipts",
@@ -2455,6 +2575,8 @@ const server = createServer(async (request, response) => {
     const action = url.pathname.endsWith("/submit") ? "submit" : "approve";
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace(new RegExp(`/${action}$`), "");
     const [documentKind, documentNo] = remainder.split("/");
+    const permission = action === "submit" ? ACTIONS.DOCUMENT_SUBMIT : ACTIONS.DOCUMENT_APPROVE;
+    if (!await ensureLifecycleAccess(request, response, permission, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentAction(action, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
@@ -2462,6 +2584,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/complete")) {
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace("/complete", "");
     const [documentKind, documentNo] = remainder.split("/");
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentComplete(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
@@ -2469,16 +2592,20 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/sync-drive")) {
     const segments = url.pathname.replace("/api/workflow-documents/", "").replace(/\/sync-drive$/, "").split("/");
     const [documentKind, documentNo] = segments.length === 2 ? segments : [segments[0], ""];
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentDriveSync(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/workflow-templates") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleWorkflowTemplateSave(request, response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/workflow-transactions") {
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return;
     await handleWorkflowTransactionStart(request, response);
     return;
   }
@@ -2487,6 +2614,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/refresh", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
     await handleWorkflowTransactionRefresh(transactionNo, request, response);
     return;
   }
@@ -2495,6 +2623,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/complete", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_COMPLETE)) return;
     await handleWorkflowTransactionComplete(transactionNo, request, response);
     return;
   }
@@ -2503,6 +2632,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/cancel", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_COMPLETE)) return;
     await handleWorkflowTransactionCancel(transactionNo, request, response);
     return;
   }
@@ -2511,6 +2641,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
     await handleWorkflowTransactionDriveSync(transactionNo, response);
     return;
   }
@@ -2519,6 +2650,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-sheets", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
     await handleWorkflowTransactionSheetsSync(transactionNo, response);
     return;
   }
@@ -2543,6 +2675,7 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/approve", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_APPROVE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptApprove(receiptNo, request, response);
     return;
   }
@@ -2551,6 +2684,7 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/approve", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_APPROVE, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseRequestApprove(requestNo, request, response);
     return;
   }
@@ -2559,6 +2693,7 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/complete", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseRequestComplete(requestNo, request, response);
     return;
   }
@@ -2567,6 +2702,7 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/complete", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptComplete(receiptNo, request, response);
     return;
   }
@@ -2575,6 +2711,7 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/receive-stock", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.STOCK_RECEIVE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptReceiveStock(receiptNo, request, response);
     return;
   }
@@ -2583,6 +2720,8 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptDriveSync(receiptNo, response);
     return;
   }
@@ -2591,6 +2730,8 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseDriveSync(requestNo, response);
     return;
   }
@@ -2601,11 +2742,13 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/api/google-drive/config") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleGoogleDriveConfig(request, response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/company-settings") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleCompanySettingsSave(request, response);
     return;
   }
@@ -2627,11 +2770,13 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/workflow-document-types") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowDocumentTypesList(response);
       return;
     }
 
     if (url.pathname === "/api/workflow-templates") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTemplateList(response);
       return;
     }
@@ -2640,11 +2785,13 @@ const server = createServer(async (request, response) => {
     // route below, or a request for the literal "next" would be swallowed and
     // treated as a lookup for a transaction named "next".
     if (url.pathname === "/api/workflow-transactions/next") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return;
       await handleNextWorkflowTransaction(url, response);
       return;
     }
 
     if (url.pathname === "/api/workflow-transactions") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionList(response);
       return;
     }
@@ -2761,35 +2908,41 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/expense-requests") {
-      await handleExpenseRequestList(response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleExpenseRequestList(request, response);
       return;
     }
 
     if (url.pathname === "/api/substitute-receipts") {
-      await handleSubstituteReceiptList(response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleSubstituteReceiptList(request, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/substitute-receipts/") && !url.pathname.includes("/files/")) {
       const receiptNo = decodeURIComponent(url.pathname.replace("/api/substitute-receipts/", ""));
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
       await handleSubmittedSubstituteReceiptGet(receiptNo, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/expense-requests/") && !url.pathname.includes("/files/")) {
       const requestNo = decodeURIComponent(url.pathname.replace("/api/expense-requests/", ""));
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
       await handleSubmittedExpenseRequestGet(requestNo, response);
       return;
     }
 
     if (url.pathname === "/api/workflow-documents") {
-      await handleWorkflowDocumentList(url, response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleWorkflowDocumentList(request, url, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/workflow-documents/")) {
       const remainder = url.pathname.replace("/api/workflow-documents/", "");
       const [documentKind, documentNo] = remainder.split("/");
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
       await handleWorkflowDocumentGet(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
       return;
     }
@@ -2798,6 +2951,7 @@ const server = createServer(async (request, response) => {
       const transactionNo = decodeURIComponent(url.pathname
         .replace("/api/workflow-transactions/", "")
         .replace("/prefill", ""));
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionPrefill(transactionNo, url, response);
       return;
     }
@@ -2808,45 +2962,53 @@ const server = createServer(async (request, response) => {
       && !url.pathname.endsWith("/prefill")
     ) {
       const transactionNo = decodeURIComponent(url.pathname.replace("/api/workflow-transactions/", ""));
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionGet(transactionNo, response);
       return;
     }
 
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedExpenseRequest(rootDir, fileRoute.requestNo))) return;
       await handleExpenseRequestFile(fileRoute, response);
       return;
     }
 
     const substituteReceiptFileRoute = parseSubstituteReceiptFileRoute(url.pathname);
     if (substituteReceiptFileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getSubmittedSubstituteReceipt(rootDir, substituteReceiptFileRoute.receiptNo))) return;
       await handleSubstituteReceiptFile(substituteReceiptFileRoute, response);
       return;
     }
 
     const workflowDocumentFileRoute = parseWorkflowDocumentFileRoute(url.pathname);
     if (workflowDocumentFileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => getWorkflowDocument(rootDir, workflowDocumentFileRoute.documentKind, workflowDocumentFileRoute.documentNo))) return;
       await handleWorkflowDocumentFile(workflowDocumentFileRoute, response);
       return;
     }
 
     const workflowTransactionFileRoute = parseWorkflowTransactionFileRoute(url.pathname);
     if (workflowTransactionFileRoute) {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionFile(workflowTransactionFileRoute, response);
       return;
     }
 
     if (url.pathname === "/api/google-drive/status") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleGoogleDriveStatus(response);
       return;
     }
 
     if (url.pathname === "/api/company-settings") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleCompanySettingsGet(response);
       return;
     }
 
     if (url.pathname === "/api/google-drive/login") {
+      if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
       await handleGoogleDriveLogin(request, response);
       return;
     }

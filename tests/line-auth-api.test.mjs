@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import serverLogic from "../forms/local-server.logic.js";
+
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -26,7 +28,7 @@ function readBody(request) {
   });
 }
 
-async function startUpstream() {
+async function startUpstream({ role = "employee" } = {}) {
   const upstream = createServer(async (request, response) => {
     if (request.url === "/oauth2/v2.1/verify") {
       await readBody(request);
@@ -54,7 +56,7 @@ async function startUpstream() {
           display_name: "ผู้ใช้จริง",
           picture_url: "https://example.com/p.png",
           status: "active",
-          app_user_roles: [{ role_code: "employee" }],
+          app_user_roles: [{ role_code: role }],
         }]));
       return;
     }
@@ -146,6 +148,7 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
     SWEET_HOUSE_ROOT_DIR: rootDir,
     SWEET_HOUSE_AUTH_MODE: "line",
     LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${upstream.url}/oauth2/v2.1/verify`,
     SUPABASE_URL: upstream.url,
     SUPABASE_SERVICE_ROLE_KEY: "server-key",
     SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
@@ -167,7 +170,7 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
   }
 });
 
-test("line session owns new numbered documents and supplies lifecycle actors", async () => {
+test("line session owns new numbered documents and rejects privileged lifecycle actions for employees", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-owner-"));
   const upstream = await startUpstream();
   const app = await startApp({
@@ -233,14 +236,119 @@ test("line session owns new numbered documents and supplies lifecycle actors", a
       headers: { cookie, "content-type": "application/json" },
       body: JSON.stringify({ approvedBy: "attacker" }),
     });
-    assert.equal(approveResponse.status, 200);
-    const storedApproved = JSON.parse(await readFile(draftPath, "utf8"));
-    assert.equal(storedApproved.ownerUserId, "user-1");
-    assert.equal(storedApproved.approvedBy, "ผู้ใช้จริง");
-    assert.equal(storedApproved.statusHistory.at(-1).actor, "ผู้ใช้จริง");
+    assert.equal(approveResponse.status, 403);
+    assert.equal((await approveResponse.json()).code, "AUTH_FORBIDDEN");
+    const storedAfterDeniedApproval = JSON.parse(await readFile(draftPath, "utf8"));
+    assert.equal(storedAfterDeniedApproval.ownerUserId, "user-1");
+    assert.equal(storedAfterDeniedApproval.status, "pending_approval");
   } finally {
     await stopApp(app.child);
     await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("employee cannot read another user's or legacy document files, while owner can", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-resource-"));
+  const other = await serverLogic.saveExpenseDraft({
+    rootDir,
+    payload: {
+      accountingMonth: "2026-09",
+      requestTitle: "เอกสารของคนอื่น",
+      requestType: "reimbursement",
+      ownerUserId: "user-2",
+    },
+    uploads: [{ evidenceKey: "receipt", originalName: "other.txt", type: "text/plain", buffer: Buffer.from("other") }],
+  });
+  const legacy = await serverLogic.saveExpenseDraft({
+    rootDir,
+    payload: {
+      accountingMonth: "2026-09",
+      requestTitle: "เอกสาร legacy",
+      requestType: "reimbursement",
+    },
+    uploads: [{ evidenceKey: "receipt", originalName: "legacy.txt", type: "text/plain", buffer: Buffer.from("legacy") }],
+  });
+  const pending = await serverLogic.saveExpenseSubmission({
+    rootDir,
+    payload: {
+      accountingMonth: "2026-09",
+      requestTitle: "รออนุมัติ",
+      requestType: "reimbursement",
+      requesterName: "ผู้ขอ",
+      businessPurpose: "ทดสอบ role gate",
+      paymentTargetName: "ผู้ขอ",
+      ownerUserId: "user-2",
+      expenseLines: [{
+        date: "2026-09-05",
+        category: "ทดสอบ",
+        description: "รายการทดสอบ",
+        vendor: "ร้านค้า",
+        amountBeforeVat: "100",
+        vatAmount: "0",
+        withholdingTax: "0",
+      }],
+    },
+  });
+  const upstream = await startUpstream();
+  const app = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${upstream.url}/oauth2/v2.1/verify`,
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const login = await fetch(`${app.baseUrl}/api/auth/line-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idToken: "valid-token" }),
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    for (const record of [other, legacy]) {
+      const response = await fetch(`${app.baseUrl}/api/expense-requests/${record.requestNo}/files/raw/A1_receipt_001.txt`, { headers: { cookie } });
+      assert.equal(response.status, 403);
+      assert.equal((await response.json()).code, "AUTH_FORBIDDEN");
+    }
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+  }
+
+  const ownerUpstream = await startUpstream({ role: "owner" });
+  const ownerApp = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${ownerUpstream.url}/oauth2/v2.1/verify`,
+    SUPABASE_URL: ownerUpstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const login = await fetch(`${ownerApp.baseUrl}/api/auth/line-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idToken: "valid-token" }),
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const response = await fetch(`${ownerApp.baseUrl}/api/expense-requests/${other.requestNo}/files/raw/A1_receipt_001.txt`, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "other");
+    const approve = await fetch(`${ownerApp.baseUrl}/api/expense-requests/${pending.requestNo}/approve`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ approvedBy: "forged" }),
+    });
+    assert.equal(approve.status, 200);
+    const storedApproved = JSON.parse(await readFile(join(rootDir, pending.folderPath, "data", "submission.json"), "utf8"));
+    assert.equal(storedApproved.approvedBy, "ผู้ใช้จริง");
+    assert.equal(storedApproved.statusHistory.at(-1).actor, "ผู้ใช้จริง");
+  } finally {
+    await stopApp(ownerApp.child);
+    await new Promise(resolve => ownerUpstream.server.close(resolve));
     await rm(rootDir, { recursive: true, force: true });
   }
 });
