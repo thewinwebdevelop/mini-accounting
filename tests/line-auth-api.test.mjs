@@ -1,0 +1,168 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    request.on("data", chunk => chunks.push(chunk));
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
+}
+
+async function startUpstream() {
+  const upstream = createServer(async (request, response) => {
+    if (request.url === "/oauth2/v2.1/verify") {
+      await readBody(request);
+      const now = Math.floor(Date.now() / 1000);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        iss: "https://access.line.me",
+        sub: "U123",
+        aud: "channel-1",
+        exp: now + 3600,
+        iat: now - 10,
+        name: "ผู้ใช้จริง",
+        picture: "https://example.com/p.png",
+      }));
+      return;
+    }
+    if (request.url.startsWith("/rest/v1/app_users")) {
+      await readBody(request);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "POST"
+        ? [{ id: "user-1", line_user_id: "U123", status: "active" }]
+        : [{
+          id: "user-1",
+          line_user_id: "U123",
+          display_name: "ผู้ใช้จริง",
+          picture_url: "https://example.com/p.png",
+          status: "active",
+          app_user_roles: [{ role_code: "employee" }],
+        }]));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", resolve);
+  });
+  return { server: upstream, url: `http://127.0.0.1:${upstream.address().port}` };
+}
+
+async function startApp(env) {
+  const child = spawn(process.execPath, ["local-server.mjs"], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...env, PORT: "0" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = [];
+  const wait = new Promise((resolve, reject) => {
+    const onData = chunk => {
+      const text = chunk.toString();
+      output.push(text);
+      const match = text.match(/Expense request local web app: http:\/\/localhost:(\d+)\//);
+      if (match) resolve(`http://127.0.0.1:${match[1]}`);
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", chunk => output.push(chunk.toString()));
+    child.once("error", reject);
+    child.once("exit", code => reject(new Error(`server exited ${code}: ${output.join("")}`)));
+  });
+  const baseUrl = await Promise.race([
+    wait,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`server timeout: ${output.join("")}`)), 5000)),
+  ]);
+  return { child, baseUrl };
+}
+
+async function stopApp(child) {
+  child.kill("SIGTERM");
+  await new Promise(resolve => child.once("exit", resolve));
+}
+
+test("LINE session route creates a cookie and /me returns the resolved app user", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-auth-"));
+  const upstream = await startUpstream();
+  const app = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${upstream.url}/oauth2/v2.1/verify`,
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const login = await fetch(`${app.baseUrl}/api/auth/line-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idToken: "valid-token" }),
+    });
+    assert.equal(login.status, 200);
+    assert.deepEqual((await login.json()).user, {
+      id: "user-1",
+      lineUserId: "U123",
+      displayName: "ผู้ใช้จริง",
+      pictureUrl: "https://example.com/p.png",
+      status: "active",
+      role: "employee",
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    assert.match(login.headers.get("set-cookie"), /HttpOnly/);
+
+    const me = await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie } });
+    assert.equal(me.status, 200);
+    assert.deepEqual((await me.json()).user.role, "employee");
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("line auth mode rejects unauthenticated domain APIs and tampered sessions", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-auth-guard-"));
+  const upstream = await startUpstream();
+  const app = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_CHANNEL_ID: "channel-1",
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const missing = await fetch(`${app.baseUrl}/api/company-settings`);
+    assert.equal(missing.status, 401);
+    assert.equal((await missing.json()).code, "AUTH_REQUIRED");
+
+    const tampered = await fetch(`${app.baseUrl}/api/company-settings`, {
+      headers: { cookie: "sweet_house_session=not-valid" },
+    });
+    assert.equal(tampered.status, 401);
+    assert.equal((await tampered.json()).code, "AUTH_REQUIRED");
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

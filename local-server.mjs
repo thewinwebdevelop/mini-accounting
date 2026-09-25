@@ -145,6 +145,19 @@ const {
 const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
+const {
+  resolveLineAppUser,
+  verifyLineIdToken,
+} = require("./forms/line-auth.logic.js");
+const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
+const {
+  SESSION_COOKIE_NAME,
+  buildSessionCookie,
+  clearSessionCookie,
+  parseCookies,
+  signSession,
+  verifySession,
+} = require("./forms/session.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -160,6 +173,12 @@ const port = Number(process.env.PORT || 8787);
 const allowNetwork = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
 const listenHost = allowNetwork ? "0.0.0.0" : "127.0.0.1";
 const maxBodyBytes = 80 * 1024 * 1024;
+const authMode = String(process.env.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const sessionSecret = String(process.env.SWEET_HOUSE_SESSION_SECRET || "");
+const sessionTtlSeconds = Math.max(300, Number(process.env.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
+const cookieSecure = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_COOKIE_SECURE || ""))
+  || String(process.env.NODE_ENV || "").toLowerCase() === "production";
+const appPublicOrigin = String(process.env.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -178,6 +197,121 @@ function sendJson(response, statusCode, data) {
   response.end(JSON.stringify(data, (key, value) => (
     key === "absolutePath" || key === "absoluteFolderPath" ? undefined : value
   )));
+}
+
+function sendAuthError(response, statusCode, code, error, { clearCookie = false } = {}) {
+  if (clearCookie) response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+  sendJson(response, statusCode, { code, error });
+}
+
+function isPublicApiPath(pathname) {
+  return pathname === "/api/auth/line-session"
+    || pathname === "/api/auth/me"
+    || pathname === "/api/auth/logout"
+    || pathname === "/api/google-drive/oauth2callback"
+    || pathname === "/api/shopee/callback";
+}
+
+function originIsAllowed(request) {
+  if (!appPublicOrigin || request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return true;
+  return request.headers.origin === appPublicOrigin;
+}
+
+function readRequestSession(request) {
+  if (!sessionSecret) throw Object.assign(new Error("Session configuration is missing"), { code: "SESSION_CONFIG_MISSING" });
+  let cookies;
+  try {
+    cookies = parseCookies(request.headers.cookie || "");
+  } catch {
+    throw Object.assign(new Error("Session is invalid"), { code: "SESSION_INVALID" });
+  }
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) throw Object.assign(new Error("Session is missing"), { code: "SESSION_MISSING" });
+  return verifySession(token, sessionSecret);
+}
+
+function requireAuthenticatedRequest(request, response, url) {
+  if (authMode !== "line" || !url.pathname.startsWith("/api/") || isPublicApiPath(url.pathname)) return true;
+  if (!sessionSecret) {
+    sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+    return false;
+  }
+  if (!originIsAllowed(request)) {
+    sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
+    return false;
+  }
+  try {
+    request.auth = readRequestSession(request);
+    return true;
+  } catch (error) {
+    sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
+    return false;
+  }
+}
+
+async function handleLineSession(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const lineProfile = await verifyLineIdToken({ idToken: body.idToken || body.id_token });
+    const client = createSupabaseAdminClient();
+    const user = await resolveLineAppUser({ client, lineProfile });
+    if (user.status !== "active" || !user.role) {
+      sendAuthError(response, 403, "APP_USER_PENDING", "บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ใช้งาน");
+      return;
+    }
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const expiresAt = issuedAt + sessionTtlSeconds;
+    const token = signSession({
+      userId: user.id,
+      lineUserId: user.lineUserId,
+      displayName: user.displayName,
+      role: user.role,
+      iat: issuedAt,
+      exp: expiresAt,
+    }, sessionSecret);
+    response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
+    sendJson(response, 200, { user, expiresAt });
+  } catch (error) {
+    if (error?.code === "APP_USER_NOT_FOUND" || error?.code === "LINE_PROFILE_INVALID") {
+      sendAuthError(response, 403, "APP_USER_PENDING", "บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ใช้งาน");
+      return;
+    }
+    if (error?.code === "SUPABASE_CONFIG_MISSING" || error?.code === "SUPABASE_CONFIG_INVALID" || error?.code === "LINE_AUTH_CONFIG_MISSING" || error?.code === "LINE_AUTH_UNAVAILABLE" || error?.code === "SUPABASE_REQUEST_FAILED") {
+      sendAuthError(response, 503, "AUTH_PROVIDER_UNAVAILABLE", "ระบบยืนยันตัวตนยังไม่พร้อมใช้งาน");
+      return;
+    }
+    if (error?.code === "LINE_TOKEN_INVALID") {
+      sendAuthError(response, 401, "LINE_TOKEN_INVALID", "LINE token ไม่ถูกต้องหรือหมดอายุ");
+      return;
+    }
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    sendAuthError(response, 400, "AUTH_REQUEST_INVALID", "ไม่สามารถเข้าสู่ระบบได้");
+  }
+}
+
+function handleAuthMe(request, response) {
+  if (authMode !== "line") {
+    sendJson(response, 200, { authenticated: false, mode: "disabled", user: null });
+    return;
+  }
+  try {
+    const session = readRequestSession(request);
+    sendJson(response, 200, { authenticated: true, mode: "line", user: session });
+  } catch (error) {
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
+  }
+}
+
+function handleAuthLogout(response) {
+  response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+  sendJson(response, 200, { ok: true });
 }
 
 function sendOperationError(response, error, fallback) {
@@ -2057,6 +2191,23 @@ async function handleStaticFile(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (!requireAuthenticatedRequest(request, response, url)) return;
+
+  if (request.method === "POST" && url.pathname === "/api/auth/line-session") {
+    await handleLineSession(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/me") {
+    handleAuthMe(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+    handleAuthLogout(response);
+    return;
+  }
 
   if (request.method === "POST" && request.url === "/api/inventory/products") {
     await handleInventoryProductCreate(request, response);

@@ -33,6 +33,7 @@ function assertTokenClaims(claims, channelId, now) {
 async function verifyLineIdToken({
   idToken,
   channelId = process.env.LINE_CHANNEL_ID,
+  verifyUrl = process.env.LINE_VERIFY_URL || LINE_VERIFY_URL,
   fetchImpl = globalThis.fetch,
   now = currentUnixSeconds,
 } = {}) {
@@ -48,7 +49,7 @@ async function verifyLineIdToken({
 
   let response;
   try {
-    response = await fetchImpl(LINE_VERIFY_URL, {
+    response = await fetchImpl(verifyUrl, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ id_token: idToken, client_id: channelId }),
