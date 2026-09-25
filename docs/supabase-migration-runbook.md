@@ -12,7 +12,7 @@ SWEET_HOUSE_ROOT_DIR="/Users/tar/Documents/หจกสวีทเฮาส์"
 
 ## Configure
 
-Copy `.env.example` to the deployment environment and set `SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. Apply migrations `supabase/migrations/20260925_001_line_auth.sql` and `supabase/migrations/20260925_002_core_data.sql` in order.
+Copy `.env.example` to the deployment environment and set `SUPABASE_URL`, the server-only `SUPABASE_SERVICE_ROLE_KEY`, and (unless the default is desired) `SUPABASE_STORAGE_BUCKET`. Apply migrations `supabase/migrations/20260925_001_line_auth.sql`, `supabase/migrations/20260925_002_core_data.sql`, and `supabase/migrations/20260925_003_storage.sql` in order.
 
 ## Dry run
 
@@ -30,10 +30,35 @@ Review `counts` and the source keys. The command performs no Supabase writes in 
 
 Stop local writes, create a fresh backup, then run the same command with `--apply`. The process upserts by `source_key`, verifies each row, records `migration_records`, and marks the run failed if any row cannot be verified. Re-running is safe for already recorded source keys.
 
+## File storage dry run
+
+The file migration is separate from the core-data migration and defaults to dry-run. It scans document JSON/PDF/raw files under `documents/` and product/SKU images under `data/inventory-images/`; it does not modify local files or contact Supabase in dry-run mode.
+
+```bash
+SWEET_HOUSE_ROOT_DIR="/path/to/data-root" \
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+scripts/migrate-local-files-to-supabase.mjs
+```
+
+Review `counts`, `sourceKey`, `objectPath`, SHA-256, and byte sizes. Create a backup immediately before apply and stop local writes while the apply runs.
+
+## File storage apply
+
+```bash
+SWEET_HOUSE_ROOT_DIR="/path/to/data-root" \
+SUPABASE_URL="https://your-project.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="..." \
+SUPABASE_STORAGE_BUCKET="sweet-house-files" \
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+scripts/migrate-local-files-to-supabase.mjs --apply
+```
+
+The command uploads to the private bucket, downloads each object back for byte/hash verification, then records the source in `storage_migration_records`. It never deletes local files. A repeated run skips an unchanged source and re-uploads a changed source.
+
 ## Verify
 
 Compare the migration output counts with the local dry-run counts and query the Supabase tables by `source_key`. Confirm that product, SKU, and stock movement source IDs are complete before switching the application data backend.
 
 ## Cutover
 
-The current branch only establishes the migration contract and core data slice. A later cutover task must add a dual-read/dual-write or frozen-write switch, migrate document JSON/PDF/raw evidence to Supabase Storage, verify every domain, and only then set `DATA_BACKEND=supabase`.
+The current branch establishes the migration contract, core data slice, and file-storage migration command. A later cutover task must add a dual-read/dual-write or frozen-write switch, change application file reads to use authorized Storage objects, verify every domain, and only then set `DATA_BACKEND=supabase`.
