@@ -78,10 +78,8 @@ const {
 } = require("./forms/workflow.logic.js");
 const {
   createProductCategory,
-  createProduct,
   createPurchaseInMovement,
   createSaleSku,
-  createStockSku,
   getInventoryProductDetail,
   getInventoryDashboardSummary,
   getSaleSku,
@@ -89,16 +87,12 @@ const {
   listInventoryBalances,
   listInventoryStockGroups,
   listProductCategories,
-  listProducts,
   listSaleSkus,
   listStockInReport,
-  listStockSkus,
   saveProductImage,
   saveStockSkuImage,
   updateProductCategory,
-  updateProduct,
   updateSaleSku,
-  updateStockSku,
 } = require("./forms/inventory.logic.js");
 const {
   createSubstituteReceiptVendor,
@@ -164,6 +158,7 @@ const {
   assertDocumentAccess,
   assertPermission,
 } = require("./forms/authorization.logic.js");
+const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -185,6 +180,11 @@ const sessionTtlSeconds = Math.max(300, Number(process.env.SWEET_HOUSE_SESSION_T
 const cookieSecure = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_COOKIE_SECURE || ""))
   || String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const appPublicOrigin = String(process.env.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
+const inventoryDataAdapter = createInventoryDataAdapter({
+  rootDir,
+  env: process.env,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -1606,7 +1606,7 @@ async function handleNextSubstituteReceipt(url, response) {
 
 async function handleInventoryProductList(url, response) {
   try {
-    sendJson(response, 200, { products: listProducts(rootDir, { search: url.searchParams.get("search") || "" }) });
+    sendJson(response, 200, { products: await inventoryDataAdapter.read("listProducts", { search: url.searchParams.get("search") || "" }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list products" });
   }
@@ -1650,7 +1650,7 @@ async function handleInventoryCategoryUpdate(categoryId, request, response) {
 async function handleInventoryProductCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { product: createProduct(rootDir, payload) });
+    sendJson(response, 200, { product: await inventoryDataAdapter.write("saveProduct", payload) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create product" });
   }
@@ -1670,7 +1670,7 @@ async function handleInventoryProductImageUpload(productId, request, response) {
 async function handleInventoryProductUpdate(productId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { product: updateProduct(rootDir, productId, payload) });
+    sendJson(response, 200, { product: await inventoryDataAdapter.write("saveProduct", { ...payload, id: productId }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update product" });
   }
@@ -1678,7 +1678,7 @@ async function handleInventoryProductUpdate(productId, request, response) {
 
 async function handleInventoryStockSkuList(url, response) {
   try {
-    sendJson(response, 200, { stockSkus: listStockSkus(rootDir, { search: url.searchParams.get("search") || "" }) });
+    sendJson(response, 200, { stockSkus: await inventoryDataAdapter.read("listStockSkus", { search: url.searchParams.get("search") || "" }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list stock SKUs" });
   }
@@ -1687,7 +1687,7 @@ async function handleInventoryStockSkuList(url, response) {
 async function handleInventoryStockSkuCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { stockSku: createStockSku(rootDir, payload) });
+    sendJson(response, 200, { stockSku: await inventoryDataAdapter.write("saveStockSku", payload) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create stock SKU" });
   }
@@ -1707,7 +1707,7 @@ async function handleInventoryStockSkuImageUpload(stockSkuId, request, response)
 async function handleInventoryStockSkuUpdate(stockSkuId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { stockSku: updateStockSku(rootDir, stockSkuId, payload) });
+    sendJson(response, 200, { stockSku: await inventoryDataAdapter.write("saveStockSku", { ...payload, id: stockSkuId }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update stock SKU" });
   }

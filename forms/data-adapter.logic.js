@@ -53,7 +53,7 @@ function assertRepositoryMethod(repository, method, role) {
   }
 }
 
-function createDataAdapter({ local, cloud = null, mode = "local", domain = "default", logger = () => {}, fallbackOnCloudError = false } = {}) {
+function createDataAdapter({ local, cloud = null, mode = "local", domain = "default", logger = () => {}, fallbackOnCloudError = false, prepareCloudWrite = {} } = {}) {
   if (!["local", "shadow", "dual-write", "supabase-read"].includes(mode)) {
     throw adapterError("DATA_BACKEND_INVALID", `Unsupported data backend mode: ${mode}`);
   }
@@ -93,8 +93,11 @@ function createDataAdapter({ local, cloud = null, mode = "local", domain = "defa
     if (mode === "supabase-read") return cloud[method](...args);
 
     const localResult = await local[method](...args);
+    const cloudArgs = typeof prepareCloudWrite[method] === "function"
+      ? prepareCloudWrite[method](localResult, args)
+      : args;
     try {
-      await cloud[method](...args);
+      await cloud[method](...cloudArgs);
     } catch (error) {
       throw adapterError("DATA_CLOUD_WRITE_FAILED", "Cloud data write failed; retry is required", { retryable: true, causeCode: error?.code || "CLOUD_ERROR" });
     }

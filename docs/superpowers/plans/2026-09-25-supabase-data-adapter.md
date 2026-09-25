@@ -81,12 +81,12 @@
 - `createLocalDataAdapter({ rootDir })` maps existing company/vendor/inventory/document operations to the adapter contract.
 - Inventory route handlers consume the selected adapter without changing response JSON.
 
-- [ ] Write failing integration tests for local mode, shadow mode, dual-write success/failure, and Supabase-read fallback using fake local/cloud repositories.
-- [ ] Run focused integration tests to establish the missing adapter integration.
-- [ ] Implement the local wrapper and inject backend selection at the server boundary; do not rewrite existing SQLite domain operations.
-- [ ] Route inventory reads/writes through the adapter while preserving existing mapping, validation, and authorization behavior.
-- [ ] Run inventory, auth, and server API suites; verify `DATA_BACKEND=local` is byte-compatible with existing responses.
-- [ ] Commit with `feat: route inventory through data adapter`.
+- [x] Write failing integration tests for local mode, shadow mode, dual-write success/failure, and Supabase-read fallback using fake local/cloud repositories.
+- [x] Run focused integration tests to establish the missing adapter integration.
+- [x] Implement the local wrapper and inject backend selection at the server boundary; do not rewrite existing SQLite domain operations.
+- [x] Route inventory reads/writes through the adapter while preserving existing mapping, validation, and authorization behavior.
+- [x] Run inventory, auth, and server API suites; verify `DATA_BACKEND=local` is byte-compatible with existing responses.
+- [x] Commit with `feat: route inventory through data adapter`.
 
 ### Task 4: Integrate document workflows and ownership into cloud shadow/dual-write
 

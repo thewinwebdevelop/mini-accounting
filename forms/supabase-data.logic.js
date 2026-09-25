@@ -1,4 +1,5 @@
 const { supabaseRequest } = require("./supabase.logic.js");
+const { canonicalHash, stableSourceKey } = require("./data-backend.logic.js");
 
 function dataError(code, message) {
   const error = new Error(message);
@@ -42,6 +43,41 @@ function mapInventoryRecord(record = {}) {
     updatedAt: record.updated_at,
     sourceHash: record.source_hash,
     sourcePayload: record.source_payload,
+  });
+}
+
+function mapCloudProduct(record = {}) {
+  const mapped = mapInventoryRecord(record);
+  return compact({
+    id: mapped.sourceId,
+    productCode: mapped.productCode,
+    name: mapped.name,
+    category: mapped.category,
+    description: mapped.description,
+    imagePath: mapped.imagePath || "",
+    imageUrl: mapped.imagePath ? `/api/inventory/images/${mapped.imagePath}` : "",
+    status: mapped.status,
+    createdAt: mapped.createdAt,
+    updatedAt: mapped.updatedAt,
+  });
+}
+
+function mapCloudStockSku(record = {}) {
+  return compact({
+    id: record.source_id,
+    productId: record.product_source_id,
+    productCode: record.product_code || "",
+    productName: record.product_name || "",
+    sku: record.sku,
+    color: record.color,
+    size: record.size,
+    barcode: record.barcode,
+    defaultUnitCost: Number(record.default_unit_cost || 0).toFixed(2),
+    imagePath: record.image_path || "",
+    imageUrl: record.image_path ? `/api/inventory/images/${record.image_path}` : "",
+    status: record.status,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
   });
 }
 
@@ -141,6 +177,22 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     return listTable("documents", params.toString(), mapDocumentRecord);
   }
 
+  async function listProducts(filters = {}) {
+    const search = String(filters.search || "").trim().toLowerCase();
+    const products = await listTable("inventory_products", "", mapCloudProduct);
+    if (!search) return products;
+    return products.filter(product => [product.productCode, product.name, product.category]
+      .some(value => String(value || "").toLowerCase().includes(search)));
+  }
+
+  async function listStockSkus(filters = {}) {
+    const search = String(filters.search || "").trim().toLowerCase();
+    const skus = await listTable("inventory_stock_skus", "", mapCloudStockSku);
+    if (!search) return skus;
+    return skus.filter(item => [item.sku, item.color, item.size, item.productCode, item.productName]
+      .some(value => String(value || "").toLowerCase().includes(search)));
+  }
+
   async function getDocument(sourceKey) {
     const params = new URLSearchParams({ source_key: `eq.${sourceKey}`, limit: "1" });
     const result = await listTable("documents", params.toString(), mapDocumentRecord);
@@ -154,6 +206,38 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     listInventoryProducts: query => listTable("inventory_products", query, mapInventoryRecord),
     listInventoryStockSkus: query => listTable("inventory_stock_skus", query, value => value),
     listInventoryStockMovements: query => listTable("inventory_stock_movements", query, value => value),
+    listProducts,
+    listStockSkus,
+    saveProduct: record => upsertTable("inventory_products", {
+      source_key: stableSourceKey("inventory_product", record.id),
+      source_id: record.id,
+      product_code: record.productCode ?? "",
+      name: record.name ?? "",
+      category: record.category ?? "",
+      description: record.description ?? "",
+      image_path: record.imagePath ?? "",
+      status: record.status ?? "active",
+      created_at: record.createdAt ?? now(),
+      updated_at: record.updatedAt ?? now(),
+      source_hash: canonicalHash(record),
+      source_payload: record,
+    }, mapCloudProduct, "inventory product"),
+    saveStockSku: record => upsertTable("inventory_stock_skus", {
+      source_key: stableSourceKey("inventory_stock_sku", record.id),
+      source_id: record.id,
+      product_source_id: record.productId,
+      sku: record.sku ?? "",
+      color: record.color ?? "",
+      size: record.size ?? "",
+      barcode: record.barcode ?? "",
+      default_unit_cost: record.defaultUnitCost ?? 0,
+      image_path: record.imagePath ?? "",
+      status: record.status ?? "active",
+      created_at: record.createdAt ?? now(),
+      updated_at: record.updatedAt ?? now(),
+      source_hash: canonicalHash(record),
+      source_payload: record,
+    }, mapCloudStockSku, "stock SKU"),
     upsertInventoryProduct: record => upsertTable("inventory_products", {
       source_key: sourceKeyOf(record),
       source_id: record.sourceId ?? record.source_id ?? null,
