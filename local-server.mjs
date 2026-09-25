@@ -121,7 +121,14 @@ const {
   importPlatformOrders,
   listPlatformOrderImports,
   postPlatformOrderImport,
+  getShopeeOrder,
 } = require("./forms/platform-orders.logic.js");
+const {
+  getShopeeConnection,
+  saveShopeeConnection,
+} = require("./forms/shopee-auth.logic.js");
+const { createShopeeClient } = require("./forms/shopee-client.logic.js");
+const { syncShopeeOrders } = require("./forms/shopee-orders.logic.js");
 const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
@@ -1463,6 +1470,73 @@ async function handlePlatformOrderImportPost(importId, response) {
   }
 }
 
+function shopeeClientFromEnvironment() {
+  return createShopeeClient({
+    partnerId: process.env.SHOPEE_PARTNER_ID || "",
+    partnerKey: process.env.SHOPEE_PARTNER_KEY || "",
+    baseUrl: process.env.SHOPEE_API_BASE_URL || undefined,
+  });
+}
+
+function publicShopeeConnection(connection) {
+  if (!connection) return null;
+  const { accessToken, refreshToken, ...publicFields } = connection;
+  return publicFields;
+}
+
+async function handleShopeeConnection(url, response) {
+  const connection = getShopeeConnection(rootDir, url.searchParams.get("connectionId") || url.searchParams.get("shopId") || "");
+  sendJson(response, 200, { connection: publicShopeeConnection(connection) });
+}
+
+async function handleShopeeAuthorize(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const client = shopeeClientFromEnvironment();
+    const redirectUrl = payload.redirectUrl || `${payload.origin || "http://127.0.0.1:8787"}/api/shopee/callback`;
+    sendJson(response, 200, {
+      authorizationUrl: client.buildAuthorizationUrl({ redirectUrl, state: payload.state || "" }),
+    });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง Shopee authorization URL ได้");
+  }
+}
+
+async function handleShopeeCallback(url, response) {
+  try {
+    const shopId = url.searchParams.get("shop_id") || url.searchParams.get("shopId");
+    const accessToken = url.searchParams.get("access_token") || "";
+    const refreshToken = url.searchParams.get("refresh_token") || "";
+    if (!shopId || !accessToken || !refreshToken) {
+      sendJson(response, 400, { error: "Shopee callback ต้องมี shop_id, access_token และ refresh_token" });
+      return;
+    }
+    const expireIn = Number(url.searchParams.get("expire_in") || 0);
+    const connection = saveShopeeConnection(rootDir, {
+      shopId,
+      shopName: url.searchParams.get("shop_name") || "",
+      partnerId: process.env.SHOPEE_PARTNER_ID || "",
+      accessToken,
+      refreshToken,
+      tokenExpiresAt: expireIn ? new Date(Date.now() + expireIn * 1000).toISOString() : "",
+    });
+    sendJson(response, 200, { connection: publicShopeeConnection(connection) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถบันทึก Shopee connection ได้");
+  }
+}
+
+async function handleShopeeSync(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const client = shopeeClientFromEnvironment();
+    const result = await syncShopeeOrders(rootDir, { connectionId: payload.connectionId || payload.shopId, client });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถ sync Shopee orders ได้");
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -1770,6 +1844,21 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/platform-orders/imports") {
     await handlePlatformOrderImportCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/authorize") {
+    await handleShopeeAuthorize(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/shopee/callback") {
+    await handleShopeeCallback(url, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/sync") {
+    await handleShopeeSync(request, response);
     return;
   }
 
@@ -2084,6 +2173,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/platform-orders/imports") {
       await handlePlatformOrderImportList(response);
+      return;
+    }
+
+    if (url.pathname === "/api/shopee/connection") {
+      await handleShopeeConnection(url, response);
       return;
     }
 
