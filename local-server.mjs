@@ -129,6 +129,7 @@ const {
 } = require("./forms/shopee-auth.logic.js");
 const { createShopeeClient } = require("./forms/shopee-client.logic.js");
 const { syncShopeeOrders } = require("./forms/shopee-orders.logic.js");
+const { arrangeShipmentBatch, prepareShipmentBatch } = require("./forms/shopee-shipment.logic.js");
 const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
@@ -1537,6 +1538,46 @@ async function handleShopeeSync(request, response) {
   }
 }
 
+function authenticatedShopeeClient(connection) {
+  const rawClient = shopeeClientFromEnvironment();
+  return {
+    ...rawClient,
+    request: (options = {}) => rawClient.request({
+      ...options,
+      accessToken: options.accessToken || connection.accessToken,
+      shopId: options.shopId || connection.shopId,
+    }),
+  };
+}
+
+async function handleShopeeShipmentBatchPrepare(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await prepareShipmentBatch(rootDir, payload.orderIds || [], {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถเตรียม shipment batch ได้");
+  }
+}
+
+async function handleShopeeShipmentBatchArrange(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await arrangeShipmentBatch(rootDir, batchId, payload.selection || payload, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถนัดรับ shipment batch ได้");
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -1859,6 +1900,19 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/shopee/sync") {
     await handleShopeeSync(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/shipment-batches/prepare") {
+    await handleShopeeShipmentBatchPrepare(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/arrange")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/arrange", ""));
+    await handleShopeeShipmentBatchArrange(batchId, request, response);
     return;
   }
 

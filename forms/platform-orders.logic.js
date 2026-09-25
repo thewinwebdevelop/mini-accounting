@@ -858,6 +858,8 @@ function mapShopeeOrderRow(row) {
     buyerName: row.buyer_name,
     trackingNumber: row.tracking_number,
     shippingCarrier: row.shipping_carrier,
+    logisticsChannelId: row.logistics_channel_id,
+    productLocationId: row.product_location_id,
     packageNumber: row.package_number,
     shipmentArrangedAt: row.shipment_arranged_at,
     externalUpdatedAt: row.external_updated_at,
@@ -945,8 +947,9 @@ function upsertShopeeOrder(rootDir, payload = {}, options = {}) {
         import_id, platform, order_no, order_date, order_status, buyer_name,
         created_at, source, shop_id, external_order_id, external_updated_at,
         shipping_status, tracking_number, shipping_carrier, package_number,
-        shipment_arranged_at, last_synced_at, raw_payload_json
-      ) VALUES (?, 'shopee', ?, ?, ?, ?, ?, 'shopee_api', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        logistics_channel_id, product_location_id, shipment_arranged_at,
+        last_synced_at, raw_payload_json
+      ) VALUES (?, 'shopee', ?, ?, ?, ?, ?, 'shopee_api', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(platform, order_no) DO UPDATE SET
         import_id = excluded.import_id,
         order_date = excluded.order_date,
@@ -959,6 +962,8 @@ function upsertShopeeOrder(rootDir, payload = {}, options = {}) {
         shipping_status = excluded.shipping_status,
         tracking_number = excluded.tracking_number,
         shipping_carrier = excluded.shipping_carrier,
+        logistics_channel_id = excluded.logistics_channel_id,
+        product_location_id = excluded.product_location_id,
         package_number = excluded.package_number,
         shipment_arranged_at = excluded.shipment_arranged_at,
         last_synced_at = excluded.last_synced_at,
@@ -978,6 +983,8 @@ function upsertShopeeOrder(rootDir, payload = {}, options = {}) {
       trackingNumber,
       cleanText(payload.logisticsChannel ?? payload.logistics_channel ?? payload.shippingCarrier ?? payload.shipping_carrier),
       packageNumber,
+      cleanText(payload.logisticsChannelId ?? payload.logistics_channel_id),
+      cleanText(payload.productLocationId ?? payload.product_location_id),
       payload.shipmentArrangedAt ?? payload.shipment_arranged_at ? cleanText(payload.shipmentArrangedAt ?? payload.shipment_arranged_at) : "",
       timestamp,
       JSON.stringify(payload),

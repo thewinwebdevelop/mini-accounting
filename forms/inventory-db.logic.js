@@ -309,6 +309,8 @@ function ensureInventorySchema(db) {
   addColumnIfMissing(db, "platform_orders", "shipping_status", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_orders", "tracking_number", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_orders", "shipping_carrier", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "logistics_channel_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "platform_orders", "product_location_id", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_orders", "package_number", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_orders", "shipment_arranged_at", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "platform_orders", "last_synced_at", "TEXT NOT NULL DEFAULT ''");
