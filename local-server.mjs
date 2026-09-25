@@ -236,6 +236,16 @@ function safeStaticPath(urlPath) {
     "/sale-skus/": "/sale-skus.html",
     "/platform-orders": "/platform-orders.html",
     "/platform-orders/": "/platform-orders.html",
+    "/shopee": "/shopee-connection.html",
+    "/shopee/": "/shopee-connection.html",
+    "/shopee-connection": "/shopee-connection.html",
+    "/shopee-connection/": "/shopee-connection.html",
+    "/shopee-orders": "/shopee-orders.html",
+    "/shopee-orders/": "/shopee-orders.html",
+    "/shopee-mapping": "/shopee-mapping.html",
+    "/shopee-mapping/": "/shopee-mapping.html",
+    "/shopee-shipment": "/shopee-shipment.html",
+    "/shopee-shipment/": "/shopee-shipment.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");

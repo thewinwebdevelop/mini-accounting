@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shopee Orders - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="/shopee-workflow.css">
+</head>
+<body>
+  <header class="topbar"><details class="app-menu"><summary class="menu-button" aria-label="เปิดเมนู">☰</summary><nav class="menu-panel" aria-label="เมนู Shopee"><div class="menu-group"><div class="menu-group-title">Shopee workflow</div><a class="menu-item" href="/shopee-connection">เชื่อมต่อ / Sync</a><a class="menu-item" href="/shopee-orders">Orders</a><a class="menu-item" href="/shopee-mapping">Manual SKU</a><a class="menu-item" href="/shopee-shipment">นัดรับ / ใบปะหน้า</a></div><div class="menu-group"><div class="menu-group-title">ระบบอื่น</div><a class="menu-item" href="/platform-orders">CSV Platform Orders</a><a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a><a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a><a class="menu-item" href="/">หน้าหลัก</a></div></nav></details><div><h1 class="brand-title">Shopee Orders</h1><p class="brand-subtitle">ตรวจสอบรายการสั่งซื้อและเลือก order สำหรับขั้นตอนถัดไป</p></div></header>
+  <main class="page"><section class="section"><div class="section-header"><h2 class="section-title">รายการ Shopee orders</h2><span id="shopeeSelectedCount" class="muted"></span></div><div class="section-body">
+    <div class="actions"><label class="field" style="min-width:240px" for="shopeeShopId"><span>Shop ID</span><input id="shopeeShopId" placeholder="เช่น 123456789" autocomplete="off"></label><button class="button secondary" id="refreshShopeeOrdersButton" type="button">Refresh orders</button></div>
+    <div id="shopeeOrderStatus" class="status-box"></div>
+    <div class="table-wrap"><table><thead><tr><th style="width: 8%;">เลือก</th><th>Order</th><th>สถานะ</th><th>Mapping</th><th>Tracking</th></tr></thead><tbody id="shopeeOrderRows"></tbody></table></div>
+    <div class="actions"><button class="button primary" id="openShopeeMappingButton" type="button" disabled>ไป Manual SKU Mapping</button><button class="button secondary" id="openShopeeShipmentButton" type="button" disabled>ไป Shipment & Label</button></div>
+  </div></section></main>
+  <script src="/shopee-orders.logic.browser.js"></script>
+</body>
+</html>

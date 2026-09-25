@@ -294,6 +294,10 @@
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
+          <a class="menu-item" href="/shopee-connection">Shopee: เชื่อมต่อ / Sync</a>
+          <a class="menu-item" href="/shopee-orders">Shopee: Orders</a>
+          <a class="menu-item" href="/shopee-mapping">Shopee: Manual SKU</a>
+          <a class="menu-item" href="/shopee-shipment">Shopee: นัดรับ / ใบปะหน้า</a>
         </div>
         <div class="menu-group">
           <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
@@ -360,18 +364,6 @@
         </div>
       </form>
 
-      <section class="section" id="shopeeIntegration">
-        <div class="section-header"><h2 class="section-title">Shopee automation</h2></div>
-        <div class="section-body">
-          <label class="field" for="shopeeShopId"><span>Shop ID</span><input id="shopeeShopId" placeholder="เช่น 123456789" autocomplete="off"></label>
-          <div class="actions">
-            <button class="button secondary" id="shopeeConnectButton" type="button">Connect Shopee</button>
-            <button class="button primary" id="syncShopeeOrdersButton" type="button">Sync orders</button>
-          </div>
-          <div id="shopeeConnectionStatus" class="muted">ยังไม่ได้ตรวจสอบการเชื่อมต่อ</div>
-        </div>
-      </section>
-
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">Recent imports</h2>
@@ -395,21 +387,6 @@
         </div>
       </section>
 
-      <section class="section" id="shopeeOrdersSection">
-        <div class="section-header"><h2 class="section-title">Shopee orders</h2><span id="shopeeSelectedCount" class="muted"></span></div>
-        <div class="section-body">
-          <div class="shopee-actions">
-            <button class="button secondary small" id="refreshShopeeOrdersButton" type="button">Refresh orders</button>
-            <button class="button primary small" id="prepareShopeeShipmentButton" type="button">เตรียมจัดส่ง</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th style="width: 8%;">เลือก</th><th>Order</th><th>สถานะ</th><th>Mapping</th><th>Tracking</th></tr></thead>
-              <tbody id="shopeeOrderRows"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
     </div>
 
     <div class="detail-column">
@@ -417,24 +394,6 @@
       <div class="actions post-actions">
         <button id="postPlatformOrderImport" class="button primary" type="button" disabled>Post to inventory</button>
       </div>
-      <section class="section" id="shopeeOrderDetail">
-        <div class="section-header"><h2 class="section-title">Manual Stock SKU mapping</h2></div>
-        <div class="section-body"><div class="muted">เลือก Order ทางซ้ายเพื่อ map Stock SKU</div><div hidden data-shopee-mapping></div></div>
-      </section>
-      <section class="section" id="shopeeShipmentPanel">
-        <div class="section-header"><h2 class="section-title">Batch shipment & label</h2></div>
-        <div class="section-body">
-          <div id="shopeeBatchStatus" class="muted">ยังไม่มี shipment batch</div>
-          <div class="shopee-actions">
-            <button class="button secondary small" id="arrangeShopeeShipmentButton" type="button" disabled>กดนัดรับสินค้า</button>
-            <button class="button secondary small" id="refreshShopeeTrackingButton" type="button" disabled>Refresh Tracking</button>
-            <button class="button secondary small" id="createShopeeDocumentsButton" type="button" disabled>ดึงใบปะหน้า Shopee</button>
-            <button class="button primary small" id="overlayShopeeLabelsButton" type="button" disabled>สร้าง Custom Label</button>
-            <button class="button primary small" id="printShopeeLabelsButton" type="button" disabled>Print Preview</button>
-          </div>
-          <div id="shopeeBatchChoices"></div>
-        </div>
-      </section>
     </div>
   </main>
 
