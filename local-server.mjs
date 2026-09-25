@@ -330,6 +330,8 @@ function sendWorkflowMutationError(response, error, fallback, defaultStatus = 40
 function safeStaticPath(urlPath) {
   const routeMap = {
     "/": "/index.html",
+    "/line-auth": "/line-auth.html",
+    "/line-auth/": "/line-auth.html",
     "/expense-request": "/expense-request.html",
     "/expense-request/": "/expense-request.html",
     "/expense-requests": "/expense-requests.html",
@@ -388,6 +390,14 @@ function safeStaticPath(urlPath) {
   const absolutePath = path.join(formsDir, normalized);
   if (!absolutePath.startsWith(formsDir)) return null;
   return absolutePath;
+}
+
+function escapeHtmlAttribute(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function redirect(response, location) {
@@ -2159,8 +2169,8 @@ async function handleInventoryImage(urlPath, response) {
   }
 
   try {
-    const body = await readFile(absolutePath);
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
+    const body = await readFile(absolutePath);
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch {
@@ -2179,8 +2189,11 @@ async function handleStaticFile(request, response) {
       return;
     }
 
-    const body = await readFile(absolutePath);
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
+    let body = await readFile(absolutePath);
+    if (contentType.startsWith("text/html")) {
+      body = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(process.env.LINE_LIFF_ID || ""));
+    }
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch {
