@@ -159,6 +159,7 @@ const {
   assertPermission,
 } = require("./forms/authorization.logic.js");
 const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
+const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -182,6 +183,10 @@ const cookieSecure = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_COOKI
 const appPublicOrigin = String(process.env.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
 const inventoryDataAdapter = createInventoryDataAdapter({
   rootDir,
+  env: process.env,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+const documentDataAdapter = createDocumentDataAdapter({
   env: process.env,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
@@ -324,6 +329,11 @@ async function filterOwnedDocumentList(request, records, { numberField, load }) 
   for (const record of records) {
     const documentNo = String(record?.[numberField] || "").trim();
     if (!documentNo) continue;
+    const directOwner = String(record?.ownerUserId || record?.payload?.ownerUserId || "").trim();
+    if (directOwner) {
+      if (directOwner === String(request.auth?.userId || "").trim()) visible.push(record);
+      continue;
+    }
     try {
       const full = await load(documentNo);
       if (String(full?.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim()) visible.push(record);
@@ -627,10 +637,15 @@ async function handleExpenseSubmission(request, response) {
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
-    const result = await saveExpenseSubmission({
-      rootDir,
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: payload.requestNo,
       payload,
-      uploads: files,
+      localSave: () => saveExpenseSubmission({
+        rootDir,
+        payload,
+        uploads: files,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -653,10 +668,15 @@ async function handleSubstituteReceiptSubmission(request, response) {
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
-    const result = await saveSubstituteReceiptSubmission({
-      rootDir,
+    const result = await documentDataAdapter.save({
+      documentKind: "substitute_receipt",
+      documentNo: payload.receiptNo,
       payload,
-      uploads: files,
+      localSave: () => saveSubstituteReceiptSubmission({
+        rootDir,
+        payload,
+        uploads: files,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -678,10 +698,15 @@ async function handleSubstituteReceiptDraftSave(request, response) {
       payload,
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     })) return;
-    const result = await saveSubstituteReceiptDraft({
-      rootDir,
+    const result = await documentDataAdapter.save({
+      documentKind: "substitute_receipt",
+      documentNo: payload.receiptNo,
       payload,
-      uploads: files,
+      localSave: () => saveSubstituteReceiptDraft({
+        rootDir,
+        payload,
+        uploads: files,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -933,7 +958,12 @@ async function handleWorkflowDocumentSubmission(request, response) {
     }
 
     const payload = buildWorkflowDocumentPayload({ ...data, ...serverOwnedFields });
-    const result = await saveWorkflowDocument({ rootDir, payload, uploads: files });
+    const result = await documentDataAdapter.save({
+      documentKind: payload.documentKind,
+      documentNo: payload.documentNo,
+      payload,
+      localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files }),
+    });
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
   } catch (error) {
@@ -1032,7 +1062,12 @@ function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
 async function handleWorkflowDocumentList(request, url, response) {
   try {
     const filters = parseWorkflowDocumentListFilters(url.searchParams);
-    const documents = await listWorkflowDocumentSummaries(rootDir, filters);
+    const localDocuments = await listWorkflowDocumentSummaries(rootDir, filters);
+    const documents = await documentDataAdapter.list({
+      localResult: localDocuments,
+      documentKind: filters.documentKind || undefined,
+      filters: filters.documentKind ? { documentKind: filters.documentKind } : {},
+    });
     const visible = authMode === "line" && request.auth?.role === "employee"
       ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
       : documents;
@@ -1046,7 +1081,8 @@ async function handleWorkflowDocumentList(request, url, response) {
 
 async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   try {
-    const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    const localRecord = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    const record = await documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
     if (!record) throw new Error("ไม่พบเอกสาร");
     sendJson(response, 200, omitAbsoluteFolderPath(record));
   } catch (error) {
@@ -1474,10 +1510,15 @@ async function handleDraftSave(request, response) {
       payload,
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     })) return;
-    const result = await saveExpenseDraft({
-      rootDir,
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: payload.requestNo || payload.draftId,
       payload,
-      uploads: files,
+      localSave: () => saveExpenseDraft({
+        rootDir,
+        payload,
+        uploads: files,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -1499,7 +1540,8 @@ async function handleDraftList(response) {
 
 async function handleExpenseRequestList(request, response) {
   try {
-    const result = await listExpenseRequests(rootDir);
+    const localResult = await listExpenseRequests(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "expense_request" });
     const visible = await filterOwnedDocumentList(request, result, {
       numberField: "requestNo",
       load: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
@@ -1514,7 +1556,8 @@ async function handleExpenseRequestList(request, response) {
 
 async function handleSubstituteReceiptList(request, response) {
   try {
-    const result = await listSubstituteReceipts(rootDir);
+    const localResult = await listSubstituteReceipts(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "substitute_receipt" });
     const visible = await filterOwnedDocumentList(request, result, {
       numberField: "receiptNo",
       load: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
@@ -1529,7 +1572,8 @@ async function handleSubstituteReceiptList(request, response) {
 
 async function handleSubmittedExpenseRequestGet(requestNo, response) {
   try {
-    const result = await getSubmittedExpenseRequest(rootDir, requestNo);
+    const localResult = await getSubmittedExpenseRequest(rootDir, requestNo);
+    const result = await documentDataAdapter.get({ localResult, documentKind: "expense_request", documentNo: requestNo });
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load expense request" });
@@ -1538,7 +1582,8 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
 
 async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
   try {
-    const result = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    const localResult = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    const result = await documentDataAdapter.get({ localResult, documentKind: "substitute_receipt", documentNo: receiptNo });
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load substitute receipt" });

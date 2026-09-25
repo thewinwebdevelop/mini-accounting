@@ -98,12 +98,12 @@
 - Expense, substitute-receipt, and lightweight workflow saves mirror the normalized document record after local validation and server-side owner binding.
 - Lists/gets can shadow or read cloud records while preserving the existing API payload shape.
 
-- [ ] Add failing tests for owner preservation, legacy unowned records, document create/update dual-write, lifecycle actor stamps, and cloud failure retry behavior.
-- [ ] Implement document serialization with `payload jsonb`, stable `document_kind/document_no`, owner ID, status, accounting month, and source hash.
-- [ ] Add cloud shadow comparison for list/get results with redacted diff logging.
-- [ ] Keep local as the response source in dual-write; return a retryable error when the authoritative cloud write is unknown.
-- [ ] Run the combined auth/workflow suite and full local suite.
-- [ ] Commit with `feat: dual-write authorized document workflows`.
+- [x] Add failing tests for owner preservation, legacy unowned records, document create/update dual-write, lifecycle actor stamps, and cloud failure retry behavior.
+- [x] Implement document serialization with `payload jsonb`, stable `document_kind/document_no`, owner ID, status, accounting month, and source hash.
+- [x] Add cloud shadow comparison for list/get results with redacted diff logging.
+- [x] Keep local as the response source in dual-write; return a retryable error when the authoritative cloud write is unknown.
+- [x] Run the combined auth/workflow suite and full local suite.
+- [x] Commit with `feat: dual-write authorized document workflows`.
 
 ### Task 5: Add authorized Storage read cutover and reconciliation tooling
 
