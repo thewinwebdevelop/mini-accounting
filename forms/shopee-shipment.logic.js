@@ -1,3 +1,5 @@
+const { mkdir, writeFile } = require("node:fs/promises");
+const path = require("node:path");
 const { ensureInventorySchema, openInventoryDatabase } = require("./inventory-db.logic.js");
 
 function nowIso(options = {}) {
@@ -111,6 +113,203 @@ function normalizeBatchResults(body, packages) {
   }));
 }
 
+function normalizeTrackingResults(body, packages) {
+  const response = bodyData(body);
+  const raw = response.result || response.results || response.packageList || response.package_list || [];
+  if (!raw.length) return packages.map((item) => ({ packageNumber: item.package_number, trackingNumber: "" }));
+  return raw.map((item) => ({
+    packageNumber: cleanText(item.packageNumber ?? item.package_number),
+    trackingNumber: cleanText(item.trackingNumber ?? item.tracking_number ?? item.trackingNo ?? item.tracking_no),
+  }));
+}
+
+function mapDocumentJob(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    batchId: row.batch_id,
+    shopeeJobId: row.shopee_job_id,
+    documentType: row.document_type,
+    status: row.status,
+    filePath: row.downloaded_file_path || "",
+    downloadedFilePath: row.downloaded_file_path || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function documentJobStatus(body) {
+  const response = bodyData(body);
+  return cleanText(response.status || response.jobStatus || response.job_status || response.result?.status).toUpperCase();
+}
+
+function documentJobId(body) {
+  const response = bodyData(body);
+  return cleanText(response.jobId || response.job_id || response.taskId || response.task_id || response.result?.jobId || response.result?.job_id);
+}
+
+function documentFileBase64(body) {
+  const response = bodyData(body);
+  return response.fileBase64 || response.file_base64 || response.file || response.dataBase64 || response.data_base64 || "";
+}
+
+async function refreshBatchTracking(rootDir, batchId, { client, now = () => new Date().toISOString() } = {}) {
+  if (!client?.request) throw new Error("refreshBatchTracking ต้องมี client");
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    const batch = db.prepare("SELECT * FROM shipment_batches WHERE id = ?").get(Number(batchId));
+    if (!batch) throw new Error("ไม่พบ shipment batch");
+    const orders = listBatchOrders(db, batch.id);
+    const packageList = orders
+      .filter((order) => order.status !== "failed")
+      .map((order) => ({ order_sn: order.externalOrderId || order.orderNo, package_number: order.packageNumber }));
+    const response = await client.request({
+      path: "/api/v2/logistics/get_mass_tracking_number",
+      method: "POST",
+      shopId: batch.shop_id,
+      body: { package_list: packageList },
+    });
+    const tracking = normalizeTrackingResults(response, packageList);
+    const byPackage = new Map(tracking.map((item) => [item.packageNumber, item.trackingNumber]));
+    const timestamp = now();
+    for (const order of orders) {
+      if (order.status === "failed") continue;
+      const trackingNumber = byPackage.get(order.packageNumber) || order.trackingNumber || "";
+      const status = trackingNumber ? "documents_pending" : "tracking_pending";
+      db.prepare(`
+        UPDATE shipment_batch_orders
+        SET status = ?, tracking_number = ?, updated_at = ?
+        WHERE id = ?
+      `).run(status, trackingNumber, timestamp, order.id);
+      if (trackingNumber) {
+        db.prepare("UPDATE platform_orders SET tracking_number = ?, shipping_status = ? WHERE id = ?")
+          .run(trackingNumber, "SHIPPED", order.platformOrderId);
+      }
+    }
+    const refreshedOrders = listBatchOrders(db, batch.id);
+    const allTracked = refreshedOrders.filter((order) => order.status !== "failed")
+      .every((order) => Boolean(order.trackingNumber));
+    const batchStatus = allTracked ? "documents_pending" : "tracking_pending";
+    db.prepare("UPDATE shipment_batches SET status = ?, updated_at = ? WHERE id = ?").run(batchStatus, timestamp, batch.id);
+    db.prepare(`
+      INSERT INTO shipment_actions (batch_id, action_type, idempotency_key, request_payload, status, created_at, updated_at)
+      VALUES (?, 'tracking_refresh', ?, ?, 'succeeded', ?, ?)
+      ON CONFLICT(idempotency_key) DO UPDATE SET response_code = excluded.response_code, updated_at = excluded.updated_at
+    `).run(batch.id, `tracking_refresh:${batch.id}:${timestamp}`, JSON.stringify({ packageList }), timestamp, timestamp);
+    return { batch: mapBatch({ ...batch, status: batchStatus }, refreshedOrders), orders: refreshedOrders };
+  } finally {
+    db.close();
+  }
+}
+
+async function createShippingDocumentJob(rootDir, batchId, { client, now = () => new Date().toISOString() } = {}) {
+  if (!client?.request) throw new Error("createShippingDocumentJob ต้องมี client");
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    const batch = db.prepare("SELECT * FROM shipment_batches WHERE id = ?").get(Number(batchId));
+    if (!batch) throw new Error("ไม่พบ shipment batch");
+    const orders = listBatchOrders(db, batch.id);
+    if (!orders.length || orders.some((order) => !order.trackingNumber)) {
+      throw new Error("ยังไม่มี Tracking ครบทุก package");
+    }
+    const existing = db.prepare(`
+      SELECT * FROM shipping_document_jobs
+      WHERE batch_id = ? AND status IN ('created', 'processing', 'ready')
+      ORDER BY id DESC LIMIT 1
+    `).get(batch.id);
+    if (existing) return mapDocumentJob(existing);
+
+    const timestamp = now();
+    const packageList = orders.map((order) => ({
+      order_sn: order.externalOrderId || order.orderNo,
+      package_number: order.packageNumber,
+      tracking_number: order.trackingNumber,
+    }));
+    const response = await client.request({
+      path: "/api/v2/logistics/create_shipping_document_job",
+      method: "POST",
+      shopId: batch.shop_id,
+      body: { package_list: packageList, document_type: "WAYBILL" },
+    });
+    const shopeeJobId = documentJobId(response);
+    if (!shopeeJobId) throw new Error("Shopee ไม่ส่งรหัส shipping document job");
+    const row = db.prepare(`
+      INSERT INTO shipping_document_jobs (batch_id, shopee_job_id, document_type, status, created_at, updated_at)
+      VALUES (?, ?, 'WAYBILL', 'created', ?, ?) RETURNING *
+    `).get(batch.id, shopeeJobId, timestamp, timestamp);
+    db.prepare("UPDATE shipment_batches SET status = 'documents_pending', updated_at = ? WHERE id = ?").run(timestamp, batch.id);
+    db.prepare(`
+      INSERT INTO shipment_actions (batch_id, action_type, idempotency_key, request_payload, status, created_at, updated_at)
+      VALUES (?, 'document_create', ?, ?, 'succeeded', ?, ?)
+    `).run(batch.id, `document_create:${batch.id}`, JSON.stringify({ packageList }), timestamp, timestamp);
+    return mapDocumentJob(row);
+  } finally {
+    db.close();
+  }
+}
+
+async function pollShippingDocumentJob(rootDir, jobId, { client, now = () => new Date().toISOString() } = {}) {
+  if (!client?.request) throw new Error("pollShippingDocumentJob ต้องมี client");
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    const job = db.prepare("SELECT * FROM shipping_document_jobs WHERE id = ?").get(Number(jobId));
+    if (!job) throw new Error("ไม่พบ shipping document job");
+    if (job.status === "ready" && job.downloaded_file_path) return mapDocumentJob(job);
+    const timestamp = now();
+    const statusResponse = await client.request({
+      path: "/api/v2/logistics/get_shipping_document_job_status",
+      method: "POST",
+      shopId: db.prepare("SELECT shop_id FROM shipment_batches WHERE id = ?").get(job.batch_id)?.shop_id,
+      body: { job_id: job.shopee_job_id },
+    });
+    const status = documentJobStatus(statusResponse);
+    if (!['READY', 'SUCCESS', 'COMPLETED', 'DONE'].includes(status)) {
+      const nextStatus = ['FAILED', 'ERROR'].includes(status) ? "failed" : "processing";
+      const updated = db.prepare("UPDATE shipping_document_jobs SET status = ?, updated_at = ? WHERE id = ? RETURNING *")
+        .get(nextStatus, timestamp, job.id);
+      return mapDocumentJob(updated);
+    }
+    let content;
+    try {
+      const downloadResponse = await client.request({
+        path: "/api/v2/logistics/download_shipping_document_job",
+        method: "POST",
+        shopId: db.prepare("SELECT shop_id FROM shipment_batches WHERE id = ?").get(job.batch_id)?.shop_id,
+        body: { job_id: job.shopee_job_id },
+      });
+      const encoded = documentFileBase64(downloadResponse);
+      if (!encoded) throw new Error("Shopee ไม่ส่งไฟล์ shipping document");
+      content = Buffer.from(encoded, "base64");
+      if (!content.length) throw new Error("shipping document ว่างเปล่า");
+    } catch (error) {
+      const updated = db.prepare("UPDATE shipping_document_jobs SET status = 'failed', updated_at = ? WHERE id = ? RETURNING *")
+        .get(timestamp, job.id);
+      const failure = new Error(error.message || "ไม่สามารถดาวน์โหลด shipping document ได้");
+      failure.job = mapDocumentJob(updated);
+      throw failure;
+    }
+    const outputDir = path.join(rootDir, "data", "shipping-documents");
+    await mkdir(outputDir, { recursive: true });
+    const filePath = path.join(outputDir, `shipment-batch-${job.batch_id}-${job.shopee_job_id}.pdf`);
+    await writeFile(filePath, content, { flag: "wx" }).catch(async (error) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const updated = db.prepare("UPDATE shipping_document_jobs SET status = 'ready', downloaded_file_path = ?, updated_at = ? WHERE id = ? RETURNING *")
+      .get(filePath, timestamp, job.id);
+    db.prepare("UPDATE shipment_batches SET status = 'ready_to_print', updated_at = ? WHERE id = ?").run(timestamp, job.batch_id);
+    db.prepare(`
+      INSERT INTO shipment_actions (batch_id, action_type, idempotency_key, request_payload, status, created_at, updated_at)
+      VALUES (?, 'document_download', ?, ?, 'succeeded', ?, ?)
+    `).run(job.batch_id, `document_download:${job.id}`, JSON.stringify({ jobId: job.shopee_job_id }), timestamp, timestamp);
+    return mapDocumentJob(updated);
+  } finally {
+    db.close();
+  }
+}
+
 async function prepareShipmentBatch(rootDir, orderIds = [], { client, now = () => new Date().toISOString() } = {}) {
   if (!client?.request) throw new Error("prepareShipmentBatch ต้องมี client");
   const db = openInventoryDatabase(rootDir);
@@ -222,4 +421,12 @@ async function arrangeShipmentBatch(rootDir, batchId, selection = {}, { client, 
   }
 }
 
-module.exports = { arrangeShipmentBatch, groupEligibleShopeePackages, normalizePickup, prepareShipmentBatch };
+module.exports = {
+  arrangeShipmentBatch,
+  createShippingDocumentJob,
+  groupEligibleShopeePackages,
+  normalizePickup,
+  pollShippingDocumentJob,
+  prepareShipmentBatch,
+  refreshBatchTracking,
+};

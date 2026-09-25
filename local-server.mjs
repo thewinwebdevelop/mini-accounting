@@ -123,13 +123,20 @@ const {
   postPlatformOrderImport,
   getShopeeOrder,
 } = require("./forms/platform-orders.logic.js");
+const { openInventoryDatabase, ensureInventorySchema } = require("./forms/inventory-db.logic.js");
 const {
   getShopeeConnection,
   saveShopeeConnection,
 } = require("./forms/shopee-auth.logic.js");
 const { createShopeeClient } = require("./forms/shopee-client.logic.js");
 const { syncShopeeOrders } = require("./forms/shopee-orders.logic.js");
-const { arrangeShipmentBatch, prepareShipmentBatch } = require("./forms/shopee-shipment.logic.js");
+const {
+  arrangeShipmentBatch,
+  createShippingDocumentJob,
+  pollShippingDocumentJob,
+  prepareShipmentBatch,
+  refreshBatchTracking,
+} = require("./forms/shopee-shipment.logic.js");
 const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
@@ -1578,6 +1585,98 @@ async function handleShopeeShipmentBatchArrange(batchId, request, response) {
   }
 }
 
+function publicShippingDocumentJob(job, request) {
+  if (!job) return null;
+  const { filePath, downloadedFilePath, ...publicJob } = job;
+  return {
+    ...publicJob,
+    downloadUrl: job.status === "ready" ? `/api/shopee/shipping-document-jobs/${encodeURIComponent(job.id)}/download` : "",
+  };
+}
+
+async function handleShopeeShipmentBatchTracking(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await refreshBatchTracking(rootDir, batchId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถดึง Tracking จาก Shopee ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentCreate(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const job = await createShippingDocumentJob(rootDir, batchId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, { job: publicShippingDocumentJob(job, request) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง shipping document job ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentPoll(jobId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const db = openInventoryDatabase(rootDir);
+    ensureInventorySchema(db);
+    const job = db.prepare(`
+      SELECT shipping_document_jobs.*, shipment_batches.shop_id
+      FROM shipping_document_jobs
+      JOIN shipment_batches ON shipment_batches.id = shipping_document_jobs.batch_id
+      WHERE shipping_document_jobs.id = ?
+    `).get(Number(jobId));
+    db.close();
+    if (!job) throw new Error("ไม่พบ shipping document job");
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId || job.shop_id);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await pollShippingDocumentJob(rootDir, jobId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, { job: publicShippingDocumentJob(result, request) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถตรวจสอบ shipping document job ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentDownload(jobId, response) {
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    const job = db.prepare("SELECT * FROM shipping_document_jobs WHERE id = ? AND status = 'ready'").get(Number(jobId));
+    if (!job?.downloaded_file_path) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    const documentsRoot = path.resolve(rootDir, "data", "shipping-documents");
+    const absolutePath = path.resolve(job.downloaded_file_path);
+    if (!absolutePath.startsWith(`${documentsRoot}${path.sep}`)) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    const body = await readFile(absolutePath);
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="shipment-batch-${job.batch_id}.pdf"`,
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  } finally {
+    db.close();
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -1913,6 +2012,38 @@ const server = createServer(async (request, response) => {
       .replace("/api/shopee/shipment-batches/", "")
       .replace("/arrange", ""));
     await handleShopeeShipmentBatchArrange(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/refresh-tracking")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/refresh-tracking", ""));
+    await handleShopeeShipmentBatchTracking(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/create-documents")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/create-documents", ""));
+    await handleShopeeShippingDocumentCreate(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipping-document-jobs/") && url.pathname.endsWith("/poll")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipping-document-jobs/", "")
+      .replace("/poll", ""));
+    await handleShopeeShippingDocumentPoll(jobId, request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/shopee/shipping-document-jobs/") && url.pathname.endsWith("/download")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipping-document-jobs/", "")
+      .replace("/download", ""));
+    await handleShopeeShippingDocumentDownload(jobId, response);
     return;
   }
 
