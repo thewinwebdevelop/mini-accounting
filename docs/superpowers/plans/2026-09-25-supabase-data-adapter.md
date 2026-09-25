@@ -135,11 +135,11 @@
 - `compareLocalAndSupabase({ rootDir, local, cloud })` returns deterministic counts, missing keys, hash mismatches, and a redacted report.
 - Migration/compare commands remain dry-run by default and never delete local data.
 
-- [ ] Write failing tests for deterministic reports, missing/mismatched rows, exit status, and no-write dry-run behavior.
-- [ ] Implement the compare command and document backup, dry-run, dual-write, observation, rollback, and final cutover procedures.
-- [ ] Mark only completed migration/cutover checklist items; leave production project verification unchecked until actually run.
-- [ ] Run focused tests, then `./scripts/test.sh`.
-- [ ] Commit with `chore: add supabase cutover verification tooling`.
+- [x] Write failing tests for deterministic reports, missing/mismatched rows, exit status, and no-write dry-run behavior.
+- [x] Implement the compare command and document backup, dry-run, dual-write, observation, rollback, and final cutover procedures.
+- [x] Mark only completed migration/cutover checklist items; leave production project verification unchecked until actually run.
+- [x] Run focused tests, then `./scripts/test.sh`.
+- [x] Commit with `chore: add supabase cutover verification tooling`.
 
 ## Final verification
 

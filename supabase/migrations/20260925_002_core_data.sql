@@ -4,6 +4,7 @@ create table if not exists public.company_settings (
   legal_name text not null,
   tax_id text not null default '',
   branch text not null default '',
+  source_hash text not null default '',
   address text not null default '',
   source_payload jsonb not null default '{}'::jsonb
 );
@@ -26,6 +27,7 @@ create table if not exists public.vendors (
   status text not null,
   created_at timestamptz,
   updated_at timestamptz,
+  source_hash text not null default '',
   source_payload jsonb not null default '{}'::jsonb
 );
 
@@ -40,6 +42,7 @@ create table if not exists public.inventory_products (
   status text not null,
   created_at timestamptz,
   updated_at timestamptz,
+  source_hash text not null default '',
   source_payload jsonb not null default '{}'::jsonb
 );
 
@@ -56,6 +59,7 @@ create table if not exists public.inventory_stock_skus (
   status text not null,
   created_at timestamptz,
   updated_at timestamptz,
+  source_hash text not null default '',
   source_payload jsonb not null default '{}'::jsonb
 );
 
@@ -73,8 +77,15 @@ create table if not exists public.inventory_stock_movements (
   reference_no text not null default '',
   note text not null default '',
   created_at timestamptz,
+  source_hash text not null default '',
   source_payload jsonb not null default '{}'::jsonb
 );
+
+alter table public.company_settings add column if not exists source_hash text not null default '';
+alter table public.vendors add column if not exists source_hash text not null default '';
+alter table public.inventory_products add column if not exists source_hash text not null default '';
+alter table public.inventory_stock_skus add column if not exists source_hash text not null default '';
+alter table public.inventory_stock_movements add column if not exists source_hash text not null default '';
 
 create table if not exists public.migration_records (
   migration_name text not null,

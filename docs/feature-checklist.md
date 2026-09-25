@@ -50,7 +50,7 @@
 - [x] Add private Supabase Storage bucket, server-only Storage client, deterministic file manifest, and idempotent verified migration CLI.
 - [ ] Run the reviewed file migration against the target Supabase project and switch authorized file reads to Storage.
 - [x] Add resource-level authorization for employee-owned documents and owner/accounting approval actions.
-- [ ] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
+- [x] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
 - [ ] Configure LINE Developing/Review/Published channels and complete production verification.
 
 ## Requested Next

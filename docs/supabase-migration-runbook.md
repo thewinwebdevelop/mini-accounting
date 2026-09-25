@@ -59,6 +59,20 @@ The command uploads to the private bucket, downloads each object back for byte/h
 
 Compare the migration output counts with the local dry-run counts and query the Supabase tables by `source_key`. Confirm that product, SKU, and stock movement source IDs are complete before switching the application data backend.
 
+## Compare before read cutover
+
+The comparison command is read-only and exits with status `2` when a source key is missing, extra, or has a different canonical `source_payload` hash:
+
+```bash
+SWEET_HOUSE_ROOT_DIR="/path/to/data-root" \
+SUPABASE_URL="https://your-project.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="..." \
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+scripts/compare-local-supabase.mjs
+```
+
+Run it after core-data apply and again after the dual-write observation window. Do not enable `supabase-read` for a domain while its report contains unexplained differences.
+
 ## LINE resource authorization
 
 When `SWEET_HOUSE_AUTH_MODE=line`, new expense requests, substitute receipts, and lightweight workflow documents are stamped with the authenticated Supabase app-user ID in `ownerUserId`. Edits preserve the stored owner; client-supplied owner or audit actor fields are ignored. Employees can read and submit only their own documents. Approval, completion, stock receiving, Drive/Sheets sync, and settings require the corresponding privileged role. Legacy numbered records without `ownerUserId` remain available only to owner/accounting/admin users until an ownership backfill is reviewed.
