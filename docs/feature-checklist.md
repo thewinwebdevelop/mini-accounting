@@ -43,6 +43,15 @@
 
 - [ ] Shopee/TikTok fee summary.
 
+## LINE Mini App migration
+
+- [x] LINE token verification, signed HttpOnly session, role-aware app-user foundation, and `/line-auth` LIFF entrypoint.
+- [x] Supabase server boundary, auth/core-data migrations, and idempotent local-data migration dry-run/apply tooling.
+- [ ] Migrate document JSON, PDFs, raw evidence, and product images to Supabase Storage.
+- [ ] Add resource-level authorization for employee-owned documents and owner/accounting approval actions.
+- [ ] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
+- [ ] Configure LINE Developing/Review/Published channels and complete production verification.
+
 ## Requested Next
 
 

@@ -4,6 +4,14 @@
 
 ## 1. สร้าง OAuth Client ใน Google Cloud
 
+เมื่อ deploy ระบบเป็น LINE MINI App ให้เปลี่ยน callback จาก `localhost` เป็น HTTPS public origin ของระบบ เช่น:
+
+```text
+https://accounting.example.com/api/google-drive/oauth2callback
+```
+
+ค่า callback ใน Google Cloud Console และ `GOOGLE_OAUTH_REDIRECT_URI` ต้องตรงกันทุกตัวอักษร ส่วนการตั้งค่า local เดิมยังใช้ `http://localhost:8787/api/google-drive/oauth2callback` ได้ใน `SWEET_HOUSE_AUTH_MODE=disabled`.
+
 1. เปิด Google Cloud Console
 2. สร้างหรือเลือก project
 3. Enable `Google Drive API`
