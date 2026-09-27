@@ -27,7 +27,7 @@ test("inventory page focuses on product and Stock SKU master data", async () => 
   assert.match(html, /href="\/inventory-stock-list"/);
   assert.match(html, /data-create-product-flow/);
   assert.match(html, /<select id="productCategory" name="category" required data-searchable><\/select>/);
-  assert.match(html, /<select id="skuProductSelect" name="productId" required data-searchable><\/select>/);
+  assert.match(html, /<select id="skuProductSelect" name="productId" required data-searchable data-display-lines="2"><\/select>/);
   assert.doesNotMatch(html, /<input id="productCategory"/);
   assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
   assert.match(html, /src="\.\/inventory\.logic\.browser\.js"/);
@@ -67,6 +67,19 @@ test("inventory browser controller supports create product mode from stock list"
   assert.match(script, /URLSearchParams\(window\.location\.search\)/);
   assert.match(script, /create-product/);
   assert.match(script, /focusCreateProductFlow/);
+});
+
+test("Stock SKU parent-product selector clamps long labels to two lines", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const searchableSelect = await readFile(new URL("../forms/searchable-select.logic.browser.js", import.meta.url), "utf8");
+
+  assert.match(html, /id="skuProductSelect"[^>]*data-display-lines="2"/);
+  assert.match(searchableSelect, /data-display-lines/);
+  assert.match(searchableSelect, /-webkit-line-clamp:\s*2/);
+  assert.match(searchableSelect, /text-overflow:\s*ellipsis/);
+  assert.match(searchableSelect, /\.searchable-select-trigger[\s\S]*?max-height:\s*38px/);
+  assert.match(searchableSelect, /\.searchable-select-option[\s\S]*?max-height:\s*50px/);
+  assert.match(searchableSelect, /\.searchable-select-option[\s\S]*?line-height:\s*18px/);
 });
 
 test("inventory settings page manages product category options", async () => {

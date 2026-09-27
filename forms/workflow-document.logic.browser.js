@@ -2,6 +2,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const logic = window.WorkflowDocumentLogic;
   const workflowLogic = window.WorkflowLogic;
   const lifecycleLogic = window.DocumentLifecycleLogic;
+  const stockLineLogic = window.StockLineLogic || {
+    isUsableStockSku: stockSku => String(stockSku?.status || "") !== "inactive",
+    stockSkuLabel: stockSku => [stockSku?.sku, stockSku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${stockSku?.id || ""}`,
+  };
   const query = new URLSearchParams(location.search);
 
   const state = {
@@ -11,6 +15,7 @@ window.addEventListener("DOMContentLoaded", () => {
     workflowTemplateId: query.get("workflowTemplateId") || "",
     workflowStepId: query.get("workflowStepId") || "",
     status: "draft",
+    stockSkus: [],
   };
 
   const form = document.querySelector("#workflowDocumentForm");
@@ -125,17 +130,71 @@ window.addEventListener("DOMContentLoaded", () => {
     lineItems.querySelectorAll(".line-item").forEach(updateLineSummary);
   }
 
+  function renderStockSkuOptions(select, selectedId = "") {
+    if (!select) return;
+    const makeOption = (label, value) => {
+      const option = document.createElement("option");
+      option.textContent = label;
+      option.value = String(value ?? "");
+      return option;
+    };
+    const options = [makeOption("เลือก Stock SKU", "")];
+    state.stockSkus.filter(stockLineLogic.isUsableStockSku).forEach((stockSku) => {
+      const option = makeOption(stockLineLogic.stockSkuLabel(stockSku), stockSku.id);
+      option.dataset.sku = stockSku.sku || "";
+      option.dataset.description = stockLineLogic.stockSkuLabel(stockSku);
+      option.dataset.unitCost = stockSku.defaultUnitCost || "";
+      options.push(option);
+    });
+    select.replaceChildren(...options);
+    select.value = selectedId || "";
+    window.SearchableSelect?.enhance(select);
+  }
+
+  function applyStockLineMode(row) {
+    const checkbox = row.querySelector('[name="isStockItem"]');
+    const field = row.querySelector("[data-stock-sku-field]");
+    const select = row.querySelector('[name="stockSkuId"]');
+    const enabled = !!checkbox?.checked;
+    if (field) field.hidden = !enabled;
+    if (select) {
+      select.required = enabled;
+      if (!enabled) select.value = "";
+    }
+    row.dataset.stockSkuId = enabled ? (select?.value || "") : "";
+  }
+
   function addLine(initial = {}) {
     const fragment = lineTemplate.content.cloneNode(true);
     const row = fragment.querySelector(".line-item");
     row.querySelector('input[name="description"]').value = initial.description || "";
     row.querySelector('input[name="quantity"]').value = initial.quantity || "";
     row.querySelector('input[name="unitCost"]').value = initial.unitCost || "";
+    const stockCheckbox = row.querySelector('[name="isStockItem"]');
+    const stockSelect = row.querySelector('[name="stockSkuId"]');
+    renderStockSkuOptions(stockSelect, initial.stockSkuId || "");
+    stockCheckbox.checked = !!initial.stockSkuId;
     row.dataset.stockSkuId = initial.stockSkuId || "";
     row.querySelector('[name="vatMode"]').value = initial.vatMode || "unspecified";
     row.querySelector('[name="vatRate"]').value = initial.vatRate ?? "7";
     row.querySelector('[name="vatAmount"]').value = initial.vatAmount ?? "";
     row.querySelector('[name="withholdingTax"]').value = initial.withholdingTax ?? "";
+    stockCheckbox.addEventListener("change", () => {
+      applyStockLineMode(row);
+      updatePreview();
+    });
+    stockSelect.addEventListener("change", () => {
+      const selected = stockSelect.selectedOptions[0];
+      row.dataset.stockSkuId = stockSelect.value || "";
+      if (selected?.dataset.description) {
+        row.querySelector('input[name="description"]').value = selected.dataset.description;
+      }
+      if (selected?.dataset.unitCost && !row.querySelector('input[name="unitCost"]').value) {
+        row.querySelector('input[name="unitCost"]').value = selected.dataset.unitCost;
+      }
+      updatePreview();
+    });
+    applyStockLineMode(row);
     row.addEventListener("input", updatePreview);
     row.addEventListener("change", updatePreview);
     row.querySelector("[data-remove-line]").addEventListener("click", () => {
@@ -144,6 +203,9 @@ window.addEventListener("DOMContentLoaded", () => {
         row.querySelector('[name="vatMode"]').value = "unspecified";
         row.querySelector('[name="vatRate"]').value = "7";
         row.dataset.stockSkuId = "";
+        row.querySelector('[name="isStockItem"]').checked = false;
+        row.querySelector('[name="stockSkuId"]').value = "";
+        applyStockLineMode(row);
       } else {
         row.remove();
       }
@@ -191,6 +253,35 @@ window.addEventListener("DOMContentLoaded", () => {
     // the real-HTML VM harness faithful without attempting to assign to a
     // browser's read-only FileList.
     if (Array.isArray(input.files)) input.files = [];
+  }
+
+  function renderExistingEvidenceFiles(files = []) {
+    const container = document.querySelector("#existingEvidenceFiles");
+    const list = container?.querySelector("[data-existing-evidence-list]");
+    if (!container || !list) return;
+    list.replaceChildren();
+    const entries = Array.isArray(files) ? files : [];
+    if (!entries.length) {
+      container.hidden = true;
+      return;
+    }
+    entries.forEach((file) => {
+      const name = typeof file === "string" ? file : (file?.name || file?.path || "ไฟล์แนบ");
+      const url = typeof file === "object" ? file?.url : "";
+      const item = document.createElement("li");
+      if (url) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = name;
+        item.appendChild(link);
+      } else {
+        item.textContent = name;
+      }
+      list.appendChild(item);
+    });
+    container.hidden = false;
   }
 
   function collectPayload() {
@@ -300,6 +391,7 @@ window.addEventListener("DOMContentLoaded", () => {
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
     for (const line of lines) addLine(line);
+    renderExistingEvidenceFiles([]);
     setDocumentState(payload.status || state.status);
     updatePreview();
   }
@@ -313,7 +405,26 @@ window.addEventListener("DOMContentLoaded", () => {
     state.workflowTemplateId = payload.workflowTemplateId || state.workflowTemplateId;
     state.workflowStepId = payload.workflowStepId || state.workflowStepId;
     fillForm(payload);
+    renderExistingEvidenceFiles(record.rawFiles || payload.rawFiles || []);
     setStatus(`โหลดเอกสาร ${state.documentNo} แล้ว`, "success");
+  }
+
+  async function resumeExistingWorkflowDocument() {
+    if (state.documentNo || !state.transactionNo || !state.workflowStepId) return false;
+    try {
+      const transaction = await api(`/api/workflow-transactions/${encodeURIComponent(state.transactionNo)}`);
+      const child = (transaction.childDocuments || []).find((document) => (
+        document.documentKind === state.documentKind && document.workflowStepId === state.workflowStepId
+      )) || (transaction.childDocuments || []).find((document) => (
+        document.documentKind === state.documentKind && document.documentNo
+      ));
+      if (!child?.documentNo) return false;
+      state.documentNo = child.documentNo;
+      await loadExistingDocument();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function buildMultipartPayload(payload) {
@@ -401,11 +512,17 @@ window.addEventListener("DOMContentLoaded", () => {
   applyDocumentKindLabel();
   applyDocumentListLink();
   vendorPicker?.load();
-  fillForm();
-
-  if (state.documentNo) {
-    loadExistingDocument().catch((error) => setStatus(error.message, "error"));
-  } else {
-    prefillBanner.load();
-  }
+  api("/api/inventory/stock-skus")
+    .then((result) => { state.stockSkus = result.stockSkus || []; })
+    .catch(() => { state.stockSkus = []; })
+    .finally(() => {
+      fillForm();
+      if (state.documentNo) {
+        loadExistingDocument().catch((error) => setStatus(error.message, "error"));
+      } else {
+        resumeExistingWorkflowDocument().then((resumed) => {
+          if (!resumed) prefillBanner.load();
+        });
+      }
+    });
 });

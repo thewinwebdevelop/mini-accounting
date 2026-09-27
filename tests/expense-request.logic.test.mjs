@@ -70,6 +70,19 @@ test("validateExpenseRequest rejects an empty placeholder expense line", () => {
   assert.deepEqual(errors, ["กรอกรายละเอียดและยอดเงินของรายการค่าใช้จ่ายอย่างน้อย 1 รายการ"]);
 });
 
+test("validateExpenseRequest accepts a Stock SKU line without manually retyping its description", () => {
+  const errors = validateExpenseRequest({
+    requestType: "reimbursement",
+    accountingMonth: "2026-09",
+    requesterName: "คุณผู้ขอ",
+    businessPurpose: "ซื้อสินค้าเข้าสต๊อก",
+    paymentTargetName: "ร้านค้า",
+    expenseLines: [{ stockSkuId: "101", amountBeforeVat: "250.00", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.deepEqual(errors, []);
+});
+
 test("validateExpenseRequest requires VAT confirmation for an unknown-tax prefill line", () => {
   const errors = validateExpenseRequest({
     requestType: "reimbursement",

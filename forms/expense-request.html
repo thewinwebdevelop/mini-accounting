@@ -241,6 +241,46 @@
       gap: 5px;
     }
 
+    .stock-item-field {
+      display: grid;
+      gap: 3px;
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field {
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field[hidden] {
+      display: none !important;
+    }
+
+    .stock-item-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-top: 8px;
+      width: fit-content;
+      color: var(--brand);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .stock-item-toggle input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      min-height: 15px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .stock-item-field small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     .span-2 { grid-column: span 2; }
     .span-3 { grid-column: span 3; }
     .span-4 { grid-column: span 4; }
@@ -319,7 +359,7 @@
     }
 
     .line-row {
-      overflow: hidden;
+      overflow: visible;
       border: 1px solid #d9e2ec;
       border-radius: 8px;
       background: #fbfdff;
@@ -353,6 +393,8 @@
     }
 
     .line-title {
+      display: block;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -593,12 +635,45 @@
       font-weight: 800;
     }
 
+    #workflowPrefillGroups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 8px;
+    }
+
     .prefill-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      min-width: 0;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+      line-height: 1.45;
       font-size: 12px;
       font-weight: 700;
+    }
+
+    .prefill-group:hover {
+      border-color: #60a5fa;
+      background: #f8fbff;
+    }
+
+    .prefill-group input[type="checkbox"] {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      margin: 2px 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .prefill-group span {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .bottom-action-bar {
@@ -762,6 +837,7 @@
       }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <div class="app">
@@ -1021,7 +1097,6 @@
           <div class="errors" id="errors"></div>
           <div class="status-box" id="saveStatus"></div>
           <button class="button secondary" type="button" id="reloadSavedRequest" hidden>โหลดรายละเอียดซ้ำ</button>
-          <div class="hint">เปิดผ่าน http://localhost:8787/expense-request แล้วกด บันทึกใบเบิกจ่าย เพื่อเก็บข้อมูล PDF และ raw files ลงโฟลเดอร์มาตรฐาน ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น</div>
         </div>
       </aside>
     </main>
@@ -1043,6 +1118,13 @@
           <label>วันที่</label>
           <input name="lineDate" type="date">
         </div>
+        <div class="stock-item-field">
+          <label class="stock-item-toggle"><input name="isStockItem" type="checkbox"><span>เป็นสต๊อกสินค้า</span></label>
+          <small>เลือก Stock SKU จากรายการที่มีอยู่ในระบบ</small>
+        </div>
+        <label class="field stock-sku-field" data-stock-sku-field hidden>Stock SKU
+          <select name="stockSkuId" data-searchable data-stock-sku data-display-lines="2"></select>
+        </label>
         <div class="field">
           <label>หมวด</label>
           <select name="lineCategory" data-searchable>
@@ -1083,6 +1165,7 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./stock-line.logic.js"></script>
   <script src="./expense-request.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
@@ -1099,6 +1182,10 @@
     } = window.ExpenseRequestLogic;
 
     const form = document.querySelector("#expenseForm");
+    const stockLineLogic = window.StockLineLogic || {
+      isUsableStockSku: (stockSku) => String(stockSku?.status || "") !== "inactive",
+      stockSkuLabel: (stockSku) => [stockSku?.sku, stockSku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${stockSku?.id || ""}`,
+    };
     const lineItems = document.querySelector("#lineItems");
     const lineTemplate = document.querySelector("#lineTemplate");
     const output = document.querySelector("#output");
@@ -1183,6 +1270,7 @@
     let legacyReadOnly = false;
     let mutationInFlight = false;
     let currentStatus = "draft";
+    let stockSkus = [];
     const moneyIds = {
       amountBeforeVat: document.querySelector("#sumBeforeVat"),
       vatAmount: document.querySelector("#sumVat"),
@@ -1242,13 +1330,18 @@
       updatePreview();
     }
 
+    function isEditableRequestStatus() {
+      return currentStatus === "draft" || currentStatus === "pending_approval";
+    }
+
     function addLine() {
-      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
       lineItems.querySelectorAll(".line-row").forEach((row) => {
         row.open = false;
       });
       const node = lineTemplate.content.firstElementChild.cloneNode(true);
       node.querySelector('[name="lineDate"]').value = todayInputValue();
+      setupStockLine(node);
       lineItems.append(node);
       updatePreview();
     }
@@ -1257,6 +1350,7 @@
       const node = lineTemplate.content.firstElementChild.cloneNode(true);
       node.open = open;
       node.querySelector('[name="lineDate"]').value = line.date || todayInputValue();
+      setupStockLine(node, line.stockSkuId || "");
       node.querySelector('[name="lineCategory"]').value = line.category || "";
       node.querySelector('[name="lineDescription"]').value = line.description || "";
       node.querySelector('[name="lineVendor"]').value = line.vendor || "";
@@ -1265,6 +1359,63 @@
       node.dataset.vatConfirmationRequired = line.vatConfirmationRequired ? "true" : "";
       node.querySelector('[name="lineWht"]').value = line.withholdingTax || "";
       lineItems.append(node);
+    }
+
+    function renderStockSkuOptions(row, selectedId = "") {
+      const select = row.querySelector('[name="stockSkuId"]');
+      if (!select) return;
+      const makeOption = (label, value) => {
+        const option = document.createElement("option");
+        option.textContent = label;
+        option.value = String(value ?? "");
+        return option;
+      };
+      const options = [makeOption("เลือก Stock SKU", "")];
+      stockSkus.filter(stockLineLogic.isUsableStockSku).forEach((stockSku) => {
+        const option = makeOption(stockLineLogic.stockSkuLabel(stockSku), stockSku.id);
+        option.dataset.description = stockLineLogic.stockSkuLabel(stockSku);
+        option.dataset.unitCost = stockSku.defaultUnitCost || "";
+        options.push(option);
+      });
+      select.replaceChildren(...options);
+      select.value = selectedId || "";
+      window.SearchableSelect?.enhance(select);
+    }
+
+    function applyStockLineMode(row) {
+      const enabled = !!row.querySelector('[name="isStockItem"]')?.checked;
+      const field = row.querySelector("[data-stock-sku-field]");
+      const select = row.querySelector('[name="stockSkuId"]');
+      if (field) field.hidden = !enabled;
+      if (select) {
+        select.required = enabled;
+        if (!enabled) select.value = "";
+      }
+      row.dataset.stockSkuId = enabled ? (select?.value || "") : "";
+    }
+
+    function setupStockLine(row, selectedId = "") {
+      const checkbox = row.querySelector('[name="isStockItem"]');
+      const select = row.querySelector('[name="stockSkuId"]');
+      renderStockSkuOptions(row, selectedId);
+      checkbox.checked = !!selectedId;
+      row.dataset.stockSkuId = selectedId || "";
+      checkbox.addEventListener("change", () => {
+        applyStockLineMode(row);
+        updatePreview();
+      });
+      select.addEventListener("change", () => {
+        const selected = select.selectedOptions[0];
+        row.dataset.stockSkuId = select.value || "";
+        if (selected?.dataset.description) {
+          row.querySelector('[name="lineDescription"]').value = selected.dataset.description;
+        }
+        if (selected?.dataset.unitCost && !row.querySelector('[name="lineBeforeVat"]').value) {
+          row.querySelector('[name="lineBeforeVat"]').value = selected.dataset.unitCost;
+        }
+        updatePreview();
+      });
+      applyStockLineMode(row);
     }
 
     function fileSizeLabel(bytes) {
@@ -1317,6 +1468,7 @@
         category: row.querySelector('[name="lineCategory"]').value,
         description: row.querySelector('[name="lineDescription"]').value,
         vendor: row.querySelector('[name="lineVendor"]').value,
+        ...(row.dataset.stockSkuId ? { stockSkuId: row.dataset.stockSkuId } : {}),
         amountBeforeVat: row.querySelector('[name="lineBeforeVat"]').value,
         vatAmount: row.querySelector('[name="lineVat"]').value,
         ...(row.dataset.vatConfirmationRequired === "true" ? { vatConfirmationRequired: true } : {}),
@@ -1441,17 +1593,21 @@
 
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
-      const locked = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      const editable = currentStatus === "draft" || currentStatus === "pending_approval";
+      const locked = legacyReadOnly || mutationInFlight || !editable;
       const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
       controls.forEach((control) => { if (control) control.disabled = locked; });
       lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = locked; });
-      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft"; });
-      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || !editable; });
+      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || !editable;
+      document.querySelector("#saveDraft").hidden = legacyReadOnly || !editable;
+      document.querySelector("#saveDraft").textContent = currentStatus === "pending_approval" ? "บันทึกการแก้ไข" : "บันทึกแบบร่าง";
       document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      document.querySelector("#submitRequest").hidden = legacyReadOnly || currentStatus !== "draft";
     }
 
     async function runMutation(work) {
-      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      if (legacyReadOnly || mutationInFlight || !["draft", "pending_approval"].includes(currentStatus)) return;
       mutationInFlight = true;
       setReadOnlyMode(legacyReadOnly);
       try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
@@ -1614,8 +1770,9 @@
       const formData = new FormData();
       formData.append("payload", JSON.stringify(data));
       appendUploadsToFormData(formData);
-      setSaveStatus("กำลังบันทึกแบบร่าง...");
-      const response = await fetch("/api/expense-drafts", {
+      const isPendingEdit = currentStatus === "pending_approval";
+      setSaveStatus(isPendingEdit ? "กำลังบันทึกการแก้ไข..." : "กำลังบันทึกแบบร่าง...");
+      const response = await fetch(isPendingEdit ? "/api/expense-requests" : "/api/expense-drafts", {
         method: "POST",
         body: formData,
       });
@@ -1625,10 +1782,11 @@
         return;
       }
 
-      adoptNumberedResult(result, "draft");
+      const expectedStatus = isPendingEdit ? "pending_approval" : "draft";
+      adoptNumberedResult(result, expectedStatus);
       let vendorPresetError = "";
       try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
-      currentStatus = "draft";
+      currentStatus = expectedStatus;
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
@@ -1642,10 +1800,11 @@
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       // The detail reload updates the status panel; restore the preset result
       // afterward so a failed optional vendor save remains visible.
-      setSaveStatus(vendorPresetError || `บันทึกแบบร่างแล้ว: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
+      setSaveStatus(vendorPresetError || `${isPendingEdit ? "บันทึกการแก้ไขแล้ว" : "บันทึกแบบร่างแล้ว"}: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
     }
 
     async function submitRequest() {
+      if (currentStatus !== "draft") return;
       const data = collectData();
       const errors = validateExpenseRequest(data);
       if (errors.length) {
@@ -1734,7 +1893,7 @@
       });
       card.addEventListener("drop", (event) => {
         event.preventDefault();
-        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+        if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
         card.classList.remove("dragging");
         setFiles(evidenceKey, event.dataTransfer.files);
       });
@@ -1745,7 +1904,7 @@
     form.addEventListener("change", updatePreview);
     lineItems.addEventListener("click", (event) => {
       if (event.target.matches("[data-remove-line]")) {
-        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+        if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
         event.target.closest(".line-row").remove();
         updatePreview();
       }
@@ -1756,6 +1915,12 @@
 
     setDateDefaults();
     vendorPicker?.load();
+    try {
+      const stockResult = await fetch("/api/inventory/stock-skus");
+      if (stockResult.ok) stockSkus = (await stockResult.json()).stockSkus || [];
+    } catch {
+      stockSkus = [];
+    }
     await updateNextRequestNo();
     const draftIdFromUrl = new URLSearchParams(location.search).get("draftId");
     const requestNoFromUrl = new URLSearchParams(location.search).get("requestNo");

@@ -188,6 +188,10 @@
       gap: 5px;
     }
 
+    [data-stock-only-field][hidden] {
+      display: none !important;
+    }
+
     label {
       color: var(--brand);
       font-size: 12px;
@@ -257,8 +261,10 @@
     }
 
     .stock-line-title {
+      display: block;
       flex: 1;
       min-width: 0;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -298,6 +304,22 @@
     }
 
     .file-card input { min-height: 42px; }
+
+    .existing-file-list {
+      display: grid;
+      gap: 4px;
+      padding: 8px 10px;
+      border: 1px solid #bbf7d0;
+      border-radius: 6px;
+      background: #f0fdf4;
+      color: #166534;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .existing-file-list strong { color: #166534; }
+    .existing-file-list a { overflow-wrap: anywhere; }
+    .existing-file-list ul { margin: 0; padding-left: 18px; }
 
     .actions {
       display: flex;
@@ -374,12 +396,45 @@
       font-weight: 800;
     }
 
+    #workflowPrefillGroups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 8px;
+    }
+
     .prefill-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      min-width: 0;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+      line-height: 1.45;
       font-size: 12px;
       font-weight: 700;
+    }
+
+    .prefill-group:hover {
+      border-color: #60a5fa;
+      background: #f8fbff;
+    }
+
+    .prefill-group input[type="checkbox"] {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      margin: 2px 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .prefill-group span {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .icon-button {
@@ -479,6 +534,7 @@
       .file-grid { grid-template-columns: 1fr; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -577,6 +633,14 @@
               <input id="receiptTitle" name="receiptTitle" placeholder="เช่น ซื้อสต๊อกเสื้อผ้า Lot กันยายน">
               <span class="field-badge" data-badge-for="receiptTitle" hidden></span>
             </div>
+            <div class="field span-6">
+              <label for="requesterName">ชื่อผู้เบิกจ่าย/ผู้รับรอง</label>
+              <input id="requesterName" name="requesterName" placeholder="เช่น คุณต้า">
+            </div>
+            <div class="field span-6">
+              <label for="requesterRole">ตำแหน่ง</label>
+              <input id="requesterRole" name="requesterRole" placeholder="เช่น ผู้จัดการ">
+            </div>
           </div>
         </div>
       </section>
@@ -609,23 +673,15 @@
               <label for="paymentChannel">ช่องทางชำระเงิน</label>
               <input id="paymentChannel" name="paymentChannel" value="โอนผ่านบัญชีบริษัท">
             </div>
-            <div class="field span-6">
-              <label for="paymentReference">เลขอ้างอิง/บัญชีปลายทาง</label>
-              <input id="paymentReference" name="paymentReference">
-            </div>
             <div class="field span-12">
-              <label for="paymentNote">หมายเหตุการจ่ายเงิน / รายละเอียดการชำระเงิน</label>
-              <textarea id="paymentNote" name="paymentNote" placeholder="เช่น จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท"></textarea>
-              <span class="hint">ระบุรายละเอียดการแบ่งจ่ายหรือข้อมูลเพิ่มเติมที่ต้องการแสดงในเอกสาร</span>
+              <label for="paymentNote">หมายเหตุเพิ่มเติม</label>
+              <textarea id="paymentNote" name="paymentNote" placeholder="เช่น แบ่งจ่ายเงินสด 500 บาท และโอน 1,700 บาท"></textarea>
+              <span class="hint">ข้อความนี้จะแสดงในเอกสารและ PDF</span>
             </div>
             <div class="field span-12">
               <label for="businessPurpose">วัตถุประสงค์ทางธุรกิจ *</label>
               <textarea id="businessPurpose" name="businessPurpose" required>ซื้อสินค้าเพื่อขาย</textarea>
               <span class="field-badge" data-badge-for="businessPurpose" hidden></span>
-            </div>
-            <div class="field span-12">
-              <label for="additionalNote">หมายเหตุเพิ่มเติม</label>
-              <textarea id="additionalNote" name="additionalNote" placeholder="เช่น แบ่งจ่ายเงินสด 500 บาท และโอน 1,700 บาท"></textarea>
             </div>
           </div>
         </div>
@@ -651,18 +707,22 @@
             <label class="file-card">
               <strong>สลิป/Statement/หลักฐานชำระเงิน</strong>
               <input name="evidence_paymentSlip" type="file" multiple>
+              <div class="existing-file-list" data-existing-evidence-for="paymentSlip" hidden></div>
             </label>
             <label class="file-card">
               <strong>หลักฐานสั่งซื้อ/แชท/ใบเสนอราคา</strong>
               <input name="evidence_purchaseOrder" type="file" multiple>
+              <div class="existing-file-list" data-existing-evidence-for="purchaseOrder" hidden></div>
             </label>
             <label class="file-card">
               <strong>ใบรับสินค้าเข้าคลัง/รูปสินค้าที่รับ</strong>
               <input name="evidence_goodsReceived" type="file" multiple>
+              <div class="existing-file-list" data-existing-evidence-for="goodsReceived" hidden></div>
             </label>
             <label class="file-card">
               <strong>หลักฐานประกอบอื่น</strong>
               <input name="evidence_otherEvidence" type="file" multiple>
+              <div class="existing-file-list" data-existing-evidence-for="otherEvidence" hidden></div>
             </label>
           </div>
         </div>
@@ -738,7 +798,7 @@
       <div class="stock-line-fields">
         <div class="field" data-stock-only-field>
           <label>Stock SKU *</label>
-          <select name="stockSkuId" data-searchable></select>
+          <select name="stockSkuId" data-searchable data-display-lines="2"></select>
         </div>
         <div class="field">
           <label data-description-label>รายละเอียด</label>
@@ -759,6 +819,7 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./stock-line.logic.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./document-lifecycle.logic.js"></script>

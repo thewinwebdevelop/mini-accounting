@@ -273,10 +273,11 @@ function buildSubstituteReceiptPayload(data = {}) {
     receiptDate: cleanText(data.receiptDate),
     payeeName: cleanText(data.payeeName),
     payeeTaxId: cleanText(data.payeeTaxId),
+    requesterName: cleanText(data.requesterName || data.preparedBy),
+    requesterRole: cleanText(data.requesterRole || data.preparedByRole),
     paymentChannel: cleanText(data.paymentChannel),
     paymentReference: cleanText(data.paymentReference),
     paymentNote: cleanText(data.paymentNote ?? data.additionalNote),
-    additionalNote: cleanText(data.additionalNote ?? data.paymentNote),
     vendorId: cleanText(data.vendorId),
     vendorSnapshot: buildVendorSnapshot(data),
     businessPurpose: cleanText(data.businessPurpose),
@@ -300,11 +301,11 @@ function buildSubstituteReceiptPayload(data = {}) {
 function formatSubstituteReceiptMarkdown(payload = {}) {
   const isStockPurchase = (payload.receiptType || "stock_purchase") === "stock_purchase";
   const lineHeader = isStockPurchase
-    ? "| ลำดับ | Stock SKU | รายละเอียด | จำนวน | ต้นทุนต่อหน่วย | ยอดรวม |\n|---:|---|---|---:|---:|---:|"
+    ? "| ลำดับ | รายละเอียด | จำนวน | ต้นทุนต่อหน่วย | ยอดรวม |\n|---:|---|---:|---:|---:|"
     : "| ลำดับ | รายละเอียด | จำนวน | ราคา/หน่วย | ยอดรวม |\n|---:|---|---:|---:|---:|";
   const lines = (payload.lines ?? []).map((line, index) => (
     isStockPurchase
-      ? `| ${index + 1} | ${line.sku || ""} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
+      ? `| ${index + 1} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
       : `| ${index + 1} | ${line.description || ""} | ${line.quantity || 0} | ${line.unitCost || "0.00"} | ${line.lineTotal || "0.00"} |`
   )).join("\n");
   const evidence = Object.values(payload.evidence ?? {}).map((item) => (
@@ -321,8 +322,9 @@ function formatSubstituteReceiptMarkdown(payload = {}) {
 วันที่เอกสาร: ${payload.receiptDate || ""}
 ประเภทเอกสาร: ${payload.receiptTypeLabel || ""}
 ผู้ขาย/ผู้รับเงิน: ${payload.payeeName || ""}
+ผู้เบิกจ่าย/ผู้รับรอง: ${payload.requesterName || ""}
+ตำแหน่งผู้เบิกจ่าย: ${payload.requesterRole || ""}
 ช่องทางชำระเงิน: ${payload.paymentChannel || ""}
-เลขอ้างอิงชำระเงิน: ${payload.paymentReference || ""}
 หมายเหตุการจ่ายเงิน: ${payload.paymentNote || ""}
 วัตถุประสงค์ทางธุรกิจ: ${payload.businessPurpose || ""}
 โฟลเดอร์: ${payload.folderPath || ""}

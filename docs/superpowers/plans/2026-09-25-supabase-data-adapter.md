@@ -52,7 +52,7 @@
 ### Task 2: Add Supabase document schema and normalized repositories
 
 **Files:**
-- Create: `supabase/migrations/20260925_004_documents.sql`
+- Create: `supabase/migrations/202609250004_documents.sql`
 - Create: `forms/supabase-data.logic.js`
 - Create: `forms/document-cloud.logic.js`
 - Create: `tests/supabase-data.logic.test.mjs`

@@ -39,7 +39,7 @@ def _signature_table():
     return signature_table([("ผู้จัดทำ", ""), ("ผู้อนุมัติ", "")])
 
 
-def _line_description(line):
+def _line_description(line, document_kind=None):
     mode = line.get("vatMode") or "unspecified"
     rate = text(line.get("vatRate"), "")
     mode_label = {
@@ -50,7 +50,9 @@ def _line_description(line):
     }.get(mode, "ยังไม่ระบุ VAT")
     if mode in ("exclusive", "inclusive") and rate:
         mode_label += f" {rate}%"
-    details = [paragraph(line.get("description")), paragraph(mode_label, "DocSmall")]
+    details = [paragraph(line.get("description"))]
+    if not (document_kind in ("payment_voucher", "goods_receipt") and mode == "unspecified"):
+        details.append(paragraph(mode_label, "DocSmall"))
     # An unclassified historical amount is not evidence of a zero VAT charge.
     if mode != "unspecified":
         values = []
@@ -88,19 +90,44 @@ def _document_totals(payload):
     return totals_table(rows, note="\n".join(notes))
 
 
+def _vendor_tax_id(payload):
+    snapshot = payload.get("vendorSnapshot") or {}
+    for value in [
+        snapshot.get("taxId"),
+        payload.get("vendorTaxId"),
+        payload.get("payeeTaxId"),
+        payload.get("paymentTargetTaxId"),
+    ]:
+        value = text(value, "")
+        if value:
+            return value
+    return ""
+
+
 def build_document_story(payload):
     lines = payload.get("lines") or []
+    document_kind = payload.get("documentKind")
+    header_payload = payload
+    if document_kind in ("payment_voucher", "goods_receipt") and text(payload.get("transactionNo"), ""):
+        header_payload = dict(payload)
+        header_payload.pop("transactionNo", None)
 
     header_rows = [
         ("ผู้รับเงิน/คู่ค้า", payload.get("payeeName")),
+    ]
+    vendor_tax_id = _vendor_tax_id(payload)
+    if vendor_tax_id:
+        header_rows.append(("เลขประจำตัวผู้เสียภาษีผู้ขาย", vendor_tax_id))
+    header_rows.extend([
         ("ผู้ขอ/ผู้จัดทำ", payload.get("requesterName")),
         ("ชื่อเอกสาร", payload.get("title")),
-    ]
+    ])
     if text(payload.get("transactionNo"), ""):
-        header_rows.append(("เลขที่ธุรกรรม", payload.get("transactionNo")))
+        if document_kind not in ("payment_voucher", "goods_receipt"):
+            header_rows.append(("เลขที่ธุรกรรม", payload.get("transactionNo")))
     header_rows.append(("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")))
     story = [
-        document_header(payload, document_title(payload)),
+        document_header(header_payload, document_title(payload)),
         detail_grid(header_rows),
         paragraph("รายการ", "DocHeading"),
     ]
@@ -112,7 +139,7 @@ def build_document_story(payload):
     for index, line in enumerate(lines, 1):
         item_rows.append([
             paragraph(index),
-            _line_description(line),
+            _line_description(line, payload.get("documentKind")),
             paragraph(line.get("quantity")),
             money_paragraph(line.get("unitCost")),
             money_paragraph(line.get("lineTotal")),

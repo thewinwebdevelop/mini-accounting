@@ -22,6 +22,13 @@ test("expense form keeps copy/export controls in the backup tools section", asyn
   assert.match(html, /<button class="button secondary" type="button" id="copyMarkdown">Copy Markdown<\/button>/);
 });
 
+test("expense form does not show the obsolete localhost helper hint", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.doesNotMatch(html, /เปิดผ่าน http:\/\/localhost:8787\/expense-request/);
+  assert.doesNotMatch(html, /ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น/);
+});
+
 test("expense form uses placeholders instead of sample values for user-entered fields", async () => {
   const html = await readFile(htmlPath, "utf8");
 
@@ -59,6 +66,53 @@ test("expense line template is collapsible with a summary for each item", async 
   assert.match(template, /data-line-title/);
   assert.match(template, /data-line-total/);
   assert.match(html, /function updateLineSummaries/);
+});
+
+test("expense lines switch between manual entry and an active Stock SKU", async () => {
+  const { elements } = await setupExpenseRequestSandbox({
+    stockSkus: [
+      { id: 201, sku: "BAG-201", productName: "ถุงแพ็คสินค้า", defaultUnitCost: "12.50", status: "active" },
+      { id: 202, sku: "BAG-202", productName: "ถุงที่ปิดใช้งาน", status: "inactive" },
+    ],
+  });
+
+  const row = elements.lineItems.querySelector(".line-row");
+  const checkbox = row.querySelector('[name="isStockItem"]');
+  const field = row.querySelector("[data-stock-sku-field]");
+  const select = row.querySelector('[name="stockSkuId"]');
+  assert.ok(row.querySelector(".stock-item-toggle"), "stock checkbox and label should share one row");
+
+  assert.equal(field.hidden, true);
+  assert.equal(select.querySelectorAll("option").length, 2, "inactive SKUs must not be offered");
+
+  checkbox.checked = true;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, false);
+  assert.equal(select.required, true);
+
+  select.value = "201";
+  select.selectedOptions = [select.querySelectorAll("option")[1]];
+  select.dispatch("change");
+  assert.equal(row.dataset.stockSkuId, "201");
+  assert.equal(row.querySelector('[name="lineDescription"]').value, "BAG-201 - ถุงแพ็คสินค้า");
+  assert.equal(row.querySelector('[name="lineBeforeVat"]').value, "12.50");
+
+  checkbox.checked = false;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, true);
+  assert.equal(row.dataset.stockSkuId, "");
+  assert.equal(select.value, "");
+});
+
+test("expense line item keeps stock controls in full-width rows", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.match(html, /\.line-row\s*\{[\s\S]*?overflow:\s*visible/);
+  assert.match(html, /\.stock-item-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-sku-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-item-toggle input\[type="checkbox"\][\s\S]*?width:\s*15px[\s\S]*?height:\s*15px/);
+  assert.match(html, /\.stock-item-toggle\s*\{[\s\S]*?padding-top:\s*8px/);
+  assert.match(html, /\.stock-sku-field\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
 });
 
 test("expense form exposes navigation menu and bottom submit bar", async () => {
@@ -117,6 +171,37 @@ test("expense form validates canonical identity, authoritative status, and prese
   assert.match(html, /target="_blank" rel="noreferrer"/);
 });
 
+test("pending expense requests remain editable and save through the numbered endpoint", async () => {
+  const { elements, form, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      evidenceFiles: {},
+      rawFiles: [],
+      payload: {
+        requestNo: "REQ-2026-09-0001",
+        status: "pending_approval",
+        accountingMonth: "2026-09",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        businessPurpose: "ก่อนแก้ไข",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+      },
+    },
+  });
+
+  assert.equal(elements.saveDraft.hidden, false);
+  assert.equal(elements.submitRequest.hidden, true);
+  form.elements.businessPurpose.value = "แก้ไขหลังส่ง";
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.ok(fetchLog.some((url) => url.includes("/api/expense-requests/REQ-2026-09-0001")));
+  assert.equal(fetchLog.some((url) => url.includes("/api/expense-drafts")), false);
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {
@@ -134,6 +219,9 @@ test("expense request form shows the cross-document prefill banner", async () =>
   const html = await readFile(htmlPath, "utf8");
   assert.match(html, /workflow-prefill\.logic\.js/);
   assert.match(html, /id="workflowPrefillBanner"/);
+  assert.match(html, /#workflowPrefillGroups\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(html, /\.prefill-group input\[type="checkbox"\]\s*\{[\s\S]*?width:\s*18px[\s\S]*?min-height:\s*18px/);
+  assert.match(html, /\.prefill-group span\s*\{[\s\S]*?min-width:\s*0/);
   assert.match(html, /ใช้ข้อมูลเดิม/);
   assert.match(html, /กรอกใหม่/);
 });
@@ -190,7 +278,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [] } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -229,6 +317,9 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     }
     if (url === "/api/vendors") {
       return { ok: true, json: async () => ({ vendors: vendorPickerVendors }) };
+    }
+    if (url === "/api/inventory/stock-skus") {
+      return { ok: true, json: async () => ({ stockSkus }) };
     }
     if (url.includes("/api/expense-requests/REQ-")) {
       if (detailFailureCount > 0) {

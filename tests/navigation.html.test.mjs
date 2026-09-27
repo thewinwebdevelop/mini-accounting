@@ -110,6 +110,20 @@ test("hamburger menu popover stays inside short viewports", async () => {
   }
 });
 
+test("main navigation loads the mobile menu layout on every menu page", async () => {
+  const menuPages = await pagesWithMainMenu();
+  const mobileCss = await readFile(new URL("../forms/mobile-menu.css", import.meta.url), "utf8");
+
+  assert.match(mobileCss, /position:\s*fixed;/);
+  assert.match(mobileCss, /max-height:\s*calc\(100dvh - 72px\);/);
+  assert.match(mobileCss, /z-index:\s*100;/);
+
+  for (const { page } of menuPages) {
+    const html = await readFile(new URL(`../forms/${page}`, import.meta.url), "utf8");
+    assert.match(html, /<link rel="stylesheet" href="\/mobile-menu\.css">/, page);
+  }
+});
+
 // The five lightweight kinds (forms/workflow-document.html) each have a list
 // page at /workflow-documents?documentKind=... . Ten more top-level entries
 // (list + create for each) would swamp the menu, so they share ONE group,

@@ -1,8 +1,9 @@
 import logging
 import os
+import re
 import tempfile
 from copy import copy
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 from decimal import Decimal, InvalidOperation
 
 from pypdf import PdfReader, PdfWriter
@@ -14,6 +15,39 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+
+def _configure_thai_shaping():
+    """Enable Thai mark positioning without replacing text with private glyphs.
+
+    ReportLab's HarfBuzz integration enables ``ccmp`` by default. Sarabun's
+    ``ccmp`` rule decomposes SARA AM and emits private glyph aliases, which
+    makes otherwise searchable PDF text appear corrupted to extractors. The
+    ``mark``/``mkmk`` positioning rules are sufficient for Thai stacking here;
+    disabling only ``ccmp`` keeps the original text mapping while retaining
+    the visual mark placement we need.
+    """
+    try:
+        import reportlab.platypus.paragraph as paragraph_module
+        from reportlab.pdfbase import ttfonts
+    except ImportError:
+        return False
+    if not getattr(ttfonts, "uharfbuzz", None):
+        return False
+
+    shape_frag_word = ttfonts.shapeFragWord
+
+    def thai_shape_frag_word(word):
+        return shape_frag_word(
+            word,
+            features={"kern": True, "liga": True, "dlig": True, "ccmp": False},
+        )
+
+    paragraph_module.shapeFragWord = thai_shape_frag_word
+    return True
+
+
+THAI_SHAPING_AVAILABLE = _configure_thai_shaping()
 
 
 COMPANY = {
@@ -64,6 +98,7 @@ styles.add(ParagraphStyle(
     textColor=BRAND,
     alignment=TA_RIGHT,
     spaceAfter=8,
+    shaping=1,
 ))
 styles.add(ParagraphStyle(
     name="DocHeading",
@@ -74,6 +109,7 @@ styles.add(ParagraphStyle(
     spaceBefore=12,
     spaceAfter=7,
     keepWithNext=True,
+    shaping=1,
 ))
 styles.add(ParagraphStyle(
     name="DocBody",
@@ -81,6 +117,7 @@ styles.add(ParagraphStyle(
     fontSize=9.5,
     leading=14,
     textColor=BRAND,
+    shaping=1,
 ))
 styles.add(ParagraphStyle(
     name="DocSmall",
@@ -88,6 +125,7 @@ styles.add(ParagraphStyle(
     fontSize=8,
     leading=11,
     textColor=colors.HexColor("#52606d"),
+    shaping=1,
 ))
 styles.add(ParagraphStyle(
     name="DocMoney",
@@ -95,12 +133,56 @@ styles.add(ParagraphStyle(
     fontSize=9,
     leading=13,
     alignment=TA_RIGHT,
+    shaping=1,
 ))
 styles.add(ParagraphStyle(name="DocHeader", parent=styles["DocSmall"], fontName=BOLD_FONT, textColor=BRAND_2))
 styles.add(ParagraphStyle(name="DocCompany", parent=styles["DocBody"], fontName=BOLD_FONT, fontSize=14, leading=19, spaceAfter=5))
 styles.add(ParagraphStyle(name="DocTotal", parent=styles["DocMoney"], fontName=BOLD_FONT, fontSize=19, leading=26, textColor=ACCENT))
 styles.add(ParagraphStyle(name="DocCenter", parent=styles["DocBody"], alignment=TA_CENTER))
 styles.add(ParagraphStyle(name="DocCaptionCenter", parent=styles["DocSmall"], alignment=TA_CENTER))
+
+
+def _plain_paragraph_text(value):
+    value = re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", "", value)
+    return unescape(value).strip()
+
+
+def _collect_story_text(value):
+    if isinstance(value, Paragraph):
+        text_value = _plain_paragraph_text(value.text)
+        return [text_value] if text_value else []
+    if isinstance(value, Table):
+        result = []
+        for cell in getattr(value, "_cellvalues", []):
+            result.extend(_collect_story_text(cell))
+        return result
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            result.extend(_collect_story_text(item))
+        return result
+    return []
+
+
+def _draw_logical_text_layer(canvas, logical_text, page_height):
+    if not logical_text:
+        return
+    line_index = 0
+    for value in logical_text:
+        for line in value.splitlines() or [""]:
+            # Keep each line in its own text object and give extractors enough
+            # vertical separation to preserve the original Thai string order.
+            # Render mode 3 makes this accessibility/search layer invisible.
+            y = 1 + (line_index % max(1, int(page_height // 10))) * 10
+            text_object = canvas.beginText(1, y)
+            text_object.setFont(FONT, 8)
+            text_object.setTextRenderMode(3)
+            if line:
+                text_object.textOut(line)
+            text_object.textLine()
+            canvas.drawText(text_object)
+            line_index += 1
 
 
 def text(value, fallback="-"):
@@ -148,6 +230,7 @@ def company_info(payload):
 
 def build_doc(path, title, payload, story, page_size=A4, footer_label=None):
     company = company_info(payload)
+    logical_text = _collect_story_text(story)
     doc = SimpleDocTemplate(
         path,
         pagesize=page_size,
@@ -162,6 +245,7 @@ def build_doc(path, title, payload, story, page_size=A4, footer_label=None):
     def footer(canvas, document):
         page_width, page_height = page_size
         canvas.saveState()
+        _draw_logical_text_layer(canvas, logical_text, page_height)
         canvas.setFillColor(ACCENT)
         canvas.rect(14 * mm, page_height - 10 * mm, 16 * mm, 1.2 * mm, fill=1, stroke=0)
         canvas.setStrokeColor(LINE)
@@ -246,10 +330,11 @@ def signature_cell(role, name="", compact=False):
     ]
 
 
-def signature_table(roles, width=182 * mm, preparer_position=False, compact=False):
+def signature_table(roles, width=182 * mm, preparer_position=False, preparer_position_value="", compact=False):
     cells = [signature_cell(role, name, compact=compact) for role, name in roles]
     if preparer_position:
-        cells[0].append(paragraph("ตำแหน่ง........................................", "DocCaptionCenter"))
+        position = text(preparer_position_value, "")
+        cells[0].append(paragraph(f"ตำแหน่ง: {position}" if position else "ตำแหน่ง........................................", "DocCaptionCenter"))
     table = Table([cells],
                   colWidths=[width / len(roles)] * len(roles), hAlign="LEFT")
     table.setStyle(TableStyle([

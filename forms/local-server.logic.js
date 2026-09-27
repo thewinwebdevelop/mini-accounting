@@ -25,6 +25,7 @@ const {
 const {
   LIGHTWEIGHT_DOCUMENT_KINDS,
   WORKFLOW_DOCUMENT_PREFIXES,
+  WORKFLOW_DOCUMENT_PDF_VERSION,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
   buildWorkflowDocumentRawFileName,
   formatWorkflowDocumentMarkdown,
@@ -1986,11 +1987,11 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     const stored = existing.payload || {};
     await assertWorkflowMutationAllowed(rootDir, stored.transactionNo);
     const currentStatus = normalizeExpenseRequestStatus(stored.status || "pending_approval");
-    if (currentStatus === "pending_approval") {
-      if (uploads.length) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ส่งตรวจอนุมัติแล้ว ไม่สามารถแก้ไขในขั้นตอนนี้ได้");
+    const isPendingEdit = currentStatus === "pending_approval";
+    if (currentStatus !== "draft" && !isPendingEdit) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่างหรือรอตรวจอนุมัติ");
+    if (isPendingEdit && !uploads.length && !Object.keys(payload).some((key) => !["requestNo", "status", "folderPath", "draftId"].includes(key))) {
       return numberedSubmissionResult({ ...stored, status: currentStatus, statusLabel: EXPENSE_NUMBERED_STATUS_LABELS[currentStatus], __rootDir: rootDir }, existing.pdfFiles, existing.rawFiles);
     }
-    if (currentStatus !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     const existingEvidenceFiles = existing.evidenceFiles || {};
     const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
@@ -2001,14 +2002,16 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     const nextPayload = buildExpensePayload({ ...vendorPayload, accountingMonth, transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "", company, requestNo: existing.requestNo, folderPath: existing.folderPath, sequence: existing.requestNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval", statusHistory: stored.statusHistory || [] });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.pending_approval;
-    nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
+    nextPayload.statusHistory = isPendingEdit
+      ? (Array.isArray(stored.statusHistory) ? stored.statusHistory : [])
+      : [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
     nextPayload.updatedAt = now;
     nextPayload.requestNo = existing.requestNo;
     nextPayload.folderPath = existing.folderPath;
     nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     nextPayload.createdAt = stored.createdAt;
     nextPayload.accountingMonth = accountingMonth;
-    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "completedAt", "completedBy", "ownerUserId"]);
+    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "submittedAt", "submittedBy", "approvedAt", "approvedBy", "completedAt", "completedBy", "ownerUserId"]);
     nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     const validationErrors = validateExpenseRequest({ ...nextPayload, accountingMonth, evidenceFiles });
     if (validationErrors.length) throw new Error(validationErrors.join(", "));
@@ -2051,11 +2054,11 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     const stored = existing.payload || {};
     await assertWorkflowMutationAllowed(rootDir, stored.transactionNo);
     const currentStatus = normalizeSubstituteReceiptStatus(stored.status || "pending_approval");
-    if (currentStatus === "pending_approval") {
-      if (uploads.length) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ส่งตรวจอนุมัติแล้ว ไม่สามารถแก้ไขในขั้นตอนนี้ได้");
+    const isPendingEdit = currentStatus === "pending_approval";
+    if (currentStatus !== "draft" && !isPendingEdit) throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่างหรือรอตรวจอนุมัติ");
+    if (isPendingEdit && !uploads.length && !Object.keys(payload).some((key) => !["receiptNo", "status", "folderPath", "draftId"].includes(key))) {
       return numberedSubmissionResult({ ...stored, status: currentStatus, statusLabel: SUBSTITUTE_RECEIPT_STATUS_LABELS[currentStatus], __rootDir: rootDir }, existing.pdfFiles, existing.rawFiles);
     }
-    if (currentStatus !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
     const authoritative = { transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "" };
     const candidate = { ...stored, ...payload, ...authoritative };
     await assertSubstituteReceiptTypeMatchesWorkflowStep(rootDir, candidate);
@@ -2069,7 +2072,9 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     const nextPayload = buildSubstituteReceiptPayload({ ...vendorPayload, ...authoritative, accountingMonth, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.pending_approval;
-    nextPayload.statusHistory = [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
+    nextPayload.statusHistory = isPendingEdit
+      ? (Array.isArray(stored.statusHistory) ? stored.statusHistory : [])
+      : [...(Array.isArray(stored.statusHistory) ? stored.statusHistory : []), { fromStatus: "draft", toStatus: "pending_approval", changedAt: now, note: "submitted" }];
     nextPayload.stockReceipt = stored.stockReceipt || null;
     nextPayload.revisions = Array.isArray(stored.revisions) ? stored.revisions : [];
     nextPayload.updatedAt = now;
@@ -2079,7 +2084,7 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     nextPayload.createdAt = stored.createdAt;
     nextPayload.receiptType = stored.receiptType;
     nextPayload.accountingMonth = accountingMonth;
-    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "stockReceipt", "revisions", "completedAt", "completedBy", "ownerUserId"]);
+    preserveNumberedServerMetadata(nextPayload, stored, ["sheetSync", "driveSync", "syncMetadata", "submittedAt", "submittedBy", "approvedAt", "approvedBy", "stockReceipt", "revisions", "completedAt", "completedBy", "ownerUserId"]);
     nextPayload.ownerUserId = String(stored.ownerUserId || "").trim();
     const errors = validateSubstituteReceipt(nextPayload);
     if (errors.length) throw new Error(errors.join(", "));
@@ -2740,6 +2745,41 @@ async function writeWorkflowDocumentFiles(rootDir, payload, { beforeCommit } = {
   return { absoluteFolderPath, pdfFiles };
 }
 
+function normalizeWorkflowCompanySettings(company = {}) {
+  return {
+    legalName: String(company.legalName ?? "").trim(),
+    taxId: String(company.taxId ?? "").trim(),
+    branch: String(company.branch ?? "").trim(),
+    address: String(company.address ?? "").trim(),
+  };
+}
+
+// Older lightweight documents were generated before company settings became
+// server-owned, so their stored payload/PDF can still contain the fallback tax
+// ID text. Refresh the artifact lazily when its PDF is opened; this also makes
+// a company-settings change take effect for existing documents without asking
+// the user to edit and resave every document one by one.
+async function refreshWorkflowDocumentCompanySettings({ rootDir, documentKind, documentNo }) {
+  return withWorkflowDocumentMutation(rootDir, documentKind, documentNo, async () => {
+    const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    if (!record) throw new Error("ไม่พบเอกสาร");
+
+    const company = normalizeWorkflowCompanySettings(await getCompanySettings(rootDir));
+    const currentCompany = normalizeWorkflowCompanySettings(record.payload?.company);
+    if (JSON.stringify(currentCompany) === JSON.stringify(company)
+      && record.payload?.pdfVersion === WORKFLOW_DOCUMENT_PDF_VERSION) return record;
+
+    const payload = {
+      ...record.payload,
+      folderPath: record.folderPath,
+      company,
+      pdfVersion: WORKFLOW_DOCUMENT_PDF_VERSION,
+    };
+    await withWorkflowMutationGate(rootDir, payload.transactionNo, () => writeWorkflowDocumentFiles(rootDir, payload));
+    return getWorkflowDocument(rootDir, documentKind, documentNo);
+  });
+}
+
 async function buildWorkflowDocumentRecord(rootDir, folderPath) {
   const absolutePath = path.join(rootDir, folderPath, "data", "workflow-document.json");
   const payload = JSON.parse(await readFile(absolutePath, "utf8"));
@@ -2934,6 +2974,16 @@ async function getWorkflowDocument(rootDir, documentKind, documentNo) {
   }
 
   return null;
+}
+
+async function getWorkflowDocumentFiles(rootDir, documentKind, documentNo) {
+  const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+  if (!record) return null;
+  const [pdfFiles, rawFiles] = await Promise.all([
+    listWorkflowDocumentPdfFiles(rootDir, record.folderPath, documentKind, documentNo),
+    listWorkflowDocumentRawFiles(rootDir, record.folderPath, documentKind, documentNo),
+  ]);
+  return { pdfFiles, rawFiles };
 }
 
 // Defense-in-depth path containment: resolves targetPath and refuses it unless
@@ -5267,6 +5317,7 @@ module.exports = {
   getLegacySubstituteReceiptDraftFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
+  getWorkflowDocumentFiles,
   getWorkflowDocumentFile,
   getWorkflowTemplate,
   getWorkflowTransaction,
@@ -5307,5 +5358,6 @@ module.exports = {
   syncWorkflowDocumentToDrive,
   syncWorkflowTransactionToDrive,
   syncWorkflowTransactionToSheets,
+  refreshWorkflowDocumentCompanySettings,
   writeWorkflowDocumentFiles,
 };

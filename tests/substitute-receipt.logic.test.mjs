@@ -74,8 +74,26 @@ test("buildSubstituteReceiptPayload preserves an optional payment note", () => {
   });
 
   assert.equal(payload.paymentNote, "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท");
-  assert.match(formatSubstituteReceiptMarkdown(payload), /จ่ายเงินสด 500 บาท/);
-  assert.match(formatSubstituteReceiptMarkdown(payload), /โอนเงิน 2,000 บาท/);
+  const markdown = formatSubstituteReceiptMarkdown(payload);
+  assert.match(markdown, /จ่ายเงินสด 500 บาท/);
+  assert.match(markdown, /โอนเงิน 2,000 บาท/);
+  assert.doesNotMatch(markdown, /เลขอ้างอิงชำระเงิน/);
+});
+
+test("buildSubstituteReceiptPayload canonicalizes the legacy additional note into the single payment note", () => {
+  const payload = buildSubstituteReceiptPayload({
+    accountingMonth: "2026-09",
+    sequence: "8",
+    receiptDate: "2026-09-04",
+    receiptType: "general_expense",
+    payeeName: "ร้านตัวอย่าง",
+    businessPurpose: "ค่าใช้จ่ายตัวอย่าง",
+    additionalNote: "จ่ายเงินสด 500 บาท และโอนเงิน 2,000 บาท",
+    lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "2500" }],
+  });
+
+  assert.equal(payload.paymentNote, "จ่ายเงินสด 500 บาท และโอนเงิน 2,000 บาท");
+  assert.equal(payload.additionalNote, undefined);
 });
 
 test("buildSubstituteReceiptPayload preserves the server-bound owner user id", () => {
@@ -91,6 +109,23 @@ test("buildSubstituteReceiptPayload preserves the server-bound owner user id", (
   });
 
   assert.equal(payload.ownerUserId, "user-1");
+});
+
+test("buildSubstituteReceiptPayload preserves requester identity for the certificate", () => {
+  const payload = buildSubstituteReceiptPayload({
+    accountingMonth: "2026-09",
+    sequence: "10",
+    receiptDate: "2026-09-04",
+    receiptType: "general_expense",
+    payeeName: "ร้านตัวอย่าง",
+    requesterName: "คุณต้า",
+    requesterRole: "ผู้จัดการ",
+    businessPurpose: "ค่าใช้จ่ายตัวอย่าง",
+    lines: [{ description: "ค่าใช้จ่าย", quantity: "1", unitCost: "100" }],
+  });
+
+  assert.equal(payload.requesterName, "คุณต้า");
+  assert.equal(payload.requesterRole, "ผู้จัดการ");
 });
 
 test("validateSubstituteReceipt requires traceable evidence and valid stock purchase lines", () => {
@@ -226,7 +261,9 @@ test("formatSubstituteReceiptMarkdown includes stock lines and raw evidence name
   const markdown = formatSubstituteReceiptMarkdown(payload);
   assert.match(markdown, /# ใบรับรองแทนใบเสร็จรับเงิน/);
   assert.match(markdown, /SR-2026-09-0001/);
-  assert.match(markdown, /TOP-A-WHITE-M/);
+  assert.match(markdown, /\| ลำดับ \| รายละเอียด \| จำนวน \| ต้นทุนต่อหน่วย \| ยอดรวม \|/);
+  assert.doesNotMatch(markdown, /TOP-A-WHITE-M/);
+  assert.match(markdown, /เสื้อ A/);
   assert.match(markdown, /B1_payment-slip_001.jpg/);
   assert.match(markdown, /ยอดรวม \| 200.00/);
 });

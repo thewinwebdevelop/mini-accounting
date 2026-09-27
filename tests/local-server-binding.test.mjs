@@ -92,6 +92,10 @@ test("local server binds loopback only by default (no network opt-in)", async ()
     const loopback = await tryConnect("127.0.0.1", port);
     assert.equal(loopback.connected, true, "loopback connection should succeed by default");
 
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true, runtime: "local", version: "unknown" });
+
     const externalIp = firstExternalIPv4();
     if (externalIp) {
       const external = await tryConnect(externalIp, port);

@@ -99,7 +99,12 @@ def baht_text(value):
 
 def _substitute_signature_table(payload):
     prepared_by = payload.get("preparedBy") or payload.get("requesterName") or ""
-    return shared_signatures([("ผู้จ่ายเงิน/ผู้รับรอง", prepared_by), ("ผู้อนุมัติ", "")], preparer_position=True)
+    prepared_role = payload.get("preparedByRole") or payload.get("requesterRole") or ""
+    return shared_signatures(
+        [("ผู้จ่ายเงิน/ผู้รับรอง", prepared_by), ("ผู้อนุมัติ", "")],
+        preparer_position=bool(prepared_role),
+        preparer_position_value=prepared_role,
+    )
 
 
 def paragraph_text(value):
@@ -110,10 +115,8 @@ def _payee_table(payload):
     return detail_grid([
         ("ชื่อผู้รับเงิน/ผู้ขาย", payload.get("payeeName")),
         ("เลขประจำตัวผู้เสียภาษี", payload.get("payeeTaxId")),
-        ("ที่อยู่", "........................................................................................"),
         ("ประเภท", payload.get("receiptTypeLabel") or RECEIPT_TYPE_LABELS.get(payload.get("receiptType"), "ซื้อสต๊อกสินค้า")),
         ("ช่องทางชำระเงิน", payload.get("paymentChannel")),
-        ("เลขอ้างอิงชำระเงิน", payload.get("paymentReference")),
     ])
 
 
@@ -136,17 +139,17 @@ def build_substitute_receipt_story(payload):
 
     if is_stock_purchase:
         item_rows = [[
-            paragraph("ลำดับ"), paragraph("Stock SKU"), paragraph("รายละเอียด"),
-            paragraph("จำนวน"), paragraph("ต้นทุน/หน่วย"), paragraph("ยอดรวม"), paragraph("หมายเหตุ"),
+            paragraph("ลำดับ"), paragraph("รายละเอียด"), paragraph("จำนวน"),
+            paragraph("ต้นทุน/หน่วย"), paragraph("ยอดรวม"), paragraph("หมายเหตุ"),
         ]]
         for index, line in enumerate(lines, 1):
             item_rows.append([
-                paragraph(index), paragraph(line.get("sku")), paragraph(line.get("description")),
-                paragraph(line.get("quantity")), money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
+                paragraph(index), paragraph(line.get("description")), paragraph(line.get("quantity")),
+                money_paragraph(line.get("unitCost")), money_paragraph(line.get("lineTotal")),
                 paragraph("-"),
             ])
-        col_widths = [12 * mm, 40 * mm, 40 * mm, 18 * mm, 25 * mm, 27 * mm, 20 * mm]
-        align_right_cols = [3, 4, 5]
+        col_widths = [12 * mm, 80 * mm, 18 * mm, 25 * mm, 27 * mm, 20 * mm]
+        align_right_cols = [2, 3, 4]
     else:
         item_rows = [[
             paragraph("ลำดับ"), paragraph("รายละเอียดรายจ่าย"), paragraph("จำนวน"),
@@ -162,27 +165,30 @@ def build_substitute_receipt_story(payload):
         align_right_cols = [2, 3, 4]
 
     total_amount = totals.get("totalAmount")
+    note = paragraph_text(payload.get("paymentNote") or payload.get("additionalNote"))
     story.extend([
         styled_table(item_rows, col_widths=col_widths, align_right_cols=align_right_cols, header_shade=True),
         Spacer(1, 4),
         _totals_box(total_amount),
         Spacer(1, 6),
-        paragraph(f"หมายเหตุ: {paragraph_text(payload.get('paymentNote')) or '-'}"),
+        paragraph(f"หมายเหตุเพิ่มเติม: {note or '-'}"),
         Spacer(1, 10),
         paragraph(f"วัตถุประสงค์ทางธุรกิจ: {paragraph_text(payload.get('businessPurpose')) or '-'}"),
     ])
 
-    additional_note = paragraph_text(payload.get("additionalNote"))
-    if additional_note:
-        story.extend([
-            Spacer(1, 4),
-            paragraph(f"หมายเหตุเพิ่มเติม: {additional_note}"),
-        ])
+    prepared_by = paragraph_text(payload.get("preparedBy") or payload.get("requesterName"))
+    prepared_role = paragraph_text(payload.get("preparedByRole") or payload.get("requesterRole"))
+    declarant = "ข้าพเจ้า"
+    if prepared_by:
+        declarant += f" {prepared_by} (ผู้เบิกจ่าย)"
+    if prepared_role:
+        declarant += f" ตำแหน่ง {prepared_role}"
+    declarant += " ขอรับรองว่า"
 
     story.extend([
         Spacer(1, 6),
         paragraph(
-            f"ข้าพเจ้าขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ "
+            f"{declarant} รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ "
             f"และข้าพเจ้าได้จ่ายไปในงานของทาง {company['name']} โดยแท้ "
             f"ตั้งแต่วันที่ {thai_date(payload.get('receiptDate'))} ถึงวันที่ {thai_date(payload.get('receiptDate'))} "
             "ทั้งนี้ ได้แนบหลักฐานการชำระเงิน/การสั่งซื้อประกอบไว้ในชุดเอกสารนี้แล้ว",

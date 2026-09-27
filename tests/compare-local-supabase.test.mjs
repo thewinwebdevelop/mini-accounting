@@ -29,3 +29,28 @@ test("matching source payloads pass regardless of object key order", () => {
     [{ source_key: "vendor:1", source_payload: { a: 1, b: 2 } }],
   ).ok, true);
 });
+
+test("document file comparison ignores migration timestamps", () => {
+  assert.equal(compareRecordSets(
+    [{
+      source_key: "document_file:documents/a.pdf",
+      document_source_key: "document:purchase_order:PO-1",
+      object_path: "documents/a.pdf",
+      source_sha256: "hash",
+      byte_size: 10,
+      content_type: "application/pdf",
+      original_name: "a.pdf",
+      migrated_at: "2026-09-25T00:00:00.000Z",
+    }],
+    [{
+      source_key: "document_file:documents/a.pdf",
+      document_source_key: "document:purchase_order:PO-1",
+      object_path: "documents/a.pdf",
+      source_sha256: "hash",
+      byte_size: 10,
+      content_type: "application/pdf",
+      original_name: "a.pdf",
+      migrated_at: "2026-09-25T01:00:00.000Z",
+    }],
+  ).ok, true);
+});

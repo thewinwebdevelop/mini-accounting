@@ -137,6 +137,9 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
 
     const fetched = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}`);
     assert.equal(fetched.payload.title, "สั่งซื้อสินค้า Lot กันยายน");
+    assert.equal(fetched.rawFiles[0].name, "evidence_001.txt");
+    const fetchedRawFile = await fetch(`${baseUrl}${fetched.rawFiles[0].url}`);
+    assert.equal(fetchedRawFile.status, 200, "GET must expose a working URL for previously uploaded raw files");
     assert.equal("absoluteFolderPath" in fetched, false, "GET must not leak the server's absolute filesystem path");
 
     const list = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");

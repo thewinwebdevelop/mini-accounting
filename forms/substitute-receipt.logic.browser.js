@@ -2,6 +2,9 @@ window.addEventListener("DOMContentLoaded", () => {
   const logic = window.SubstituteReceiptLogic;
   const evidenceKeys = ["paymentSlip", "purchaseOrder", "goodsReceived", "otherEvidence"];
   const lifecycleLogic = window.DocumentLifecycleLogic;
+  const stockLineLogic = window.StockLineLogic || {
+    stockSkuLabel: (sku) => [sku?.sku, sku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${sku?.id || ""}`,
+  };
   const state = {
     stockSkus: [],
     vendors: [],
@@ -44,7 +47,7 @@ window.addEventListener("DOMContentLoaded", () => {
     form,
     select: vendorPresetSelect,
     checkbox: saveVendorPresetCheckbox,
-    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], paymentChannel: ["paymentChannel"], paymentReference: ["paymentReference"], defaultBusinessPurpose: ["businessPurpose"] },
+    mapping: { name: ["payeeName"], taxId: ["payeeTaxId"], paymentChannel: ["paymentChannel"], defaultBusinessPurpose: ["businessPurpose"] },
     onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
   });
 
@@ -136,12 +139,76 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function normalizeEvidenceFile(file, rawFilesByName) {
+    if (typeof file === "string") {
+      return { storedName: file, originalName: file, ...(rawFilesByName.get(file) || {}) };
+    }
+    if (!file || typeof file !== "object") return null;
+    const name = file.storedName || file.originalName || file.name || "";
+    return { ...(rawFilesByName.get(name) || {}), ...file };
+  }
+
+  function evidenceFileName(file) {
+    return file?.storedName || file?.originalName || file?.name || "ดาวน์โหลด";
+  }
+
+  function renderEvidenceFileItems(files) {
+    return files.map((file) => {
+      const label = escapeHtml(evidenceFileName(file));
+      return file?.url
+        ? `<li><a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${label}</a></li>`
+        : `<li>${label}</li>`;
+    }).join("");
+  }
+
+  function renderEvidenceFileSummary(files) {
+    return files.map((file) => {
+      const label = escapeHtml(evidenceFileName(file));
+      return file?.url
+        ? `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${label}</a>`
+        : label;
+    }).join(" · ");
+  }
+
   function renderLegacyEvidence(filesByKey = {}, rawFiles = []) {
+    const rawFileList = (Array.isArray(rawFiles) ? rawFiles : [])
+      .map((file) => typeof file === "string" ? { storedName: file, originalName: file } : file)
+      .filter((file) => file && typeof file === "object");
+    const rawFilesByName = new Map();
+    rawFileList.forEach((file) => {
+      for (const name of [file.storedName, file.originalName, file.name]) {
+        if (name) rawFilesByName.set(String(name), file);
+      }
+    });
+
+    const filesByEvidenceKey = Object.fromEntries(evidenceKeys.map((key) => {
+      const files = (Array.isArray(filesByKey?.[key]) ? filesByKey[key] : [])
+        .map((file) => normalizeEvidenceFile(file, rawFilesByName))
+        .filter(Boolean);
+      return [key, files];
+    }));
+    const allFiles = [];
+    const seen = new Set();
+    for (const file of [...Object.values(filesByEvidenceKey).flat(), ...rawFileList]) {
+      const key = String(file.url || evidenceFileName(file));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      allFiles.push(file);
+    }
+
+    form.querySelectorAll("[data-existing-evidence-for]").forEach((container) => {
+      const key = container.dataset.existingEvidenceFor;
+      const files = filesByEvidenceKey[key] || [];
+      container.hidden = !files.length;
+      container.innerHTML = files.length
+        ? `<strong>ไฟล์ที่อัปโหลดแล้ว</strong><ul>${renderEvidenceFileItems(files)}</ul>`
+        : "";
+    });
+
     if (!legacyEvidenceLinks) return;
-    const files = [...Object.values(filesByKey).flat(), ...(Array.isArray(rawFiles) ? rawFiles : [])].filter((file) => file && file.url);
-    legacyEvidenceLinks.hidden = !files.length;
-    legacyEvidenceLinks.innerHTML = files.length
-      ? `ไฟล์แนบแบบร่างเก่า: ${files.map((file) => `<a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.storedName || file.originalName || "ดาวน์โหลด")}</a>`).join(" · ")}`
+    legacyEvidenceLinks.hidden = !allFiles.length;
+    legacyEvidenceLinks.innerHTML = allFiles.length
+      ? `ไฟล์แนบเดิม: ${renderEvidenceFileSummary(allFiles)}`
       : "";
   }
 
@@ -179,7 +246,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function applyRecordFieldLock() {
-    const locked = state.legacyReadOnly || state.status !== "draft" || state.mutationInFlight;
+    const locked = state.legacyReadOnly || !["draft", "pending_approval"].includes(state.status) || state.mutationInFlight;
     form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = locked; });
     addLineButton.disabled = locked;
   }
@@ -220,7 +287,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function skuLabel(sku) {
-    return `${sku.sku} - ${sku.productName} ${sku.color || ""} ${sku.size || ""}`.trim();
+    return stockLineLogic.stockSkuLabel(sku);
   }
 
   function option(label, value, sku = null) {
@@ -229,7 +296,7 @@ window.addEventListener("DOMContentLoaded", () => {
     node.textContent = label;
     if (sku) {
       node.dataset.sku = sku.sku;
-      node.dataset.description = `${sku.productName} ${sku.color || ""} ${sku.size || ""}`.trim();
+      node.dataset.description = stockLineLogic.stockSkuLabel(sku);
       node.dataset.unitCost = sku.defaultUnitCost || "";
     }
     return node;
@@ -265,7 +332,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function stockLinesLocked() {
-    return state.legacyReadOnly || state.mutationInFlight || state.status !== "draft";
+    return state.legacyReadOnly || state.mutationInFlight || !["draft", "pending_approval"].includes(state.status);
   }
 
   function applyStockLineLock() {
@@ -316,7 +383,8 @@ window.addEventListener("DOMContentLoaded", () => {
     state.status = lifecycleLogic.normalizeDocumentStatus("substitute_receipt", status || "draft");
     const actions = availableActions();
     receiptStatus.textContent = lifecycleLogic.DOCUMENT_STATUS_LABELS[state.status];
-    saveDraftButton.hidden = state.status !== "draft" || state.legacyReadOnly;
+    saveDraftButton.hidden = !["draft", "pending_approval"].includes(state.status) || state.legacyReadOnly;
+    saveDraftButton.textContent = state.status === "pending_approval" ? "บันทึกการแก้ไข" : "บันทึกแบบร่าง";
     submitForApprovalButton.hidden = state.legacyReadOnly || !actions.includes("submit");
     approveReceiptButton.hidden = !actions.includes("approve");
     receiveStockButton.hidden = !actions.includes("receive_stock");
@@ -346,7 +414,7 @@ window.addEventListener("DOMContentLoaded", () => {
     select.addEventListener("change", () => {
       const selected = select.selectedOptions[0];
       skuInput.value = selected?.dataset.sku || "";
-      if (selected?.dataset.description && !description.value) description.value = selected.dataset.description;
+      if (selected?.dataset.description) description.value = selected.dataset.description;
       if (selected?.dataset.unitCost && !unitCost.value) unitCost.value = selected.dataset.unitCost;
       updatePreview();
     });
@@ -411,12 +479,13 @@ window.addEventListener("DOMContentLoaded", () => {
       receiptDate: form.elements.receiptDate.value,
       receiptTitle: form.elements.receiptTitle.value,
       receiptType: form.elements.receiptType.value,
+      requesterName: form.elements.requesterName.value,
+      requesterRole: form.elements.requesterRole.value,
       payeeName: form.elements.payeeName.value,
       payeeTaxId: form.elements.payeeTaxId.value,
       vendorId: form.dataset.vendorId || "",
       vendorSnapshot: (() => { try { return JSON.parse(form.dataset.vendorSnapshot || "null") || undefined; } catch { return undefined; } })(),
       paymentChannel: form.elements.paymentChannel.value,
-      paymentReference: form.elements.paymentReference.value,
       paymentNote: form.elements.paymentNote.value,
       businessPurpose: form.elements.businessPurpose.value,
       transactionNo: form.elements.transactionNo.value,
@@ -506,7 +575,6 @@ window.addEventListener("DOMContentLoaded", () => {
     form.elements.payeeName.value = vendor.name || "";
     form.elements.payeeTaxId.value = vendor.taxId || "";
     form.elements.paymentChannel.value = vendor.paymentChannel || "โอนผ่านบัญชีบริษัท";
-    form.elements.paymentReference.value = vendor.paymentReference || "";
     if (vendor.defaultBusinessPurpose) {
       form.elements.businessPurpose.value = vendor.defaultBusinessPurpose;
     }
@@ -542,6 +610,7 @@ window.addEventListener("DOMContentLoaded", () => {
     fields: {
       payee: ["payeeName", "payeeTaxId"],
       purpose: ["receiptTitle", "businessPurpose"],
+      parties: ["requesterName", "requesterRole"],
     },
     applyLines(lines) {
       lineItems.replaceChildren();
@@ -569,13 +638,14 @@ window.addEventListener("DOMContentLoaded", () => {
     // template never declared one (workflowContext.receiptType is "").
     applyWorkflowReceiptTypeLock();
     form.elements.receiptTitle.value = payload.receiptTitle || "";
+    form.elements.requesterName.value = payload.requesterName || payload.preparedBy || "";
+    form.elements.requesterRole.value = payload.requesterRole || payload.preparedByRole || "";
     form.elements.payeeName.value = payload.payeeName || "";
     if (payload.vendorId) form.dataset.vendorId = payload.vendorId; else delete form.dataset.vendorId;
     if (payload.vendorSnapshot) form.dataset.vendorSnapshot = JSON.stringify(payload.vendorSnapshot); else delete form.dataset.vendorSnapshot;
     form.elements.payeeTaxId.value = payload.payeeTaxId || "";
     form.elements.paymentChannel.value = payload.paymentChannel || "โอนผ่านบัญชีบริษัท";
-    form.elements.paymentReference.value = payload.paymentReference || "";
-    form.elements.paymentNote.value = payload.paymentNote || "";
+    form.elements.paymentNote.value = payload.paymentNote || payload.additionalNote || "";
     form.elements.businessPurpose.value = payload.businessPurpose || "ซื้อสินค้าเพื่อขาย";
     if (vendorPresetSelect) vendorPresetSelect.value = "";
     // A draft/receipt saved earlier from within a workflow already carries
@@ -624,6 +694,7 @@ window.addEventListener("DOMContentLoaded", () => {
       status: state.status,
       evidenceFiles: payload.evidenceFiles || receipt.evidenceFiles || {},
     });
+    renderLegacyEvidence(payload.evidenceFiles || receipt.evidenceFiles || {}, receipt.rawFiles || []);
     setStatus(`โหลดเอกสาร ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
 
@@ -635,20 +706,22 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function saveDraft() {
-    if (state.legacyReadOnly || state.status !== "draft") throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
+    if (state.legacyReadOnly || !["draft", "pending_approval"].includes(state.status)) throw new Error("เอกสารนี้ไม่อยู่ในสถานะแบบร่างหรือรอตรวจอนุมัติ");
     clearStatus();
     const payload = collectPayload();
     delete payload.draftId;
-    const result = await api("/api/substitute-receipt-drafts", {
+    const isPendingEdit = state.status === "pending_approval";
+    const result = await api(isPendingEdit ? "/api/substitute-receipts" : "/api/substitute-receipt-drafts", {
       method: "POST",
       body: buildMultipartPayload(payload),
     });
-    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== "draft") throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
+    const expectedStatus = isPendingEdit ? "pending_approval" : "draft";
+    if (!/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(String(result.receiptNo || "")) || (state.receiptNo && result.receiptNo !== state.receiptNo) || result.status !== expectedStatus) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ถูกต้อง");
     if (!result.evidenceFiles || typeof result.evidenceFiles !== "object" || !Array.isArray(result.rawFiles) || (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles))) throw new Error("เซิร์ฟเวอร์ส่งข้อมูลเอกสารไม่ครบถ้วน");
     state.receiptNo = result.receiptNo;
     let vendorPresetError = "";
     try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
-    state.status = "draft";
+    state.status = expectedStatus;
     state.existingEvidenceFiles = result.evidenceFiles;
     for (const key of evidenceKeys) form.querySelector(`[name="evidence_${key}"]`).value = "";
     replaceReceiptUrl(state.receiptNo);
@@ -661,8 +734,8 @@ window.addEventListener("DOMContentLoaded", () => {
       showReloadSavedReceipt(true);
       return;
     }
-    setReceiptState("draft");
-    setStatus(vendorPresetError || `บันทึกแบบร่าง ${escapeHtml(result.receiptNo)} แล้ว`, vendorPresetError ? "error" : "success");
+    setReceiptState(expectedStatus);
+    setStatus(vendorPresetError || `${isPendingEdit ? "บันทึกการแก้ไข" : "บันทึกแบบร่าง"} ${escapeHtml(result.receiptNo)} แล้ว`, vendorPresetError ? "error" : "success");
   }
 
   async function submitForApproval() {

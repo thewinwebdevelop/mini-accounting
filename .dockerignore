@@ -1,0 +1,14 @@
+.env
+.env.*
+.git
+.gitignore
+.codex
+data
+documents
+node_modules
+coverage
+tmp
+*.log
+docs/superpowers
+tests
+

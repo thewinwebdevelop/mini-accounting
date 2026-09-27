@@ -10,7 +10,9 @@
 https://accounting.example.com/api/google-drive/oauth2callback
 ```
 
-ค่า callback ใน Google Cloud Console และ `GOOGLE_OAUTH_REDIRECT_URI` ต้องตรงกันทุกตัวอักษร ส่วนการตั้งค่า local เดิมยังใช้ `http://localhost:8787/api/google-drive/oauth2callback` ได้ใน `SWEET_HOUSE_AUTH_MODE=disabled`.
+ค่า callback ใน Google Cloud Console และ `GOOGLE_OAUTH_REDIRECT_URI` ต้องตรงกันทุกตัวอักษร ส่วน local development ที่ `SWEET_HOUSE_AUTH_MODE=disabled` จะใช้ `http://localhost:<PORT>/api/google-drive/oauth2callback` โดย `<PORT>` ต้องเป็น port ที่ server กำลัง listen อยู่ เช่น `61800`.
+
+ห้ามใช้ IP วงแลนของเครื่อง เช่น `http://192.168.1.129:61800/...` เป็น callback ของ Web OAuth เพราะ Google ไม่รับ raw private IP เป็น host ของ redirect URI สำหรับ flow นี้ ถ้าเปิดระบบจากมือถือผ่านวงแลน ให้ทำ Google login จากเครื่องที่รัน server ผ่าน `localhost` หรือ deploy ระบบด้วย public HTTPS domain ก่อน.
 
 1. เปิด Google Cloud Console
 2. สร้างหรือเลือก project
@@ -19,7 +21,7 @@ https://accounting.example.com/api/google-drive/oauth2callback
 5. เพิ่ม Authorized JavaScript origin:
 
 ```text
-http://localhost:8787
+http://localhost:<PORT>
 ```
 
 ช่องนี้ต้องเป็น origin เท่านั้น ห้ามมี path ต่อท้าย เช่น `/api/...`
@@ -27,7 +29,7 @@ http://localhost:8787
 6. เพิ่ม Authorized redirect URI:
 
 ```text
-http://localhost:8787/api/google-drive/oauth2callback
+http://localhost:<PORT>/api/google-drive/oauth2callback
 ```
 
 7. ถ้า OAuth app ยังอยู่สถานะ `Testing` ให้เพิ่มบัญชี Google ที่จะใช้ login ใน `Audience` > `Test users`:
@@ -40,7 +42,7 @@ sweethousecute.manage@gmail.com
 
 ## 2. ตั้งค่าในเว็บ local
 
-1. เปิด `http://localhost:8787/google-drive`
+1. เปิด `http://localhost:<PORT>/google-drive` จากเครื่องที่รัน server
 2. ใส่ `Google OAuth Client ID`
 3. ใส่ `Google OAuth Client Secret`
 4. ตรวจ `Google Drive base folder`

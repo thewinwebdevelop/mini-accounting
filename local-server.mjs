@@ -36,6 +36,7 @@ const {
   getSubstituteReceiptFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
+  getWorkflowDocumentFiles,
   getWorkflowDocumentFile,
   getWorkflowTemplate,
   getWorkflowTransaction,
@@ -52,6 +53,7 @@ const {
   listWorkflowTransactions,
   parseMultipartForm,
   refreshWorkflowTransaction,
+  refreshWorkflowDocumentCompanySettings,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
@@ -70,6 +72,7 @@ const {
   syncWorkflowTransactionToSheets,
 } = require("./forms/local-server.logic.js");
 const {
+  LIGHTWEIGHT_DOCUMENT_KINDS,
   buildWorkflowDocumentPayload,
   validateWorkflowDocumentPayload,
 } = require("./forms/workflow-document.logic.js");
@@ -157,6 +160,8 @@ const {
 } = require("./forms/line-bot.logic.js");
 const { scanLineDocument } = require("./forms/line-ocr.logic.js");
 const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
+const { createSupabaseStorageClient } = require("./forms/supabase-storage.logic.js");
+const { resolveGoogleOAuthRedirectUri } = require("./forms/google-oauth-config.logic.js");
 const {
   SESSION_COOKIE_NAME,
   buildSessionCookie,
@@ -174,49 +179,132 @@ const {
 const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
 const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
 const { createFileAdapter } = require("./forms/storage-file.adapter.js");
+const { validateStockSkuReferences } = require("./forms/stock-line.logic.js");
+const {
+  assertCloudRuntimeConfig,
+  buildCloudRuntimeEnv,
+  healthPayload,
+  isCloudRunEnvironment,
+  resolveListenHost,
+  resolveRuntimeRoot,
+} = require("./forms/cloud-run.logic.js");
+const { createDocumentFileSynchronizer } = require("./forms/supabase-document-files.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
-const rootDir = process.env.SWEET_HOUSE_ROOT_DIR || appDir;
+const runtimeEnv = buildCloudRuntimeEnv(process.env);
+assertCloudRuntimeConfig(runtimeEnv);
+const cloudRun = isCloudRunEnvironment(runtimeEnv);
+const rootDir = resolveRuntimeRoot({ env: runtimeEnv, appDir });
 const formsDir = path.join(appDir, "forms");
-const port = Number(process.env.PORT || 8787);
+const port = Number(runtimeEnv.PORT || 8787);
 // Security: bind loopback-only by default. There is no authentication
 // anywhere in this app, so binding every interface (the previous behaviour)
 // let anyone on the same network -- office wifi, cafe wifi -- open the
 // accounting app and read, edit, or delete documents. Set
 // SWEET_HOUSE_ALLOW_NETWORK=1 to opt in when the owner deliberately wants to
 // reach the app from another device (phone, tablet) on their own network.
-const allowNetwork = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
-const listenHost = allowNetwork ? "0.0.0.0" : "127.0.0.1";
+const allowNetwork = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
+const listenHost = resolveListenHost(runtimeEnv);
 const maxBodyBytes = 80 * 1024 * 1024;
-const authMode = String(process.env.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
-const sessionSecret = String(process.env.SWEET_HOUSE_SESSION_SECRET || "");
-const sessionTtlSeconds = Math.max(300, Number(process.env.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
-const cookieSecure = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_COOKIE_SECURE || ""))
-  || String(process.env.NODE_ENV || "").toLowerCase() === "production";
-const appPublicOrigin = String(process.env.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
-const lineChannelSecret = String(process.env.LINE_CHANNEL_SECRET || "");
-const lineChannelAccessToken = String(process.env.LINE_CHANNEL_ACCESS_TOKEN || "");
-const lineIntakeMaxBytes = Math.max(1024 * 1024, Number(process.env.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024));
-const lineMiniAppUrl = String(process.env.LINE_INTAKE_MINI_APP_URL || (process.env.APP_PUBLIC_ORIGIN ? `${String(process.env.APP_PUBLIC_ORIGIN).replace(/\/$/, "")}/line-intake` : "")).trim();
-const lineOcrProvider = String(process.env.LINE_OCR_PROVIDER || "manual").trim().toLowerCase();
-const lineOcrEndpoint = String(process.env.LINE_OCR_API_URL || "").trim();
-const lineOcrApiKey = String(process.env.LINE_OCR_API_KEY || "").trim();
-const lineIntakeStore = createConfiguredLineIntakeStore({ rootDir, env: process.env, maxBytes: lineIntakeMaxBytes });
+const authMode = String(runtimeEnv.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const sessionSecret = String(runtimeEnv.SWEET_HOUSE_SESSION_SECRET || "");
+const sessionTtlSeconds = Math.max(300, Number(runtimeEnv.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
+const cookieSecure = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_COOKIE_SECURE || ""))
+  || String(runtimeEnv.NODE_ENV || "").toLowerCase() === "production";
+const appPublicOrigin = String(runtimeEnv.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
+const googleOAuthRedirectUri = String(runtimeEnv.GOOGLE_OAUTH_REDIRECT_URI || "").trim();
+const lineChannelSecret = String(runtimeEnv.LINE_CHANNEL_SECRET || "");
+const lineChannelAccessToken = String(runtimeEnv.LINE_CHANNEL_ACCESS_TOKEN || "");
+const lineIntakeMaxBytes = Math.max(1024 * 1024, Number(runtimeEnv.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024));
+const lineMiniAppUrl = String(runtimeEnv.LINE_INTAKE_MINI_APP_URL || (runtimeEnv.APP_PUBLIC_ORIGIN ? `${String(runtimeEnv.APP_PUBLIC_ORIGIN).replace(/\/$/, "")}/line-intake` : "")).trim();
+const lineOcrProvider = String(runtimeEnv.LINE_OCR_PROVIDER || "manual").trim().toLowerCase();
+const lineOcrEndpoint = String(runtimeEnv.LINE_OCR_API_URL || "").trim();
+const lineOcrApiKey = String(runtimeEnv.LINE_OCR_API_KEY || "").trim();
+const lineIntakeStore = createConfiguredLineIntakeStore({ rootDir, env: runtimeEnv, maxBytes: lineIntakeMaxBytes });
 const inventoryDataAdapter = createInventoryDataAdapter({
   rootDir,
-  env: process.env,
+  env: runtimeEnv,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
+const documentFileSynchronizer = cloudRun
+  ? createDocumentFileSynchronizer({
+    rootDir,
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+    storageClient: createSupabaseStorageClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY, bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET }),
+  })
+  : null;
 const documentDataAdapter = createDocumentDataAdapter({
-  env: process.env,
+  env: runtimeEnv,
+  persistFiles: documentFileSynchronizer
+    ? ({ documentKind, documentNo, folderPath }) => documentFileSynchronizer.sync({ documentKind, documentNo, folderPath })
+    : undefined,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
 const documentFileAdapter = createFileAdapter({
   rootDir,
-  env: process.env,
+  env: runtimeEnv,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
+
+async function assertKnownStockSkuReferences(lines = []) {
+  const selectedLines = (Array.isArray(lines) ? lines : []).filter((line) => String(line?.stockSkuId ?? "").trim());
+  if (!selectedLines.length) return;
+  const stockSkus = await inventoryDataAdapter.read("listStockSkus", { search: "" });
+  const errors = validateStockSkuReferences(lines, stockSkus);
+  if (errors.length) throw new Error(errors.join(", "));
+}
+
+async function resolveDocumentFileReference({ documentKind, documentNo, section, fileName, localResolve }) {
+  try {
+    return await localResolve();
+  } catch (error) {
+    if (!cloudRun) throw error;
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind,
+      documentNo,
+    });
+    const folderPath = String(cloudRecord?.folderPath || "");
+    if (!folderPath.startsWith("documents/") || !["pdf", "raw"].includes(section)
+      || !fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+      throw error;
+    }
+    const baseDir = path.resolve(rootDir, folderPath, section);
+    const absolutePath = path.resolve(baseDir, fileName);
+    if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) throw error;
+    return { absolutePath, fileName, section };
+  }
+}
+
+async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad }) {
+  try {
+    return await localLoad();
+  } catch (error) {
+    if (!cloudRun || !documentFileSynchronizer) throw error;
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind,
+      documentNo,
+    });
+    if (!cloudRecord) throw error;
+    await documentFileSynchronizer.materialize({ record: cloudRecord });
+    await rebuildDocumentIndex(rootDir);
+    return localLoad();
+  }
+}
+
+async function persistCloudDocumentMutation({ documentKind, documentNo, result, localLoad }) {
+  if (!cloudRun) return result;
+  const localRecord = await localLoad();
+  await documentDataAdapter.save({
+    documentKind,
+    documentNo,
+    payload: localRecord?.payload || localRecord,
+    localSave: async () => result,
+  });
+  return result;
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -746,6 +834,7 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
     const body = await readJsonBody(request);
     const scanned = await ensureLineIntakeScanned(item);
     const payload = buildLineExpensePayload(request, scanned, body);
+    await assertKnownStockSkuReferences(payload.expenseLines);
     const errors = validateExpenseRequest(payload);
     if (errors.length) {
       sendJson(response, 400, { code: "LINE_INTAKE_CONFIRMATION_INVALID", error: errors.join(", "), errors });
@@ -789,8 +878,12 @@ async function handleLineIntakeCancel(request, response, intakeId) {
 }
 
 function getOAuthRedirectUri(request) {
-  const host = request.headers.host || `localhost:${port}`;
-  return `http://${host}/api/google-drive/oauth2callback`;
+  return resolveGoogleOAuthRedirectUri({
+    configuredRedirectUri: googleOAuthRedirectUri,
+    publicDeployment: cloudRun || String(runtimeEnv.NODE_ENV || "").toLowerCase() === "production",
+    requestHost: request.headers.host,
+    port,
+  });
 }
 
 function parseExpenseRequestFileRoute(urlPath) {
@@ -888,6 +981,7 @@ async function handleExpenseSubmission(request, response) {
       numberField: "requestNo",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
+    await assertKnownStockSkuReferences(payload.expenseLines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "requestNo",
       payload,
@@ -919,6 +1013,7 @@ async function handleSubstituteReceiptSubmission(request, response) {
       numberField: "receiptNo",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
+    await assertKnownStockSkuReferences(payload.lines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "receiptNo",
       payload,
@@ -950,6 +1045,7 @@ async function handleSubstituteReceiptDraftSave(request, response) {
       numberField: "receiptNo",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
+    await assertKnownStockSkuReferences(payload.lines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "receiptNo",
       payload,
@@ -975,10 +1071,21 @@ async function handleSubstituteReceiptDraftSave(request, response) {
 async function handleSubstituteReceiptApprove(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await approveSubstituteReceipt({
       rootDir,
       receiptNo,
       approvedBy: actorForRequest(request, payload.approvedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -989,10 +1096,21 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
 async function handleExpenseRequestApprove(requestNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await approveExpenseRequest({
       rootDir,
       requestNo,
       approvedBy: actorForRequest(request, payload.approvedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1010,10 +1128,21 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
 async function handleExpenseRequestComplete(requestNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await completeExpenseRequest({
       rootDir,
       requestNo,
       completedBy: actorForRequest(request, payload.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1027,10 +1156,21 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
 async function handleSubstituteReceiptComplete(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await completeSubstituteReceipt({
       rootDir,
       receiptNo,
       completedBy: actorForRequest(request, payload.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1041,11 +1181,22 @@ async function handleSubstituteReceiptComplete(receiptNo, request, response) {
 async function handleSubstituteReceiptReceiveStock(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await receiveSubstituteReceiptStock({
       rootDir,
       receiptNo,
       receivedDate: payload.receivedDate,
       receivedBy: actorForRequest(request, payload.receivedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1081,11 +1232,17 @@ async function handleSubstituteReceiptDriveSync(receiptNo, response) {
 
 async function handleExpenseRequestFile(fileRoute, response) {
   try {
-    const file = await getExpenseRequestFile({
-      rootDir,
-      requestNo: fileRoute.requestNo,
+    const file = await resolveDocumentFileReference({
+      documentKind: "expense_request",
+      documentNo: fileRoute.requestNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getExpenseRequestFile({
+        rootDir,
+        requestNo: fileRoute.requestNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
     const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
     const body = Buffer.isBuffer(served) ? served : served.body;
@@ -1101,11 +1258,17 @@ async function handleExpenseRequestFile(fileRoute, response) {
 
 async function handleSubstituteReceiptFile(fileRoute, response) {
   try {
-    const file = await getSubstituteReceiptFile({
-      rootDir,
-      receiptNo: fileRoute.receiptNo,
+    const file = await resolveDocumentFileReference({
+      documentKind: "substitute_receipt",
+      documentNo: fileRoute.receiptNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getSubstituteReceiptFile({
+        rootDir,
+        receiptNo: fileRoute.receiptNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
     const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
     const body = Buffer.isBuffer(served) ? served : served.body;
@@ -1121,12 +1284,25 @@ async function handleSubstituteReceiptFile(fileRoute, response) {
 
 async function handleWorkflowDocumentFile(fileRoute, response) {
   try {
-    const file = await getWorkflowDocumentFile({
-      rootDir,
+    if (fileRoute.section === "pdf") {
+      await refreshWorkflowDocumentCompanySettings({
+        rootDir,
+        documentKind: fileRoute.documentKind,
+        documentNo: fileRoute.documentNo,
+      });
+    }
+    const file = await resolveDocumentFileReference({
       documentKind: fileRoute.documentKind,
       documentNo: fileRoute.documentNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getWorkflowDocumentFile({
+        rootDir,
+        documentKind: fileRoute.documentKind,
+        documentNo: fileRoute.documentNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
     const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
     const body = Buffer.isBuffer(served) ? served : served.body;
@@ -1145,6 +1321,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const data = JSON.parse(fields.payload || "{}");
+    await assertKnownStockSkuReferences(data.lines);
     const errors = validateWorkflowDocumentPayload(data);
     if (errors.length) throw new Error(errors.join(", "));
 
@@ -1217,7 +1394,12 @@ async function handleWorkflowDocumentSubmission(request, response) {
       };
     }
 
-    const payload = buildWorkflowDocumentPayload({ ...data, ...serverOwnedFields });
+    // Company identity is server-owned. Always take it from the current
+    // company settings so every regenerated lightweight-document PDF carries
+    // the configured legal name and tax ID, including edits to an existing
+    // draft. Never trust a client-supplied company object for this header.
+    const company = await getCompanySettings(rootDir);
+    const payload = buildWorkflowDocumentPayload({ ...data, company, ...serverOwnedFields });
     const result = await documentDataAdapter.save({
       documentKind: payload.documentKind,
       documentNo: payload.documentNo,
@@ -1234,11 +1416,22 @@ async function handleWorkflowDocumentSubmission(request, response) {
 async function handleWorkflowDocumentComplete(documentKind, documentNo, request, response) {
   try {
     const body = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const result = await completeWorkflowDocument({
       rootDir,
       documentKind,
       documentNo,
       completedBy: actorForRequest(request, body.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind,
+      documentNo,
+      result,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1249,11 +1442,23 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
 async function handleWorkflowDocumentAction(action, documentKind, documentNo, request, response) {
   try {
     const body = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const actions = {
       submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: actorForRequest(request, body.submittedBy) }),
       approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: actorForRequest(request, body.approvedBy) }),
     };
-    sendJson(response, 200, await actions[action]());
+    const result = await actions[action]();
+    await persistCloudDocumentMutation({
+      documentKind,
+      documentNo,
+      result,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
+    sendJson(response, 200, result);
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถเปลี่ยนสถานะเอกสารได้");
   }
@@ -1323,10 +1528,14 @@ async function handleWorkflowDocumentList(request, url, response) {
   try {
     const filters = parseWorkflowDocumentListFilters(url.searchParams);
     const localDocuments = await listWorkflowDocumentSummaries(rootDir, filters);
+    const cloudFilters = {
+      ...filters,
+      ...(filters.documentKind ? {} : { documentKinds: LIGHTWEIGHT_DOCUMENT_KINDS }),
+    };
     const documents = await documentDataAdapter.list({
       localResult: localDocuments,
       documentKind: filters.documentKind || undefined,
-      filters: filters.documentKind ? { documentKind: filters.documentKind } : {},
+      filters: cloudFilters,
     });
     const visible = authMode === "line" && request.auth?.role === "employee"
       ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
@@ -1344,7 +1553,16 @@ async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
     const localRecord = await getWorkflowDocument(rootDir, documentKind, documentNo);
     const record = await documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
     if (!record) throw new Error("ไม่พบเอกสาร");
-    sendJson(response, 200, omitAbsoluteFolderPath(record));
+    const files = localRecord
+      ? await getWorkflowDocumentFiles(rootDir, documentKind, documentNo)
+      : null;
+    sendJson(response, 200, omitAbsoluteFolderPath({
+      ...record,
+      ...(files ? {
+        pdfFiles: files.pdfFiles.map(omitAbsolutePathFromFileEntry),
+        rawFiles: files.rawFiles.map(omitAbsolutePathFromFileEntry),
+      } : {}),
+    }));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดเอกสารได้",
@@ -1582,9 +1800,17 @@ async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   }
 }
 
-function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
+function buildWorkflowStepOpenUrl({ route, documentKind, documentNo, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
   const separator = route.includes("?") ? "&" : "?";
   const params = new URLSearchParams({ transactionNo, workflowTemplateId, workflowStepId, returnTo });
+  if (documentNo) {
+    const documentNumberParam = documentKind === "expense_request"
+      ? "requestNo"
+      : documentKind === "substitute_receipt"
+        ? "receiptNo"
+        : "documentNo";
+    params.set(documentNumberParam, documentNo);
+  }
   // Only present for a substitute_receipt step whose *snapshotted* template
   // step declared a receiptType (see getDocumentTypeDefinition call site
   // below) -- a template persisted before this feature shipped, or a step
@@ -1628,10 +1854,15 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
     const templateStep = (transaction.templateSnapshot?.documentSteps || [])
       .find((item) => item.stepId === step.stepId);
     const receiptType = step.documentKind === "substitute_receipt" ? templateStep?.receiptType : undefined;
+    const childDocument = (transaction.childDocuments || []).find((document) => document.workflowStepId === step.stepId)
+      || (transaction.childDocuments || []).find((document) => !document.workflowStepId && document.documentKind === step.documentKind);
+    const documentNo = childDocument?.documentNo || "";
 
     const returnTo = `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`;
     const url = buildWorkflowStepOpenUrl({
       route: definition.route,
+      documentKind: step.documentKind,
+      documentNo,
       transactionNo,
       workflowTemplateId: transaction.workflowTemplateId,
       workflowStepId: step.stepId,
@@ -1645,6 +1876,7 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
       transactionNo,
       workflowTemplateId: transaction.workflowTemplateId,
       workflowStepId: step.stepId,
+      documentNo,
       returnTo,
     });
   } catch (error) {
@@ -1673,9 +1905,12 @@ async function handleWorkflowTransactionFile(fileRoute, response) {
   }
 }
 
-async function handleGoogleDriveStatus(response) {
+async function handleGoogleDriveStatus(request, response) {
   try {
-    sendJson(response, 200, await getGoogleDriveStatus(rootDir));
+    sendJson(response, 200, {
+      ...(await getGoogleDriveStatus(rootDir)),
+      redirectUri: getOAuthRedirectUri(request),
+    });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot read Google Drive status",
@@ -1765,6 +2000,7 @@ async function handleDraftSave(request, response) {
       numberField: "requestNo",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
+    await assertKnownStockSkuReferences(payload.expenseLines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "requestNo",
       payload,
@@ -2649,7 +2885,7 @@ async function handleStaticFile(request, response) {
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
     let body = await readFile(absolutePath);
     if (contentType.startsWith("text/html")) {
-      body = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(process.env.LINE_LIFF_ID || ""));
+      body = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(runtimeEnv.LINE_LIFF_ID || ""));
     }
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
@@ -2661,6 +2897,11 @@ async function handleStaticFile(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "GET" && url.pathname === "/healthz") {
+    sendJson(response, 200, healthPayload(runtimeEnv));
+    return;
+  }
 
   if (!requireAuthenticatedRequest(request, response, url)) return;
 
@@ -3346,7 +3587,7 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/google-drive/status") {
       if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
-      await handleGoogleDriveStatus(response);
+      await handleGoogleDriveStatus(request, response);
       return;
     }
 
@@ -3446,8 +3687,10 @@ async function startServer() {
 
   server.listen(port, listenHost, () => {
     const boundPort = server.address().port;
-    console.log(`Expense request local web app: http://localhost:${boundPort}/`);
-    if (allowNetwork) {
+    console.log(`${cloudRun ? "Expense request Cloud Run app" : "Expense request local web app"}: http://localhost:${boundPort}/`);
+    if (cloudRun) {
+      console.log(`Cloud Run runtime active (${listenHost}:${boundPort}); durable data is configured for Supabase and local files use ${rootDir}`);
+    } else if (allowNetwork) {
       console.log(
         `[คำเตือน] SWEET_HOUSE_ALLOW_NETWORK เปิดใช้งานอยู่ เซิร์ฟเวอร์กำลังรับฟังทุกอินเทอร์เฟซเครือข่าย (${listenHost}:${boundPort}) สามารถเข้าถึงจากเครือข่ายได้จากอุปกรณ์อื่น เช่น วงแลนสำนักงานหรือไวไฟร้านกาแฟ และระบบนี้ไม่มีระบบยืนยันตัวตนใด ๆ ทั้งสิ้น ผู้ใดก็ตามที่อยู่ในเครือข่ายเดียวกันจะสามารถเปิดดู แก้ไข หรือลบเอกสารบัญชีได้ โปรดใช้เฉพาะในเครือข่ายที่เชื่อถือได้เท่านั้น`,
       );

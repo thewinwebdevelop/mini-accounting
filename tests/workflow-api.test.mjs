@@ -11,6 +11,7 @@ import serverLogic from "../forms/local-server.logic.js";
 import inventoryLogic from "../forms/inventory.logic.js";
 import workflowLogic from "../forms/workflow.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+import companySettingsLogic from "../forms/company-settings.logic.js";
 
 const { createProduct, createStockSku } = inventoryLogic;
 
@@ -1657,6 +1658,27 @@ test("POST refresh and start-document enforce strict template order, and self-re
     assert.equal(poParsed.searchParams.get("workflowStepId"), poStep.stepId);
     assert.equal(poParsed.searchParams.get("returnTo"), `/workflow-transaction?transactionNo=${txn.transactionNo}`);
 
+    const draft = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+      method: "POST",
+      body: workflowDocumentFormData({
+        transactionNo: txn.transactionNo,
+        workflowTemplateId: txn.workflowTemplateId,
+        workflowStepId: poStep.stepId,
+      }),
+    });
+    const resumed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${poStep.stepId}`, {
+      method: "POST",
+    });
+    const resumedUrl = new URL(resumed.url, baseUrl);
+    assert.equal(resumedUrl.searchParams.get("documentNo"), draft.documentNo, "ดำเนินการต่อต้องเปิดเอกสาร draft เดิม");
+
+    await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${draft.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${draft.documentNo}/approve`, { method: "POST", body: JSON.stringify({}) });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${draft.documentNo}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ completedBy: "คุณต้า" }),
+    });
+
     // A locked step (payment_voucher, step index 2) must be refused even
     // though it is a real step in the template.
     const lockedAttempt = await requestJson(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${voucherStep.stepId}`, {
@@ -1671,10 +1693,9 @@ test("POST refresh and start-document enforce strict template order, and self-re
     });
     assert.equal(unknownAttempt.ok, false);
 
-    // Complete the purchase order directly (without ever calling /refresh)
-    // then immediately try to start substitute_receipt: start-document must
-    // refresh first so the newly-completed step unlocks the next one right away.
-    await submitAndCompletePurchaseOrder(baseUrl, txn);
+    // The resumed purchase order was completed above without ever calling
+    // /refresh. start-document must refresh first so the newly-completed step
+    // unlocks substitute_receipt immediately.
 
     const receiptOpen = await requestJsonOk(baseUrl, `/api/workflow-transactions/${txn.transactionNo}/start-document/${receiptStep.stepId}`, {
       method: "POST",
@@ -1698,6 +1719,94 @@ test("POST refresh and start-document enforce strict template order, and self-re
     assert.equal(refreshed.steps[0].workflowStatus, "completed");
     assert.equal(refreshed.steps[1].workflowStatus, "not_started");
     assert.equal(refreshed.steps[2].workflowStatus, "blocked");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("workflow document PDFs include configured company tax ID for every lightweight document kind", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-company-pdf-"));
+  const child = spawnLocalServer(rootDir);
+  const company = {
+    legalName: "หจก.สวีทเฮาส์ เดซี่",
+    taxId: "0103569007277",
+    branch: "สำนักงานใหญ่",
+    address: "500 หมู่ 10 กรุงเทพฯ",
+  };
+  const kinds = [
+    "purchase_order",
+    "payment_voucher",
+    "cash_spend_declaration",
+    "payee_acknowledgement",
+    "goods_receipt",
+  ];
+
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    await companySettingsLogic.saveCompanySettings({ rootDir, ...company });
+
+    for (const documentKind of kinds) {
+      const saved = await requestJsonOk(baseUrl, "/api/workflow-documents", {
+        method: "POST",
+        body: workflowDocumentFormData({
+          documentKind,
+          title: `ทดสอบ PDF ${documentKind}`,
+          businessPurpose: "ทดสอบข้อมูลบริษัทใน PDF",
+        }),
+      });
+      const record = await serverLogic.getWorkflowDocument(rootDir, documentKind, saved.documentNo);
+      const pdfText = await extractPdfText(join(rootDir, record.folderPath, "pdf", `01_${documentKind}.pdf`));
+      assert.match(pdfText, /0103569007277/, `${documentKind}: PDF ต้องแสดงเลขประจำตัวผู้เสียภาษีของบริษัท`);
+      assert.match(pdfText, /หจก\.สวีทเฮาส์ เดซี่/, `${documentKind}: PDF ต้องแสดงชื่อนิติบุคคล`);
+    }
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("opening a legacy workflow PDF refreshes missing company settings before serving it", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-legacy-company-pdf-"));
+  const child = spawnLocalServer(rootDir);
+  const company = {
+    legalName: "หจก.สวีทเฮาส์ เดซี่",
+    taxId: "0103569007277",
+    branch: "สำนักงานใหญ่",
+    address: "500 หมู่ 10 กรุงเทพฯ",
+  };
+
+  try {
+    const legacyPayload = workflowDocumentLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order",
+      accountingMonth: "2026-09",
+      documentDate: "2026-09-26",
+      title: "เอกสารเก่าก่อนตั้งค่าบริษัท",
+      requesterName: "คุณต้า",
+      payeeName: "ร้านค้าตัวอย่าง",
+      businessPurpose: "ทดสอบ regenerate PDF",
+      lines: [{ description: "สินค้าเก่า", quantity: "1", unitCost: "100" }],
+    });
+    await serverLogic.saveWorkflowDocument({ rootDir, payload: legacyPayload });
+    await companySettingsLogic.saveCompanySettings({ rootDir, ...company });
+
+    const legacyRecord = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", legacyPayload.documentNo);
+    const legacyPdfPath = join(rootDir, legacyRecord.folderPath, "pdf", "01_purchase_order.pdf");
+    const legacyPdfText = await extractPdfText(legacyPdfPath);
+    assert.match(legacyPdfText, /กรุณาระบุเลขประจำตัวผู้เสียภาษี/);
+
+    const port = await waitForServerPort(child);
+    const response = await fetch(`http://localhost:${port}/workflow-documents/purchase_order/${legacyPayload.documentNo}/pdf/01_purchase_order.pdf`);
+    assert.equal(response.ok, true);
+    const downloadedPdfPath = join(rootDir, "downloaded-legacy-purchase-order.pdf");
+    await writeFile(downloadedPdfPath, Buffer.from(await response.arrayBuffer()));
+    const refreshedPdfText = await extractPdfText(downloadedPdfPath);
+    assert.match(refreshedPdfText, /0103569007277/);
+    assert.doesNotMatch(refreshedPdfText, /กรุณาระบุเลขประจำตัวผู้เสียภาษี/);
+
+    const refreshedRecord = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", legacyPayload.documentNo);
+    assert.deepEqual(refreshedRecord.payload.company, company);
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

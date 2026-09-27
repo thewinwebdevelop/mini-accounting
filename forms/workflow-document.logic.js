@@ -21,6 +21,7 @@ const WORKFLOW_DOCUMENT_STATUS_LABELS = {
   completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
 };
+const WORKFLOW_DOCUMENT_PDF_VERSION = 3;
 
 // A cancelled lightweight document must never be silently reopened by completing
 // it. Every other status may transition to "completed" (repeat completion of an
@@ -315,6 +316,7 @@ function buildWorkflowDocumentPayload(data = {}, options = {}) {
       branch: cleanText(data.company.branch),
       address: cleanText(data.company.address),
     } : undefined,
+    pdfVersion: WORKFLOW_DOCUMENT_PDF_VERSION,
     lines,
     totals,
     evidenceFiles,
@@ -375,6 +377,7 @@ const WorkflowDocumentLogic = {
   validateWorkflowAmounts,
   WORKFLOW_DOCUMENT_PREFIXES,
   WORKFLOW_DOCUMENT_STATUS_LABELS,
+  WORKFLOW_DOCUMENT_PDF_VERSION,
   assertWorkflowDocumentCompletable,
   buildWorkflowDocumentPayload,
   buildVendorSnapshot,

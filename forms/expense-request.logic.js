@@ -136,7 +136,7 @@ function validateExpenseRequest(data = {}) {
   if (!String(data.paymentTargetName ?? "").trim()) errors.push("ระบุชื่อผู้รับเงินหรือผู้ขาย");
   if (!Array.isArray(data.expenseLines) || data.expenseLines.length === 0) {
     errors.push("เพิ่มรายการค่าใช้จ่ายอย่างน้อย 1 รายการ");
-  } else if (!data.expenseLines.some((line) => String(line.description ?? "").trim() && toCents(line.amountBeforeVat) > 0)) {
+  } else if (!data.expenseLines.some((line) => (String(line.description ?? "").trim() || String(line.stockSkuId ?? "").trim()) && toCents(line.amountBeforeVat) > 0)) {
     errors.push("กรอกรายละเอียดและยอดเงินของรายการค่าใช้จ่ายอย่างน้อย 1 รายการ");
   }
   if ((data.expenseLines || []).some((line) => line.vatConfirmationRequired && !String(line.vatAmount ?? "").trim())) {

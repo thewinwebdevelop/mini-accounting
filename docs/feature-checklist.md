@@ -48,9 +48,11 @@
 - [x] LINE token verification, signed HttpOnly session, role-aware app-user foundation, and `/line-auth` LIFF entrypoint.
 - [x] Supabase server boundary, auth/core-data migrations, and idempotent local-data migration dry-run/apply tooling.
 - [x] Add private Supabase Storage bucket, server-only Storage client, deterministic file manifest, and idempotent verified migration CLI.
+- [x] Migrate document metadata and document-file references to Supabase with idempotent source-key verification.
 - [ ] Run the reviewed file migration against the target Supabase project and switch authorized file reads to Storage.
 - [x] Add resource-level authorization for employee-owned documents and owner/accounting approval actions.
 - [x] Add Supabase-backed data adapter and dual-read/dual-write cutover for inventory and document workflows.
+- [x] Add per-line manual-or-Stock-SKU selection to lightweight workflow documents and expense requests, with active-SKU server validation; preserve substitute-receipt stock/general document mode.
 - [ ] Configure LINE Developing/Review/Published channels and complete production verification.
 - [ ] Configure LINE Messaging API webhook URL, channel access token, and rich-menu shortcuts for image/PDF intake.
 - [ ] Configure `LINE_OCR_PROVIDER=http`, OCR endpoint/API key, and apply the LINE intake OCR migration before production use.

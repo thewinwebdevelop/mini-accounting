@@ -31,7 +31,7 @@
 ### Task 1: Storage schema and server-only client
 
 **Files:**
-- Create: `supabase/migrations/20260925_003_storage.sql`
+- Create: `supabase/migrations/202609250003_storage.sql`
 - Create: `forms/supabase-storage.logic.js`
 - Create: `tests/supabase-storage.logic.test.mjs`
 - Modify: `.env.example`
@@ -65,7 +65,7 @@ Run the same `node --test` command and expect all Storage client tests to pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/20260925_003_storage.sql forms/supabase-storage.logic.js tests/supabase-storage.logic.test.mjs .env.example
+git add supabase/migrations/202609250003_storage.sql forms/supabase-storage.logic.js tests/supabase-storage.logic.test.mjs .env.example
 git commit -m "feat: add private supabase storage boundary"
 ```
 
@@ -132,7 +132,7 @@ For each manifest row, query `storage_migration_records` by migration/source key
 
 - [ ] **Step 4: Add CLI output and runbook**
 
-Use `SWEET_HOUSE_ROOT_DIR`, `SUPABASE_STORAGE_BUCKET` (default `sweet-house-files`), `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`. Print JSON counts and per-source errors with paths relative to the data root. Document applying migration `20260925_003_storage.sql`, backup requirements, dry-run, apply, and verification.
+Use `SWEET_HOUSE_ROOT_DIR`, `SUPABASE_STORAGE_BUCKET` (default `sweet-house-files`), `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`. Print JSON counts and per-source errors with paths relative to the data root. Document applying migration `202609250003_storage.sql`, backup requirements, dry-run, apply, and verification.
 
 - [ ] **Step 5: Run focused and full tests**
 

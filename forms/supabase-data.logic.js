@@ -172,6 +172,14 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     if (filters.ownerUserId) params.set("owner_user_id", `eq.${filters.ownerUserId}`);
     if (filters.status) params.set("status", `eq.${filters.status}`);
     if (filters.documentKind) params.set("document_kind", `eq.${filters.documentKind}`);
+    const documentKinds = Array.isArray(filters.documentKinds)
+      ? filters.documentKinds
+        .map(value => String(value || "").trim())
+        .filter(value => /^[a-z0-9_]+$/.test(value))
+      : [];
+    if (!filters.documentKind && documentKinds.length > 0) {
+      params.set("or", `(${documentKinds.map(value => `document_kind.eq.${value}`).join(",")})`);
+    }
     if (filters.accountingMonth) params.set("accounting_month", `eq.${filters.accountingMonth}`);
     params.set("order", "updated_at.desc");
     return listTable("documents", params.toString(), mapDocumentRecord);

@@ -22,9 +22,9 @@ test("google drive settings page supports OAuth setup from the UI", async () => 
   assert.match(html, /\/api\/google-drive\/config/);
   assert.match(html, /\/api\/google-drive\/login/);
   assert.match(html, /Authorized JavaScript origin/);
-  assert.match(html, /http:\/\/localhost:8787/);
   assert.match(html, /Authorized redirect URI/);
-  assert.match(html, /http:\/\/localhost:8787\/api\/google-drive\/oauth2callback/);
+  assert.match(html, /id="oauthRedirectUri"/);
+  assert.match(html, /id="oauthOrigin"/);
   assert.match(html, /Test users/);
   assert.match(html, /sweethousecute\.manage@gmail\.com/);
 });

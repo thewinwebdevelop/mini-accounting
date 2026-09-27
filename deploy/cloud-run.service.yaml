@@ -1,0 +1,71 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: sweet-house
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containerConcurrency: 40
+      containers:
+        - image: asia-southeast1-docker.pkg.dev/REPLACE_PROJECT_ID/sweet-house/sweet-house:REPLACE_TAG
+          ports:
+            - name: http1
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          env:
+            - name: CLOUD_RUN
+              value: "1"
+            - name: NODE_ENV
+              value: production
+            - name: SWEET_HOUSE_AUTH_MODE
+              value: line
+            - name: SWEET_HOUSE_COOKIE_SECURE
+              value: "1"
+            - name: APP_PUBLIC_ORIGIN
+              value: https://REPLACE_WITH_CLOUD_RUN_URL
+            - name: LINE_INTAKE_MINI_APP_URL
+              value: https://REPLACE_WITH_CLOUD_RUN_URL/line-intake
+            - name: SUPABASE_URL
+              value: https://REPLACE_PROJECT.supabase.co
+            - name: SUPABASE_STORAGE_BUCKET
+              value: sweet-house-files
+            - name: LINE_INTAKE_BACKEND
+              value: supabase
+            - name: DATA_BACKEND
+              value: supabase-read
+            - name: DATA_BACKEND_DOCUMENTS
+              value: supabase-read
+            - name: DATA_BACKEND_INVENTORY
+              value: supabase-read
+            - name: DATA_BACKEND_FILES
+              value: supabase-read
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-supabase-secret
+                  key: latest
+            - name: SWEET_HOUSE_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-session-secret
+                  key: latest
+            - name: LINE_CHANNEL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-line-channel-secret
+                  key: latest
+            - name: LINE_CHANNEL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-line-access-token
+                  key: latest
+

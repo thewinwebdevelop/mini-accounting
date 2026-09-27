@@ -28,10 +28,15 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /name="quantity"/);
   assert.match(html, /name="unitCost"/);
   assert.match(html, /name="paymentNote"/);
+  assert.match(html, /name="requesterName"/);
+  assert.match(html, /name="requesterRole"/);
+  assert.doesNotMatch(html, /name="paymentReference"/);
+  assert.doesNotMatch(html, /เลขอ้างอิง\/บัญชีปลายทาง/);
   assert.match(html, /name="evidence_paymentSlip"/);
   assert.match(html, /name="evidence_purchaseOrder"/);
   assert.match(html, /name="evidence_goodsReceived"/);
-  assert.match(html, /name="additionalNote"/);
+  assert.match(html, /<label for="paymentNote">หมายเหตุเพิ่มเติม<\/label>/);
+  assert.doesNotMatch(html, /name="additionalNote"/);
   assert.match(html, /id="submitSubstituteReceipt"/);
   assert.match(html, /id="saveDraft"/);
   assert.match(html, /id="submitForApproval"/);
@@ -39,6 +44,7 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /id="receiveStock"/);
   assert.match(html, /id="receiptStatus"/);
   assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
+  assert.match(html, /src="\.\/stock-line\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.browser\.js"/);
 });
@@ -52,6 +58,7 @@ test("substitute receipt stock line template is collapsible with a running summa
   assert.match(template, /data-stock-line-title/);
   assert.match(template, /data-stock-line-total/);
   assert.match(template, /class="stock-line-fields"/);
+  assert.match(html, /\.stock-line-title\s*\{[\s\S]*?text-overflow:\s*ellipsis[\s\S]*?white-space:\s*nowrap/);
 });
 
 test("substitute receipt line template lets general expenses skip Stock SKU", async () => {
@@ -59,9 +66,10 @@ test("substitute receipt line template lets general expenses skip Stock SKU", as
   const template = html.match(/<template id="stockLineTemplate">([\s\S]*?)<\/template>/)?.[1] ?? "";
 
   assert.match(template, /data-stock-only-field/);
-  assert.match(template, /<select name="stockSkuId" data-searchable><\/select>/);
+  assert.match(template, /<select name="stockSkuId" data-searchable data-display-lines="2"><\/select>/);
   assert.doesNotMatch(template, /<select name="stockSkuId" required/);
   assert.match(template, /data-description-label>รายละเอียด/);
+  assert.match(html, /\[data-stock-only-field\]\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
 });
 
 test("substitute receipt browser controller loads draft and submitted receipt query targets", async () => {
@@ -93,12 +101,50 @@ test("substitute receipt controller validates canonical identity and legacy atta
   assert.match(browserLogic, /workflowTemplateId/);
 });
 
+test("pending substitute receipts remain editable and save through the numbered endpoint", async () => {
+  const { elements, fetchCalls } = await setupSubstituteReceiptSandbox({
+    search: "?receiptNo=SR-2026-09-0001",
+    receiptResponse: {
+      receiptNo: "SR-2026-09-0001",
+      status: "pending_approval",
+      payload: { receiptType: "general_expense", lines: [], receiptTitle: "ก่อนแก้ไข" },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+    mutationResponses: [],
+  });
+
+  assert.equal(elements.saveDraft.hidden, false);
+  assert.equal(elements.submitForApproval.hidden, true);
+  assert.equal(elements.approveReceipt.hidden, false);
+  assert.equal(elements.receiptStatus.textContent, "รอตรวจอนุมัติ");
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const saveCall = fetchCalls.find((call) => call.options.method === "POST" && call.url === "/api/substitute-receipts");
+  assert.ok(saveCall, "pending edits must save through the numbered receipt endpoint");
+  assert.equal(fetchCalls.some((call) => call.url.includes("/api/substitute-receipt-drafts")), false);
+});
+
 test("substitute receipt browser controller updates stock line summaries", async () => {
   const browserLogic = await readFile(browserLogicPath, "utf8");
 
   assert.match(browserLogic, /function updateStockLineSummaries/);
   assert.match(browserLogic, /data-stock-line-title/);
   assert.match(browserLogic, /data-stock-line-total/);
+});
+
+test("substitute receipt stock options use the shared SKU and product-name label", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+
+  assert.match(browserLogic, /stockLineLogic\.stockSkuLabel/);
+});
+
+test("substitute receipt controller collects requester identity for the certificate", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /form\.elements\.requesterName/);
+  assert.match(browserLogic, /form\.elements\.requesterRole/);
 });
 
 test("approved general expense completes directly through the canonical lifecycle action", async () => {
@@ -137,7 +183,7 @@ test("approved stock completion opens a modal and a decline or Escape makes no m
 test("canonical lifecycle labels and SR mutation controls cover each receipt type and status", async () => {
   const expected = {
     draft: ["แบบร่าง", ["saveDraft", "submitForApproval"]],
-    pending_approval: ["รอตรวจอนุมัติ", ["approveReceipt"]],
+    pending_approval: ["รอตรวจอนุมัติ", ["saveDraft", "approveReceipt"]],
     approved: ["อนุมัติแล้ว", ["completeReceipt"]],
     received: ["รับเข้าคลังแล้ว", ["completeReceipt"]],
     completed: ["เสร็จสิ้น", []],
@@ -331,6 +377,9 @@ test("substitute receipt form shows the cross-document prefill banner", async ()
   const html = await readFile(htmlPath, "utf8");
   assert.match(html, /workflow-prefill\.logic\.js/);
   assert.match(html, /id="workflowPrefillBanner"/);
+  assert.match(html, /#workflowPrefillGroups\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(html, /\.prefill-group input\[type="checkbox"\]\s*\{[\s\S]*?width:\s*18px[\s\S]*?min-height:\s*18px/);
+  assert.match(html, /\.prefill-group span\s*\{[\s\S]*?min-width:\s*0/);
   assert.match(html, /ใช้ข้อมูลเดิม/);
   assert.match(html, /กรอกใหม่/);
 });
@@ -368,6 +417,57 @@ test("substitute receipt browser controller submits the optional payment note", 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.equal(capturedPost.payload.paymentNote, "จ่ายเงินสด 500 บาท\nโอนเงิน 2,000 บาท");
+});
+
+test("substitute receipt reload restores a legacy additional note into the single note field", async () => {
+  const { elements } = await setupSubstituteReceiptSandbox({
+    search: "?receiptNo=SR-2026-09-0005",
+    receiptResponse: {
+      receiptNo: "SR-2026-09-0005",
+      status: "draft",
+      payload: { additionalNote: "หมายเหตุเดิมที่ต้องแสดงต่อ" },
+    },
+  });
+
+  assert.equal(elements.paymentNote.value, "หมายเหตุเดิมที่ต้องแสดงต่อ");
+});
+
+test("opening a saved substitute receipt renders its existing evidence links", async () => {
+  const { elements } = await setupSubstituteReceiptSandbox({
+    search: "?receiptNo=SR-2026-09-0005",
+    receiptResponse: {
+      receiptNo: "SR-2026-09-0005",
+      status: "draft",
+      payload: {
+        evidenceFiles: {
+          paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }],
+          purchaseOrder: [{ storedName: "B2_purchase-order_001.jpg" }],
+        },
+      },
+      evidenceFiles: {
+        paymentSlip: [{ storedName: "B1_payment-slip_001.jpg" }],
+        purchaseOrder: [{ storedName: "B2_purchase-order_001.jpg" }],
+      },
+      rawFiles: [{
+        storedName: "B1_payment-slip_001.jpg",
+        url: "/api/substitute-receipts/SR-2026-09-0005/files/raw/B1_payment-slip_001.jpg",
+      }, {
+        storedName: "B2_purchase-order_001.jpg",
+        url: "/api/substitute-receipts/SR-2026-09-0005/files/raw/B2_purchase-order_001.jpg",
+      }],
+    },
+  });
+
+  assert.equal(elements.legacyEvidenceLinks.hidden, false);
+  assert.match(elements.legacyEvidenceLinks.innerHTML, /B1_payment-slip_001\.jpg/);
+  assert.match(elements.legacyEvidenceLinks.innerHTML, /\/api\/substitute-receipts\/SR-2026-09-0005\/files\/raw/);
+
+  const paymentSlipFiles = elements.legacyEvidenceLinks.parentNode.querySelector('[data-existing-evidence-for="paymentSlip"]');
+  const purchaseOrderFiles = elements.legacyEvidenceLinks.parentNode.querySelector('[data-existing-evidence-for="purchaseOrder"]');
+  assert.equal(paymentSlipFiles.hidden, false);
+  assert.match(paymentSlipFiles.innerHTML, /B1_payment-slip_001\.jpg/);
+  assert.equal(purchaseOrderFiles.hidden, false);
+  assert.match(purchaseOrderFiles.innerHTML, /B2_purchase-order_001\.jpg/);
 });
 
 // --- Genuine execution: the real controller module actually runs --------
@@ -660,13 +760,13 @@ test("real substitute-receipt controller selects an active vendor and submits it
   elements.vendorPresetSelect.dispatch("change");
   assert.equal(form.elements.payeeName.value, savedVendor.name);
   assert.equal(form.elements.payeeTaxId.value, savedVendor.taxId);
-  assert.equal(form.elements.paymentReference.value, savedVendor.paymentReference);
   assert.equal(form.dataset.vendorId, savedVendor.id);
 
   elements.saveDraft.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(capturedPost.payload.vendorId, savedVendor.id);
   assert.equal(capturedPost.payload.payeeName, savedVendor.name);
+  assert.equal(Object.prototype.hasOwnProperty.call(capturedPost.payload, "paymentReference"), false);
 });
 
 test("substitute-receipt controller renders an old inactive vendor snapshot when the picker lists no active match", async () => {
@@ -703,7 +803,6 @@ test("substitute-receipt controller renders an old inactive vendor snapshot when
 
   assert.equal(form.elements.payeeName.value, oldSnapshot.name);
   assert.equal(form.elements.payeeTaxId.value, oldSnapshot.taxId);
-  assert.equal(form.elements.paymentReference.value, oldSnapshot.paymentReference);
   assert.equal(form.dataset.vendorId, "VENDOR-INACTIVE-SR");
   assert.equal(elements.vendorPresetSelect.value, "", "inactive vendor is not offered as a new selection");
 });

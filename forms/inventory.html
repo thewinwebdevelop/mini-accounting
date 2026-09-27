@@ -176,6 +176,7 @@
       .span-4, .span-6 { grid-column: span 12; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -289,7 +290,7 @@
           <div class="grid">
             <div class="field span-12">
               <label for="skuProductSelect">สินค้าแม่ *</label>
-              <select id="skuProductSelect" name="productId" required data-searchable></select>
+              <select id="skuProductSelect" name="productId" required data-searchable data-display-lines="2"></select>
             </div>
             <div class="field span-6">
               <label for="skuCode">SKU *</label>

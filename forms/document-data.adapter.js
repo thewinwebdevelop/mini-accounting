@@ -19,9 +19,24 @@ function stripPrivatePaths(value) {
 
 function buildDocumentCloudRecord({ documentKind, documentNo, payload, result }) {
   const cleanKind = String(documentKind || payload?.documentKind || result?.documentKind || "").trim();
-  const cleanNo = String(documentNo || payload?.documentNo || result?.documentNo || "").trim();
+  const cleanNo = String(
+    documentNo
+      || payload?.documentNo
+      || payload?.requestNo
+      || payload?.receiptNo
+      || result?.documentNo
+      || result?.requestNo
+      || result?.receiptNo
+      || "",
+  ).trim();
   if (!cleanKind || !cleanNo) throw adapterError("DOCUMENT_SOURCE_KEY_INVALID", "Document identity is required for cloud persistence");
-  const safePayload = stripPrivatePaths(payload || result?.payload || result || {});
+  const effectivePayload = { ...(payload || {}) };
+  for (const field of ["documentNo", "requestNo", "receiptNo", "folderPath", "status", "accountingMonth", "createdAt", "updatedAt"]) {
+    if ((effectivePayload[field] === undefined || effectivePayload[field] === "") && result?.[field] !== undefined) {
+      effectivePayload[field] = result[field];
+    }
+  }
+  const safePayload = stripPrivatePaths(Object.keys(effectivePayload).length ? effectivePayload : result?.payload || result || {});
   return {
     sourceKey: stableSourceKey("document", `${cleanKind}:${cleanNo}`),
     documentKind: cleanKind,
@@ -50,7 +65,7 @@ function cloudRecordToPublicDocument(record = {}) {
   }).filter(([, value]) => value !== undefined));
 }
 
-function createDocumentDataAdapter({ env = process.env, client, logger = () => {} } = {}) {
+function createDocumentDataAdapter({ env = process.env, client, logger = () => {}, persistFiles } = {}) {
   const mode = String(env.DATA_BACKEND_DOCUMENTS || env.DATA_BACKEND || "local").trim().toLowerCase();
   if (!["local", "shadow", "dual-write", "supabase-read"].includes(mode)) {
     throw adapterError("DATA_BACKEND_INVALID", `Unsupported data backend mode: ${mode}`);
@@ -71,6 +86,9 @@ function createDocumentDataAdapter({ env = process.env, client, logger = () => {
     if (mode === "local" || mode === "shadow") return result;
     const record = buildDocumentCloudRecord({ documentKind, documentNo, payload, result });
     try {
+      if (typeof persistFiles === "function") {
+        await persistFiles({ documentKind, documentNo: record.documentNo, folderPath: record.folderPath, payload, result });
+      }
       await cloud.upsertDocument(record);
     } catch (error) {
       throw adapterError("DATA_CLOUD_WRITE_FAILED", "Cloud document write failed; retry is required", { retryable: true, causeCode: error?.code || "CLOUD_ERROR" });

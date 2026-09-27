@@ -2336,7 +2336,7 @@ test("getSubmittedExpenseRequest returns editable saved request data with raw ev
   }
 });
 
-test("saveExpenseSubmission rejects edits after submission", async () => {
+test("saveExpenseSubmission allows edits while pending approval without resetting history or evidence", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -2399,12 +2399,47 @@ test("saveExpenseSubmission rejects edits after submission", async () => {
 
     const saved = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
     assert.equal(saved.payload.requesterName, "คุณส่ง");
+    assert.equal(saved.payload.requestTitle, "แก้ไขหลังส่ง");
+    assert.equal(saved.payload.status, "pending_approval");
+    assert.equal(saved.payload.statusHistory.length, 1);
+    assert.equal(saved.payload.statusHistory[0].toStatus, "pending_approval");
+    assert.equal(saved.evidenceFiles.receipt[0].storedName, "A1_receipt_001.jpg");
     const requests = await listExpenseRequests(rootDir);
     assert.equal(requests.filter((request) => request.status === "pending_approval").length, 1);
     const submittedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(submittedRecord.syncStatus, "synced");
     assert.equal(submittedRecord.driveFolderUrl, "https://drive.google.com/drive/folders/drive-folder-123");
     assert.equal(submittedRecord.editUrl, "/expense-request?requestNo=REQ-2026-09-0001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission allows edits while pending approval without resetting history or evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-edit-"));
+
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({ receiptTitle: "ก่อนแก้ไข" }),
+      uploads: validSlipUpload(),
+    });
+
+    const repeated = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: { receiptNo: submitted.receiptNo, receiptTitle: "แก้ไขหลังส่ง" },
+      uploads: [],
+      createStockMovements: false,
+    });
+
+    assert.equal(repeated.receiptNo, submitted.receiptNo);
+    assert.equal(repeated.status, "pending_approval");
+    const saved = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(saved.payload.receiptTitle, "แก้ไขหลังส่ง");
+    assert.equal(saved.payload.status, "pending_approval");
+    assert.equal(saved.payload.statusHistory.length, 1);
+    assert.equal(saved.payload.statusHistory[0].toStatus, "pending_approval");
+    assert.equal(saved.evidenceFiles.paymentSlip[0].storedName, "B1_payment-slip_001.jpg");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

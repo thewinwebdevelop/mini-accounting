@@ -16,6 +16,11 @@ class FakeClassList {
     this.element._className = [...this.names].join(" ");
   }
 
+  remove(...names) {
+    names.forEach((name) => this.names.delete(name));
+    this.element._className = [...this.names].join(" ");
+  }
+
   contains(name) {
     return this.names.has(name);
   }
@@ -254,7 +259,58 @@ test("searchable select renders search inside the dropdown popover and filters o
   search.dispatchEvent(new FakeEvent("input"));
 
   const visibleOptions = panel.querySelectorAll(".searchable-select-option");
-  assert.deepEqual(visibleOptions.map((option) => option.textContent), ["กระโปรง B สีขาว F"]);
+  assert.deepEqual(visibleOptions.map((option) => option.querySelector("span")?.textContent || option.textContent), ["กระโปรง B สีขาว F"]);
+});
+
+test("searchable select keeps the selected value to one line, clamps options to two lines, and lifts overflow ancestors", async () => {
+  const { document, window } = await loadSearchableSelect();
+  const section = document.createElement("div");
+  section.className = "section";
+  const select = document.createElement("select");
+  select.dataset.searchable = "";
+  select.dataset.displayLines = "2";
+  select.value = "stock-1";
+  appendOption(select, "stock-1", "รหัสสินค้า - ชื่อสินค้ายาวมากจนต้องตัดข้อความ");
+  section.append(select);
+  document.body.append(section);
+
+  window.SearchableSelect.enhance(select);
+
+  const styles = document.head.querySelector("#searchableSelectStyles").textContent;
+  assert.match(styles, /\.searchable-select-trigger[\s\S]*?white-space:\s*nowrap/);
+  assert.match(styles, /\.searchable-select\[data-display-lines="2"\] \.searchable-select-option[\s\S]*?-webkit-line-clamp:\s*2/);
+  assert.match(styles, /\.searchable-select\[data-display-lines="2"\] \.searchable-select-option[\s\S]*?height:\s*50px[\s\S]*?line-height:\s*18px/);
+  assert.match(styles, /\.section\.searchable-select-open[\s\S]*?overflow:\s*visible/);
+  assert.match(styles, /\.section:has\(\.searchable-select-panel:not\(\[hidden\]\)\)[\s\S]*?overflow:\s*visible/);
+
+  const trigger = section.querySelector(".searchable-select-trigger");
+  trigger.click();
+  const optionLabel = section.querySelector(".searchable-select-option").querySelector("span");
+  assert.ok(optionLabel);
+  assert.match(styles, /\.searchable-select\[data-display-lines="2"\] \.searchable-select-option > span[\s\S]*?-webkit-line-clamp:\s*2/);
+  assert.equal(section.classList.contains("searchable-select-open"), true);
+  trigger.click();
+  assert.equal(section.classList.contains("searchable-select-open"), false);
+});
+
+test("searchable select lifts overflow ancestors when classList is array-like", async () => {
+  const { document, window } = await loadSearchableSelect();
+  const row = document.createElement("details");
+  row.className = "line-row";
+  row.classList = ["line-row"];
+  const select = document.createElement("select");
+  select.dataset.searchable = "";
+  appendOption(select, "sku-1", "Stock SKU 1");
+  row.append(select);
+  document.body.append(row);
+
+  window.SearchableSelect.enhance(select);
+
+  const trigger = row.querySelector(".searchable-select-trigger");
+  assert.doesNotThrow(() => trigger.click());
+  assert.match(row.className, /searchable-select-open/);
+  assert.doesNotThrow(() => trigger.click());
+  assert.doesNotMatch(row.className, /searchable-select-open/);
 });
 
 test("searchable select keeps the native select synced for form submission", async () => {

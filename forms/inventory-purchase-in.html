@@ -165,6 +165,7 @@
       .span-4, .span-6 { grid-column: span 12; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -237,7 +238,7 @@
         <div class="grid">
           <div class="field span-12">
             <label for="purchaseSkuSelect">Stock SKU *</label>
-            <select id="purchaseSkuSelect" name="stockSkuId" required data-searchable></select>
+            <select id="purchaseSkuSelect" name="stockSkuId" required data-searchable data-display-lines="2"></select>
           </div>
           <div class="field span-4">
             <label for="movementDate">วันที่รับเข้า *</label>

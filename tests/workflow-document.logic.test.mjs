@@ -18,6 +18,10 @@ test("lightweight workflow documents expose required standalone kinds", () => {
   ]);
 });
 
+test("workflow document PDF version advances after the Thai shaping renderer fix", () => {
+  assert.equal(docLogic.WORKFLOW_DOCUMENT_PDF_VERSION, 3);
+});
+
 test("buildWorkflowDocumentPayload preserves the server-bound owner user id", () => {
   const payload = docLogic.buildWorkflowDocumentPayload({
     documentKind: "purchase_order",

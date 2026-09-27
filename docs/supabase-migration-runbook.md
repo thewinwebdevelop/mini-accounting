@@ -12,7 +12,7 @@ SWEET_HOUSE_ROOT_DIR="/Users/tar/Documents/หจกสวีทเฮาส์"
 
 ## Configure
 
-Copy `.env.example` to the deployment environment and set `SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. The storage migration creates the private standard bucket `sweet-house-files`; leave `SUPABASE_STORAGE_BUCKET` at that default unless a matching private custom bucket has already been created. Apply migrations `supabase/migrations/20260925_001_line_auth.sql`, `supabase/migrations/20260925_002_core_data.sql`, and `supabase/migrations/20260925_003_storage.sql` in order.
+Copy `.env.example` to the deployment environment and set `SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. The storage migration creates the private standard bucket `sweet-house-files`; leave `SUPABASE_STORAGE_BUCKET` at that default unless a matching private custom bucket has already been created. Apply all migrations with `supabase db push`; the repository uses unique migration versions `20260925`, `202609250002`, `202609250003`, `202609250004`, and `202609250005`.
 
 ## Dry run
 
@@ -55,6 +55,32 @@ scripts/migrate-local-files-to-supabase.mjs --apply
 
 The command uploads to the private bucket, downloads each object back for byte/hash verification, then records the source in `storage_migration_records`. It never deletes local files. A repeated run skips an unchanged source and re-uploads a changed source.
 
+## Document metadata dry run
+
+Document metadata is migrated separately from file bytes. The command creates rows in `documents` and `document_files`, links every approved document file to its document source key, and never exposes local absolute paths in the cloud payload.
+
+```bash
+SWEET_HOUSE_ROOT_DIR="/path/to/data-root" \
+SUPABASE_URL="https://your-project.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="..." \
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+scripts/migrate-local-documents-to-supabase.mjs
+```
+
+Review the document and document-file counts, source keys, hashes, and bucket/object references before applying.
+
+## Document metadata apply
+
+```bash
+SWEET_HOUSE_ROOT_DIR="/path/to/data-root" \
+SUPABASE_URL="https://your-project.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="..." \
+/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+scripts/migrate-local-documents-to-supabase.mjs --apply
+```
+
+The migration is idempotent by `migration_records` source key. It records both the document metadata and file references, but it never deletes local files or re-uploads file bytes.
+
 ## Verify
 
 Compare the migration output counts with the local dry-run counts and query the Supabase tables by `source_key`. Confirm that product, SKU, and stock movement source IDs are complete before switching the application data backend.
@@ -71,7 +97,7 @@ SUPABASE_SERVICE_ROLE_KEY="..." \
 scripts/compare-local-supabase.mjs
 ```
 
-Run it after core-data apply and again after the dual-write observation window. Do not enable `supabase-read` for a domain while its report contains unexplained differences.
+Run it after core-data, file-storage, and document-metadata apply. The report now includes `company_settings`, `documents`, and `document_files` domains. Run it again after the dual-write observation window. Do not enable `supabase-read` for a domain while its report contains unexplained differences.
 
 ## LINE resource authorization
 

@@ -73,7 +73,7 @@ test("storageRequest redacts provider response details on error", async () => {
 });
 
 test("storage migration SQL defines a private bucket and protected ledger", async () => {
-  const sql = await readFile(new URL("../supabase/migrations/20260925_003_storage.sql", import.meta.url), "utf8");
+  const sql = await readFile(new URL("../supabase/migrations/202609250003_storage.sql", import.meta.url), "utf8");
   assert.match(sql, /storage\.buckets/);
   assert.match(sql, /sweet-house-files/);
   assert.match(sql, /public[\s\S]{0,120}false/);

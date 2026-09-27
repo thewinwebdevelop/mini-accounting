@@ -6,13 +6,39 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from generate_workflow_document_pdf import DOCUMENT_KIND_LABELS, build_document_pdf
-from pdf_common import pdf_page_count
+from pdf_common import FONT, pdf_page_count, pdfmetrics, styles
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_LOGIC_PATH = REPO_ROOT / "forms" / "workflow.logic.js"
 
 
 class WorkflowDocumentPdfTests(unittest.TestCase):
+    def test_thai_text_styles_enable_complex_script_shaping(self):
+        self.assertTrue(
+            pdfmetrics.getFont(FONT).shapable,
+            "the registered Thai font must have HarfBuzz shaping available",
+        )
+        for style_name in ["DocTitle", "DocBody", "DocSmall", "DocMoney"]:
+            with self.subTest(style=style_name):
+                self.assertEqual(
+                    styles[style_name].shaping,
+                    1,
+                    f"{style_name} must enable HarfBuzz shaping for Thai combining marks",
+                )
+
+    def test_shaped_thai_pdf_keeps_original_text_searchable(self):
+        extracted = self.pdf_text({
+            "documentKind": "purchase_order",
+            "title": "ใบสั่งซื้อ",
+            "businessPurpose": "สั่งซื้อสินค้า",
+            "lines": [{"description": "สินค้าไทย", "quantity": 1, "unitCost": "10.00", "lineTotal": "10.00"}],
+            "totals": {"grossAmount": "10.00"},
+        })
+        self.assertIn("ใบสั่งซื้อ", extracted)
+        self.assertIn("สั่งซื้อสินค้า", extracted)
+        self.assertNotIn("\ue000", extracted)
+        self.assertNotIn("\ue001", extracted)
+
     def pdf_text(self, payload):
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "document.pdf"
@@ -30,6 +56,16 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
         self.assertIn("100.00", extracted)
         self.assertNotIn("VAT 0.00", extracted)
         self.assertNotIn("VAT 7%", extracted)
+
+    def test_payment_voucher_line_does_not_show_unspecified_vat_label(self):
+        extracted = self.pdf_text({
+            "documentKind": "payment_voucher",
+            "lines": [{"description": "ค่าขนส่ง", "quantity": 1, "unitCost": "120.00", "lineTotal": "120.00"}],
+            "totals": {"grossAmount": "120.00"},
+        })
+        line_text = extracted.split("รายการ", 1)[-1].split("ยอดก่อน VAT", 1)[0]
+        self.assertNotIn("ยังไม่ระบุ VAT", line_text)
+        self.assertIn("ค่าขนส่ง", line_text)
 
     def test_inclusive_vat_and_net_payment_are_printed_for_every_kind(self):
         for kind in DOCUMENT_KIND_LABELS:
@@ -124,6 +160,19 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
             self.assertGreater(os.path.getsize(output_path), 0)
             self.assertGreaterEqual(pdf_page_count(str(output_path)), 1)
 
+    def test_vendor_tax_id_is_printed_for_every_lightweight_document_kind(self):
+        for kind in DOCUMENT_KIND_LABELS:
+            with self.subTest(kind=kind):
+                extracted = self.pdf_text({
+                    "documentKind": kind,
+                    "payeeName": "บริษัทผู้ขายตัวอย่าง",
+                    "vendorSnapshot": {"taxId": "0105551234567"},
+                    "lines": [{"description": "สินค้า", "quantity": 1, "unitCost": "10.00", "lineTotal": "10.00"}],
+                    "totals": {"grossAmount": "10.00"},
+                })
+                self.assertIn("เลขประจำตัวผู้เสียภาษีผู้ขาย", extracted)
+                self.assertIn("0105551234567", extracted)
+
     def test_build_document_pdf_shows_transaction_number_when_present(self):
         payload = {
             "documentKind": "purchase_order",
@@ -141,6 +190,33 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
             build_document_pdf(payload, str(output_path))
             self.assertTrue(output_path.exists())
             self.assertGreater(os.path.getsize(output_path), 0)
+
+    def test_payment_voucher_pdf_omits_transaction_number(self):
+        extracted = self.pdf_text({
+            "documentKind": "payment_voucher",
+            "documentNo": "PV-2026-09-0001",
+            "transactionNo": "TXN-2026-09-0001",
+            "payeeName": "ผู้รับเงิน",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": 1, "unitCost": "100.00", "lineTotal": "100.00"}],
+            "totals": {"grossAmount": "100.00"},
+        })
+        self.assertNotIn("เลขที่ธุรกรรม", extracted)
+        self.assertNotIn("TXN-2026-09-0001", extracted)
+
+    def test_goods_receipt_pdf_omits_unspecified_vat_line_label_and_transaction_number(self):
+        extracted = self.pdf_text({
+            "documentKind": "goods_receipt",
+            "documentNo": "GR-2026-09-0001",
+            "transactionNo": "TXN-2026-09-0001",
+            "payeeName": "ผู้ส่งสินค้า",
+            "lines": [{"description": "สินค้า", "quantity": 1, "unitCost": "100.00", "lineTotal": "100.00"}],
+            "totals": {"grossAmount": "100.00"},
+        })
+        line_text = extracted.split("รายการ", 1)[-1].split("ยอดก่อน VAT", 1)[0]
+        self.assertNotIn("ยังไม่ระบุ VAT", line_text)
+        self.assertIn("ยอดก่อน VAT (บาท): ยังไม่ระบุ VAT", extracted)
+        self.assertNotIn("เลขที่ธุรกรรม", extracted)
+        self.assertNotIn("TXN-2026-09-0001", extracted)
 
     def test_build_document_pdf_handles_every_lightweight_kind(self):
         kinds = [
