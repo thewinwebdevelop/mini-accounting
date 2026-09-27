@@ -2681,7 +2681,9 @@ test("syncExpenseRequestToDrive uploads a submitted request folder with Google D
     assert.equal(result.uploadedFileCount, 4);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].rootDir, rootDir);
-    assert.equal(calls[0].folderPath, submitted.folderPath);
+    assert.equal(calls[0].drivePath, "2026/09/ใบเบิกค่าใช้จ่าย");
+    assert.equal(calls[0].layoutVersion, 2);
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith(`${submitted.requestNo}__`)));
 
     const metadata = JSON.parse(await readFile(join(submitted.absoluteFolderPath, "data", "drive-sync.json"), "utf8"));
     assert.equal(metadata.syncStatus, "synced");
@@ -2731,7 +2733,10 @@ test("syncSubstituteReceiptToDrive uploads a submitted receipt folder with Googl
     assert.equal(result.uploadedFileCount, 5);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].rootDir, rootDir);
-    assert.equal(calls[0].folderPath, submitted.folderPath);
+    assert.equal(calls[0].drivePath, "2026/09/ใบรับรองแทนใบเสร็จรับเงิน");
+    assert.equal(calls[0].layoutVersion, 2);
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith(`${submitted.receiptNo}__`)));
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith("raw/")));
 
     const metadata = JSON.parse(await readFile(join(submitted.absoluteFolderPath, "data", "drive-sync.json"), "utf8"));
     assert.equal(metadata.syncStatus, "synced");

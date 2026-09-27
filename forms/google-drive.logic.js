@@ -232,6 +232,21 @@ async function findDriveFolder({ accessToken, fetchImpl, name, parentId }) {
   return data.files?.[0] || null;
 }
 
+async function findDriveFile({ accessToken, fetchImpl, name, parentId }) {
+  const query = [
+    `'${escapeDriveQueryValue(parentId)}' in parents`,
+    `name = '${escapeDriveQueryValue(name)}'`,
+    `mimeType != '${driveFolderMimeType}'`,
+    "trashed = false",
+  ].join(" and ");
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("q", query);
+  url.searchParams.set("fields", "files(id,name,webViewLink)");
+  url.searchParams.set("pageSize", "1");
+  const data = await driveFetchJson({ accessToken, fetchImpl, url: url.toString() });
+  return data.files?.[0] || null;
+}
+
 async function createDriveFolder({ accessToken, fetchImpl, name, parentId }) {
   return driveFetchJson({
     accessToken,
@@ -285,11 +300,33 @@ async function collectFiles(dir, baseDir = dir) {
   return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
-async function uploadFileToDrive({ accessToken, fetchImpl = fetch, file, parentId }) {
+function normalizeManifestRelativePath(value) {
+  const normalized = normalizeDrivePath(value);
+  const parts = normalized.split("/").filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === ".." || /[\u0000-\u001f\u007f]/.test(part))) {
+    throw new Error("Invalid Google Drive manifest path");
+  }
+  return parts.join("/");
+}
+
+function assertManifestFileInsideRoot(rootDir, absolutePath) {
+  const root = path.resolve(rootDir);
+  const file = path.resolve(absolutePath);
+  const relative = path.relative(root, file);
+  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Google Drive manifest file is outside the application root");
+  }
+  return file;
+}
+
+async function uploadFileToDrive({ accessToken, fetchImpl = fetch, file, parentId, fileId = "" }) {
   const fileStat = await stat(file.absolutePath);
   const mimeType = getMimeType(file.absolutePath);
-  const session = await fetchImpl("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink", {
-    method: "POST",
+  const endpoint = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=resumable&fields=id,name,webViewLink`
+    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink";
+  const session = await fetchImpl(endpoint, {
+    method: fileId ? "PATCH" : "POST",
     headers: {
       authorization: `Bearer ${accessToken}`,
       "content-type": "application/json; charset=UTF-8",
@@ -298,7 +335,7 @@ async function uploadFileToDrive({ accessToken, fetchImpl = fetch, file, parentI
     },
     body: JSON.stringify({
       name: file.name,
-      parents: [parentId],
+      ...(fileId ? {} : { parents: [parentId] }),
     }),
   });
   if (!session.ok) {
@@ -322,6 +359,73 @@ async function uploadFileToDrive({ accessToken, fetchImpl = fetch, file, parentI
     throw new Error(data.error?.message || data.error || `Cannot upload ${file.relativePath}`);
   }
   return data;
+}
+
+async function uploadFilesToGoogleDrive({
+  rootDir,
+  drivePath,
+  files = [],
+  fetchImpl = fetch,
+  now = () => new Date().toISOString(),
+}) {
+  const config = await getGoogleDriveConfig(rootDir);
+  const accessToken = await getValidAccessToken({ rootDir, fetchImpl });
+  const rootPathParts = [
+    ...splitDrivePath(config?.driveBasePath || defaultDriveBasePath),
+    ...splitDrivePath(drivePath),
+  ];
+  if (!rootPathParts.length) throw new Error("Google Drive path is empty");
+
+  const rootFolder = await ensureDrivePath({ accessToken, fetchImpl, pathParts: rootPathParts });
+  const directoryCache = new Map([["", rootFolder.id]]);
+  const manifest = files
+    .map((file) => ({
+      absolutePath: assertManifestFileInsideRoot(rootDir, file?.absolutePath),
+      relativePath: normalizeManifestRelativePath(file?.relativePath),
+    }))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  let uploadedFileCount = 0;
+
+  for (const file of manifest) {
+    const dirname = path.posix.dirname(file.relativePath) === "." ? "" : path.posix.dirname(file.relativePath);
+    if (!directoryCache.has(dirname)) {
+      const folder = await ensureDrivePath({
+        accessToken,
+        fetchImpl,
+        pathParts: splitDrivePath(dirname),
+        startParentId: rootFolder.id,
+      });
+      directoryCache.set(dirname, folder.id);
+    }
+    const existingFile = await findDriveFile({
+      accessToken,
+      fetchImpl,
+      name: path.posix.basename(file.relativePath),
+      parentId: directoryCache.get(dirname),
+    });
+    await uploadFileToDrive({
+      accessToken,
+      fetchImpl,
+      file: {
+        absolutePath: file.absolutePath,
+        name: path.posix.basename(file.relativePath),
+        relativePath: file.relativePath,
+      },
+      parentId: directoryCache.get(dirname),
+      fileId: existingFile?.id || "",
+    });
+    uploadedFileCount += 1;
+  }
+
+  return {
+    syncStatus: "synced",
+    layoutVersion: 2,
+    driveFolderId: rootFolder.id,
+    driveFolderUrl: rootFolder.webViewLink || `https://drive.google.com/drive/folders/${rootFolder.id}`,
+    drivePath: rootPathParts.join("/"),
+    uploadedFileCount,
+    syncedAt: now(),
+  };
 }
 
 async function uploadFolderToGoogleDrive({ rootDir, folderPath, fetchImpl = fetch, now = () => new Date().toISOString() }) {
@@ -379,5 +483,6 @@ module.exports = {
   normalizeDrivePath,
   saveGoogleDriveConfig,
   splitDrivePath,
+  uploadFilesToGoogleDrive,
   uploadFolderToGoogleDrive,
 };

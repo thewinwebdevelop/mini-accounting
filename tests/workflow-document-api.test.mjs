@@ -8,6 +8,7 @@ import test from "node:test";
 
 import serverLogic from "../forms/local-server.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+import workflowLogic from "../forms/workflow.logic.js";
 
 // Binding a fixed port let two runs of this suite collide. Bind port 0 (the OS
 // picks a free one) and read the actually-assigned port back out of the
@@ -857,7 +858,12 @@ for (const documentKind of DRIVE_SYNC_KINDS) {
         },
       });
 
-      assert.deepEqual(uploads, [{ rootDir, folderPath: record.folderPath }], "must upload exactly this document's own folder, once");
+      assert.equal(uploads.length, 1, "must upload exactly this document once");
+      assert.equal(uploads[0].rootDir, rootDir);
+      const driveTypeName = workflowLogic.getDocumentTypeDefinition(documentKind).label.replace(/[\\/]/g, "-");
+      assert.equal(uploads[0].drivePath, `2026/09/${driveTypeName}`);
+      assert.equal(uploads[0].layoutVersion, 2);
+      assert.ok(uploads[0].files.some((file) => file.relativePath.startsWith(`${record.documentNo}__`)));
       assert.equal(result.syncStatus, "synced");
       assert.equal(result.documentKind, documentKind);
       assert.equal(result.documentNo, record.documentNo);

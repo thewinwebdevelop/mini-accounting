@@ -1116,7 +1116,7 @@ test("completeWorkflowTransaction succeeds and auto-syncs Drive when the templat
 
     assert.equal(completed.status, "completed");
     assert.equal(completed.completedBy, "บัญชี");
-    assert.equal(driveCalls, 2);
+    assert.equal(driveCalls, 1);
     assert.equal(completed.driveSync.syncStatus, "synced");
     assert.equal(completed.sheetSync, undefined);
   } finally {
@@ -1142,7 +1142,7 @@ test("completeWorkflowTransaction does not auto-sync Drive when the toggle is of
     assert.equal(completed.driveSync.syncStatus, "not_required");
 
     const manualDrive = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: txn.transactionNo, driveUploader: stubDrive });
-    assert.equal(driveCalls, 2);
+    assert.equal(driveCalls, 1);
     assert.equal(manualDrive.syncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1162,7 +1162,7 @@ test("completeWorkflowTransaction repeated call is a true no-op: preserves the a
       completedBy: "บัญชี",
       driveUploader: stubDrive,
     });
-    assert.equal(driveCalls, 2);
+    assert.equal(driveCalls, 1);
 
     const second = await serverLogic.completeWorkflowTransaction({
       rootDir,
@@ -1171,7 +1171,7 @@ test("completeWorkflowTransaction repeated call is a true no-op: preserves the a
       driveUploader: stubDrive,
     });
 
-    assert.equal(driveCalls, 2, "a repeat completion call must not re-trigger Drive sync");
+    assert.equal(driveCalls, 1, "a repeat completion call must not re-trigger Drive sync");
     assert.equal(second.completedAt, first.completedAt, "the original completedAt must survive a repeat call");
     assert.equal(second.completedBy, "บัญชี", "the original completedBy must not be overwritten by a repeat call's argument");
     assert.equal(second.statusHistory.length, first.statusHistory.length, "no duplicate history entry may be appended");
@@ -2942,20 +2942,20 @@ async function completeMultiStepTransaction(rootDir, documentKinds = ["purchase_
   return { transaction, children };
 }
 
-// Records every folder handed to the uploader, in call order, and fails for
-// the folders listed in failFolderPaths.
-function recordingDriveUploader({ failFolderPaths = [], failMessage = "quota exceeded", onUpload } = {}) {
+// Records each workflow manifest handed to the uploader and can fail by the
+// new shared workflow drive path.
+function recordingDriveUploader({ failDrivePaths = [], failMessage = "quota exceeded", onUpload } = {}) {
   const calls = [];
   const uploader = async (options) => {
-    calls.push(options.folderPath);
+    calls.push(options);
     if (onUpload) await onUpload(options);
-    if (failFolderPaths.includes(options.folderPath)) throw new Error(failMessage);
+    if (failDrivePaths.includes(options.drivePath)) throw new Error(failMessage);
     const id = `drive-${calls.length}`;
     return {
       driveFolderId: id,
       driveFolderUrl: `https://drive.google.com/drive/folders/${id}`,
-      drivePath: `base/${options.folderPath.replace(/^documents\//, "")}`,
-      uploadedFileCount: 2,
+      drivePath: `base/${options.drivePath}`,
+      uploadedFileCount: options.files?.length || 0,
     };
   };
   return { uploader, calls };
@@ -2972,47 +2972,40 @@ test("the workflow's per-kind Drive sync dispatch covers every document kind a t
   );
 });
 
-test("a partial Drive sync reports each document on its own, holds the transaction folder back, and a retry re-attempts only what failed", async () => {
+test("a failed workflow bundle records one failed root and a retry replaces it", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-drive-"));
   try {
     const { transaction, children } = await completeMultiStepTransaction(rootDir);
     const [purchaseOrder, paymentVoucher, goodsReceipt] = children;
 
-    const first = recordingDriveUploader({ failFolderPaths: [paymentVoucher.folderPath] });
+    const first = recordingDriveUploader({ failDrivePaths: ["2026/09/TXN-2026-09-0001 - ทดสอบซิงก์หลายเอกสาร"] });
     const partial = await serverLogic.syncWorkflowTransactionToDrive({
       rootDir,
       transactionNo: transaction.transactionNo,
       driveUploader: first.uploader,
     });
 
-    assert.deepEqual(
-      first.calls,
-      [purchaseOrder.folderPath, paymentVoucher.folderPath, goodsReceipt.folderPath],
-      "every child is attempted, in step order; the transaction folder is held back while a child is missing",
-    );
+    assert.equal(first.calls.length, 1);
+    assert.equal(first.calls[0].drivePath, "2026/09/TXN-2026-09-0001 - ทดสอบซิงก์หลายเอกสาร");
     assert.equal(partial.syncStatus, "sync_failed", "one child failing must not report plain success");
     assert.equal(partial.error, "quota exceeded");
-    assert.deepEqual(
-      partial.documents.map((doc) => [doc.documentKind, doc.documentNo, doc.syncStatus]),
-      [
-        ["purchase_order", purchaseOrder.documentNo, "synced"],
-        ["payment_voucher", paymentVoucher.documentNo, "sync_failed"],
-        ["goods_receipt", goodsReceipt.documentNo, "synced"],
-      ],
-    );
-    const failedEntry = partial.documents[1];
+    assert.deepEqual(partial.documents.map((doc) => [doc.documentKind, doc.documentNo, doc.syncStatus]), [
+      ["purchase_order", purchaseOrder.documentNo, "sync_failed"],
+      ["payment_voucher", paymentVoucher.documentNo, "sync_failed"],
+      ["goods_receipt", goodsReceipt.documentNo, "sync_failed"],
+    ]);
+    const failedEntry = partial.documents[0];
     assert.equal(failedEntry.error, "quota exceeded");
     assert.match(failedEntry.message, /Google Drive/);
     assert.match(failedEntry.message, /quota exceeded/);
-    assert.equal(partial.transactionFolder.syncStatus, "waiting_for_documents");
-    assert.ok(partial.message.includes(paymentVoucher.documentNo), "the transaction's message must name the document that did not make it");
-    assert.equal(partial.message.includes(purchaseOrder.documentNo), false, "documents that did make it are not listed as failures");
-    assert.equal(partial.syncedDocumentCount, 2);
+    assert.equal(partial.transactionFolder.syncStatus, "sync_failed");
+    assert.ok(partial.message.includes(paymentVoucher.documentNo));
+    assert.equal(partial.syncedDocumentCount, 0);
     assert.equal(partial.totalDocumentCount, 3);
 
     const persisted = await serverLogic.getWorkflowTransaction(rootDir, transaction.transactionNo);
     assert.deepEqual(persisted.driveSync, partial, "the per-document result must be persisted on the transaction");
-    assert.equal((await readChildDriveSyncMetadata(rootDir, paymentVoucher.folderPath)).syncStatus, "sync_failed", "the failure is recorded on the child too, by its own action");
+    await assert.rejects(() => readChildDriveSyncMetadata(rootDir, paymentVoucher.folderPath));
 
     const second = recordingDriveUploader();
     const retried = await serverLogic.syncWorkflowTransactionToDrive({
@@ -3021,20 +3014,13 @@ test("a partial Drive sync reports each document on its own, holds the transacti
       driveUploader: second.uploader,
     });
 
-    assert.deepEqual(
-      second.calls,
-      [paymentVoucher.folderPath, transaction.folderPath],
-      "a retry re-attempts only the child that failed, then sends the transaction folder",
-    );
+    assert.equal(second.calls.length, 1);
+    assert.equal(second.calls[0].drivePath, "2026/09/TXN-2026-09-0001 - ทดสอบซิงก์หลายเอกสาร");
     assert.equal(retried.syncStatus, "synced");
     assert.equal(retried.error, undefined);
     assert.deepEqual(
-      retried.documents.map((doc) => [doc.documentNo, doc.syncStatus, doc.alreadySynced]),
-      [
-        [purchaseOrder.documentNo, "synced", true],
-        [paymentVoucher.documentNo, "synced", false],
-        [goodsReceipt.documentNo, "synced", true],
-      ],
+      retried.documents.map((doc) => [doc.documentNo, doc.syncStatus]),
+      [[purchaseOrder.documentNo, "synced"], [paymentVoucher.documentNo, "synced"], [goodsReceipt.documentNo, "synced"]],
     );
     assert.equal(retried.transactionFolder.syncStatus, "synced");
     assert.equal(retried.driveFolderUrl, retried.transactionFolder.driveFolderUrl, "the transaction's own Drive link stays where the page already reads it");
@@ -3045,36 +3031,36 @@ test("a partial Drive sync reports each document on its own, holds the transacti
       transactionNo: transaction.transactionNo,
       driveUploader: third.uploader,
     });
-    assert.deepEqual(third.calls, [], "once everything is in Drive, pressing sync again must not duplicate any file");
+    assert.deepEqual(third.calls, [], "once the v2 bundle is in Drive, pressing sync again must not duplicate any file");
     assert.equal(again.syncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("when every child makes it but the transaction folder fails, the transaction folder is named and a retry sends only it", async () => {
+test("a workflow bundle failure names the root folder and retry uploads the bundle", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-drive-"));
   try {
     const { transaction, children } = await completeMultiStepTransaction(rootDir, ["purchase_order", "payment_voucher"]);
 
-    const first = recordingDriveUploader({ failFolderPaths: [transaction.folderPath] });
+    const first = recordingDriveUploader({ failDrivePaths: ["2026/09/TXN-2026-09-0001 - ทดสอบซิงก์หลายเอกสาร"] });
     const partial = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: transaction.transactionNo, driveUploader: first.uploader });
-    assert.deepEqual(first.calls, [...children.map((doc) => doc.folderPath), transaction.folderPath]);
+    assert.equal(first.calls.length, 1);
     assert.equal(partial.syncStatus, "sync_failed");
     assert.equal(partial.transactionFolder.syncStatus, "sync_failed");
     assert.ok(partial.message.includes(transaction.transactionNo), "the message must name the transaction folder as what failed");
-    assert.ok(partial.documents.every((doc) => doc.syncStatus === "synced"));
+    assert.ok(partial.documents.every((doc) => doc.syncStatus === "sync_failed"));
 
     const second = recordingDriveUploader();
     const retried = await serverLogic.syncWorkflowTransactionToDrive({ rootDir, transactionNo: transaction.transactionNo, driveUploader: second.uploader });
-    assert.deepEqual(second.calls, [transaction.folderPath]);
+    assert.equal(second.calls.length, 1);
     assert.equal(retried.syncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("a child already synced through its own button is not uploaded again by the workflow, and its own Drive link is reported", async () => {
+test("a standalone child sync does not affect the workflow bundle location", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-drive-"));
   try {
     const { transaction, children } = await completeMultiStepTransaction(rootDir);
@@ -3100,27 +3086,20 @@ test("a child already synced through its own button is not uploaded again by the
       driveUploader: recorder.uploader,
     });
 
-    assert.deepEqual(
-      recorder.calls,
-      [paymentVoucher.folderPath, goodsReceipt.folderPath, transaction.folderPath],
-      "the uploader creates new Drive files on every call, so the already-synced purchase order must not be uploaded a second time",
-    );
+    assert.equal(recorder.calls.length, 1);
+    assert.equal(recorder.calls[0].drivePath, "2026/09/TXN-2026-09-0001 - ทดสอบซิงก์หลายเอกสาร");
     const purchaseOrderEntry = result.documents.find((doc) => doc.documentNo === purchaseOrder.documentNo);
     assert.equal(purchaseOrderEntry.syncStatus, "synced");
-    assert.equal(purchaseOrderEntry.alreadySynced, true);
-    assert.equal(purchaseOrderEntry.driveFolderUrl, ownSync.driveFolderUrl);
-    assert.deepEqual(
-      await readChildDriveSyncMetadata(rootDir, purchaseOrder.folderPath),
-      ownSync,
-      "the child's own sync record must be left exactly as its own button wrote it",
-    );
+    assert.equal(purchaseOrderEntry.syncStatus, "synced");
+    assert.equal(purchaseOrderEntry.driveFolderUrl, result.driveFolderUrl);
+    assert.deepEqual(await readChildDriveSyncMetadata(rootDir, purchaseOrder.folderPath), ownSync);
     assert.equal(result.syncStatus, "synced");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
 
-test("syncWorkflowTransactionToDrive reaches every one of the seven document kinds through that kind's own sync action, children first, and the uploaded summary links each child's Drive folder", async () => {
+test("syncWorkflowTransactionToDrive bundles every one of the seven document kinds under one root", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-drive-all-"));
   const child = spawnLocalServer(rootDir);
   let serverStopped = false;
@@ -3140,13 +3119,8 @@ test("syncWorkflowTransactionToDrive reaches every one of the seven document kin
     const childDocuments = await serverLogic.findWorkflowChildDocuments(rootDir, txn.transactionNo);
     assert.equal(childDocuments.length, ALL_DOCUMENT_KINDS.length);
 
-    let summaryAtUpload = "";
     const recorder = recordingDriveUploader({
-      onUpload: async ({ folderPath }) => {
-        if (folderPath === transaction.folderPath) {
-          summaryAtUpload = await readFile(join(rootDir, folderPath, "working-md", "workflow-summary.md"), "utf8");
-        }
-      },
+      onUpload: async () => {},
     });
     const result = await serverLogic.syncWorkflowTransactionToDrive({
       rootDir,
@@ -3154,37 +3128,20 @@ test("syncWorkflowTransactionToDrive reaches every one of the seven document kin
       driveUploader: recorder.uploader,
     });
 
-    assert.equal(recorder.calls.length, ALL_DOCUMENT_KINDS.length + 1, "one upload per child document, plus the transaction folder");
-    assert.equal(recorder.calls.at(-1), transaction.folderPath, "the transaction folder goes up last");
-    assert.deepEqual(
-      [...recorder.calls.slice(0, -1)].sort(),
-      childDocuments.map((doc) => doc.folderPath).sort(),
-      "every child document's own folder must be uploaded",
-    );
-
-    // Each child's own data/drive-sync.json carries the identity field only
-    // that kind's own standalone sync action writes -- proof the workflow went
-    // through the child's action rather than a second upload path of its own.
+    assert.equal(recorder.calls.length, 1, "all workflow files must use one upload manifest");
+    assert.equal(recorder.calls[0].drivePath, `2026/09/${transaction.transactionNo} - ${transaction.title}`);
+    assert.equal(recorder.calls[0].layoutVersion, 2);
+    assert.ok(recorder.calls[0].files.some((file) => file.relativePath === "99_ชุดรวมเอกสาร_workflow-transaction.pdf"));
     for (const doc of childDocuments) {
-      const own = await readChildDriveSyncMetadata(rootDir, doc.folderPath);
-      assert.equal(own.syncStatus, "synced", doc.documentKind);
-      if (doc.documentKind === "expense_request") {
-        assert.equal(own.requestNo, doc.requestNo, "expense_request goes through syncExpenseRequestToDrive");
-      } else if (doc.documentKind === "substitute_receipt") {
-        assert.equal(own.receiptNo, doc.receiptNo, "substitute_receipt goes through syncSubstituteReceiptToDrive");
-      } else {
-        assert.equal(own.documentKind, doc.documentKind, `${doc.documentKind} goes through syncWorkflowDocumentToDrive`);
-        assert.equal(own.documentNo, doc.documentNo, doc.documentKind);
-      }
+      const documentNo = doc.documentNo || doc.requestNo || doc.receiptNo;
+      assert.ok(recorder.calls[0].files.some((file) => file.relativePath.startsWith(`${documentNo}__`)), doc.documentKind);
     }
 
     assert.equal(result.syncStatus, "synced");
     assert.deepEqual(result.documents.map((doc) => doc.documentKind), ALL_DOCUMENT_KINDS, "reported in template step order");
     assert.ok(result.documents.every((doc) => doc.syncStatus === "synced" && doc.documentNo));
     assert.equal(result.transactionFolder.syncStatus, "synced");
-    for (const doc of result.documents) {
-      assert.ok(summaryAtUpload.includes(doc.driveFolderUrl), `${doc.documentKind}: the summary uploaded with the transaction folder must link its Drive folder`);
-    }
+    assert.ok(result.documents.every((doc) => doc.driveFolderUrl === result.driveFolderUrl));
   } finally {
     if (!serverStopped) await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });
@@ -3215,7 +3172,7 @@ test("syncing a completed transaction with no Google Drive credentials names eve
       assert.match(doc.message, /ยังไม่ได้ตั้งค่า Google Drive/, `${doc.documentKind}: must say, in Thai, why it failed`);
       assert.ok(result.message.includes(doc.documentNo), `${doc.documentKind}: the transaction's message must name ${doc.documentNo}`);
     }
-    assert.equal(result.transactionFolder.syncStatus, "waiting_for_documents");
+    assert.equal(result.transactionFolder.syncStatus, "sync_failed");
     assert.equal(result.syncedDocumentCount, 0);
     assert.doesNotMatch(JSON.stringify(result), /absolutePath|absoluteFolderPath/);
     assert.equal(JSON.stringify(result).includes(rootDir), false, "must not leak the server's filesystem path");

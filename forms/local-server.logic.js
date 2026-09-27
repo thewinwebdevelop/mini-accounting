@@ -48,7 +48,7 @@ const {
   RECEIVABLE_PREFILL_GROUPS,
 } = require("./workflow-prefill.logic.js");
 const { getCompanySettings } = require("./company-settings.logic.js");
-const { uploadFolderToGoogleDrive } = require("./google-drive.logic.js");
+const { uploadFilesToGoogleDrive } = require("./google-drive.logic.js");
 const { recordMonthlyExpense, findMonthlyExpenseSourceKeyConflicts, deleteMonthlyExpenseRowsBySourceKey } = require("./google-sheets.logic.js");
 const {
   createPurchaseInMovement,
@@ -913,6 +913,67 @@ async function writeDriveSyncMetadata(rootDir, folderPath, metadata) {
   const dataDir = path.join(rootDir, folderPath, "data");
   await mkdir(dataDir, { recursive: true });
   await writeFile(path.join(dataDir, "drive-sync.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+}
+
+const GOOGLE_DRIVE_LAYOUT_VERSION = 2;
+
+function sanitizeDriveName(value, fallback = "เอกสาร") {
+  const sanitized = String(value || fallback)
+    .replace(/[\\/\u0000-\u001f\u007f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  return sanitized || fallback;
+}
+
+function documentTypeDriveFolderName(documentKind) {
+  return sanitizeDriveName(getDocumentTypeDefinition(documentKind)?.label || documentKind);
+}
+
+function documentDrivePath(documentKind, accountingMonth) {
+  const { year, month } = getMonthParts(accountingMonth);
+  return `${year}/${month}/${documentTypeDriveFolderName(documentKind)}`;
+}
+
+function workflowDrivePath(transaction) {
+  const { year, month } = getMonthParts(transaction.accountingMonth);
+  const folderName = sanitizeDriveName(`${transaction.transactionNo} - ${transaction.title || "ธุรกรรม"}`);
+  return `${year}/${month}/${folderName}`;
+}
+
+function driveFileName(documentNo, fileName) {
+  return `${sanitizeDriveName(documentNo, "เอกสาร")}__${sanitizeDriveName(fileName, "ไฟล์")}`;
+}
+
+async function buildDriveManifestForFolder(rootDir, folderPath, documentNo) {
+  assertPathWithinDirectory(rootDir, path.join(rootDir, folderPath), "ที่อยู่โฟลเดอร์เอกสารไม่ถูกต้อง");
+  const [pdfFiles, rawFiles] = await Promise.all([
+    listPdfFiles(rootDir, folderPath),
+    listRawFiles(rootDir, folderPath),
+  ]);
+  const files = [
+    ...pdfFiles.map((file) => ({
+      absolutePath: file.absolutePath,
+      relativePath: driveFileName(documentNo, file.name),
+    })),
+    ...rawFiles.map((file) => ({
+      absolutePath: file.absolutePath,
+      relativePath: `raw/${driveFileName(documentNo, file.name)}`,
+    })),
+  ];
+  if (!files.length) throw new Error(`ไม่พบไฟล์ PDF หรือหลักฐานของเอกสาร ${documentNo}`);
+  return files;
+}
+
+async function uploadStandaloneDocumentToDrive({ rootDir, documentKind, documentNo, accountingMonth, folderPath, driveUploader, now }) {
+  const files = await buildDriveManifestForFolder(rootDir, folderPath, documentNo);
+  return driveUploader({
+    rootDir,
+    drivePath: documentDrivePath(documentKind, accountingMonth),
+    files,
+    layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION,
+    now,
+  });
 }
 
 function normalizeExpenseRequestStatus(status) {
@@ -4786,7 +4847,7 @@ async function completeWorkflowTransaction({
   transactionNo,
   completedBy = "",
   now = () => new Date().toISOString(),
-  driveUploader = uploadFolderToGoogleDrive,
+  driveUploader = uploadFilesToGoogleDrive,
   packetGenerator = generateWorkflowPacketPdf,
 }) {
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
@@ -4933,7 +4994,7 @@ async function getWorkflowTransactionFile({ rootDir, transactionNo, section, fil
 async function syncExpenseRequestToDrive({
   rootDir,
   requestNo,
-  driveUploader = uploadFolderToGoogleDrive,
+  driveUploader = uploadFilesToGoogleDrive,
   now = () => new Date().toISOString(),
 }) {
   if (!requestNo) throw new Error("Missing expense request number");
@@ -4947,11 +5008,19 @@ async function syncExpenseRequestToDrive({
     return await withWorkflowMutationLease(rootDir, transactionNo, async () => {
       try {
         await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
-        const uploadResult = await driveUploader({ rootDir, folderPath: request.folderPath });
+        const uploadResult = await uploadStandaloneDocumentToDrive({
+          rootDir,
+          documentKind: "expense_request",
+          documentNo: requestNo,
+          accountingMonth: request.accountingMonth || request.payload?.accountingMonth || getAccountingMonthFromRequestNo(requestNo),
+          folderPath: request.folderPath,
+          driveUploader,
+          now,
+        });
         await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
         const syncedAt = now();
         const metadata = {
-          requestNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+          layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, requestNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
           driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
           uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
         };
@@ -4962,7 +5031,7 @@ async function syncExpenseRequestToDrive({
         return metadata;
       } catch (error) {
         const message = error.message || "Google Drive sync failed";
-        const failedMetadata = { requestNo, syncStatus: "sync_failed", error: message, updatedAt: now() };
+        const failedMetadata = { layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, requestNo, syncStatus: "sync_failed", error: message, updatedAt: now() };
         await withWorkflowMutationGate(rootDir, transactionNo, async () => {
           await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
           await writeDriveSyncMetadata(rootDir, request.folderPath, failedMetadata);
@@ -4978,7 +5047,7 @@ async function syncExpenseRequestToDrive({
 async function syncSubstituteReceiptToDrive({
   rootDir,
   receiptNo,
-  driveUploader = uploadFolderToGoogleDrive,
+  driveUploader = uploadFilesToGoogleDrive,
   now = () => new Date().toISOString(),
 }) {
   if (!receiptNo) throw new Error("Missing substitute receipt number");
@@ -4989,11 +5058,19 @@ async function syncSubstituteReceiptToDrive({
   return withWorkflowMutationLease(rootDir, transactionNo, async () => {
     try {
       await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
-      const uploadResult = await driveUploader({ rootDir, folderPath: receipt.folderPath });
+      const uploadResult = await uploadStandaloneDocumentToDrive({
+        rootDir,
+        documentKind: "substitute_receipt",
+        documentNo: receiptNo,
+        accountingMonth: receipt.accountingMonth || receipt.payload?.accountingMonth || getAccountingMonthFromReceiptNo(receiptNo),
+        folderPath: receipt.folderPath,
+        driveUploader,
+        now,
+      });
       await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
       const syncedAt = now();
       const metadata = {
-        receiptNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+        layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, receiptNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
         driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
         uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
       };
@@ -5004,7 +5081,7 @@ async function syncSubstituteReceiptToDrive({
       return metadata;
     } catch (error) {
       const failedMetadata = {
-        receiptNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed",
+        layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, receiptNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed",
         syncedAt: "", updatedAt: now(),
       };
       await withWorkflowMutationGate(rootDir, transactionNo, async () => {
@@ -5058,7 +5135,7 @@ async function syncWorkflowDocumentToDrive({
   rootDir,
   documentKind,
   documentNo,
-  driveUploader = uploadFolderToGoogleDrive,
+  driveUploader = uploadFilesToGoogleDrive,
   now = () => new Date().toISOString(),
 }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(documentKind)) throw new Error("ประเภทเอกสารไม่ถูกต้อง");
@@ -5078,11 +5155,19 @@ async function syncWorkflowDocumentToDrive({
   return withWorkflowMutationLease(rootDir, transactionNo, async () => {
     try {
       await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
-      const uploadResult = await driveUploader({ rootDir, folderPath: record.folderPath });
+      const uploadResult = await uploadStandaloneDocumentToDrive({
+        rootDir,
+        documentKind,
+        documentNo,
+        accountingMonth: record.accountingMonth || record.payload?.accountingMonth,
+        folderPath: record.folderPath,
+        driveUploader,
+        now,
+      });
       await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
       const syncedAt = now();
       const metadata = {
-        documentKind, documentNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
+        layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, documentKind, documentNo, syncStatus: "synced", driveFolderId: uploadResult.driveFolderId,
         driveFolderUrl: uploadResult.driveFolderUrl, drivePath: uploadResult.drivePath,
         uploadedFileCount: uploadResult.uploadedFileCount, syncedAt, updatedAt: syncedAt,
       };
@@ -5095,7 +5180,7 @@ async function syncWorkflowDocumentToDrive({
       await withWorkflowMutationGate(rootDir, transactionNo, async () => {
         await assertWorkflowCancellationBarrierByNumber(rootDir, transactionNo);
         await writeDriveSyncMetadata(rootDir, record.folderPath, {
-          documentKind, documentNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed", syncedAt: "", updatedAt: now(),
+          layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, documentKind, documentNo, syncStatus: "sync_failed", error: error.message || "Google Drive sync failed", syncedAt: "", updatedAt: now(),
         });
       });
       throw error;
@@ -5103,13 +5188,10 @@ async function syncWorkflowDocumentToDrive({
   });
 }
 
-// documentKind -> that document's OWN standalone Drive sync action. The
-// workflow never uploads a child document's folder itself: it dispatches
-// here, so a child synced from the workflow is uploaded, recorded and stored
-// exactly as if the user had pressed that document's own sync button (same
-// state, same action). Each entry only adapts the shared { documentNo } to the
-// identifier its action takes. Covers every kind DOCUMENT_TYPE_DEFINITIONS
-// declares (asserted in tests/workflow-api.test.mjs).
+// documentKind -> standalone Drive sync actions. These remain available for
+// documents created outside a workflow. A workflow transaction deliberately
+// uses one bundle upload below so its child PDFs and evidence never scatter
+// into separate Drive folders.
 const DOCUMENT_DRIVE_SYNC_ACTIONS = Object.freeze({
   expense_request: ({ documentNo, ...options }) => syncExpenseRequestToDrive({ ...options, requestNo: documentNo }),
   substitute_receipt: ({ documentNo, ...options }) => syncSubstituteReceiptToDrive({ ...options, receiptNo: documentNo }),
@@ -5125,125 +5207,40 @@ function driveSyncDocumentName(documentKind, documentNo) {
   return `${getDocumentTypeDefinition(documentKind)?.label || documentKind} ${documentNo || ""}`.trim();
 }
 
-// One child document's turn in the workflow sync. Never throws: a failure
-// becomes this child's own sync_failed entry, so one bad document never stops
-// the others from getting their turn.
-//
-// A child whose own sync record already says "synced" (the user pressed its
-// own button earlier, or an earlier workflow sync already got it there) is
-// NOT uploaded again: uploadFolderToGoogleDrive reuses Drive folders but
-// creates a brand-new Drive file for every local file on every call -- it
-// never looks for an existing file (tests/google-drive.logic.test.mjs pins
-// this down) -- so a second upload would put a duplicate of every file in
-// Drive. Anything else (never synced, sync_failed, or an expense request
-// edited after syncing, which its own save marks needs_resync) is sent
-// through the child's own action.
-async function syncWorkflowChildDocumentToDrive(rootDir, doc, { driveUploader, now }) {
-  const { documentNo } = normalizeDocumentWorkflowStatus(doc);
-  const entry = {
-    documentKind: doc.documentKind,
-    documentNo: documentNo || "",
-    workflowStepId: doc.workflowStepId || "",
-  };
-
-  try {
-    const action = DOCUMENT_DRIVE_SYNC_ACTIONS[doc.documentKind];
-    if (!action) throw new Error(`ไม่รองรับการซิงก์ Google Drive สำหรับเอกสารประเภท ${doc.documentKind}`);
-
-    const ownRecord = await readDriveSyncMetadata(rootDir, doc.folderPath);
-    const alreadySynced = ownRecord?.syncStatus === "synced";
-    const metadata = alreadySynced ? ownRecord : await action({ rootDir, documentNo, driveUploader, now });
-
-    return {
-      ...entry,
-      syncStatus: "synced",
-      alreadySynced,
-      driveFolderUrl: metadata.driveFolderUrl || "",
-      drivePath: metadata.drivePath || "",
-      syncedAt: metadata.syncedAt || "",
-    };
-  } catch (error) {
-    const raw = error.message || "Google Drive sync failed";
-    return { ...entry, syncStatus: "sync_failed", error: raw, message: describeDriveSyncError(raw) };
+async function buildWorkflowDriveManifest(rootDir, transaction, orderedChildren) {
+  const files = [];
+  for (const doc of orderedChildren) {
+    const { documentNo } = normalizeDocumentWorkflowStatus(doc);
+    if (!documentNo) throw new Error(`ไม่พบเลขที่เอกสารในขั้นตอน ${doc.workflowStepId || ""}`);
+    const [pdfFiles, rawFiles] = await Promise.all([
+      listPdfFiles(rootDir, doc.folderPath),
+      listRawFiles(rootDir, doc.folderPath),
+    ]);
+    for (const file of pdfFiles) {
+      files.push({ absolutePath: file.absolutePath, relativePath: driveFileName(documentNo, file.name) });
+    }
+    for (const file of rawFiles) {
+      files.push({ absolutePath: file.absolutePath, relativePath: `raw/${driveFileName(documentNo, file.name)}` });
+    }
   }
-}
 
-// The transaction folder's own result from an earlier sync, if any. A
-// transaction synced before child documents were included recorded only its
-// own folder's result, flat on driveSync -- that folder is in Drive already
-// and must not be uploaded a second time either.
-function previousWorkflowTransactionFolderSync(driveSync) {
-  if (!driveSync) return null;
-  if (driveSync.transactionFolder) return driveSync.transactionFolder;
-  if (driveSync.syncStatus !== "synced") return null;
-  return {
-    syncStatus: "synced",
-    driveFolderId: driveSync.driveFolderId || "",
-    driveFolderUrl: driveSync.driveFolderUrl || "",
-    drivePath: driveSync.drivePath || "",
-    uploadedFileCount: driveSync.uploadedFileCount || 0,
-    syncedAt: driveSync.syncedAt || "",
-  };
-}
-
-async function uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now }) {
-  try {
-    const uploadResult = await driveUploader({ rootDir, folderPath: transaction.folderPath });
-    return {
-      syncStatus: "synced",
-      alreadySynced: false,
-      driveFolderId: uploadResult.driveFolderId || "",
-      driveFolderUrl: uploadResult.driveFolderUrl || "",
-      drivePath: uploadResult.drivePath || "",
-      uploadedFileCount: uploadResult.uploadedFileCount || 0,
-      syncedAt: now(),
-    };
-  } catch (error) {
-    const raw = error.message || "Google Drive sync failed";
-    return { syncStatus: "sync_failed", error: raw, message: describeDriveSyncError(raw) };
+  const [packetFiles, transactionRawFiles] = await Promise.all([
+    listPdfFiles(rootDir, transaction.folderPath),
+    listRawFiles(rootDir, transaction.folderPath),
+  ]);
+  for (const file of packetFiles) {
+    files.push({ absolutePath: file.absolutePath, relativePath: sanitizeDriveName(file.name, WORKFLOW_PACKET_PDF_FILE_NAME) });
   }
+  for (const file of transactionRawFiles) {
+    files.push({ absolutePath: file.absolutePath, relativePath: `raw/${driveFileName(transaction.transactionNo, file.name)}` });
+  }
+  if (!files.length) throw new Error(`ไม่พบไฟล์สำหรับ workflow ${transaction.transactionNo}`);
+  return files;
 }
 
-// Syncing a completed workflow is meant to put the whole set of paperwork for
-// one purchase into Drive, not just its cover sheet. So it:
-//
-//   1. sends every child document, in template step order, through that
-//      document's OWN standalone sync action (DOCUMENT_DRIVE_SYNC_ACTIONS) --
-//      there is no second upload path for child documents in this function.
-//      Each child lands where its own button would put it (its own folder,
-//      mirrored under the Drive base path the way it is laid out on disk), so
-//      syncing from the workflow and from the document can never put one
-//      document in two places. Children go one at a time, not in parallel:
-//      ensureDrivePath's find-then-create would otherwise race and create
-//      duplicate year/month folders.
-//   2. then, only once every child is in Drive, uploads the transaction's own
-//      folder (packet PDF + summary). Its workflow-summary.md is rewritten
-//      just before that upload to list each child's Drive folder link, so the
-//      transaction folder in Drive is the index to its paperwork. Holding it
-//      back while a child is missing means the cover sheet never reaches
-//      Drive without the paperwork it describes -- and, because the uploader
-//      is not idempotent, it goes up exactly once, with a complete index.
-//
-// A partial failure is sync_failed, never plain success: `documents` has one
-// entry per child (synced / sync_failed with its own Thai `message`,
-// `alreadySynced` when it was not uploaded again), `transactionFolder` says
-// whether the folder went up, is waiting for the children, or failed, and
-// `message` names, in Thai, exactly which documents did not make it. `error`
-// stays the first underlying error. A retry skips everything already in Drive
-// (each child's own sync record, and transactionFolder here), so it
-// re-attempts only what failed.
-//
-// Never throws past itself for an upload failure (only for a transaction that
-// does not exist or is not completed): it also runs automatically inside
-// completeWorkflowTransaction, where a missing Drive connection must degrade
-// to a status the page can show, not a failed completion. There is no Google
-// Sheets write here or anywhere in the workflow layer (decision D6): each
-// child writes its own Sheets row, and a workflow row would double-count the
-// same money.
-//
-// The result is stored on transaction.driveSync (persisted via
-// persistWorkflowTransaction into workflow-transaction.json), because the
-// transaction page renders driveSync straight off the transaction record.
+// Upload a workflow as one Drive bundle. This is intentionally independent of
+// standalone sync: a workflow has one root folder containing every child PDF,
+// every evidence file under raw/, and the packet PDF.
 async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUploader, now }) {
   if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
 
@@ -5260,81 +5257,74 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
     (stepOrder.get(a.workflowStepId) ?? Number.MAX_SAFE_INTEGER) - (stepOrder.get(b.workflowStepId) ?? Number.MAX_SAFE_INTEGER)
   ));
 
-  const documents = [];
-  for (const doc of orderedChildren) {
-    documents.push(await syncWorkflowChildDocumentToDrive(rootDir, doc, { driveUploader, now }));
-  }
+  const documentEntries = orderedChildren.map((doc) => {
+    const { documentNo } = normalizeDocumentWorkflowStatus(doc);
+    return { documentKind: doc.documentKind, documentNo: documentNo || "", workflowStepId: doc.workflowStepId || "" };
+  });
   return withWorkflowMutationLease(rootDir, transactionNo, async () => {
     await assertWorkflowCancellationBarrier(rootDir, transaction);
-    const missingDocuments = documents.filter((doc) => doc.syncStatus !== "synced");
+    if (transaction.driveSync?.layoutVersion === GOOGLE_DRIVE_LAYOUT_VERSION
+      && transaction.driveSync.syncStatus === "synced") return transaction.driveSync;
 
-    const previousFolder = previousWorkflowTransactionFolderSync(transaction.driveSync);
-    let transactionFolder;
-    if (previousFolder?.syncStatus === "synced") {
-      transactionFolder = { ...previousFolder, alreadySynced: true };
-    } else if (missingDocuments.length) {
-      transactionFolder = { syncStatus: "waiting_for_documents", message: WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE };
-    } else {
-    // Persisted first so the workflow-summary.md this rewrites -- and the
-    // upload right after carries -- already links every child's Drive folder.
-      await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      await persistWorkflowTransaction(
+    let uploadResult;
+    let errorInfo = null;
+    try {
+      const files = await buildWorkflowDriveManifest(rootDir, transaction, orderedChildren);
+      uploadResult = await driveUploader({
         rootDir,
-        { ...transaction, driveSync: { ...(transaction.driveSync || {}), documents }, updatedAt: now() },
-        childDocuments,
-      );
-    });
-      transactionFolder = await (async () => {
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      const result = await uploadWorkflowTransactionFolder(rootDir, transaction, { driveUploader, now });
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
-      return result;
-    })();
-    }
-
-    const failures = [
-    ...missingDocuments.map((doc) => ({ name: driveSyncDocumentName(doc.documentKind, doc.documentNo), error: doc.error, message: doc.message })),
-    ...(transactionFolder.syncStatus === "sync_failed"
-      ? [{ name: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo}`, error: transactionFolder.error, message: transactionFolder.message }]
-      : []),
-  ];
-    const allSynced = failures.length === 0 && transactionFolder.syncStatus === "synced";
-    const syncedDocumentCount = documents.length - missingDocuments.length;
-
-    let failureSummary = {};
-    if (!allSynced) {
-    const lines = [
-      `สำเร็จ ${syncedDocumentCount} จาก ${documents.length} เอกสาร ยังไม่สำเร็จ:`,
-      ...failures.map((failure) => `- ${failure.name}: ${failure.message}`),
-    ];
-    if (transactionFolder.syncStatus === "waiting_for_documents") {
-      lines.push(`- โฟลเดอร์ธุรกรรม ${transaction.transactionNo} (ชุดรวม PDF และสรุป): ${WORKFLOW_TRANSACTION_FOLDER_WAITING_MESSAGE}`);
-    }
-      failureSummary = { error: failures[0]?.error || transactionFolder.error || "Google Drive sync failed", message: lines.join("\n") };
+        drivePath: workflowDrivePath(transaction),
+        files,
+        layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION,
+        now,
+      });
+    } catch (error) {
+      const raw = error.message || "Google Drive sync failed";
+      errorInfo = { error: raw, message: describeDriveSyncError(raw) };
     }
 
     const finishedAt = now();
-    const metadata = {
-    syncStatus: allSynced ? "synced" : "sync_failed",
-    ...failureSummary,
-    syncedDocumentCount,
-    totalDocumentCount: documents.length,
-    documents,
-    transactionFolder,
-    // The transaction folder's own Drive link stays where the page and any
-    // earlier reader of driveSync already look for it.
-    ...(transactionFolder.syncStatus === "synced"
+    const synced = !errorInfo;
+    const transactionFolder = synced
       ? {
+        layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION,
+        syncStatus: "synced",
+        alreadySynced: false,
+        driveFolderId: uploadResult.driveFolderId || "",
+        driveFolderUrl: uploadResult.driveFolderUrl || "",
+        drivePath: uploadResult.drivePath || "",
+        uploadedFileCount: uploadResult.uploadedFileCount || 0,
+        syncedAt: uploadResult.syncedAt || finishedAt,
+      }
+      : { layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION, syncStatus: "sync_failed", ...errorInfo };
+    const documents = documentEntries.map((doc) => ({
+      ...doc,
+      layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION,
+      syncStatus: synced ? "synced" : "sync_failed",
+      driveFolderUrl: synced ? transactionFolder.driveFolderUrl : "",
+      drivePath: synced ? transactionFolder.drivePath : "",
+      ...(synced ? { syncedAt: transactionFolder.syncedAt } : { error: errorInfo.error, message: errorInfo.message }),
+    }));
+    const failureSummary = synced ? {} : {
+      error: errorInfo.error,
+      message: `สำเร็จ 0 จาก ${documents.length} เอกสาร ยังไม่สำเร็จ:\n${documents.map((doc) => `- ${driveSyncDocumentName(doc.documentKind, doc.documentNo)}: ${doc.message}`).join("\n")}\n- โฟลเดอร์ธุรกรรม ${transaction.transactionNo}: ${transactionFolder.message}`,
+    };
+    const metadata = {
+      layoutVersion: GOOGLE_DRIVE_LAYOUT_VERSION,
+      syncStatus: synced ? "synced" : "sync_failed",
+      ...failureSummary,
+      syncedDocumentCount: synced ? documents.length : 0,
+      totalDocumentCount: documents.length,
+      documents,
+      transactionFolder,
+      ...(synced ? {
         driveFolderId: transactionFolder.driveFolderId,
         driveFolderUrl: transactionFolder.driveFolderUrl,
         drivePath: transactionFolder.drivePath,
         uploadedFileCount: transactionFolder.uploadedFileCount,
-      }
-      : {}),
-    syncedAt: allSynced ? finishedAt : "",
-    updatedAt: finishedAt,
-  };
+      } : {}),
+      syncedAt: synced ? finishedAt : "",
+      updatedAt: finishedAt,
+    };
 
     await withWorkflowMutationGate(rootDir, transactionNo, async () => {
       await assertWorkflowCancellationBarrier(rootDir, transaction);
@@ -5359,7 +5349,7 @@ const workflowTransactionDriveSyncsInFlight = new Map();
 async function syncWorkflowTransactionToDrive({
   rootDir,
   transactionNo,
-  driveUploader = uploadFolderToGoogleDrive,
+  driveUploader = uploadFilesToGoogleDrive,
   now = () => new Date().toISOString(),
 }) {
   const key = `${path.resolve(rootDir)}\n${transactionNo}`;
