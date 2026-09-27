@@ -23,6 +23,9 @@ test("expense request list page supports filtering and creating a new request", 
   assert.match(html, /\/api\/expense-requests/);
   assert.match(html, /\/api\/expense-requests\/\$\{encodeURIComponent\(requestNo\)\}\/approve/);
   assert.match(html, /data-approve/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewReject"/);
+  assert.match(html, /\/api\/expense-requests\/\$\{encodeURIComponent\(requestNo\)\}\/reject/);
   assert.match(html, /ลง Sheet อีกครั้ง/);
   assert.match(html, /\/api\/expense-requests\/\$\{encodeURIComponent\(requestNo\)\}\/sync-drive/);
   assert.match(html, /Sync to Google Drive/);

@@ -39,10 +39,11 @@ const EXPECTED_LABELS = {
   voided: "ยกเลิกหลังรับรู้",
 };
 
-const EXPECTED_ACTIONS = ["submit", "approve", "receive_stock", "complete", "cancel", "void"];
+const EXPECTED_ACTIONS = ["submit", "approve", "reject", "receive_stock", "complete", "cancel", "void"];
 const EXPECTED_ACTION_TARGETS = {
   submit: "pending_approval",
   approve: "approved",
+  reject: "draft",
   receive_stock: "received",
   complete: "completed",
   cancel: "cancelled",
@@ -62,7 +63,7 @@ const EXPECTED_KIND_STATES = {
 
 const STANDARD_TRANSITIONS = {
   draft: ["draft", "pending_approval", "cancelled"],
-  pending_approval: ["pending_approval", "approved", "cancelled"],
+  pending_approval: ["pending_approval", "approved", "draft", "cancelled"],
   approved: ["approved", "completed", "cancelled"],
   completed: ["completed"],
   cancelled: ["cancelled"],
@@ -77,7 +78,7 @@ const EXPECTED_TRANSITIONS = {
   expense_request: STANDARD_TRANSITIONS,
   substitute_receipt: {
     draft: ["draft", "pending_approval", "cancelled"],
-    pending_approval: ["pending_approval", "approved", "cancelled"],
+    pending_approval: ["pending_approval", "approved", "draft", "cancelled"],
     approved: ["approved", "received", "completed", "cancelled"],
     received: ["received", "completed", "voided"],
     completed: ["completed"],
@@ -88,7 +89,7 @@ const EXPECTED_TRANSITIONS = {
 
 const EXPECTED_STANDARD_ACTIONS = {
   draft: ["submit", "cancel"],
-  pending_approval: ["approve", "cancel"],
+  pending_approval: ["approve", "reject", "cancel"],
   approved: ["complete", "cancel"],
   completed: [],
   cancelled: [],
@@ -166,13 +167,10 @@ test("gates substitute-receipt receiving on the exact stock-purchase context", (
   }
 });
 
-test("accepts draft replay but forbids returning to draft after submission for every kind", () => {
+test("accepts draft replay and allows a pending document to return to draft after rejection", () => {
   for (const kind of EXPECTED_KINDS) {
     assert.equal(lifecycle.assertDocumentTransition(kind, "draft", "draft"), undefined);
-    assert.throws(
-      () => lifecycle.assertDocumentTransition(kind, "pending_approval", "draft"),
-      { message: transitionError(kind, "pending_approval", "draft") },
-    );
+    assert.equal(lifecycle.assertDocumentTransition(kind, "pending_approval", "draft"), undefined);
   }
 });
 
@@ -212,7 +210,7 @@ test("returns exact ordered standard actions and every action maps to an allowed
 test("returns exact ordered substitute-receipt actions by state and receipt type", () => {
   const cases = [
     ["draft", {}, ["submit", "cancel"]],
-    ["pending_approval", {}, ["approve", "cancel"]],
+    ["pending_approval", {}, ["approve", "reject", "cancel"]],
     ["approved", { receiptType: "stock_purchase" }, ["receive_stock", "complete", "cancel"]],
     ["approved", { receiptType: "general_expense" }, ["complete", "cancel"]],
     ["approved", {}, ["complete", "cancel"]],
@@ -248,7 +246,7 @@ test("normalizes the expense submitted alias only as a read/source value", () =>
   );
   assert.deepEqual(
     lifecycle.availableDocumentActions("expense_request", "submitted"),
-    ["approve", "cancel"],
+    ["approve", "reject", "cancel"],
   );
   assert.throws(
     () => lifecycle.assertDocumentTransition("expense_request", "draft", "submitted"),

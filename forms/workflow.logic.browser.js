@@ -406,30 +406,31 @@ function renderTransactionRows(list, transactions) {
   }
 
   for (const transaction of transactions) {
+    const renderedTransaction = normalizeTransactionForRendering(transaction);
     const row = document.createElement("tr");
 
     const statusCell = document.createElement("td");
     const statusBadge = document.createElement("span");
-    statusBadge.className = `status ${transaction.status || ""}`.trim();
-    statusBadge.textContent = transactionStatusLabel(transaction.status);
+    statusBadge.className = `status ${renderedTransaction.status || ""}`.trim();
+    statusBadge.textContent = transactionStatusLabel(renderedTransaction.status);
     statusCell.appendChild(statusBadge);
 
     const noCell = document.createElement("td");
-    noCell.textContent = transaction.transactionNo || "-";
+    noCell.textContent = renderedTransaction.transactionNo || "-";
 
     const titleCell = document.createElement("td");
-    titleCell.textContent = transaction.title || "-";
+    titleCell.textContent = renderedTransaction.title || "-";
 
     const templateCell = document.createElement("td");
-    templateCell.textContent = transaction.templateSnapshot?.name || transaction.workflowTemplateId || "-";
+    templateCell.textContent = renderedTransaction.templateSnapshot?.name || renderedTransaction.workflowTemplateId || "-";
 
     const currentStepCell = document.createElement("td");
-    currentStepCell.textContent = currentStepLabelForTransaction(transaction);
+    currentStepCell.textContent = currentStepLabelForTransaction(renderedTransaction);
 
     const actionCell = document.createElement("td");
     const openLink = document.createElement("a");
     openLink.className = "button secondary small";
-    openLink.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
+    openLink.href = `/workflow-transaction?transactionNo=${encodeURIComponent(renderedTransaction.transactionNo)}`;
     openLink.textContent = "เปิดธุรกรรม";
     actionCell.appendChild(openLink);
 
@@ -749,6 +750,33 @@ const DRIVE_SYNC_ITEM_STATES = {
   waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
 };
 
+function safeDriveFolderUrl(value) {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "drive.google.com" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function workflowDriveFolderUrl(transaction) {
+  return safeDriveFolderUrl(transaction?.driveSync?.transactionFolder?.driveFolderUrl)
+    || safeDriveFolderUrl(transaction?.driveSync?.driveFolderUrl);
+}
+
+function renderWorkflowDriveFolderLink(link, transaction) {
+  if (!link) return;
+  const url = workflowDriveFolderUrl(transaction);
+  if (url) {
+    link.href = url;
+    link.hidden = false;
+  } else {
+    link.href = "#";
+    link.hidden = true;
+  }
+}
+
 function driveSyncItemState(entry) {
   if (entry.syncStatus === "synced") return entry.alreadySynced ? "already_synced" : "synced";
   return entry.syncStatus;
@@ -839,6 +867,7 @@ function renderDriveSyncSection(section, statusEl, button, transaction, document
   }
 
   if (statusEl) statusEl.textContent = driveSyncStatusText(transaction.driveSync);
+  renderWorkflowDriveFolderLink(document.querySelector("#workflowDriveFolderLink"), transaction);
   renderDriveSyncDocuments(documentsList, transaction);
 
   const syncGoogleDrive = !!transaction.templateSnapshot?.syncGoogleDrive;
@@ -999,7 +1028,19 @@ function setTransactionSyncButtonsDisabled(disabled) {
   if (cancelButton) cancelButton.disabled = disabled || transactionCancellationInFlight || cancellationLocked();
 }
 
+function normalizeTransactionForRendering(transaction = {}) {
+  // A cancellation overlay is only authoritative when the API also sends
+  // its cancellation evidence. If an old/stale response says "cancelled"
+  // but carries no overlay and already has completedAt, keep the durable
+  // completion visible instead of showing a misleading cancellation banner.
+  if (transaction.status === "cancelled" && transaction.completedAt && !transaction.cancellation) {
+    return { ...transaction, status: "completed" };
+  }
+  return transaction;
+}
+
 function renderTransaction(transaction, childDocuments = []) {
+  transaction = normalizeTransactionForRendering(transaction);
   transactionPageState.transaction = transaction;
   transactionPageState.childDocuments = childDocuments;
 

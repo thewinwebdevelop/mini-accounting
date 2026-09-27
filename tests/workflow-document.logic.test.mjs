@@ -60,6 +60,42 @@ test("submitWorkflowDocument moves a draft to pending approval with an immutable
   }
 });
 
+test("rejectWorkflowDocument returns a pending document to draft and records the reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const payload = docLogic.buildWorkflowDocumentPayload({
+      documentKind: "purchase_order", sequence: "1", accountingMonth: "2026-09", documentDate: "2026-09-06",
+      title: "รอตรวจ", businessPurpose: "ทดสอบ reject", lines: [{ description: "รายการ", quantity: "1", unitCost: "10" }],
+    });
+    const saved = await serverLogic.saveWorkflowDocument({ rootDir, payload });
+    await serverLogic.submitWorkflowDocument({ rootDir, documentKind: "purchase_order", documentNo: saved.documentNo, submittedBy: "ผู้ส่ง", now: () => "2026-09-06T13:00:00.000Z" });
+
+    const rejected = await serverLogic.rejectWorkflowDocument({
+      rootDir,
+      documentKind: "purchase_order",
+      documentNo: saved.documentNo,
+      rejectedBy: "ผู้ตรวจ",
+      reason: "กรุณาแก้ไขจำนวนสินค้า",
+      now: () => "2026-09-06T14:00:00.000Z",
+    });
+
+    assert.equal(rejected.status, "draft");
+    const stored = await serverLogic.getWorkflowDocument(rootDir, "purchase_order", saved.documentNo);
+    assert.equal(stored.payload.rejectedBy, "ผู้ตรวจ");
+    assert.equal(stored.payload.rejectionReason, "กรุณาแก้ไขจำนวนสินค้า");
+    assert.deepEqual(stored.payload.statusHistory.at(-1), {
+      fromStatus: "pending_approval",
+      toStatus: "draft",
+      changedAt: "2026-09-06T14:00:00.000Z",
+      note: "rejected",
+      actor: "ผู้ตรวจ",
+      reason: "กรุณาแก้ไขจำนวนสินค้า",
+    });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("every lightweight kind requires submit and approval before completion", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
   try {

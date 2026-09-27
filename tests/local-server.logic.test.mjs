@@ -22,6 +22,8 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  rejectExpenseRequest,
+  rejectSubstituteReceipt,
   completeExpenseRequest,
   completeSubstituteReceipt,
   getExpenseDraft,
@@ -1961,6 +1963,46 @@ test("approveExpenseRequest moves a submitted request to approved and records mo
     const approvedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(approvedRecord.status, "approved");
     assert.equal(approvedRecord.sheetSyncStatus, "synced");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejectExpenseRequest returns a pending request to draft with a reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-reject-"));
+  try {
+    const submitted = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    const rejected = await rejectExpenseRequest({
+      rootDir,
+      requestNo: submitted.requestNo,
+      rejectedBy: "บัญชี",
+      reason: "กรุณาแนบใบเสร็จเพิ่มเติม",
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+    assert.equal(rejected.status, "draft");
+    const loaded = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.equal(loaded.payload.rejectionReason, "กรุณาแนบใบเสร็จเพิ่มเติม");
+    assert.equal(loaded.payload.statusHistory.at(-1).note, "rejected");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejectSubstituteReceipt returns a pending receipt to draft with a reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-reject-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload(), uploads: validSlipUpload() });
+    const rejected = await rejectSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      rejectedBy: "บัญชี",
+      reason: "กรุณาตรวจสอบรายการสินค้า",
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+    assert.equal(rejected.status, "draft");
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.rejectionReason, "กรุณาตรวจสอบรายการสินค้า");
+    assert.equal(loaded.payload.statusHistory.at(-1).note, "rejected");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

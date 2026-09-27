@@ -41,6 +41,9 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /id="saveDraft"/);
   assert.match(html, /id="submitForApproval"/);
   assert.match(html, /id="approveReceipt"/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewConfirm"/);
+  assert.match(html, /id="workflowReviewReject"/);
   assert.match(html, /id="receiveStock"/);
   assert.match(html, /id="receiptStatus"/);
   assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
@@ -80,6 +83,7 @@ test("substitute receipt browser controller loads draft and submitted receipt qu
   assert.match(browserLogic, /\/api\/substitute-receipt-drafts\//);
   assert.match(browserLogic, /\/api\/substitute-receipt-vendors/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/approve/);
+  assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/reject/);
   assert.match(browserLogic, /\/api\/substitute-receipts\/.*\/receive-stock/);
 });
 
@@ -501,6 +505,7 @@ async function setupSubstituteReceiptSandbox({
   prefillResponse = null,
   nextReceiptNo = "RCT-2026-09-0001",
   receiptResponse = null,
+  workflowTransactionResponse = null,
   mutationResponses = [],
   promptResult = "2026-09-13",
   draftResponse = { receiptNo: "SR-2026-09-0001", status: "draft", evidenceFiles: {}, rawFiles: [], updatedAt: "2026-09-13T00:00:00.000Z" },
@@ -529,6 +534,9 @@ async function setupSubstituteReceiptSandbox({
     fetchCalls.push({ url, options });
     if (url.includes("/prefill")) {
       return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
+    }
+    if (url.includes("/api/workflow-transactions/") && !url.includes("/prefill")) {
+      return { ok: true, json: async () => workflowTransactionResponse ?? {} };
     }
     if (url.includes("/api/inventory/stock-skus")) {
       return { ok: true, json: async () => ({ stockSkus: [] }) };
@@ -654,6 +662,33 @@ test("opened from a workflow step: hidden fields are populated and a safe return
     fetchLog.some((url) => url.includes("/api/workflow-transactions/TXN-2026-09-0001/prefill") && url.includes("documentKind=substitute_receipt") && url.includes("stepId=step-2")),
     "must fetch the prefill endpoint for the right transaction/documentKind/stepId",
   );
+});
+
+test("opened from a workflow step resumes the existing substitute receipt instead of allocating another number", async () => {
+  const { elements, fetchLog } = await setupSubstituteReceiptSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-2",
+    workflowTransactionResponse: {
+      childDocuments: [{
+        documentKind: "substitute_receipt",
+        documentNo: "SR-2026-09-0007",
+        workflowStepId: "step-2",
+        status: "draft",
+      }],
+    },
+    receiptResponse: {
+      receiptNo: "SR-2026-09-0007",
+      status: "draft",
+      payload: { receiptNo: "SR-2026-09-0007", receiptType: "general_expense", lines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  assert.equal(elements.receiptNoPreview.textContent, "SR-2026-09-0007");
+  assert.equal(elements.receiptStatus.textContent, "แบบร่าง");
+  assert.ok(fetchLog.some((url) => url === "/api/workflow-transactions/TXN-2026-09-0001"));
+  assert.ok(fetchLog.some((url) => url === "/api/substitute-receipts/SR-2026-09-0007"));
+  assert.equal(fetchLog.some((url) => url.includes("/prefill")), false, "an existing workflow document must not offer prefill");
 });
 
 // --- receiptType lock: a workflow-declared step locks the field ----------

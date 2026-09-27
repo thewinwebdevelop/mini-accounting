@@ -2496,6 +2496,80 @@ async function approveSubstituteReceipt({
   };
 }
 
+async function rejectExpenseRequest({
+  rootDir,
+  requestNo,
+  rejectedBy = "",
+  reason = "",
+  now = () => new Date().toISOString(),
+}) {
+  const rejectionReason = String(reason || "").trim();
+  if (!rejectionReason) throw new Error("ระบุเหตุผลที่ไม่อนุมัติ");
+  const request = await getSubmittedExpenseRequest(rootDir, requestNo);
+  await assertWorkflowMutationAllowed(rootDir, request.payload?.transactionNo);
+  const payload = { ...request.payload, folderPath: request.folderPath };
+  const currentStatus = normalizeExpenseRequestStatus(payload.status || "submitted");
+  if (currentStatus !== "pending_approval") {
+    throw new Error(`Invalid expense request status transition: ${currentStatus} -> draft`);
+  }
+  const rejectedAt = now();
+  appendExpenseRequestStatus(payload, "draft", "rejected", rejectedBy, () => rejectedAt);
+  payload.rejectedAt = rejectedAt;
+  payload.rejectedBy = rejectedBy || "";
+  payload.rejectionReason = rejectionReason;
+  await assertWorkflowMutationAllowed(rootDir, payload.transactionNo);
+  const { pdfFiles } = await withWorkflowMutationGate(rootDir, payload.transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, payload.transactionNo);
+    return writeSubmittedExpenseRequestFiles(rootDir, payload);
+  });
+  return {
+    requestNo: payload.requestNo,
+    status: payload.status,
+    rejectedAt: payload.rejectedAt,
+    rejectedBy: payload.rejectedBy,
+    rejectionReason: payload.rejectionReason,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
+async function rejectSubstituteReceipt({
+  rootDir,
+  receiptNo,
+  rejectedBy = "",
+  reason = "",
+  now = () => new Date().toISOString(),
+}) {
+  const rejectionReason = String(reason || "").trim();
+  if (!rejectionReason) throw new Error("ระบุเหตุผลที่ไม่อนุมัติ");
+  const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+  await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
+  const payload = { ...receipt.payload, folderPath: receipt.folderPath };
+  const currentStatus = normalizeSubstituteReceiptStatus(payload.status || "pending_approval");
+  if (currentStatus !== "pending_approval") {
+    throw new Error(`Invalid substitute receipt status transition: ${currentStatus} -> draft`);
+  }
+  const rejectedAt = now();
+  appendSubstituteReceiptStatus(payload, "draft", "rejected", rejectedBy, () => rejectedAt);
+  payload.rejectedAt = rejectedAt;
+  payload.rejectedBy = rejectedBy || "";
+  payload.rejectionReason = rejectionReason;
+  await assertWorkflowMutationAllowed(rootDir, payload.transactionNo);
+  const { pdfFiles } = await withWorkflowMutationGate(rootDir, payload.transactionNo, async () => {
+    await assertWorkflowMutationAllowed(rootDir, payload.transactionNo);
+    return writeSubmittedSubstituteReceiptFiles(rootDir, payload);
+  });
+  return {
+    receiptNo: payload.receiptNo,
+    status: payload.status,
+    rejectedAt: payload.rejectedAt,
+    rejectedBy: payload.rejectedBy,
+    rejectionReason: payload.rejectionReason,
+    folderPath: payload.folderPath,
+    pdfFiles,
+  };
+}
+
 async function receiveSubstituteReceiptStock({
   rootDir,
   receiptNo,
@@ -3149,7 +3223,7 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
   });
 }
 
-async function transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus, stampAt, stampBy, actor = "", historyNote, now }) {
+async function transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus, stampAt, stampBy, actor = "", historyNote, reason = "", now }) {
   return withWorkflowDocumentMutation(rootDir, documentKind, documentNo, async () => {
     const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
     if (!record) throw new Error("ไม่พบเอกสาร");
@@ -3165,8 +3239,14 @@ async function transitionWorkflowDocument({ rootDir, documentKind, documentNo, t
     payload.statusLabel = WORKFLOW_DOCUMENT_STATUS_LABELS[targetStatus];
     payload[stampAt] = changedAt;
     payload[stampBy] = actor || "";
+    if (targetStatus === "draft") {
+      payload.rejectedAt = changedAt;
+      payload.rejectedBy = actor || "";
+      payload.rejectionReason = reason;
+    }
     payload.statusHistory = [...(Array.isArray(payload.statusHistory) ? payload.statusHistory : []), {
       fromStatus: sourceStatus, toStatus: targetStatus, changedAt, note: historyNote, actor: actor || "",
+      ...(reason ? { reason } : {}),
     }];
     payload.updatedAt = changedAt;
     const beforeCommit = async () => {
@@ -3188,6 +3268,7 @@ function workflowDocumentTransitionResult(payload, pdfFiles) {
     statusLabel: payload.statusLabel || WORKFLOW_DOCUMENT_STATUS_LABELS[payload.status],
     submittedAt: payload.submittedAt || "", submittedBy: payload.submittedBy || "",
     approvedAt: payload.approvedAt || "", approvedBy: payload.approvedBy || "",
+    rejectedAt: payload.rejectedAt || "", rejectedBy: payload.rejectedBy || "", rejectionReason: payload.rejectionReason || "",
     completedAt: payload.completedAt || "", completedBy: payload.completedBy || "",
     vendorId: payload.vendorId || "",
     vendorSnapshot: payload.vendorSnapshot || {},
@@ -3201,6 +3282,15 @@ async function submitWorkflowDocument({ rootDir, documentKind, documentNo, submi
 
 async function approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy = "", now = () => new Date().toISOString() }) {
   return transitionWorkflowDocument({ rootDir, documentKind, documentNo, targetStatus: "approved", stampAt: "approvedAt", stampBy: "approvedBy", actor: approvedBy, historyNote: "approved", now });
+}
+
+async function rejectWorkflowDocument({ rootDir, documentKind, documentNo, rejectedBy = "", reason = "", now = () => new Date().toISOString() }) {
+  const rejectionReason = String(reason || "").trim();
+  if (!rejectionReason) throw new Error("ระบุเหตุผลที่ไม่อนุมัติ");
+  return transitionWorkflowDocument({
+    rootDir, documentKind, documentNo, targetStatus: "draft", stampAt: "rejectedAt", stampBy: "rejectedBy",
+    actor: rejectedBy, historyNote: "rejected", reason: rejectionReason, now,
+  });
 }
 
 async function completeWorkflowDocument({ rootDir, documentKind, documentNo, completedBy = "", now = () => new Date().toISOString() }) {
@@ -5300,6 +5390,8 @@ module.exports = {
   completeSubstituteReceipt,
   completeWorkflowDocument,
   completeWorkflowTransaction,
+  rejectExpenseRequest,
+  rejectSubstituteReceipt,
   findLightweightWorkflowDocuments,
   findVendorMatches,
   findWorkflowChildDocuments,
@@ -5340,6 +5432,7 @@ module.exports = {
   parseWorkflowDocumentListFilters,
   persistWorkflowTransaction,
   receiveSubstituteReceiptStock,
+  rejectWorkflowDocument,
   refreshWorkflowTransaction,
   resolveWorkflowSheetExpenseSource,
   saveExpenseDraft,

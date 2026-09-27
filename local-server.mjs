@@ -60,9 +60,12 @@ const {
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
   submitWorkflowDocument,
+  rejectWorkflowDocument,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   receiveSubstituteReceiptStock,
+  rejectExpenseRequest,
+  rejectSubstituteReceipt,
   getSubmittedExpenseRequest,
   describeDriveSyncError,
   syncExpenseRequestToDrive,
@@ -1118,6 +1121,58 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
   }
 }
 
+async function handleSubstituteReceiptReject(receiptNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    const result = await rejectSubstituteReceipt({
+      rootDir,
+      receiptNo,
+      rejectedBy: actorForRequest(request, payload.rejectedBy),
+      reason: payload.reason,
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendWorkflowMutationError(response, error, "Cannot reject substitute receipt");
+  }
+}
+
+async function handleExpenseRequestReject(requestNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    const result = await rejectExpenseRequest({
+      rootDir,
+      requestNo,
+      rejectedBy: actorForRequest(request, payload.rejectedBy),
+      reason: payload.reason,
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendWorkflowMutationError(response, error, "Cannot reject expense request");
+  }
+}
+
 // Closes out an approved expense request. Without this route, completeExpenseRequest
 // (implemented and unit-tested in local-server.logic.js) was never reachable
 // over HTTP, so an expense_request step inside a workflow transaction could
@@ -1450,6 +1505,7 @@ async function handleWorkflowDocumentAction(action, documentKind, documentNo, re
     const actions = {
       submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: actorForRequest(request, body.submittedBy) }),
       approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: actorForRequest(request, body.approvedBy) }),
+      reject: () => rejectWorkflowDocument({ rootDir, documentKind, documentNo, rejectedBy: actorForRequest(request, body.rejectedBy), reason: body.reason }),
     };
     const result = await actions[action]();
     await persistCloudDocumentMutation({
@@ -3137,11 +3193,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve"))) {
-    const action = url.pathname.endsWith("/submit") ? "submit" : "approve";
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve") || url.pathname.endsWith("/reject"))) {
+    const action = url.pathname.endsWith("/submit") ? "submit" : url.pathname.endsWith("/approve") ? "approve" : "reject";
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace(new RegExp(`/${action}$`), "");
     const [documentKind, documentNo] = remainder.split("/");
-    const permission = action === "submit" ? ACTIONS.DOCUMENT_SUBMIT : ACTIONS.DOCUMENT_APPROVE;
+    const permission = action === "submit" ? ACTIONS.DOCUMENT_SUBMIT : action === "approve" ? ACTIONS.DOCUMENT_APPROVE : ACTIONS.DOCUMENT_REJECT;
     if (!await ensureLifecycleAccess(request, response, permission, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentAction(action, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
@@ -3246,12 +3302,30 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/reject")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/reject", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_REJECT, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
+    await handleSubstituteReceiptReject(receiptNo, request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/approve")) {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/approve", ""));
     if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_APPROVE, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseRequestApprove(requestNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/reject")) {
+    const requestNo = decodeURIComponent(url.pathname
+      .replace("/api/expense-requests/", "")
+      .replace("/reject", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_REJECT, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
+    await handleExpenseRequestReject(requestNo, request, response);
     return;
   }
 

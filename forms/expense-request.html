@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>แบบฟอร์มใบเบิกจ่าย - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -1107,6 +1108,23 @@
     </div>
   </div>
 
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button type="button" class="button secondary" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button type="button" class="button danger" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button type="button" class="button primary" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+
   <template id="lineTemplate">
     <details class="line-row" open>
       <summary class="line-summary">
@@ -1171,6 +1189,7 @@
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script>
   window.addEventListener("DOMContentLoaded", async () => {
     const {
@@ -1200,6 +1219,17 @@
       checkbox: saveVendorPresetCheckbox,
       mapping: { name: ["paymentTargetName"], taxId: ["paymentTargetTaxId"], bankName: ["paymentBankName"], accountNo: ["paymentAccountNo"], paymentChannel: ["paymentChannel"], defaultBusinessPurpose: ["businessPurpose"] },
       onError: (error) => setSaveStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+    });
+    const reviewModal = window.WorkflowReviewModal?.create({
+      dialog: document.querySelector("#workflowReviewDialog"),
+      title: document.querySelector("#workflowReviewDialogTitle"),
+      content: document.querySelector("#workflowReviewContent"),
+      reasonField: document.querySelector("#workflowReviewReasonField"),
+      reasonInput: document.querySelector("#workflowReviewReason"),
+      reasonError: document.querySelector("#workflowReviewReasonError"),
+      confirm: document.querySelector("#workflowReviewConfirm"),
+      reject: document.querySelector("#workflowReviewReject"),
+      cancel: document.querySelector("#workflowReviewCancel"),
     });
 
     // --- Workflow context (Task 9) -----------------------------------
@@ -1755,6 +1785,28 @@
       setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
     }
 
+    // A workflow step can be reopened without a requestNo in the URL. Resolve
+    // the existing child first so saving the form updates that document and
+    // regenerates its fixed files instead of allocating another REQ number.
+    async function resumeExistingWorkflowRequest() {
+      if (currentRequestNo || !workflowContext.transactionNo || !workflowContext.workflowStepId) return false;
+      try {
+        const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(workflowContext.transactionNo)}`);
+        if (!response.ok) return false;
+        const transaction = await response.json();
+        const child = (transaction.childDocuments || []).find((document) => (
+          document.documentKind === "expense_request" && document.workflowStepId === workflowContext.workflowStepId
+        )) || (transaction.childDocuments || []).find((document) => (
+          document.documentKind === "expense_request" && document.documentNo
+        ));
+        if (!child?.documentNo) return false;
+        await loadSubmittedRequest(child.documentNo);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     async function saveDraft() {
       if (location.protocol === "file:") {
         setSaveStatus("ต้องเปิดผ่าน local server เช่น http://localhost:8787/ ก่อนจึงจะบันทึกแบบร่างได้", "error");
@@ -1853,11 +1905,64 @@
       updatePreview();
     }
 
+    async function rejectRequest(reason) {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rejectedBy: "", reason }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถส่งกลับแก้ไขได้");
+      adoptNumberedResult({ ...result, status: "draft", evidenceFiles: result.evidenceFiles || {}, rawFiles: result.rawFiles || [], pdfFiles: result.pdfFiles || [] }, "draft");
+      currentStatus = "draft";
+      await loadSubmittedRequest(currentRequestNo);
+      setSaveStatus(`ส่งใบเบิกจ่าย ${currentRequestNo} กลับไปแก้ไขแล้ว`, "success");
+    }
+
+    function buildReviewModel(mode) {
+      const data = collectData();
+      const totals = calculateExpenseTotals(data.expenseLines);
+      const files = Object.values(savedEvidenceFileState).flatMap((items) => Array.isArray(items) ? items : [])
+        .map((file) => ({ name: file.originalName || file.storedName, url: file.url || "" }));
+      Object.values(uploadedFileState).flatMap((items) => items || []).forEach((file) => files.push({ name: file.name }));
+      return {
+        mode,
+        documentLabel: "ใบเบิกจ่าย",
+        documentNo: currentRequestNo || nextRequestInfo.requestNo || "ฉบับใหม่",
+        fields: [
+          { label: "วันที่เอกสาร", value: data.expenseDate },
+          { label: "ผู้ขอเบิก", value: data.requesterName },
+          { label: "ผู้รับเงิน/คู่ค้า", value: data.paymentTargetName },
+          { label: "วัตถุประสงค์", value: data.businessPurpose },
+          { label: "ยอดจ่ายสุทธิ", value: totals.netPayment },
+        ],
+        lines: data.expenseLines.map((line) => ({
+          description: [line.category, line.description].filter(Boolean).join(" - ") || "ยังไม่ได้กรอกรายละเอียด",
+          quantity: "",
+          unitCost: [line.amountBeforeVat, line.vatAmount].filter(Boolean).join(" + "),
+        })),
+        files,
+      };
+    }
+
+    function openReview(action) {
+      if (mutationInFlight) return;
+      if (!reviewModal) {
+        runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error"));
+        return;
+      }
+      const model = buildReviewModel(action === "approve" ? "approve" : "submit");
+      model.onConfirm = () => runMutation(submitRequest);
+      model.onReject = (reason) => runMutation(() => rejectRequest(reason));
+      reviewModal.open(model);
+    }
+
     document.querySelector("#addLine").addEventListener("click", addLine);
     document.querySelector("#copyMarkdown").addEventListener("click", () => copyOutput("markdown"));
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
     document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
-    document.querySelector("#submitRequest").addEventListener("click", () => runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error")));
+    document.querySelector("#submitRequest").addEventListener("click", () => openReview("submit"));
     reloadSavedRequestButton?.addEventListener("click", reloadSavedRequest);
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
@@ -1929,12 +2034,15 @@
     } else if (requestNoFromUrl) {
       await loadSubmittedRequest(requestNoFromUrl);
     } else {
-      addLine();
-      // Only fetch cross-document prefill for a brand-new, never-saved
-      // document: an existing draft/request already has its own real data,
-      // so offering to overwrite it with an earlier document's data would be
-      // wrong.
-      workflowPrefillBanner.load();
+      const resumed = await resumeExistingWorkflowRequest();
+      if (!resumed) {
+        addLine();
+        // Only fetch cross-document prefill for a brand-new, never-saved
+        // document: an existing draft/request already has its own real data,
+        // so offering to overwrite it with an earlier document's data would be
+        // wrong.
+        workflowPrefillBanner.load();
+      }
     }
   });
   </script>

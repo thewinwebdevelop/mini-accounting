@@ -16,6 +16,7 @@ window.addEventListener("DOMContentLoaded", () => {
     workflowStepId: query.get("workflowStepId") || "",
     status: "draft",
     stockSkus: [],
+    existingEvidenceFiles: [],
   };
 
   const form = document.querySelector("#workflowDocumentForm");
@@ -35,6 +36,17 @@ window.addEventListener("DOMContentLoaded", () => {
   const vatAmountPreview = document.querySelector("#vatAmountPreview");
   const withholdingTaxPreview = document.querySelector("#withholdingTaxPreview");
   const netPaymentPreview = document.querySelector("#netPaymentPreview");
+  const reviewModal = window.WorkflowReviewModal?.create({
+    dialog: document.querySelector("#workflowReviewDialog"),
+    title: document.querySelector("#workflowReviewDialogTitle"),
+    content: document.querySelector("#workflowReviewContent"),
+    reasonField: document.querySelector("#workflowReviewReasonField"),
+    reasonInput: document.querySelector("#workflowReviewReason"),
+    reasonError: document.querySelector("#workflowReviewReasonError"),
+    confirm: document.querySelector("#workflowReviewConfirm"),
+    reject: document.querySelector("#workflowReviewReject"),
+    cancel: document.querySelector("#workflowReviewCancel"),
+  });
   const pageTitle = document.querySelector("#pageTitle");
   const documentListLink = document.querySelector("#workflowDocumentListLink");
   const mutationButtons = [saveButton, submitButton, approveButton, completeButton].filter(Boolean);
@@ -392,6 +404,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
     for (const line of lines) addLine(line);
     renderExistingEvidenceFiles([]);
+    state.existingEvidenceFiles = [];
     setDocumentState(payload.status || state.status);
     updatePreview();
   }
@@ -405,7 +418,8 @@ window.addEventListener("DOMContentLoaded", () => {
     state.workflowTemplateId = payload.workflowTemplateId || state.workflowTemplateId;
     state.workflowStepId = payload.workflowStepId || state.workflowStepId;
     fillForm(payload);
-    renderExistingEvidenceFiles(record.rawFiles || payload.rawFiles || []);
+    state.existingEvidenceFiles = record.rawFiles || payload.rawFiles || [];
+    renderExistingEvidenceFiles(state.existingEvidenceFiles);
     setStatus(`โหลดเอกสาร ${state.documentNo} แล้ว`, "success");
   }
 
@@ -482,10 +496,44 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(vendorPresetError || `บันทึกเอกสาร ${state.documentNo} แล้ว\nPDF ${(result.pdfFiles || []).length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
 
-  async function transitionWorkflowDocument(action) {
+  function buildReviewModel(mode) {
+    const payload = collectPayload();
+    const input = form.querySelector('[name="evidence_evidence"]');
+    const selectedFiles = [...(input?.files || [])].map((file) => ({ name: file.name }));
+    const definition = workflowLogic?.getDocumentTypeDefinition?.(state.documentKind);
+    return {
+      mode,
+      documentLabel: definition?.label || state.documentKind,
+      documentNo: state.documentNo,
+      fields: [
+        { label: "ชื่อเอกสาร", value: payload.title },
+        { label: "ผู้ขอ/ผู้จัดทำ", value: payload.requesterName },
+        { label: "ผู้รับเงิน/คู่ค้า", value: payload.payeeName },
+        { label: "วัตถุประสงค์ทางธุรกิจ", value: payload.businessPurpose },
+        { label: "ยอดสุทธิ", value: netPaymentPreview?.textContent },
+      ],
+      lines: payload.lines,
+      files: [...state.existingEvidenceFiles, ...selectedFiles],
+    };
+  }
+
+  function openReview(action) {
+    if (!state.documentNo || !reviewModal) return;
+    const mode = action === "approve" ? "approve" : "submit";
+    const model = buildReviewModel(mode);
+    model.onConfirm = () => runMutation(() => transitionWorkflowDocument(action));
+    model.onReject = (reason) => runMutation(() => transitionWorkflowDocument("reject", reason));
+    reviewModal.open(model);
+  }
+
+  async function transitionWorkflowDocument(action, reason = "") {
     if (!state.documentNo) return;
     clearStatus();
-    const body = action === "complete" ? { completedBy: "" } : {};
+    const body = action === "complete"
+      ? { completedBy: "" }
+      : action === "reject"
+        ? { rejectedBy: "", reason }
+        : {};
     const result = await api(`/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -495,6 +543,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const messages = {
       submit: `ส่งเอกสาร ${state.documentNo} ตรวจอนุมัติแล้ว`,
       approve: `อนุมัติเอกสาร ${state.documentNo} แล้ว`,
+      reject: `ส่งเอกสาร ${state.documentNo} กลับไปแก้ไขแล้ว`,
       complete: `เอกสาร ${state.documentNo} เสร็จสิ้นแล้ว`,
     };
     setStatus(messages[action], "success");
@@ -502,8 +551,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   addLineButton.addEventListener("click", () => addLine());
   saveButton.addEventListener("click", () => runMutation(saveWorkflowDocumentSubmission));
-  submitButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("submit")));
-  approveButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("approve")));
+  submitButton.addEventListener("click", () => openReview("submit"));
+  approveButton.addEventListener("click", () => openReview("approve"));
   completeButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("complete")));
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);

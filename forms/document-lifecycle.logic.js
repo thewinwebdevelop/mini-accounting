@@ -45,6 +45,7 @@
   const DOCUMENT_ACTIONS = [
     "submit",
     "approve",
+    "reject",
     "receive_stock",
     "complete",
     "cancel",
@@ -54,6 +55,7 @@
   const DOCUMENT_ACTION_TARGET_STATUS = {
     submit: "pending_approval",
     approve: "approved",
+    reject: "draft",
     receive_stock: "received",
     complete: "completed",
     cancel: "cancelled",
@@ -73,7 +75,7 @@
 
   const standardTransitions = {
     draft: ["draft", "pending_approval", "cancelled"],
-    pending_approval: ["pending_approval", "approved", "cancelled"],
+    pending_approval: ["pending_approval", "approved", "draft", "cancelled"],
     approved: ["approved", "completed", "cancelled"],
     completed: ["completed"],
     cancelled: ["cancelled"],
@@ -87,7 +89,7 @@
     expense_request: standardTransitions,
     substitute_receipt: {
       draft: ["draft", "pending_approval", "cancelled"],
-      pending_approval: ["pending_approval", "approved", "cancelled"],
+      pending_approval: ["pending_approval", "approved", "draft", "cancelled"],
       approved: ["approved", "received", "completed", "cancelled"],
       received: ["received", "completed", "voided"],
       completed: ["completed"],
@@ -102,14 +104,14 @@
 
   const standardActions = {
     draft: ["submit", "cancel"],
-    pending_approval: ["approve", "cancel"],
+    pending_approval: ["approve", "reject", "cancel"],
     approved: ["complete", "cancel"],
     completed: [],
     cancelled: [],
   };
   const substituteReceiptActions = {
     draft: ["submit", "cancel"],
-    pending_approval: ["approve", "cancel"],
+    pending_approval: ["approve", "reject", "cancel"],
     approved: ["complete", "cancel"],
     received: ["complete", "void"],
     completed: [],

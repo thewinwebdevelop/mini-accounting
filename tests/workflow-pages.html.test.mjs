@@ -736,6 +736,7 @@ test("workflow transaction page exposes the separate manual Sheets controls", as
   const html = await readFile(transactionHtmlPath, "utf8");
   assert.match(html, /id="syncDriveButton"/);
   assert.match(html, /id="driveSyncStatus"/);
+  assert.match(html, /id="workflowDriveFolderLink"/);
   assert.match(html, /sync-drive/);
   assert.match(html, /\/complete/);
   assert.match(html, /id="sheetSyncSection"/);
@@ -743,6 +744,28 @@ test("workflow transaction page exposes the separate manual Sheets controls", as
   assert.match(html, /id="sheetSyncLink"/);
   assert.match(html, /id="syncSheetsButton"/);
   assert.match(html, /sync-sheets/);
+});
+
+test("a fully synced workflow shows a direct link to its root Google Drive folder", async () => {
+  const completed = buildCompletedTransaction({
+    templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: true },
+    driveSync: {
+      syncStatus: "synced",
+      driveFolderUrl: "https://drive.google.com/drive/folders/txn-root",
+      transactionFolder: {
+        syncStatus: "synced",
+        driveFolderUrl: "https://drive.google.com/drive/folders/txn-root",
+      },
+    },
+  });
+
+  const { elements } = await setupTransactionPageSandbox({
+    transaction: completed,
+    refreshedTransaction: completed,
+  });
+
+  assert.equal(elements.workflowDriveFolderLink.hidden, false);
+  assert.equal(elements.workflowDriveFolderLink.href, "https://drive.google.com/drive/folders/txn-root");
 });
 
 test("workflow cancellation requires explicit confirmation and adopts a validated 200", async () => {
@@ -786,6 +809,18 @@ test("workflow cancellation requires explicit confirmation and adopts a validate
   assert.match(elements.cancellationSummaryTitle.textContent, /ยกเลิก Workflow แล้ว/);
   assert.equal(elements.completeTransactionButton.disabled, true);
   assert.equal(document.activeElement, elements.cancellationSummary);
+});
+
+test("a completed transaction without cancellation evidence never renders as cancelled", async () => {
+  const transaction = buildFourStepTransaction({
+    status: "cancelled",
+    completedAt: "2026-09-27T15:01:27.320Z",
+    steps: buildFourStepTransaction().steps.map((step) => ({ ...step, workflowStatus: "completed" })),
+  });
+  const { elements } = await setupTransactionPageSandbox({ transaction, refreshedTransaction: transaction });
+
+  assert.match(elements.workflowProgress.textContent, /เสร็จสมบูรณ์/);
+  assert.equal(elements.cancellationSummary.hidden, true);
 });
 
 test("workflow cancellation renders pending 202, blocks forward actions, and retries the same route", async () => {

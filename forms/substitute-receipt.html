@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ใบรับรองแทนใบเสร็จรับเงิน - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -730,7 +731,7 @@
 
       <div class="actions">
         <button class="button secondary" type="button" id="saveDraft">บันทึกแบบร่าง</button>
-        <button class="button primary" type="submit" id="submitForApproval">ส่งตรวจอนุมัติ</button>
+        <button class="button primary" type="button" id="submitForApproval">ส่งตรวจอนุมัติ</button>
         <button class="button primary" type="button" id="approveReceipt" hidden>อนุมัติ</button>
         <button class="button primary" type="button" id="receiveStock" hidden>รับสินค้าเข้าคลัง</button>
         <button class="button primary" type="button" id="completeReceipt" hidden>เสร็จสิ้นเอกสาร</button>
@@ -789,6 +790,23 @@
     </div>
   </div>
 
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button type="button" class="button secondary" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button type="button" class="button danger" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button type="button" class="button primary" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+
   <template id="stockLineTemplate">
     <details class="stock-line" open>
       <summary class="stock-line-summary">
@@ -826,6 +844,7 @@
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script src="./substitute-receipt.logic.browser.js"></script>
 </body>
 </html>

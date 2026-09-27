@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>เอกสารประกอบ Workflow - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -518,10 +519,10 @@
       <div class="prefill-banner" id="workflowPrefillBanner" hidden>
         <p>พบข้อมูลจากเอกสารก่อนหน้าใน Workflow นี้ เลือกกลุ่มข้อมูลที่ต้องการนำมาใช้</p>
         <div id="workflowPrefillGroups"></div>
-        <div class="actions">
+  <div class="actions">
           <button type="button" id="workflowPrefillApply" class="button primary">ใช้ข้อมูลเดิม</button>
           <button type="button" id="workflowPrefillDismiss" class="button secondary">กรอกใหม่</button>
-        </div>
+  </div>
       </div>
 
       <section class="section">
@@ -661,6 +662,23 @@
     </aside>
   </main>
 
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button class="button secondary" type="button" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button class="button secondary" type="button" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button class="button primary" type="button" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+
   <template id="lineTemplate">
     <details class="line-item" open>
       <summary class="line-item-summary">
@@ -722,6 +740,7 @@
   <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
   <script>
     (function () {

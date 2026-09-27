@@ -15,6 +15,7 @@ const workflowPrefillBannerPath = new URL("../forms/workflow-prefill-banner.brow
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const expenseRequestLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 const vendorPickerPath = new URL("../forms/vendor-picker.logic.browser.js", import.meta.url);
+const reviewModalPath = new URL("../forms/workflow-review-modal.browser.js", import.meta.url);
 
 // Runs a dual-mode "*.logic.js" file the way an actual browser would: no
 // require, no module — just a window global to hang the export off of. This is
@@ -143,6 +144,7 @@ async function setupWorkflowDocumentLifecycleSandbox({
   vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
   vm.runInContext(await readFile(documentLifecycleLogicPath, "utf8"), context);
   vm.runInContext(await readFile(workflowPrefillBannerPath, "utf8"), context);
+  vm.runInContext(await readFile(reviewModalPath, "utf8"), context);
   vm.runInContext(await readFile(vendorPickerPath, "utf8"), context);
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
   context.window._handlers.DOMContentLoaded();
@@ -440,11 +442,43 @@ test("workflow document shell loads canonical lifecycle logic before the browser
   const controllerIndex = html.indexOf("workflow-document.logic.browser.js");
   assert.ok(lifecycleIndex !== -1 && lifecycleIndex < controllerIndex, "canonical lifecycle logic must load before the controller");
   assert.match(html, /id="submitWorkflowDocument"/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewConfirm"/);
+  assert.match(html, /id="workflowReviewReject"/);
+  assert.match(html, /id="workflowReviewReason"/);
   assert.match(html, /id="approveWorkflowDocument"/);
   assert.match(html, /id="completeWorkflowDocument"/);
   assert.match(html, /ส่งตรวจอนุมัติ/);
   assert.match(html, /อนุมัติ/);
   assert.match(html, /เสร็จสิ้นเอกสาร/);
+});
+
+test("workflow document submit opens a review modal before posting", async () => {
+  const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    status: "draft",
+    fetchHandler(route) {
+      if (route === "/api/workflow-documents/purchase_order/PO-2026-09-0001") {
+        return jsonResponse({
+          status: "draft",
+          documentNo: "PO-2026-09-0001",
+          payload: lifecyclePayload("draft", "purchase_order"),
+          rawFiles: [],
+        });
+      }
+      if (route.endsWith("/submit")) return jsonResponse({ status: "pending_approval", documentNo: "PO-2026-09-0001", pdfFiles: [] });
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  elements.submitWorkflowDocument.dispatch("click");
+  await settleBrowserWork();
+  assert.equal(elements.workflowReviewDialog.hidden, false);
+  assert.equal(calls.some(({ route }) => route.endsWith("/submit")), false);
+
+  elements.workflowReviewConfirm.dispatch("click");
+  await settleBrowserWork();
+  assert.equal(calls.some(({ route }) => route.endsWith("/submit")), true);
 });
 
 test("all lightweight kinds render canonical lifecycle actions, preserve editable non-draft saves, and use exact routes", async () => {
@@ -474,6 +508,9 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
 
     submit.dispatch("click");
     await settleBrowserWork();
+    assert.equal(elements.workflowReviewDialog.hidden, false, `${documentKind}: submit requires review`);
+    elements.workflowReviewConfirm.dispatch("click");
+    await settleBrowserWork();
     assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/submit`);
     assert.equal(save.hidden, false, `${documentKind}: pending approval remains saveable under O9`);
     assert.equal(approve.hidden, false, `${documentKind}: pending approval exposes approve`);
@@ -484,6 +521,9 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
     assert.equal(approve.hidden, false, `${documentKind}: authoritative pending save does not reset status`);
 
     approve.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(elements.workflowReviewDialog.hidden, false, `${documentKind}: approve requires review`);
+    elements.workflowReviewConfirm.dispatch("click");
     await settleBrowserWork();
     assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/approve`);
     assert.equal(complete.hidden, false, `${documentKind}: approved exposes complete`);

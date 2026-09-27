@@ -35,6 +35,17 @@ window.addEventListener("DOMContentLoaded", () => {
   const stockBeforeCompleteDialog = document.querySelector("#stockBeforeCompleteDialog");
   const confirmReceiveBeforeCompleteButton = document.querySelector("#confirmReceiveBeforeComplete");
   const declineReceiveBeforeCompleteButton = document.querySelector("#declineReceiveBeforeComplete");
+  const reviewModal = window.WorkflowReviewModal?.create({
+    dialog: document.querySelector("#workflowReviewDialog"),
+    title: document.querySelector("#workflowReviewDialogTitle"),
+    content: document.querySelector("#workflowReviewContent"),
+    reasonField: document.querySelector("#workflowReviewReasonField"),
+    reasonInput: document.querySelector("#workflowReviewReason"),
+    reasonError: document.querySelector("#workflowReviewReasonError"),
+    confirm: document.querySelector("#workflowReviewConfirm"),
+    reject: document.querySelector("#workflowReviewReject"),
+    cancel: document.querySelector("#workflowReviewCancel"),
+  });
   const receiptStatus = document.querySelector("#receiptStatus");
   const receiptNoPreview = document.querySelector("#receiptNoPreview");
   const lineCountPreview = document.querySelector("#lineCountPreview");
@@ -698,6 +709,28 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(`โหลดเอกสาร ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
 
+  // A workflow step can be reopened from the transaction page without a
+  // receiptNo in the URL (for example after a page refresh or from an older
+  // saved link). Resolve the existing child document before showing prefill or
+  // allowing a save, otherwise every such reopen allocates a new SR number.
+  async function resumeExistingWorkflowReceipt() {
+    if (state.receiptNo || !workflowContext.transactionNo || !workflowContext.workflowStepId) return false;
+    try {
+      const transaction = await api(`/api/workflow-transactions/${encodeURIComponent(workflowContext.transactionNo)}`);
+      const child = (transaction.childDocuments || []).find((document) => (
+        document.documentKind === "substitute_receipt" && document.workflowStepId === workflowContext.workflowStepId
+      )) || (transaction.childDocuments || []).find((document) => (
+        document.documentKind === "substitute_receipt" && document.documentNo
+      ));
+      if (!child?.documentNo) return false;
+      state.receiptNo = child.documentNo;
+      await loadReceipt(state.receiptNo);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function buildMultipartPayload(payload) {
     const body = new FormData();
     body.append("payload", JSON.stringify(payload));
@@ -787,6 +820,62 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(`อนุมัติ ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
 
+  async function rejectReceipt(reason) {
+    if (!state.receiptNo) return;
+    clearStatus();
+    const result = await api(`/api/substitute-receipts/${encodeURIComponent(state.receiptNo)}/reject`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rejectedBy: "", reason }),
+    });
+    state.status = adoptExpectedStatus(result, "draft");
+    setReceiptState(state.status);
+    setStatus(`ส่งเอกสาร ${escapeHtml(state.receiptNo)} กลับไปแก้ไขแล้ว`, "success");
+  }
+
+  function buildReviewModel(mode) {
+    const payload = collectPayload();
+    const lines = payload.lines.map((line) => ({
+      description: [line.sku, line.description].filter(Boolean).join(" - ") || "ยังไม่ได้กรอกรายละเอียด",
+      quantity: line.quantity,
+      unitCost: line.unitCost,
+    }));
+    const files = Object.values(state.existingEvidenceFiles || {}).flatMap((items) => Array.isArray(items) ? items : [])
+      .map((file) => ({ name: evidenceFileName(file), url: file?.url || "" }));
+    evidenceKeys.forEach((key) => {
+      const input = form.querySelector(`[name="evidence_${key}"]`);
+      [...(input?.files || [])].forEach((file) => files.push({ name: file.name }));
+    });
+    return {
+      mode,
+      documentLabel: "ใบรับรองแทนใบเสร็จรับเงิน",
+      documentNo: state.receiptNo || "ฉบับใหม่",
+      fields: [
+        { label: "วันที่เอกสาร", value: payload.receiptDate },
+        { label: "ผู้เบิกจ่าย/ผู้รับรอง", value: payload.requesterName },
+        { label: "ตำแหน่ง", value: payload.requesterRole },
+        { label: "ผู้ขาย/ผู้รับเงิน", value: payload.payeeName },
+        { label: "วัตถุประสงค์", value: payload.businessPurpose },
+        { label: "ยอดรวม", value: money(lines.reduce((sum, line) => sum + toNumber(line.quantity) * toNumber(line.unitCost), 0)) },
+      ],
+      lines,
+      files,
+    };
+  }
+
+  function openReview(action) {
+    if (state.mutationInFlight) return;
+    if (!reviewModal) {
+      runMutation(action === "approve" ? approveReceipt : submitForApproval).catch((error) => setStatus(error.message, "error"));
+      return;
+    }
+    const mode = action === "approve" ? "approve" : "submit";
+    const model = buildReviewModel(mode);
+    model.onConfirm = () => runMutation(action === "approve" ? approveReceipt : submitForApproval);
+    model.onReject = (reason) => runMutation(() => rejectReceipt(reason));
+    reviewModal.open(model);
+  }
+
   async function receiveStock({ closeDialogAfterSuccess = false } = {}) {
     if (!state.receiptNo) return;
     const receivedDate = window.prompt("วันที่รับสินค้า", todayInputValue());
@@ -830,7 +919,7 @@ window.addEventListener("DOMContentLoaded", () => {
   addLineButton.addEventListener("click", () => { if (!state.legacyReadOnly && state.status === "draft" && !state.mutationInFlight) addStockLine(); });
   saveDraftButton.addEventListener("click", () => runMutation(saveDraft).catch((error) => setStatus(error.message, "error")));
   reloadSavedReceiptButton?.addEventListener("click", reloadSavedReceipt);
-  approveReceiptButton.addEventListener("click", () => runMutation(approveReceipt).catch((error) => setStatus(error.message, "error")));
+  approveReceiptButton.addEventListener("click", () => openReview("approve"));
   receiveStockButton.addEventListener("click", () => runMutation(receiveStock).catch((error) => setStatus(error.message, "error")));
   completeReceiptButton.addEventListener("click", () => {
     if (state.status === "approved" && form.elements.receiptType.value === "stock_purchase") {
@@ -872,7 +961,11 @@ window.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("change", updatePreview);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    runMutation(submitForApproval).catch((error) => setStatus(error.message, "error"));
+    openReview("submit");
+  });
+  submitForApprovalButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    openReview("submit");
   });
   form.addEventListener("reset", (event) => {
     if (state.modalOpen || state.mutationInFlight || state.legacyReadOnly || state.status !== "draft") {
@@ -893,11 +986,14 @@ window.addEventListener("DOMContentLoaded", () => {
       } else if (queryReceiptNo) {
         await loadReceipt(queryReceiptNo);
       } else {
-        // Only fetch cross-document prefill for a brand-new, never-saved
-        // document: an existing draft/receipt already has its own real
-        // data, so offering to overwrite it with an earlier document's data
-        // would be wrong.
-        workflowPrefillBanner.load();
+        const resumed = await resumeExistingWorkflowReceipt();
+        if (!resumed) {
+          // Only fetch cross-document prefill for a brand-new, never-saved
+          // document: an existing draft/receipt already has its own real
+          // data, so offering to overwrite it with an earlier document's data
+          // would be wrong.
+          workflowPrefillBanner.load();
+        }
       }
       updatePreview();
     })

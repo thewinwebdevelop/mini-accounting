@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>รายการใบเบิกจ่าย - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -335,7 +336,25 @@
     </section>
   </main>
 
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button type="button" class="button secondary" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button type="button" class="button danger" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button type="button" class="button primary" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script>
     const requestTableBody = document.querySelector("#requestTableBody");
     const statusFilter = document.querySelector("#statusFilter");
@@ -343,6 +362,17 @@
     const emptyState = document.querySelector("#emptyState");
     const errorState = document.querySelector("#errorState");
     let allRequests = [];
+    const reviewModal = globalThis.WorkflowReviewModal?.create({
+      dialog: document.querySelector("#workflowReviewDialog"),
+      title: document.querySelector("#workflowReviewDialogTitle"),
+      content: document.querySelector("#workflowReviewContent"),
+      reasonField: document.querySelector("#workflowReviewReasonField"),
+      reasonInput: document.querySelector("#workflowReviewReason"),
+      reasonError: document.querySelector("#workflowReviewReasonError"),
+      confirm: document.querySelector("#workflowReviewConfirm"),
+      reject: document.querySelector("#workflowReviewReject"),
+      cancel: document.querySelector("#workflowReviewCancel"),
+    });
 
     function escapeHtml(value = "") {
       return String(value).replace(/[&<>"']/g, (character) => ({
@@ -438,7 +468,7 @@
       const approveButton = ["submitted", "pending_approval"].includes(request.status)
         ? `<button class="button primary small" type="button" data-approve="${escapeHtml(requestNo)}">อนุมัติ</button>`
         : request.status === "approved" && !workflowManaged && request.sheetSyncStatus !== "synced"
-          ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}">ลง Sheet อีกครั้ง</button>`
+          ? `<button class="button secondary small" type="button" data-approve="${escapeHtml(requestNo)}" data-resync="true">ลง Sheet อีกครั้ง</button>`
         : "";
       // The natural place to close out an approved expense request: once it
       // is approved and already synced to Sheet, there is nothing left to do
@@ -545,6 +575,60 @@
       }
     }
 
+    async function rejectRequest(requestNo, reason) {
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rejectedBy: "", reason }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถส่งกลับแก้ไขได้");
+      await loadRequests();
+      listStatus.textContent = `ส่งกลับแก้ไขแล้ว: ${requestNo}`;
+    }
+
+    function buildApprovalReviewModel(request) {
+      const payload = request.payload || request;
+      const lines = Array.isArray(payload.expenseLines) ? payload.expenseLines : [];
+      const evidence = Object.values(request.evidenceFiles || payload.evidenceFiles || {}).flatMap((items) => Array.isArray(items) ? items : []);
+      const rawFiles = Array.isArray(request.rawFiles) ? request.rawFiles : [];
+      const files = [...evidence, ...rawFiles].map((file) => ({ name: file.originalName || file.storedName || file.name, url: file.url || "" }));
+      return {
+        mode: "approve",
+        documentLabel: "ใบเบิกจ่าย",
+        documentNo: request.requestNo || payload.requestNo || "",
+        fields: [
+          { label: "วันที่เอกสาร", value: payload.expenseDate },
+          { label: "ผู้ขอเบิก", value: payload.requesterName },
+          { label: "ผู้รับเงิน/คู่ค้า", value: payload.paymentTargetName },
+          { label: "วัตถุประสงค์", value: payload.businessPurpose },
+          { label: "ยอดจ่ายสุทธิ", value: payload.netPayment || request.netPayment },
+        ],
+        lines: lines.map((line) => ({
+          description: [line.category, line.description].filter(Boolean).join(" - ") || "ยังไม่ได้กรอกรายละเอียด",
+          quantity: "",
+          unitCost: [line.amountBeforeVat, line.vatAmount].filter(Boolean).join(" + "),
+        })),
+        files,
+      };
+    }
+
+    async function openApprovalReview(requestNo, button) {
+      if (!reviewModal) return;
+      try {
+        listStatus.textContent = `กำลังโหลดเอกสาร ${requestNo} เพื่อตรวจสอบ...`;
+        const response = await fetch(`/api/expense-requests/${encodeURIComponent(requestNo)}`);
+        const request = await response.json();
+        if (!response.ok) throw new Error(request.error || "โหลดเอกสารไม่สำเร็จ");
+        const model = buildApprovalReviewModel(request);
+        model.onConfirm = () => approveRequest(requestNo, button);
+        model.onReject = (reason) => rejectRequest(requestNo, reason);
+        reviewModal.open(model);
+      } catch (error) {
+        listStatus.textContent = error.message || "โหลดเอกสารไม่สำเร็จ";
+      }
+    }
+
     async function completeRequest(requestNo, button) {
       if (!requestNo) return;
       const originalText = button.textContent;
@@ -587,7 +671,11 @@
       }
       const approveButton = event.target.closest("[data-approve]");
       if (!approveButton) return;
-      approveRequest(approveButton.dataset.approve, approveButton);
+      if (approveButton.dataset.resync === "true") {
+        approveRequest(approveButton.dataset.approve, approveButton);
+      } else {
+        openApprovalReview(approveButton.dataset.approve, approveButton);
+      }
     });
     loadRequests();
   </script>

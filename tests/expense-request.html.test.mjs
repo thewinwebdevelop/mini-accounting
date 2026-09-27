@@ -132,6 +132,9 @@ test("expense form exposes navigation menu and bottom submit bar", async () => {
   assert.match(html, /\.menu-panel \{[\s\S]*?left: 0;/);
   assert.match(bottomBar, /id="saveDraft"/);
   assert.match(bottomBar, /id="submitRequest"/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewConfirm"/);
+  assert.match(html, /id="workflowReviewReject"/);
   assert.doesNotMatch(topbar, /id="saveDraft"|id="submitRequest"/);
   assert.doesNotMatch(html, /id="draftList"/);
   assert.doesNotMatch(html, /แบบร่างล่าสุด/);
@@ -215,6 +218,32 @@ test("expense request form preserves workflow context query params", async () =>
   assert.match(html, /sanitizeWorkflowReturnTo/);
 });
 
+test("expense form resumes the existing workflow request before offering prefill", async () => {
+  const { elements, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1",
+    workflowTransactionResponse: {
+      childDocuments: [{
+        documentKind: "expense_request",
+        documentNo: "REQ-2026-09-0007",
+        workflowStepId: "step-1",
+        status: "draft",
+      }],
+    },
+    saveResponse: {
+      requestNo: "REQ-2026-09-0007",
+      status: "draft",
+      payload: { requestNo: "REQ-2026-09-0007", status: "draft", expenseLines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  assert.equal(elements.requestNoPreview.value, "REQ-2026-09-0007");
+  assert.ok(fetchLog.some((url) => url === "/api/workflow-transactions/TXN-2026-09-0001"));
+  assert.ok(fetchLog.some((url) => url === "/api/expense-requests/REQ-2026-09-0007"));
+  assert.equal(fetchLog.some((url) => url.includes("/prefill")), false, "an existing workflow document must not offer prefill");
+});
+
 test("expense request form shows the cross-document prefill banner", async () => {
   const html = await readFile(htmlPath, "utf8");
   assert.match(html, /workflow-prefill\.logic\.js/);
@@ -278,7 +307,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -311,6 +340,9 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     if (options.body?.get?.("payload")) capturedPayloads.push(JSON.parse(options.body.get("payload")));
     if (url.includes("/prefill")) {
       return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
+    }
+    if (url.includes("/api/workflow-transactions/") && !url.includes("/prefill")) {
+      return { ok: true, json: async () => workflowTransactionResponse ?? {} };
     }
     if (url.includes("/api/expense-requests/next")) {
       return { ok: true, json: async () => ({ sequence: "1", requestNo: nextRequestNo }) };

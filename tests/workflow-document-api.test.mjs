@@ -182,6 +182,28 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
   }
 });
 
+test("workflow document reject endpoint returns the document to draft with an auditable reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-reject-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData() });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    const rejected = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ rejectedBy: "ผู้ตรวจ", reason: "แก้ไขผู้รับเงิน" }),
+    });
+    assert.equal(rejected.status, "draft");
+    const fetched = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(fetched.payload.rejectionReason, "แก้ไขผู้รับเงิน");
+    assert.equal(fetched.payload.statusHistory.at(-1).note, "rejected");
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("Critical 3 exploit: POST /api/workflow-documents cannot dictate documentNo, folderPath, status, or completedBy/completedAt", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-api-"));
   const child = spawnLocalServer(rootDir);
