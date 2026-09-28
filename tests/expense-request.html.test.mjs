@@ -659,6 +659,39 @@ test("expense submit keeps the selected request type while mutation controls are
   assert.equal(capturedPayloads.at(-1).requestType, "reimbursement");
 });
 
+test("expense controller restores fields from a flattened Supabase detail response", async () => {
+  const cloudResponse = {
+    requestNo: "REQ-2026-09-0001",
+    status: "draft",
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าแพ็คสินค้า",
+    requestType: "reimbursement",
+    requesterName: "ผู้ขอ",
+    businessPurpose: "ซื้อวัสดุแพ็คสินค้า",
+    paymentTargetName: "ผู้ขายจาก Supabase",
+    expenseLines: [{ description: "กล่อง", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+    evidenceFiles: {},
+    rawFiles: [],
+  };
+  const { elements, form } = await setupExpenseRequestSandbox({ saveResponse: cloudResponse });
+  form.elements.accountingMonth.value = "2026-09";
+  form.elements.requestTitle.value = cloudResponse.requestTitle;
+  form.elements.requesterName.value = cloudResponse.requesterName;
+  form.elements.businessPurpose.value = cloudResponse.businessPurpose;
+  form.elements.paymentTargetName.value = cloudResponse.paymentTargetName;
+  const row = form.querySelector(".line-row");
+  row.querySelector('[name="lineDescription"]').value = "กล่อง";
+  row.querySelector('[name="lineBeforeVat"]').value = "100";
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(form.elements.requesterName.value, cloudResponse.requesterName);
+  assert.equal(form.elements.businessPurpose.value, cloudResponse.businessPurpose);
+  assert.equal(form.elements.paymentTargetName.value, cloudResponse.paymentTargetName);
+  assert.equal(elements.errors.textContent, "");
+});
+
 test("expense controller renders an old inactive vendor snapshot when no active preset is available", async () => {
   const oldSnapshot = {
     name: "ผู้ขายเก่าจาก snapshot",

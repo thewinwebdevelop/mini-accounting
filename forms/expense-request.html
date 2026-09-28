@@ -1748,7 +1748,11 @@
       currentStatus = request.status || request.payload?.status || "pending_approval";
       currentFolderPath = request.folderPath || request.payload?.folderPath || "";
       currentCreatedAt = request.payload?.createdAt || "";
-      const payload = request.payload ?? {};
+      // Local detail responses keep fields under payload, while the
+      // Supabase-read adapter exposes the same payload fields at the top
+      // level. Accept both shapes so a successful draft reload never blanks
+      // the form and re-runs validation against empty values.
+      const payload = request.payload ?? request;
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
