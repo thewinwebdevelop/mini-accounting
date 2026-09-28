@@ -123,6 +123,11 @@
         const element = form.elements[fieldName];
         if (!element) continue;
         element.value = patch[fieldName];
+        // Searchable selects render a separate trigger. Keep that trigger in
+        // sync when a prefill value is applied programmatically.
+        if (element.tagName === "SELECT" && typeof Event === "function" && typeof element.dispatchEvent === "function") {
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         markFieldPrefilled(fieldName, prefill?.sources?.[groupName]);
       }
     }
