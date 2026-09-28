@@ -33,6 +33,14 @@ function encodeObjectPath(objectPath) {
   return assertObjectPath(objectPath).split("/").map(encodeURIComponent).join("/");
 }
 
+function encodeStoragePathSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function storageObjectPath(objectPath) {
+  return assertObjectPath(objectPath).split("/").map(encodeStoragePathSegment).join("/");
+}
+
 function createSupabaseStorageClient({
   url = process.env.SUPABASE_URL,
   serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -112,6 +120,7 @@ module.exports = {
   assertObjectPath,
   createSupabaseStorageClient,
   downloadStorageObject,
+  storageObjectPath,
   storageRequest,
   uploadStorageObject,
 };

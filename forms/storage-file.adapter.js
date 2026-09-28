@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const path = require("node:path");
 const { createSupabaseAdminClient, supabaseRequest } = require("./supabase.logic.js");
-const { createSupabaseStorageClient, downloadStorageObject } = require("./supabase-storage.logic.js");
+const { createSupabaseStorageClient, downloadStorageObject, storageObjectPath } = require("./supabase-storage.logic.js");
 const { resolveDataBackendMode } = require("./data-backend.logic.js");
 
 const STORAGE_MIGRATION_NAME = "local-file-storage-20260925";
@@ -16,11 +16,11 @@ function storageError(code, message, details = {}) {
 function objectIdentity(rootDir, absolutePath) {
   const relativePath = path.relative(path.resolve(rootDir), path.resolve(absolutePath)).split(path.sep).join("/");
   if (relativePath.startsWith("documents/") && relativePath.length > "documents/".length) {
-    return { sourceKey: `file:${relativePath}`, objectPath: relativePath };
+    return { sourceKey: `file:${relativePath}`, objectPath: storageObjectPath(relativePath) };
   }
   const imagePrefix = "data/inventory-images/";
   if (relativePath.startsWith(imagePrefix) && relativePath.length > imagePrefix.length) {
-    return { sourceKey: `file:${relativePath}`, objectPath: `inventory-images/${relativePath.slice(imagePrefix.length)}` };
+    return { sourceKey: `file:${relativePath}`, objectPath: storageObjectPath(`inventory-images/${relativePath.slice(imagePrefix.length)}`) };
   }
   throw storageError("STORAGE_SOURCE_NOT_APPROVED", "File is outside approved Storage roots");
 }
