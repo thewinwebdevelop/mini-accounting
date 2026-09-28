@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const { mkdir, readdir, readFile, stat, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { supabaseRequest } = require("./supabase.logic.js");
-const { downloadStorageObject, uploadStorageObject } = require("./supabase-storage.logic.js");
+const { downloadStorageObject, storageObjectPath, uploadStorageObject } = require("./supabase-storage.logic.js");
 
 const STORAGE_MIGRATION_NAME = "local-file-storage-20260925";
 
@@ -57,7 +57,7 @@ async function collectFiles(rootDir, folderPath) {
     for (const entry of entries) {
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) await walk(absolutePath);
-      else if (entry.isFile()) files.push(absolutePath);
+      else if (entry.isFile() && entry.name !== ".DS_Store" && path.extname(entry.name).toLowerCase() !== ".html") files.push(absolutePath);
     }
   }
   await mkdir(folder, { recursive: true });
@@ -88,18 +88,19 @@ function createDocumentFileSynchronizer({
       const body = await readFile(absolutePath);
       const info = await stat(absolutePath);
       const sourceSha256 = crypto.createHash("sha256").update(body).digest("hex");
+      const objectPath = storageObjectPath(relativePath);
       const record = {
         migration_name: STORAGE_MIGRATION_NAME,
         source_key: `file:${relativePath}`,
         bucket_name: bucket,
-        object_path: relativePath,
+        object_path: objectPath,
         source_sha256: sourceSha256,
         byte_size: info.size,
         content_type: contentTypeFor(absolutePath),
         migrated_at: now(),
       };
       await uploadObject(storageClient, {
-        objectPath: relativePath,
+        objectPath,
         body,
         contentType: record.content_type,
       });
@@ -115,7 +116,7 @@ function createDocumentFileSynchronizer({
           source_key: `document_file:${relativePath}`,
           document_source_key: documentSourceKey,
           bucket_name: bucket,
-          object_path: relativePath,
+          object_path: objectPath,
           source_sha256: sourceSha256,
           byte_size: info.size,
           content_type: record.content_type,
@@ -123,7 +124,7 @@ function createDocumentFileSynchronizer({
           migrated_at: record.migrated_at,
         },
       });
-      records.push({ ...record, objectPath: relativePath });
+      records.push({ ...record, objectPath });
     }
     return records;
   }
@@ -145,7 +146,11 @@ function createDocumentFileSynchronizer({
 
     for (const row of Array.isArray(rows) ? rows : []) {
       const objectPath = String(row.object_path || "");
-      const relativeToFolder = objectPath.startsWith(`${folderPath}/`) ? objectPath.slice(folderPath.length + 1) : "";
+      const sourceKey = String(row.source_key || "");
+      const sourcePath = sourceKey.startsWith("document_file:") ? sourceKey.slice("document_file:".length) : "";
+      const relativeToFolder = sourcePath.startsWith(`${folderPath}/`)
+        ? sourcePath.slice(folderPath.length + 1)
+        : (objectPath.startsWith(`${folderPath}/`) ? objectPath.slice(folderPath.length + 1) : "");
       if (!relativeToFolder.startsWith("raw/") || relativeToFolder.includes("\\") || relativeToFolder.includes("..")) continue;
       const targetPath = path.resolve(folder, relativeToFolder);
       if (!targetPath.startsWith(`${folder}${path.sep}`)) continue;
