@@ -63,10 +63,14 @@ curl -fsS "$SERVICE_URL/healthz"
 ```bash
 gcloud run services update sweet-house \
   --region asia-southeast1 \
-  --update-env-vars APP_PUBLIC_ORIGIN="$SERVICE_URL",LINE_INTAKE_MINI_APP_URL="$SERVICE_URL/line-intake",SWEET_HOUSE_COOKIE_SECURE=1
+  --update-env-vars APP_PUBLIC_ORIGIN="$SERVICE_URL",LINE_INTAKE_MINI_APP_URL="$SERVICE_URL/line-intake",GOOGLE_OAUTH_REDIRECT_URI="$SERVICE_URL/api/google-drive/oauth2callback",SWEET_HOUSE_COOKIE_SECURE=1
 ```
 
-`/healthz` จะตอบโดยไม่ต้อง login เพื่อใช้เป็น startup/readiness probe; Cloud
+Google Drive OAuth config/token ต้องเก็บเป็น Secret Manager secrets ที่ผูกกับ
+`GOOGLE_DRIVE_CONFIG_JSON` และ `GOOGLE_DRIVE_TOKEN_JSON` เพราะ filesystem ของ
+Cloud Run ไม่ถาวร
+
+`/api/healthz` จะตอบโดยไม่ต้อง login เพื่อใช้เป็น startup/readiness probe; Cloud
 Run รองรับ HTTP health check endpoint โดยตรง:
 <https://cloud.google.com/run/docs/configuring/healthchecks>
 
@@ -92,8 +96,8 @@ gcloud run deploy sweet-house \
 ## 4. ตั้งค่า LINE
 
 - Webhook URL: `$SERVICE_URL/api/webhooks/line`
-- Mini App URL: `$SERVICE_URL/line-intake` หรือ URL ที่ใช้เป็น entry point ของ
-  Mini App
+- Mini App Endpoint URL: `$SERVICE_URL` (หน้า root ของระบบ)
+- ลิงก์ตรวจสอบไฟล์จาก webhook: `$SERVICE_URL/line-intake?intakeId=...`
 - ใส่ `LINE_CHANNEL_SECRET` และ `LINE_CHANNEL_ACCESS_TOKEN` เป็น Cloud Run
   secret/env vars ตาม channel ที่ใช้กับ Messaging API
 - ทดสอบ login ผ่าน LINE และส่งรูป/PDF เข้า webhook หลัง `/healthz` ผ่าน

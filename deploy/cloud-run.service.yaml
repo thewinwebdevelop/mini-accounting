@@ -16,7 +16,7 @@ spec:
               containerPort: 8080
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /api/healthz
               port: 8080
             periodSeconds: 10
             timeoutSeconds: 5
@@ -34,6 +34,18 @@ spec:
               value: https://REPLACE_WITH_CLOUD_RUN_URL
             - name: LINE_INTAKE_MINI_APP_URL
               value: https://REPLACE_WITH_CLOUD_RUN_URL/line-intake
+            - name: GOOGLE_OAUTH_REDIRECT_URI
+              value: https://REPLACE_WITH_CLOUD_RUN_URL/api/google-drive/oauth2callback
+            - name: GOOGLE_DRIVE_CONFIG_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-google-drive-config
+                  key: latest
+            - name: GOOGLE_DRIVE_TOKEN_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: sweet-house-google-drive-token
+                  key: latest
             - name: SUPABASE_URL
               value: https://REPLACE_PROJECT.supabase.co
             - name: SUPABASE_STORAGE_BUCKET
@@ -68,4 +80,3 @@ spec:
                 secretKeyRef:
                   name: sweet-house-line-access-token
                   key: latest
-

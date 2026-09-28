@@ -328,7 +328,11 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     get(key) {
       const found = this._entries.find(([entryKey]) => entryKey === key);
       if (found) return found[1];
-      if (this._form && key === "requestType") return this._form._requestType ?? "reimbursement";
+      if (this._form && key === "requestType") {
+        const selected = this._form.querySelectorAll('input[name="requestType"]')
+          .find((input) => input.checked && !input.disabled);
+        return selected?.value || null;
+      }
       return null;
     }
   }
@@ -623,6 +627,36 @@ test("real expense controller selects an active vendor and submits its identity 
 
   assert.equal(capturedPayloads.at(-1).vendorId, savedVendor.id);
   assert.equal(capturedPayloads.at(-1).paymentTargetName, savedVendor.name);
+});
+
+test("expense submit keeps the selected request type while mutation controls are disabled", async () => {
+  const saved = {
+    requestNo: "REQ-2026-09-0001",
+    status: "pending_approval",
+    evidenceFiles: {},
+    rawFiles: [],
+    payload: {
+      accountingMonth: "2026-09",
+      requestType: "reimbursement",
+      requesterName: "ผู้ขอ",
+      businessPurpose: "ทดสอบประเภทคำขอ",
+      paymentTargetName: "ร้านทดสอบ",
+      expenseLines: [{ description: "ของทดสอบ", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+    },
+  };
+  const { elements, form, capturedPayloads } = await setupExpenseRequestSandbox({ saveResponse: saved });
+  form.elements.accountingMonth.value = "2026-09";
+  form.elements.requesterName.value = "ผู้ขอ";
+  form.elements.businessPurpose.value = "ทดสอบประเภทคำขอ";
+  form.elements.paymentTargetName.value = "ร้านทดสอบ";
+  const row = form.querySelector(".line-row");
+  row.querySelector('[name="lineDescription"]').value = "ของทดสอบ";
+  row.querySelector('[name="lineBeforeVat"]').value = "10";
+
+  elements.submitRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(capturedPayloads.at(-1).requestType, "reimbursement");
 });
 
 test("expense controller renders an old inactive vendor snapshot when no active preset is available", async () => {

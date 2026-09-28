@@ -30,6 +30,16 @@ async function readJsonIfExists(filePath) {
   }
 }
 
+function readJsonFromEnvironment(name) {
+  const raw = String(process.env[name] || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 async function writeJson(filePath, data) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
@@ -87,11 +97,11 @@ async function saveGoogleDriveConfig({ rootDir, clientId, clientSecret, driveBas
 }
 
 async function getGoogleDriveConfig(rootDir) {
-  return readJsonIfExists(getConfigPath(rootDir));
+  return (await readJsonIfExists(getConfigPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_CONFIG_JSON");
 }
 
 async function getGoogleDriveToken(rootDir) {
-  return readJsonIfExists(getTokenPath(rootDir));
+  return (await readJsonIfExists(getTokenPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_TOKEN_JSON");
 }
 
 async function getGoogleDriveStatus(rootDir) {

@@ -17,7 +17,7 @@
 
   function redirectToLogin() {
     const returnTo = `${window.location.pathname}?intakeId=${encodeURIComponent(intakeId)}`;
-    window.location.assign(`/line-auth?returnTo=${encodeURIComponent(returnTo)}`);
+    window.location.assign(`/line-intake/auth?returnTo=${encodeURIComponent(returnTo)}`);
   }
 
   function showItem(item) {
@@ -39,7 +39,10 @@
   }
 
   async function load() {
-    if (!intakeId) throw new Error("ไม่พบรหัสรายการไฟล์");
+    if (!intakeId) {
+      setStatus("กรุณาส่งรูปหรือ PDF ใบแจ้งหนี้เข้า LINE OA แล้วเปิดปุ่มตรวจสอบไฟล์จากข้อความตอบกลับ");
+      return;
+    }
     const response = await fetch(`/api/line-intakes/${encodeURIComponent(intakeId)}`, { credentials: "same-origin" });
     if (response.status === 401) { redirectToLogin(); return; }
     const body = await readJson(response);

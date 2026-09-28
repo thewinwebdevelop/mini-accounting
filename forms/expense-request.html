@@ -1492,7 +1492,10 @@
     }
 
     function collectData() {
-      const requestType = new FormData(form).get("requestType");
+      // Mutation controls are disabled before save/submit work starts. A
+      // disabled radio is omitted from FormData, so read the checked option
+      // directly to preserve the user's request type during that window.
+      const requestType = form.querySelector('input[name="requestType"]:checked')?.value || "";
       const expenseLines = [...lineItems.querySelectorAll(".line-row")].map((row) => ({
         date: row.querySelector('[name="lineDate"]').value,
         category: row.querySelector('[name="lineCategory"]').value,

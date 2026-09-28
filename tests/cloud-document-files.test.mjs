@@ -74,3 +74,36 @@ test("document file synchronizer materializes a cloud document into the temporar
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("document file synchronizer materializes flattened cloud adapter records with their payload", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-cloud-materialize-flat-"));
+  const folderPath = "documents/2026/09/workflow-transactions/TXN-2026-09-0001_demo";
+  const client = {
+    url: "https://project.supabase.co",
+    serviceRoleKey: "server-secret",
+    fetchImpl: async () => new Response(JSON.stringify([]), { status: 200 }),
+  };
+  const storageClient = { ...client, bucket: "sweet-house-files" };
+  const synchronizer = createDocumentFileSynchronizer({ rootDir, client, storageClient });
+  const record = {
+    documentKind: "workflow_transaction",
+    documentNo: "TXN-2026-09-0001",
+    folderPath,
+    transactionNo: "TXN-2026-09-0001",
+    accountingMonth: "2026-09",
+    status: "in_progress",
+    title: "ร้านพี่หมวย",
+    templateSnapshot: { templateId: "stock_no_tax_invoice_director_transfer" },
+  };
+
+  try {
+    await synchronizer.materialize({ rootDir, record });
+    const payload = JSON.parse(await readFile(join(rootDir, folderPath, "data", "workflow-transaction.json"), "utf8"));
+    assert.equal(payload.transactionNo, record.transactionNo);
+    assert.equal(payload.status, record.status);
+    assert.equal(payload.title, record.title);
+    assert.deepEqual(payload.templateSnapshot, record.templateSnapshot);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

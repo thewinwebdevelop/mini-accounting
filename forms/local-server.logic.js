@@ -1537,7 +1537,7 @@ function preserveNumberedServerMetadata(nextPayload, storedPayload, fields) {
 // changed selection must resolve to an existing active master record. The
 // snapshot is then rebuilt from the master plus the document's submitted
 // editable fields; a client cannot attach an arbitrary ID or snapshot.
-async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPayload = {}) {
+async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPayload = {}, options = {}) {
   const hasSubmittedVendorId = Object.prototype.hasOwnProperty.call(payload, "vendorId");
   const requestedId = String(payload.vendorId ?? "").trim();
   const existingId = String(existingPayload.vendorId ?? "").trim();
@@ -1559,7 +1559,7 @@ async function prepareDocumentVendorPayload(rootDir, payload = {}, existingPaylo
     };
   }
 
-  const vendor = await getVendorById(rootDir, requestedId);
+  const vendor = await (options.vendorResolver || ((vendorId) => getVendorById(rootDir, vendorId)))(requestedId);
   if (vendor?.status === "inactive" && requestedId === existingId && Object.keys(existingSnapshot).length) {
     return {
       ...payload,
@@ -1628,7 +1628,7 @@ function assertLegacyDraftWriteId(id, kind) {
   throw createStateError("INVALID_DRAFT_ID", "รหัสแบบร่างไม่ถูกต้อง", 400);
 }
 
-async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
+async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vendorResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
   getMonthParts(payload.accountingMonth);
   const requestedNo = String(payload.receiptNo || "");
@@ -1655,7 +1655,7 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload);
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload, { vendorResolver });
     const draftPayload = buildSubstituteReceiptPayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
     draftPayload.status = "draft";
     draftPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.draft;
@@ -1674,7 +1674,7 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [] }) {
   return requestedNo ? withSubstituteReceiptMutation(rootDir, requestedNo, perform) : perform();
 }
 
-async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
+async function saveExpenseDraft({ rootDir, payload, uploads = [], vendorResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "expense_request");
   getMonthParts(payload.accountingMonth);
   const requestedNo = String(payload.requestNo || "");
@@ -1697,7 +1697,7 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [] }) {
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload);
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload, { vendorResolver });
     const draftPayload = buildExpensePayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
     draftPayload.status = "draft";
     draftPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.draft;
@@ -1892,6 +1892,7 @@ async function saveSubstituteReceiptSubmissionLegacy({
   payload,
   uploads = [],
   createStockMovements = true,
+  vendorResolver,
 }) {
   if (payload.receiptNo) throw new Error("Submitted substitute receipts cannot be edited");
 
@@ -1923,7 +1924,7 @@ async function saveSubstituteReceiptSubmissionLegacy({
 
   const company = await getCompanySettings(rootDir);
   const now = new Date().toISOString();
-  const vendorPayload = await prepareDocumentVendorPayload(rootDir, submissionPayload, draft?.payload || {});
+  const vendorPayload = await prepareDocumentVendorPayload(rootDir, submissionPayload, draft?.payload || {}, { vendorResolver });
   const receiptPayload = buildSubstituteReceiptPayload({
     ...submissionPayload,
     ...vendorPayload,
@@ -2035,12 +2036,12 @@ function numberedSubmissionResult(payload, pdfFiles, rawFiles) {
   };
 }
 
-async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
+async function saveExpenseSubmission({ rootDir, payload, uploads = [], vendorResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "expense_request");
   if (payload.requestNo && !EXPENSE_NUMBER_PATTERN.test(String(payload.requestNo))) throw new Error("เลขที่ใบเบิกจ่ายไม่ถูกต้อง");
   if (!payload.requestNo) {
-    const draft = await saveExpenseDraft({ rootDir, payload, uploads });
-    return saveExpenseSubmission({ rootDir, payload: { requestNo: draft.requestNo }, uploads: [] });
+    const draft = await saveExpenseDraft({ rootDir, payload, uploads, vendorResolver });
+    return saveExpenseSubmission({ rootDir, payload: { requestNo: draft.requestNo }, uploads: [], vendorResolver });
   }
   return withExpenseRequestMutation(rootDir, payload.requestNo, async () => {
     const existing = await loadNumberedExpense(rootDir, payload.requestNo);
@@ -2059,7 +2060,7 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromRequestNo(existing.requestNo);
-    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload }, stored);
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload }, stored, { vendorResolver });
     const nextPayload = buildExpensePayload({ ...vendorPayload, accountingMonth, transactionNo: stored.transactionNo || "", workflowTemplateId: stored.workflowTemplateId || "", workflowStepId: stored.workflowStepId || "", company, requestNo: existing.requestNo, folderPath: existing.folderPath, sequence: existing.requestNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval", statusHistory: stored.statusHistory || [] });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = EXPENSE_NUMBERED_STATUS_LABELS.pending_approval;
@@ -2102,12 +2103,12 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [] }) {
   });
 }
 
-async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [], createStockMovements = true }) {
+async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [], createStockMovements = true, vendorResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
   if (payload.receiptNo && !SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(String(payload.receiptNo))) throw new Error("เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง");
   if (!payload.receiptNo) {
-    const draft = await saveSubstituteReceiptDraft({ rootDir, payload, uploads });
-    return saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: draft.receiptNo }, uploads: [], createStockMovements });
+    const draft = await saveSubstituteReceiptDraft({ rootDir, payload, uploads, vendorResolver });
+    return saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: draft.receiptNo }, uploads: [], createStockMovements, vendorResolver });
   }
   return withSubstituteReceiptMutation(rootDir, payload.receiptNo, async () => {
     const existing = await loadNumberedReceipt(rootDir, payload.receiptNo);
@@ -2129,7 +2130,7 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromReceiptNo(existing.receiptNo);
     const company = await getCompanySettings(rootDir);
     const now = new Date().toISOString();
-    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload, ...authoritative }, stored);
+    const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload, ...authoritative }, stored, { vendorResolver });
     const nextPayload = buildSubstituteReceiptPayload({ ...vendorPayload, ...authoritative, accountingMonth, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
     nextPayload.status = "pending_approval";
     nextPayload.statusLabel = SUBSTITUTE_RECEIPT_STATUS_LABELS.pending_approval;
@@ -3143,7 +3144,7 @@ function assertPathWithinDirectory(baseDir, targetPath, message) {
 const WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE = "ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้";
 const WORKFLOW_DOCUMENT_STALE_GUARD_MESSAGE = "เอกสารถูกเปลี่ยนสถานะแล้ว กรุณาลองใหม่";
 
-async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], existingPayload = null }) {
+async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], existingPayload = null, vendorResolver }) {
   if (!LIGHTWEIGHT_DOCUMENT_KINDS.includes(payload.documentKind)) {
     throw new Error(`Invalid workflow document kind: ${payload.documentKind}`);
   }
@@ -3181,7 +3182,7 @@ async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], ex
   const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
   const rawFiles = flattenEvidenceFiles(evidenceFiles).map((file) => file.storedName);
 
-  const vendorPayload = await prepareDocumentVendorPayload(rootDir, payload, existingPayload || {});
+  const vendorPayload = await prepareDocumentVendorPayload(rootDir, payload, existingPayload || {}, { vendorResolver });
   const finalPayload = {
     ...vendorPayload,
     evidenceFiles,
@@ -3242,13 +3243,13 @@ async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], ex
   };
 }
 
-async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
+async function saveWorkflowDocument({ rootDir, payload, uploads = [], vendorResolver }) {
   // Existing records share the same local-process queue as lifecycle actions.
   // New records have no server document number until their allocator-backed save.
-  if (!payload.documentNo) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads });
+  if (!payload.documentNo) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads, vendorResolver });
   return withWorkflowDocumentMutation(rootDir, payload.documentKind, payload.documentNo, async () => {
     const record = await getWorkflowDocument(rootDir, payload.documentKind, payload.documentNo);
-    if (!record) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads });
+    if (!record) return saveWorkflowDocumentUnlocked({ rootDir, payload, uploads, vendorResolver });
     const stored = record.payload || {};
     const storedStatus = stored.status || "draft";
     if (storedStatus === "completed") throw new Error(WORKFLOW_DOCUMENT_COMPLETED_GUARD_MESSAGE);
@@ -3280,7 +3281,7 @@ async function saveWorkflowDocument({ rootDir, payload, uploads = [] }) {
       vendorId: Object.prototype.hasOwnProperty.call(payload, "vendorId") ? payload.vendorId : (stored.vendorId ?? ""),
       vendorSnapshot: Object.prototype.hasOwnProperty.call(payload, "vendorSnapshot") ? payload.vendorSnapshot : (stored.vendorSnapshot ?? {}),
     };
-    return saveWorkflowDocumentUnlocked({ rootDir, payload: authoritativePayload, uploads, existingPayload: stored });
+    return saveWorkflowDocumentUnlocked({ rootDir, payload: authoritativePayload, uploads, existingPayload: stored, vendorResolver });
   });
 }
 

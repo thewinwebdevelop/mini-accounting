@@ -148,7 +148,14 @@ export async function applyDocumentMigration({
     for (const record of plan.records) {
       const sourceKey = encodeURIComponent(record.sourceKey);
       const existing = await request(client, `/rest/v1/migration_records?migration_name=eq.${encodeURIComponent(DOCUMENT_MIGRATION_NAME)}&source_key=eq.${sourceKey}&limit=1`);
-      if (Array.isArray(existing) && existing.length) continue;
+      if (Array.isArray(existing) && existing.length) {
+        await request(client, `/rest/v1/${record.table}?source_key=eq.${sourceKey}`, {
+          method: "PATCH",
+          headers: { Prefer: "return=minimal" },
+          body: record.row,
+        });
+        continue;
+      }
       await request(client, `/rest/v1/${record.table}?on_conflict=source_key`, {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=representation" },

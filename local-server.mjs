@@ -163,6 +163,7 @@ const {
 } = require("./forms/line-bot.logic.js");
 const { scanLineDocument } = require("./forms/line-ocr.logic.js");
 const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
+const { createSupabaseDataRepository } = require("./forms/supabase-data.logic.js");
 const { createSupabaseStorageClient } = require("./forms/supabase-storage.logic.js");
 const { resolveGoogleOAuthRedirectUri } = require("./forms/google-oauth-config.logic.js");
 const {
@@ -192,6 +193,7 @@ const {
   resolveRuntimeRoot,
 } = require("./forms/cloud-run.logic.js");
 const { createDocumentFileSynchronizer } = require("./forms/supabase-document-files.logic.js");
+const { mapCloudVendors } = require("./forms/cloud-vendor-read.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
@@ -244,6 +246,17 @@ const documentDataAdapter = createDocumentDataAdapter({
     : undefined,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
+const cloudVendorRepository = cloudRun
+  ? createSupabaseDataRepository({
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+  })
+  : null;
+const vendorResolver = cloudVendorRepository
+  ? async vendorId => mapCloudVendors(
+    await cloudVendorRepository.listVendors(""),
+    { includeInactive: true },
+  ).find(vendor => vendor.id === String(vendorId || "").trim()) || null
+  : undefined;
 const documentFileAdapter = createFileAdapter({
   rootDir,
   env: runtimeEnv,
@@ -297,6 +310,42 @@ async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad })
   }
 }
 
+async function ensureLocalCloudWorkflowTransaction(transactionNo) {
+  const localRecord = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!cloudRun || !documentFileSynchronizer) return localRecord;
+
+  if (!localRecord) {
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind: "workflow_transaction",
+      documentNo: transactionNo,
+    });
+    if (!cloudRecord) return null;
+    await documentFileSynchronizer.materialize({ record: cloudRecord });
+  }
+
+  // Cloud Run starts with an empty ephemeral filesystem. A transaction row
+  // alone is not enough for its detail page: the child documents that make
+  // up the progress checklist are separate cloud rows and must be
+  // materialized too before the existing filesystem-oriented workflow logic
+  // scans for them.
+  const cloudDocuments = await documentDataAdapter.list({
+    localResult: [],
+    filters: {
+      documentKinds: ["expense_request", "substitute_receipt", ...LIGHTWEIGHT_DOCUMENT_KINDS],
+    },
+  });
+  const childDocuments = cloudDocuments.filter((document) => String(
+    document.transactionNo || document.payload?.transactionNo || "",
+  ).trim() === String(transactionNo).trim());
+  for (const document of childDocuments) {
+    await documentFileSynchronizer.materialize({ record: document });
+  }
+
+  if (!localRecord || childDocuments.length > 0) await rebuildDocumentIndex(rootDir);
+  return getWorkflowTransaction(rootDir, transactionNo);
+}
+
 async function persistCloudDocumentMutation({ documentKind, documentNo, result, localLoad }) {
   if (!cloudRun) return result;
   const localRecord = await localLoad();
@@ -334,7 +383,8 @@ function sendAuthError(response, statusCode, code, error, { clearCookie = false 
 }
 
 function isPublicApiPath(pathname) {
-  return pathname === "/api/auth/line-session"
+  return pathname === "/api/healthz"
+    || pathname === "/api/auth/line-session"
     || pathname === "/api/auth/me"
     || pathname === "/api/auth/logout"
     || pathname === "/api/google-drive/oauth2callback"
@@ -567,6 +617,8 @@ function safeStaticPath(urlPath) {
     "/": "/index.html",
     "/line-auth": "/line-auth.html",
     "/line-auth/": "/line-auth.html",
+    "/line-intake/auth": "/line-auth.html",
+    "/line-intake/auth/": "/line-auth.html",
     "/line-intake": "/line-intake.html",
     "/line-intake/": "/line-intake.html",
     "/expense-request": "/expense-request.html",
@@ -857,6 +909,7 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
         rootDir,
         payload,
         uploads: [{ evidenceKey: "receipt", originalName: original.fileName, type: original.contentType, buffer: original.bytes }],
+        vendorResolver,
       }),
     });
     const document = lineDocumentSummary(result);
@@ -999,6 +1052,7 @@ async function handleExpenseSubmission(request, response) {
         rootDir,
         payload,
         uploads: files,
+        vendorResolver,
       }),
     });
 
@@ -1031,6 +1085,7 @@ async function handleSubstituteReceiptSubmission(request, response) {
         rootDir,
         payload,
         uploads: files,
+        vendorResolver,
       }),
     });
 
@@ -1062,6 +1117,7 @@ async function handleSubstituteReceiptDraftSave(request, response) {
         rootDir,
         payload,
         uploads: files,
+        vendorResolver,
       }),
     });
 
@@ -1459,7 +1515,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
       documentKind: payload.documentKind,
       documentNo: payload.documentNo,
       payload,
-      localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files }),
+      localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver }),
     });
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
@@ -1698,7 +1754,14 @@ async function handleNextWorkflowTransaction(url, response) {
 
 async function handleWorkflowTransactionList(response) {
   try {
-    sendJson(response, 200, { transactions: await listWorkflowTransactions(rootDir) });
+    const localResult = await listWorkflowTransactions(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "workflow_transaction" });
+    sendJson(response, 200, {
+      transactions: result.map(transaction => ({
+        ...transaction,
+        transactionNo: transaction.transactionNo || transaction.documentNo,
+      })),
+    });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถแสดงรายการธุรกรรมได้",
@@ -1736,6 +1799,7 @@ async function handleWorkflowTransactionStart(request, response) {
 
 async function handleWorkflowTransactionGet(transactionNo, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record));
@@ -1756,6 +1820,7 @@ async function handleWorkflowTransactionGet(transactionNo, response) {
 // packet's Python subprocess before anyone has asked to download it.
 async function handleWorkflowTransactionRefresh(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const regeneratePacket = body.regeneratePacket !== false;
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
@@ -1771,6 +1836,7 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
 // there is no workflow-level Sheets sync (decision D6).
 async function handleWorkflowTransactionComplete(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const result = await completeWorkflowTransaction({
       rootDir,
@@ -1785,6 +1851,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
 
 async function handleWorkflowTransactionCancel(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const result = await cancelWorkflowTransaction({
       rootDir,
@@ -1817,6 +1884,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
 // completeWorkflowTransaction calls internally for the toggle-on path.
 async function handleWorkflowTransactionDriveSync(transactionNo, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
     sendJson(response, 200, result);
   } catch (error) {
@@ -1826,6 +1894,7 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
 
 async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
     if (result.syncStatus === "blocked_child_rows") {
       sendJson(response, 409, { error: result.error, code: result.code, conflicts: result.conflicts });
@@ -1844,6 +1913,7 @@ async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
 
 async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const documentKind = url.searchParams.get("documentKind") || "";
     const stepId = url.searchParams.get("stepId") || "";
     if (!stepId) throw new Error("ระบุขั้นตอนของ Workflow");
@@ -1878,6 +1948,7 @@ function buildWorkflowStepOpenUrl({ route, documentKind, documentNo, transaction
 
 async function handleWorkflowTransactionStartDocument(transactionNo, stepId, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
     if (!stepId) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
 
@@ -1944,6 +2015,7 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
 
 async function handleWorkflowTransactionFile(fileRoute, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(fileRoute.transactionNo);
     const file = await getWorkflowTransactionFile({
       rootDir,
       transactionNo: fileRoute.transactionNo,
@@ -2070,6 +2142,7 @@ async function handleDraftSave(request, response) {
         rootDir,
         payload,
         uploads: files,
+        vendorResolver,
       }),
     });
 
@@ -2731,7 +2804,10 @@ function sendVendorError(response, error, fallback) {
 async function handleVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
-    sendJson(response, 200, { vendors: await listVendors(rootDir, { includeInactive }) });
+    const vendors = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive })
+      : await listVendors(rootDir, { includeInactive });
+    sendJson(response, 200, { vendors });
   } catch (error) {
     sendVendorError(response, error, "Cannot list vendors");
   }
@@ -2740,7 +2816,9 @@ async function handleVendorList(url, response) {
 async function handleVendorGet(vendorId, response) {
   try {
     const id = decodeVendorId(vendorId);
-    const vendor = await getVendorById(rootDir, id);
+    const vendor = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true }).find(item => item.id === id) || null
+      : await getVendorById(rootDir, id);
     if (!vendor) {
       const error = new Error("ไม่พบผู้ขาย");
       error.code = "VENDOR_NOT_FOUND";
@@ -2759,7 +2837,10 @@ async function handleVendorMatches(url, response) {
       "name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo",
       "paymentChannel", "paymentReference", "defaultBusinessPurpose", "note",
     ].map((field) => [field, url.searchParams.get(field) || ""]));
-    const matches = findVendorMatches(candidate, await listVendors(rootDir, { includeInactive: true }));
+    const vendors = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true })
+      : await listVendors(rootDir, { includeInactive: true });
+    const matches = findVendorMatches(candidate, vendors);
     sendJson(response, 200, {
       matches: matches.map((match) => ({
         id: match.id,
@@ -2834,7 +2915,7 @@ async function handleInventoryPurchaseIn(request, response) {
 
 async function handleInventoryBalanceList(response) {
   try {
-    sendJson(response, 200, { balances: listInventoryBalances(rootDir) });
+    sendJson(response, 200, { balances: await inventoryDataAdapter.read("listInventoryBalances") });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list inventory balances" });
   }
@@ -2842,10 +2923,7 @@ async function handleInventoryBalanceList(response) {
 
 async function handleInventoryDashboard(response) {
   try {
-    sendJson(response, 200, {
-      summary: getInventoryDashboardSummary(rootDir),
-      latestStockIn: listStockInReport(rootDir, { limit: 10 }),
-    });
+    sendJson(response, 200, await inventoryDataAdapter.read("getInventoryDashboard"));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load inventory dashboard" });
   }
@@ -2854,7 +2932,7 @@ async function handleInventoryDashboard(response) {
 async function handleInventoryStockInReport(url, response) {
   try {
     sendJson(response, 200, {
-      movements: listStockInReport(rootDir, { limit: url.searchParams.get("limit") || "100" }),
+      movements: await inventoryDataAdapter.read("listStockInReport", { limit: url.searchParams.get("limit") || "100" }),
     });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load stock-in report" });
@@ -2864,7 +2942,7 @@ async function handleInventoryStockInReport(url, response) {
 async function handleInventoryStockList(url, response) {
   try {
     sendJson(response, 200, {
-      groups: listInventoryStockGroups(rootDir, {
+      groups: await inventoryDataAdapter.read("listInventoryStockGroups", {
         search: url.searchParams.get("search") || "",
         category: url.searchParams.get("category") || "",
         stockStatus: url.searchParams.get("stockStatus") || "all",
@@ -2894,7 +2972,7 @@ async function handleCurrentStockPdf(response) {
 
 async function handleInventoryStockCard(url, response) {
   try {
-    sendJson(response, 200, getStockCard(rootDir, url.searchParams.get("stockSkuId")));
+    sendJson(response, 200, await inventoryDataAdapter.read("getStockCard", url.searchParams.get("stockSkuId")));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load stock card" });
   }
@@ -2955,6 +3033,11 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (request.method === "GET" && url.pathname === "/healthz") {
+    sendJson(response, 200, healthPayload(runtimeEnv));
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/healthz") {
     sendJson(response, 200, healthPayload(runtimeEnv));
     return;
   }

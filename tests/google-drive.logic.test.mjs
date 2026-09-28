@@ -68,6 +68,37 @@ test("saveGoogleDriveConfig keeps the existing secret when updating the base pat
   }
 });
 
+test("Google Drive config and token fall back to Cloud Run environment secrets", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-drive-env-"));
+  const previousConfig = process.env.GOOGLE_DRIVE_CONFIG_JSON;
+  const previousToken = process.env.GOOGLE_DRIVE_TOKEN_JSON;
+
+  try {
+    process.env.GOOGLE_DRIVE_CONFIG_JSON = JSON.stringify({
+      clientId: "cloud-client.apps.googleusercontent.com",
+      clientSecret: "cloud-client-secret",
+      driveBasePath: "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี",
+    });
+    process.env.GOOGLE_DRIVE_TOKEN_JSON = JSON.stringify({
+      refresh_token: "cloud-refresh-token",
+      access_token: "cloud-access-token",
+      expiresAt: Date.now() + 3_600_000,
+    });
+
+    const status = await getGoogleDriveStatus(rootDir);
+    assert.equal(status.configured, true);
+    assert.equal(status.authenticated, true);
+    assert.equal(status.clientId, "cloud-client.apps.googleusercontent.com");
+    assert.equal(status.driveBasePath, "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี");
+  } finally {
+    if (previousConfig === undefined) delete process.env.GOOGLE_DRIVE_CONFIG_JSON;
+    else process.env.GOOGLE_DRIVE_CONFIG_JSON = previousConfig;
+    if (previousToken === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_JSON;
+    else process.env.GOOGLE_DRIVE_TOKEN_JSON = previousToken;
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("buildGoogleOAuthUrl creates a consent URL for the local callback", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-drive-"));
 

@@ -45,7 +45,7 @@
 
 ## LINE Mini App migration
 
-- [x] LINE token verification, signed HttpOnly session, role-aware app-user foundation, and `/line-auth` LIFF entrypoint.
+- [x] LINE token verification, signed HttpOnly session, role-aware app-user foundation, and root LINE Mini App auth gate with `/line-intake/auth` review auth fallback.
 - [x] Supabase server boundary, auth/core-data migrations, and idempotent local-data migration dry-run/apply tooling.
 - [x] Add private Supabase Storage bucket, server-only Storage client, deterministic file manifest, and idempotent verified migration CLI.
 - [x] Migrate document metadata and document-file references to Supabase with idempotent source-key verification.

@@ -34,7 +34,8 @@ function encodeObjectPath(objectPath) {
 }
 
 function encodeStoragePathSegment(segment) {
-  return encodeURIComponent(segment).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment)) return segment;
+  return `u-${Buffer.from(segment, "utf8").toString("base64url")}`;
 }
 
 function storageObjectPath(objectPath) {

@@ -31,6 +31,7 @@ function contentTypeFor(filePath) {
 function documentPayloadFileName(documentKind) {
   if (documentKind === "expense_request") return "submission.json";
   if (documentKind === "substitute_receipt") return "substitute-receipt.json";
+  if (documentKind === "workflow_transaction") return "workflow-transaction.json";
   return "workflow-document.json";
 }
 
@@ -141,7 +142,18 @@ function createDocumentFileSynchronizer({
     const documentNo = String(record.documentNo || record.payload?.documentNo || "");
     const documentSourceKey = `document:${documentKind}:${documentNo}`;
     const rows = await request(client, `/rest/v1/document_files?document_source_key=eq.${encodeURIComponent(documentSourceKey)}&order=object_path.asc`);
-    const documentPayload = record.payload && typeof record.payload === "object" ? record.payload : {};
+    // The document adapter exposes cloud rows in its public, flattened shape
+    // (payload fields are promoted to the record root), while callers that
+    // persist locally may still pass an explicit `payload` object. Accept
+    // both shapes so a Cloud Run materialization does not write an empty JSON
+    // file and make an otherwise valid document look missing.
+    const documentPayload = record.payload && typeof record.payload === "object"
+      ? record.payload
+      : Object.fromEntries(Object.entries(record).filter(([key]) => ![
+        "sourceKey",
+        "sourceHash",
+        "ownerUserId",
+      ].includes(key)));
     await writeFile(path.join(dataDir, documentPayloadFileName(documentKind)), `${JSON.stringify(documentPayload, null, 2)}\n`, "utf8");
 
     for (const row of Array.isArray(rows) ? rows : []) {

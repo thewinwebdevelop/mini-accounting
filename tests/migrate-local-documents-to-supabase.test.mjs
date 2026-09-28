@@ -31,8 +31,10 @@ async function makeFixture() {
 function fakeSupabase() {
   const rows = new Map();
   const inserted = [];
+  const patched = [];
   return {
     inserted,
+    patched,
     request: async (_client, path, options = {}) => {
       const method = options.method || "GET";
       if (path.startsWith("/rest/v1/migration_records?") && method === "GET") {
@@ -47,6 +49,10 @@ function fakeSupabase() {
       }
       if (path.startsWith("/rest/v1/migration_runs") && method === "POST") return [{ id: "run-1" }];
       if (path.startsWith("/rest/v1/migration_runs") && method === "PATCH") return [];
+      if (path.startsWith("/rest/v1/") && method === "PATCH") {
+        patched.push({ path, body: options.body });
+        return [];
+      }
       if (path.startsWith("/rest/v1/") && method === "GET") {
         const table = path.split("?")[0];
         const sourceKey = decodeURIComponent(path.match(/source_key=eq\.([^&]+)/)?.[1] || "");
@@ -93,6 +99,7 @@ test("document migration applies idempotently by source key", async () => {
     await applyDocumentMigration({ rootDir, client: {}, request: fake.request, now: () => "2026-09-25T00:00:00.000Z" });
     assert.equal(fake.inserted.filter(row => row.source_key === "document:expense_request:REQ-2026-09-0001").length, 1);
     assert.equal(fake.inserted.filter(row => row.source_key === "document_file:documents/2026/09/เบิกจ่าย/REQ-2026-09-0001/raw/receipt.jpg").length, 1);
+    assert.ok(fake.patched.length > 0);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

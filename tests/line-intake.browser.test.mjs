@@ -18,3 +18,14 @@ test("LINE intake browser controller posts an explicit confirmation payload", as
   assert.match(source, /textContent/);
   assert.doesNotMatch(source, /innerHTML/);
 });
+
+test("LINE intake keeps LIFF authentication under the configured endpoint path", async () => {
+  const source = await readFile(new URL("../forms/line-intake.browser.js", import.meta.url), "utf8");
+  assert.match(source, /\/line-intake\/auth\?returnTo=/);
+  assert.doesNotMatch(source, /\/line-auth\?returnTo=/);
+});
+
+test("LINE intake explains how to create a review link when opened without an intake", async () => {
+  const source = await readFile(new URL("../forms/line-intake.browser.js", import.meta.url), "utf8");
+  assert.match(source, /กรุณาส่งรูปหรือ PDF ใบแจ้งหนี้เข้า LINE OA/);
+});

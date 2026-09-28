@@ -2,6 +2,7 @@
   const script = document.currentScript;
   const status = document.querySelector("[data-line-auth-status]");
   const liffId = script?.dataset?.lineLiffId || "";
+  const authGate = script?.dataset?.authGate === "true";
 
   function setStatus(message, kind = "info") {
     if (!status) return;
@@ -33,6 +34,13 @@
   async function boot() {
     if (!liffId) throw new Error("ยังไม่ได้ตั้งค่า LINE LIFF ID");
     if (!window.liff || typeof window.liff.init !== "function") throw new Error("ไม่พบ LIFF SDK");
+    if (authGate) {
+      const sessionResponse = await fetch("/api/auth/me", { credentials: "same-origin" });
+      if (sessionResponse.ok) {
+        setStatus("เข้าสู่ระบบแล้ว");
+        return;
+      }
+    }
     setStatus("กำลังเชื่อมต่อ LINE...");
     await window.liff.init({ liffId });
     if (!window.liff.isLoggedIn()) {
@@ -56,6 +64,7 @@
     const meResponse = await fetch("/api/auth/me", { credentials: "same-origin" });
     if (!meResponse.ok) throw new Error("ไม่สามารถยืนยัน session ได้");
     setStatus("เข้าสู่ระบบสำเร็จ กำลังเปิดระบบ...");
+    if (authGate) return;
     window.location.replace(safeReturnPath());
   }
 

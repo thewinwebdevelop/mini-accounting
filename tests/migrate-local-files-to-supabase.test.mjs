@@ -141,6 +141,7 @@ test("collectStorageManifest uses ASCII-safe object paths for Thai filenames", a
     const thaiRecord = records.find(record => record.relativePath.endsWith("/ใบเสร็จ.pdf"));
     assert.ok(thaiRecord);
     assert.match(thaiRecord.objectPath, /^[\x00-\x7F]+$/);
+    assert.doesNotMatch(thaiRecord.objectPath, /%/);
     assert.notEqual(thaiRecord.objectPath, thaiRecord.relativePath);
   } finally {
     await rm(rootDir, { recursive: true, force: true });

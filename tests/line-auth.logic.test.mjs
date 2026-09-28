@@ -108,3 +108,22 @@ test("resolveLineAppUser does not grant a role to a pending user", async () => {
   assert.equal(user.status, "pending");
   assert.equal(user.role, "");
 });
+
+test("resolveLineAppUser accepts Supabase one-to-one role objects", async () => {
+  const user = await resolveLineAppUser({
+    client: {},
+    lineProfile: { lineUserId: "U456", displayName: "เจ้าของบริษัท", pictureUrl: "" },
+    request: async (_client, path, options) => options.method === "POST"
+      ? [{ id: "user-10", line_user_id: "U456", status: "active" }]
+      : [{
+        id: "user-10",
+        line_user_id: "U456",
+        display_name: "เจ้าของบริษัท",
+        picture_url: "",
+        status: "active",
+        app_user_roles: { role_code: "admin" },
+      }],
+  });
+
+  assert.equal(user.role, "admin");
+});

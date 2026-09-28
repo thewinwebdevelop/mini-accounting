@@ -79,8 +79,10 @@ function rowToAppUser(row) {
   if (!row || typeof row !== "object" || typeof row.id !== "string" || typeof row.line_user_id !== "string") {
     throw authError("APP_USER_NOT_FOUND", "ไม่พบผู้ใช้ในระบบ");
   }
-  const role = row.status === "active" && VALID_ROLES.has(row.app_user_roles?.[0]?.role_code)
-    ? row.app_user_roles[0].role_code
+  const relation = row.app_user_roles;
+  const roleRow = Array.isArray(relation) ? relation[0] : relation;
+  const role = row.status === "active" && VALID_ROLES.has(roleRow?.role_code)
+    ? roleRow.role_code
     : "";
   return {
     id: row.id,
