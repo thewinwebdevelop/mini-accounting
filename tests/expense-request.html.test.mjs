@@ -244,6 +244,26 @@ test("expense request restores requester role and exposes approve/complete lifec
   assert.equal(elements.completeRequest.hidden, true, "completed request must hide complete action");
 });
 
+test("expense approval review surfaces backend errors instead of leaving the confirm action silent", async () => {
+  const { context, elements } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    withReviewModal: true,
+    approveFailure: true,
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      payload: { requestNo: "REQ-2026-09-0001", status: "pending_approval", accountingMonth: "2026-09", expenseLines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  elements.approveRequest.dispatch("click");
+  await context.window._reviewModel.onConfirm();
+  assert.match(elements.saveStatus.textContent, /approve failed/);
+  assert.equal(elements.saveStatus.className, "status-box active error");
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {
@@ -346,7 +366,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, approveResponse = null, completeResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, approveResponse = null, completeResponse = null, approveFailure = false, withReviewModal = false, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -397,6 +417,7 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
       return { ok: true, json: async () => ({ stockSkus }) };
     }
     if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/approve")) {
+      if (approveFailure) return { ok: false, json: async () => ({ error: "approve failed" }) };
       return { ok: true, json: async () => approveResponse ?? { requestNo: "REQ-2026-09-0001", status: "approved", pdfFiles: [] } };
     }
     if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/complete")) {
@@ -457,6 +478,13 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
   vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
   vm.runInContext(await readFile(prefillBannerPath, "utf8"), context);
+  if (withReviewModal) {
+    window.WorkflowReviewModal = {
+      create: () => ({
+        open: (model) => { window._reviewModel = model; },
+      }),
+    };
+  }
   vm.runInContext(script, context);
 
   const bootResult = context.window._handlers.DOMContentLoaded();

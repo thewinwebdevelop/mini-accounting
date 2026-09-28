@@ -2023,8 +2023,8 @@
         return;
       }
       const model = buildReviewModel(action === "approve" ? "approve" : "submit");
-      model.onConfirm = () => runMutation(work);
-      model.onReject = (reason) => runMutation(() => rejectRequest(reason));
+      model.onConfirm = () => runMutation(work).catch((error) => setSaveStatus(error.message, "error"));
+      model.onReject = (reason) => runMutation(() => rejectRequest(reason)).catch((error) => setSaveStatus(error.message, "error"));
       reviewModal.open(model);
     }
 

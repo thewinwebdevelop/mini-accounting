@@ -1736,8 +1736,27 @@ function indexExpenseRequest(rootDir, expensePayload) {
   });
 }
 
+function normalizeExpensePayloadForWrite(expensePayload = {}) {
+  if (expensePayload.evidence && expensePayload.totals && expensePayload.requestTypeLabel) return expensePayload;
+
+  // Supabase stores the browser's input payload on the initial submit. That
+  // payload intentionally contains evidenceFiles/expenseLines, but not the
+  // derived evidence/totals/requestTypeLabel fields written to the local
+  // submission.json. Rebuild the canonical shape before any lifecycle action
+  // regenerates Markdown/PDF files on a fresh Cloud Run instance.
+  const canonical = buildExpensePayload({
+    ...expensePayload,
+    accountingMonth: expensePayload.accountingMonth || getAccountingMonthFromRequestNo(expensePayload.requestNo),
+    sequence: expensePayload.sequence || String(expensePayload.requestNo || "").split("-").at(-1),
+    evidenceFiles: expensePayload.evidenceFiles || {},
+    rawFiles: expensePayload.rawFiles || [],
+  });
+  return { ...expensePayload, ...canonical };
+}
+
 async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
-  const absoluteFolderPath = path.join(rootDir, expensePayload.folderPath);
+  const normalizedPayload = normalizeExpensePayloadForWrite(expensePayload);
+  const absoluteFolderPath = path.join(rootDir, normalizedPayload.folderPath);
   const rawDir = path.join(absoluteFolderPath, "raw");
   const dataDir = path.join(absoluteFolderPath, "data");
   const workingMdDir = path.join(absoluteFolderPath, "working-md");
@@ -1747,9 +1766,9 @@ async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   await mkdir(dataDir, { recursive: true });
   await mkdir(workingMdDir, { recursive: true });
   await mkdir(pdfDir, { recursive: true });
-  await writeFile(submissionJsonPath, `${JSON.stringify(expensePayload, null, 2)}\n`, "utf8");
-  indexExpenseRequest(rootDir, expensePayload);
-  await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(expensePayload), "utf8");
+  await writeFile(submissionJsonPath, `${JSON.stringify(normalizedPayload, null, 2)}\n`, "utf8");
+  indexExpenseRequest(rootDir, normalizedPayload);
+  await writeFile(path.join(workingMdDir, "submission.md"), formatPayloadMarkdown(normalizedPayload), "utf8");
   await generateExpensePdfs({
     payloadPath: submissionJsonPath,
     outputDir: pdfDir,
@@ -1765,7 +1784,7 @@ async function writeSubmittedExpenseRequestFiles(rootDir, expensePayload) {
   // still exactly what saveExpenseSubmission (the original, non-repeatable
   // submission) returns — untouched, since it calls generateExpensePdfs
   // directly rather than through this helper.
-  const pdfFiles = await listPdfFiles(rootDir, expensePayload.folderPath);
+  const pdfFiles = await listPdfFiles(rootDir, normalizedPayload.folderPath);
 
   return {
     absoluteFolderPath,
