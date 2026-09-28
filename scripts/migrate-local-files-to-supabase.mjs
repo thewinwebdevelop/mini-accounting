@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
-const { assertObjectPath, downloadStorageObject, uploadStorageObject } = require("../forms/supabase-storage.logic.js");
+const { createSupabaseStorageClient, downloadStorageObject, storageObjectPath, uploadStorageObject } = require("../forms/supabase-storage.logic.js");
 const { createSupabaseAdminClient, supabaseRequest } = require("../forms/supabase.logic.js");
 
 export const STORAGE_MIGRATION_NAME = "local-file-storage-20260925";
@@ -53,6 +53,7 @@ async function collectDirectory({ rootDir, sourceRoot, absoluteDir, relativeDir,
   const records = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const absolutePath = path.join(absoluteDir, entry.name);
+    if (entry.isFile() && (entry.name === ".DS_Store" || path.extname(entry.name).toLowerCase() === ".html")) continue;
     if (entry.isSymbolicLink()) {
       throw storageError("STORAGE_SOURCE_SYMLINK", `Storage source contains a symlink: ${relativePosix(rootDir, absolutePath)}`);
     }
@@ -71,7 +72,7 @@ async function collectDirectory({ rootDir, sourceRoot, absoluteDir, relativeDir,
     }
 
     const relativePath = relativePosix(rootDir, path.join(rootDir, relativeDir, entry.name));
-    const objectPath = assertObjectPath(`${objectPrefix}/${relativePosix(sourceRoot, absolutePath)}`);
+    const objectPath = storageObjectPath(`${objectPrefix}/${relativePosix(sourceRoot, absolutePath)}`);
     const body = await readFile(absolutePath);
     const record = {
       sourceKey: `file:${relativePath}`,

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const { collectStorageManifest, planStorageMigration, applyStorageMigration } = await import("../scripts/migrate-local-files-to-supabase.mjs");
 const require = createRequire(import.meta.url);
@@ -66,6 +68,7 @@ function makeLedgerRequest() {
 test("collectStorageManifest returns stable ordered records with hashes and content types", async () => {
   const rootDir = await makeFixture();
   try {
+    await writeFile(join(rootDir, "documents", ".DS_Store"), Buffer.from("macOS metadata"));
     const records = await collectStorageManifest({ rootDir });
     assert.deepEqual(records.map(record => record.sourceKey), [
       "file:data/inventory-images/products/product-1.png",
@@ -101,6 +104,44 @@ test("collectStorageManifest ignores unsupported roots and rejects an invalid ro
     const records = await collectStorageManifest({ rootDir });
     assert.equal(records.some(record => record.sourceKey.includes("not-approved")), false);
     await assert.rejects(() => collectStorageManifest({ rootDir: join(rootDir, "missing") }), error => error.code === "STORAGE_ROOT_MISSING");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("collectStorageManifest ignores macOS metadata files", async () => {
+  const rootDir = await makeFixture();
+  try {
+    await writeFile(join(rootDir, "documents", "2026", "09", "REQ-1", ".DS_Store"), Buffer.from("macOS metadata"));
+    const records = await collectStorageManifest({ rootDir });
+    assert.equal(records.some(record => record.relativePath.endsWith("/.DS_Store")), false);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("collectStorageManifest ignores generated HTML snapshots", async () => {
+  const rootDir = await makeFixture();
+  try {
+    await mkdir(join(rootDir, "documents", "2026", "09", "REQ-1", "html"), { recursive: true });
+    await writeFile(join(rootDir, "documents", "2026", "09", "REQ-1", "html", "generated.html"), "<html></html>");
+    const records = await collectStorageManifest({ rootDir });
+    assert.equal(records.some(record => record.relativePath.endsWith(".html")), false);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("collectStorageManifest uses ASCII-safe object paths for Thai filenames", async () => {
+  const rootDir = await makeFixture();
+  try {
+    const thaiDir = join(rootDir, "documents", "2026", "09", "REQ-1", "raw");
+    await writeFile(join(thaiDir, "ใบเสร็จ.pdf"), Buffer.from("pdf"));
+    const records = await collectStorageManifest({ rootDir });
+    const thaiRecord = records.find(record => record.relativePath.endsWith("/ใบเสร็จ.pdf"));
+    assert.ok(thaiRecord);
+    assert.match(thaiRecord.objectPath, /^[\x00-\x7F]+$/);
+    assert.notEqual(thaiRecord.objectPath, thaiRecord.relativePath);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -178,6 +219,28 @@ test("storage migration does not record a source when downloaded bytes fail veri
       return true;
     });
     assert.equal(ledger.records.size, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("storage migration CLI reports configuration errors instead of missing its storage client factory", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-storage-cli-"));
+  try {
+    const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "migrate-local-files-to-supabase.mjs");
+    const result = spawnSync(process.execPath, [scriptPath, "--apply"], {
+      cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
+      env: {
+        ...process.env,
+        SWEET_HOUSE_ROOT_DIR: rootDir,
+        SUPABASE_URL: "",
+        SUPABASE_SERVICE_ROLE_KEY: "",
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /SUPABASE_CONFIG_MISSING/);
+    assert.doesNotMatch(result.stderr, /ReferenceError: createSupabaseStorageClient is not defined/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
