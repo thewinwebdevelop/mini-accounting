@@ -731,6 +731,13 @@ const DRIVE_SYNC_STATUS_LABELS = {
   sync_failed: "ซิงก์ Google Drive ไม่สำเร็จ",
 };
 
+const DRIVE_SYNC_ITEM_STATES = {
+  synced: { text: "ขึ้น Google Drive แล้ว", className: "completed" },
+  already_synced: { text: "มีใน Google Drive อยู่แล้ว (ไม่อัปโหลดซ้ำ)", className: "completed" },
+  sync_failed: { text: "ไม่สำเร็จ", className: "sync_failed" },
+  waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
+};
+
 // A failed sync's `message` (set by syncWorkflowTransactionToDrive) names, in
 // Thai, every document that did not make it into Drive and why; `error` is
 // only the first underlying error, kept as the fallback for an older record.
@@ -742,13 +749,6 @@ function driveSyncStatusText(driveSync) {
   }
   return label;
 }
-
-const DRIVE_SYNC_ITEM_STATES = {
-  synced: { text: "ขึ้น Google Drive แล้ว", className: "completed" },
-  already_synced: { text: "มีใน Google Drive อยู่แล้ว (ไม่อัปโหลดซ้ำ)", className: "completed" },
-  sync_failed: { text: "ไม่สำเร็จ", className: "sync_failed" },
-  waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
-};
 
 function safeDriveFolderUrl(value) {
   if (typeof value !== "string") return "";
@@ -782,7 +782,7 @@ function driveSyncItemState(entry) {
   return entry.syncStatus;
 }
 
-function driveSyncItem({ title, state, url, detail }) {
+function driveSyncItem({ title, state, detail }) {
   const { text, className } = DRIVE_SYNC_ITEM_STATES[state] || { text: state || "-", className: "" };
   const item = document.createElement("li");
   item.className = "drive-sync-document";
@@ -797,16 +797,6 @@ function driveSyncItem({ title, state, url, detail }) {
   status.textContent = text;
   item.appendChild(status);
 
-  if (url) {
-    const link = document.createElement("a");
-    link.className = "file-link";
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = "เปิดใน Google Drive";
-    item.appendChild(link);
-  }
-
   if (detail) {
     const note = document.createElement("span");
     note.className = "muted";
@@ -816,9 +806,9 @@ function driveSyncItem({ title, state, url, detail }) {
   return item;
 }
 
-// One row per child document (in step order, as the server reports them)
-// plus the transaction's own folder, so a user can see exactly which document
-// did not make it into Drive and why, and open the ones that did.
+// Keep the per-document result/status list for auditability. The only Drive
+// link is the workflow root shown separately above, because every child row
+// resolves to that same folder.
 function renderDriveSyncDocuments(list, transaction) {
   if (!list) return;
   list.replaceChildren();
@@ -831,7 +821,6 @@ function renderDriveSyncDocuments(list, transaction) {
     list.appendChild(driveSyncItem({
       title: `${documentKindLabelFor(entry.documentKind)} ${entry.documentNo || "-"}`,
       state: driveSyncItemState(entry),
-      url: entry.syncStatus === "synced" ? entry.driveFolderUrl : "",
       detail: entry.syncStatus === "sync_failed" ? (entry.message || entry.error) : "",
     }));
   }
@@ -840,7 +829,6 @@ function renderDriveSyncDocuments(list, transaction) {
   list.appendChild(driveSyncItem({
     title: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo || "-"} (ชุดรวม PDF และสรุป)`,
     state: driveSyncItemState(folder),
-    url: folder.syncStatus === "synced" ? folder.driveFolderUrl : "",
     detail: folder.syncStatus === "sync_failed" ? (folder.message || folder.error) : "",
   }));
 }
@@ -1029,11 +1017,15 @@ function setTransactionSyncButtonsDisabled(disabled) {
 }
 
 function normalizeTransactionForRendering(transaction = {}) {
-  // A cancellation overlay is only authoritative when the API also sends
-  // its cancellation evidence. If an old/stale response says "cancelled"
-  // but carries no overlay and already has completedAt, keep the durable
+  // A cancellation overlay is only authoritative when it carries durable
+  // completion evidence. If an old/stale response says "cancelled" but only
+  // has the request/pending portion of the overlay, keep the durable
   // completion visible instead of showing a misleading cancellation banner.
-  if (transaction.status === "cancelled" && transaction.completedAt && !transaction.cancellation) {
+  const cancellation = transaction.cancellation;
+  const hasCompletedCancellation = cancellation
+    && typeof cancellation.cancelledAt === "string"
+    && cancellation.cancelledAt.trim();
+  if (transaction.status === "cancelled" && transaction.completedAt && !hasCompletedCancellation) {
     return { ...transaction, status: "completed" };
   }
   return transaction;

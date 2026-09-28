@@ -47,7 +47,7 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
 
     def test_legacy_prices_stay_unclassified(self):
         extracted = self.pdf_text({
-            "documentKind": "purchase_order",
+            "documentKind": "cash_spend_declaration",
             "lines": [{"description": "Legacy", "quantity": 2, "unitCost": "50.00", "lineTotal": "100.00"}],
             "totals": {"grossAmount": "100.00"},
         })
@@ -67,6 +67,24 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
         self.assertNotIn("ยังไม่ระบุ VAT", line_text)
         self.assertIn("ค่าขนส่ง", line_text)
 
+    def test_purchase_order_line_does_not_show_unspecified_vat_label(self):
+        extracted = self.pdf_text({
+            "documentKind": "purchase_order",
+            "lines": [{"description": "สินค้า", "quantity": 1, "unitCost": "120.00", "lineTotal": "120.00"}],
+            "totals": {"grossAmount": "120.00"},
+        })
+        line_text = extracted.split("รายการ", 1)[-1].split("ยอดก่อน VAT", 1)[0]
+        self.assertNotIn("ยังไม่ระบุ VAT", line_text)
+        self.assertIn("สินค้า", line_text)
+
+    def test_purchase_order_does_not_print_unspecified_vat_label_anywhere(self):
+        extracted = self.pdf_text({
+            "documentKind": "purchase_order",
+            "lines": [{"description": "สินค้า", "quantity": 1, "unitCost": "120.00", "lineTotal": "120.00"}],
+            "totals": {"grossAmount": "120.00"},
+        })
+        self.assertNotIn("ยังไม่ระบุ VAT", extracted)
+
     def test_inclusive_vat_and_net_payment_are_printed_for_every_kind(self):
         for kind in DOCUMENT_KIND_LABELS:
             with self.subTest(kind=kind):
@@ -84,7 +102,7 @@ class WorkflowDocumentPdfTests(unittest.TestCase):
 
     def test_mixed_vat_keeps_known_line_breakdown_and_unknown_summary(self):
         extracted = self.pdf_text({
-            "documentKind": "purchase_order",
+            "documentKind": "cash_spend_declaration",
             "lines": [
                 {"description": "Known", "quantity": 1, "unitCost": "100.00", "lineTotal": "107.00",
                  "vatMode": "exclusive", "vatRate": "7", "amountBeforeVat": "100.00", "vatAmount": "7.00"},

@@ -51,7 +51,7 @@ def _line_description(line, document_kind=None):
     if mode in ("exclusive", "inclusive") and rate:
         mode_label += f" {rate}%"
     details = [paragraph(line.get("description"))]
-    if not (document_kind in ("payment_voucher", "goods_receipt") and mode == "unspecified"):
+    if mode != "unspecified":
         details.append(paragraph(mode_label, "DocSmall"))
     # An unclassified historical amount is not evidence of a zero VAT charge.
     if mode != "unspecified":
@@ -76,7 +76,7 @@ def _document_totals(payload):
     for label, key in [("ยอดก่อน VAT (บาท)", "amountBeforeVat"), ("VAT (บาท)", "vatAmount")]:
         if totals.get(key) is not None:
             rows.append((label, totals[key]))
-        else:
+        elif payload.get("documentKind") != "purchase_order":
             notes.append(f"{label}: ยังไม่ระบุ VAT")
     gross = totals.get("grossAmount") or "0.00"
     withholding = totals.get("withholdingTax") or "0.00"

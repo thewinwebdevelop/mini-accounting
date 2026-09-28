@@ -1276,6 +1276,8 @@ test("child document files are grouped per document and expose real PDF/raw link
 test("workflow transaction page includes a packet PDF link", async () => {
   const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
   assert.match(html, /id="workflowPacketLink"/);
+  assert.match(html, /ดาวน์โหลดชุดรวมเอกสาร Workflow \(PDF เดียว\)/);
+  assert.match(html, /download="99_ชุดรวมเอกสาร_workflow-transaction\.pdf"/);
 });
 
 test("the packet PDF link stays hidden until the transaction's pdfFiles carries the packet file", async () => {
@@ -2045,12 +2047,14 @@ function fullySyncedDriveSyncResult() {
   };
 }
 
-test("workflow-transaction.html has a list for the per-document Drive result", async () => {
+test("workflow-transaction.html keeps the per-document Drive result list but only links the workflow root", async () => {
   const html = await readFile(transactionHtmlPath, "utf8");
+  assert.match(html, /id="workflowDriveFolderLink"/);
   assert.match(html, /id="driveSyncDocuments"/);
+  assert.match(html, /\.status-box\[hidden\]\s*\{\s*display:\s*none/);
 });
 
-test("a partial Drive sync lists every document with its own Thai result and offers a retry even when the template auto-syncs; the retry re-renders the result", async () => {
+test("a partial Drive sync keeps the per-document status list but does not render per-document Drive links", async () => {
   const completed = buildCompletedTransaction({
     templateSnapshot: { name: "ทดสอบ", syncGoogleDrive: true },
     driveSync: partialDriveSyncResult(),
@@ -2071,17 +2075,14 @@ test("a partial Drive sync lists every document with its own Thai result and off
   assert.match(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
   assert.match(elements.driveSyncStatus.textContent, /PV-2026-09-0001/, "the summary must name the document that did not make it");
 
-  const items = elements.driveSyncDocuments.children;
-  assert.equal(items.length, 3, "one row per child document, plus the transaction folder");
-  assert.match(renderedText(items[0]), /ใบสั่งซื้อ PO-2026-09-0001/);
-  assert.match(renderedText(items[0]), /ขึ้น Google Drive แล้ว/);
-  assert.equal(items[0].children.find((node) => node.tagName === "A")?.href, "https://drive.google.com/drive/folders/po");
-  assert.match(renderedText(items[1]), /ใบสำคัญจ่าย PV-2026-09-0001/);
-  assert.match(renderedText(items[1]), /ไม่สำเร็จ/);
-  assert.match(renderedText(items[1]), /quota exceeded/);
-  assert.equal(items[1].children.some((node) => node.tagName === "A"), false, "a document that is not in Drive has no Drive link");
-  assert.match(renderedText(items[2]), /โฟลเดอร์ธุรกรรม TXN-2026-09-0001/);
-  assert.match(renderedText(items[2]), /รอ/);
+  assert.equal(elements.workflowDriveFolderLink.hidden, true, "a partial sync must not offer a root folder link");
+  assert.equal(elements.driveSyncDocuments.children.length, 3, "the list keeps one row per child plus the workflow folder result");
+  assert.match(renderedText(elements.driveSyncDocuments.children[0]), /ใบสั่งซื้อ PO-2026-09-0001/);
+  assert.match(renderedText(elements.driveSyncDocuments.children[0]), /ขึ้น Google Drive แล้ว/);
+  assert.equal(elements.driveSyncDocuments.children[0].children.some((node) => node.tagName === "A"), false, "child rows no longer expose individual Drive links");
+  assert.match(renderedText(elements.driveSyncDocuments.children[1]), /ใบสำคัญจ่าย PV-2026-09-0001/);
+  assert.match(renderedText(elements.driveSyncDocuments.children[1]), /quota exceeded/);
+  assert.equal(elements.driveSyncDocuments.children[1].children.some((node) => node.tagName === "A"), false);
 
   elements.syncDriveButton.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2090,8 +2091,10 @@ test("a partial Drive sync lists every document with its own Thai result and off
   assert.doesNotMatch(elements.driveSyncStatus.textContent, /ไม่สำเร็จ/);
   assert.match(elements.driveSyncStatus.textContent, /สำเร็จ/);
   assert.equal(elements.syncDriveButton.hidden, true, "once everything is in Drive, an auto-sync template shows no button again");
-  assert.match(renderedText(elements.driveSyncDocuments.children[0]), /มีใน Google Drive อยู่แล้ว/, "a document that was already there is reported as not uploaded again");
-  assert.match(renderedText(elements.driveSyncDocuments.children[1]), /ขึ้น Google Drive แล้ว/);
+  assert.equal(elements.workflowDriveFolderLink.hidden, false, "a successful sync must show only the workflow root folder link");
+  assert.equal(elements.workflowDriveFolderLink.href, "https://drive.google.com/drive/folders/txn");
+  assert.equal(elements.driveSyncDocuments.children.length, 3);
+  assert.equal(elements.driveSyncDocuments.children[0].children.some((node) => node.tagName === "A"), false);
   assert.equal(elements.transactionStatus.className, "status-box active success");
 });
 
@@ -2129,5 +2132,21 @@ test("pressing sync with no Google Drive credentials shows the Thai reason for e
   assert.match(elements.transactionStatus.textContent, /PO-2026-09-0001: ยังไม่ได้ตั้งค่า Google Drive/);
   assert.match(elements.transactionStatus.textContent, /PV-2026-09-0001: ยังไม่ได้ตั้งค่า Google Drive/);
   assert.equal(elements.syncDriveButton.hidden, false, "the retry stays available");
+  assert.equal(elements.workflowDriveFolderLink.hidden, true);
   assert.equal(elements.driveSyncDocuments.children.length, 3);
+  assert.equal(elements.driveSyncDocuments.children[0].children.some((node) => node.tagName === "A"), false);
+});
+
+test("a stale cancellation overlay without cancellation completion evidence cannot hide a completed workflow", async () => {
+  const transaction = buildFourStepTransaction({
+    status: "cancelled",
+    completedAt: "2026-09-27T15:01:27.320Z",
+    cancellation: { requestedAt: "2026-09-27T15:02:00.000Z", pendingEffects: [] },
+    steps: buildFourStepTransaction().steps.map((step) => ({ ...step, workflowStatus: "completed" })),
+  });
+  const { elements } = await setupTransactionPageSandbox({ transaction, refreshedTransaction: transaction });
+
+  assert.match(elements.workflowProgress.textContent, /เสร็จสมบูรณ์/);
+  assert.equal(elements.cancellationSummary.hidden, true);
+  assert.equal(elements.cancelTransactionButton.hidden, false);
 });

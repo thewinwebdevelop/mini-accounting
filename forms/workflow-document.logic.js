@@ -21,7 +21,7 @@ const WORKFLOW_DOCUMENT_STATUS_LABELS = {
   completed: "เสร็จสิ้น",
   cancelled: "ยกเลิก",
 };
-const WORKFLOW_DOCUMENT_PDF_VERSION = 3;
+const WORKFLOW_DOCUMENT_PDF_VERSION = 5;
 
 // A cancelled lightweight document must never be silently reopened by completing
 // it. Every other status may transition to "completed" (repeat completion of an
