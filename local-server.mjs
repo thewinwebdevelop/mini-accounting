@@ -182,6 +182,7 @@ const {
 } = require("./forms/authorization.logic.js");
 const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
 const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
+const { createCloudDocumentReader } = require("./forms/cloud-document-read.logic.js");
 const { createFileAdapter } = require("./forms/storage-file.adapter.js");
 const { validateStockSkuReferences } = require("./forms/stock-line.logic.js");
 const {
@@ -246,6 +247,12 @@ const documentDataAdapter = createDocumentDataAdapter({
     : undefined,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
+const cloudDocumentReader = createCloudDocumentReader({
+  cloudRun,
+  documentDataAdapter,
+  documentFileSynchronizer,
+  rebuildIndex: () => rebuildDocumentIndex(rootDir),
+});
 const cloudVendorRepository = cloudRun
   ? createSupabaseDataRepository({
     client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
@@ -294,20 +301,7 @@ async function resolveDocumentFileReference({ documentKind, documentNo, section,
 }
 
 async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad }) {
-  try {
-    return await localLoad();
-  } catch (error) {
-    if (!cloudRun || !documentFileSynchronizer) throw error;
-    const cloudRecord = await documentDataAdapter.get({
-      localResult: null,
-      documentKind,
-      documentNo,
-    });
-    if (!cloudRecord) throw error;
-    await documentFileSynchronizer.materialize({ record: cloudRecord });
-    await rebuildDocumentIndex(rootDir);
-    return localLoad();
-  }
+  return cloudDocumentReader.ensure({ documentKind, documentNo, localLoad });
 }
 
 async function ensureLocalCloudWorkflowTransaction(transactionNo) {
@@ -1662,7 +1656,11 @@ async function handleWorkflowDocumentList(request, url, response) {
 
 async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   try {
-    const localRecord = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    const localRecord = await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const record = await documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
     if (!record) throw new Error("ไม่พบเอกสาร");
     const files = localRecord
@@ -2197,7 +2195,11 @@ async function handleSubstituteReceiptList(request, response) {
 
 async function handleSubmittedExpenseRequestGet(requestNo, response) {
   try {
-    const localResult = await getSubmittedExpenseRequest(rootDir, requestNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await documentDataAdapter.get({ localResult, documentKind: "expense_request", documentNo: requestNo });
     sendJson(response, 200, result);
   } catch (error) {
@@ -2207,7 +2209,11 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
 
 async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
   try {
-    const localResult = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await documentDataAdapter.get({ localResult, documentKind: "substitute_receipt", documentNo: receiptNo });
     sendJson(response, 200, result);
   } catch (error) {
