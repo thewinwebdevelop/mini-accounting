@@ -364,6 +364,14 @@ const mimeTypes = {
   ".pdf": "application/pdf",
 };
 
+function pdfResponseHeaders({ fileName, download = false } = {}) {
+  const safeFileName = String(fileName || "document.pdf").replace(/[\r\n\"]/g, "_");
+  return {
+    "content-type": "application/pdf",
+    "content-disposition": `${download ? "attachment" : "inline"}; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+  };
+}
+
 function sendJson(response, statusCode, data) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(data, (key, value) => (
@@ -1412,7 +1420,9 @@ async function handleWorkflowDocumentFile(fileRoute, response) {
     const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
     const body = Buffer.isBuffer(served) ? served : served.body;
     const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {
@@ -2022,7 +2032,9 @@ async function handleWorkflowTransactionFile(fileRoute, response) {
     });
     const body = await readFile(file.absolutePath);
     const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName, download: true })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {

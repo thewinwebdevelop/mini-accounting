@@ -1271,13 +1271,16 @@ test("child document files are grouped per document and expose real PDF/raw link
     hrefs.some((href) => href.includes("/workflow-documents/purchase_order/PO-2026-09-0001/raw/A0_")),
     "the lightweight document's real uploaded evidence file must be linked using its actual stored file name",
   );
+  for (const link of links) {
+    assert.notEqual(link.target, "_blank", "file links must stay in the authenticated Mini App context");
+  }
 });
 
 test("workflow transaction page includes a packet PDF link", async () => {
   const html = await readFile(new URL("../forms/workflow-transaction.html", import.meta.url), "utf8");
   assert.match(html, /id="workflowPacketLink"/);
   assert.match(html, /ดาวน์โหลดชุดรวมเอกสาร Workflow \(PDF เดียว\)/);
-  assert.match(html, /download="99_ชุดรวมเอกสาร_workflow-transaction\.pdf"/);
+  assert.doesNotMatch(html, /download="99_ชุดรวมเอกสาร_workflow-transaction\.pdf"/);
 });
 
 test("the packet PDF link stays hidden until the transaction's pdfFiles carries the packet file", async () => {
