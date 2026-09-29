@@ -1,7 +1,7 @@
 # User Profile and New-Document Autofill Design
 
 **Date:** 2026-09-29  
-**Status:** Revised; awaiting approval
+**Status:** Approved in conversation
 
 ## Goal
 
