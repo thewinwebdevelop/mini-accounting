@@ -151,6 +151,11 @@ const {
   verifyLineIdToken,
 } = require("./forms/line-auth.logic.js");
 const {
+  getAppUserProfile,
+  updateAppUserProfile,
+  listCompanyPositions,
+} = require("./forms/user-profile.server.logic.js");
+const {
   extractLineMediaEvent,
   isSupportedLineMedia,
   verifyLineWebhookSignature,
@@ -622,6 +627,55 @@ function handleAuthMe(request, response) {
 function handleAuthLogout(response) {
   response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
   sendJson(response, 200, { ok: true });
+}
+
+function sendProfileOperationError(response, error, fallback) {
+  const providerCodes = new Set([
+    "SUPABASE_CONFIG_MISSING",
+    "SUPABASE_CONFIG_INVALID",
+    "SUPABASE_CLIENT_INVALID",
+    "SUPABASE_REQUEST_FAILED",
+  ]);
+  if (providerCodes.has(error?.code)) {
+    sendJson(response, 503, { code: "PROFILE_PROVIDER_UNAVAILABLE", error: "ระบบข้อมูลโปรไฟล์ยังไม่พร้อมใช้งาน" });
+    return;
+  }
+  sendOperationError(response, error, fallback);
+}
+
+async function handleAppUserProfileGet(request, response) {
+  try {
+    const profile = await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read user profile");
+  }
+}
+
+async function handleAppUserProfilePatch(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const profile = await updateAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+      input: payload,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot save user profile");
+  }
+}
+
+async function handleCompanyPositionsGet(response) {
+  try {
+    const positions = await listCompanyPositions({ client: createSupabaseAdminClient() });
+    sendJson(response, 200, { positions });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read company positions");
+  }
 }
 
 function sendOperationError(response, error, fallback) {
@@ -3130,6 +3184,21 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
     handleAuthLogout(response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfileGet(request, response);
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfilePatch(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/company-positions") {
+    await handleCompanyPositionsGet(response);
     return;
   }
 
