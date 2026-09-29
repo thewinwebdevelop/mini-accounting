@@ -174,6 +174,7 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
+const { issueFileAccessToken, verifyFileAccessToken } = require("./forms/file-access.logic.js");
 const {
   ACTIONS,
   actorLabel,
@@ -425,6 +426,12 @@ function requireAuthenticatedRequest(request, response, url) {
     sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
     return false;
   }
+  const fileAccess = readFileAccessToken(request, url);
+  if (fileAccess) {
+    request.auth = fileAccess;
+    request.fileAccess = true;
+    return true;
+  }
   try {
     request.auth = readRequestSession(request);
     return true;
@@ -432,6 +439,22 @@ function requireAuthenticatedRequest(request, response, url) {
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
     return false;
   }
+}
+
+function readFileAccessToken(request, url) {
+  if (!['GET', 'HEAD'].includes(request.method)) return null;
+  const isFileRoute = Boolean(
+    parseExpenseRequestFileRoute(url.pathname)
+      || parseSubstituteReceiptFileRoute(url.pathname)
+      || parseWorkflowDocumentFileRoute(url.pathname)
+      || parseWorkflowTransactionFileRoute(url.pathname),
+  );
+  if (!isFileRoute) return null;
+  return verifyFileAccessToken({
+    token: url.searchParams.get("fileToken"),
+    secret: sessionSecret,
+    path: url.pathname,
+  });
 }
 
 function actorForRequest(request, suppliedActor) {
@@ -1619,16 +1642,29 @@ function omitAbsolutePathFromFileEntry(file) {
 // file entry on the workflow-transaction GET/refresh/complete routes, without
 // touching the expense-request or substitute-receipt routes, which are out of
 // scope for this fix.
-function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
+function fileEntryWithAccessToken(file, request) {
+  const publicFile = omitAbsolutePathFromFileEntry(file);
+  if (!publicFile?.url || authMode !== "line" || !request?.auth) return publicFile;
+  const fileUrl = new URL(publicFile.url, "http://sweet-house.local");
+  const fileToken = issueFileAccessToken({
+    secret: sessionSecret,
+    path: fileUrl.pathname,
+    auth: request.auth,
+  });
+  fileUrl.searchParams.set("fileToken", fileToken);
+  return { ...publicFile, url: `${fileUrl.pathname}${fileUrl.search}` };
+}
+
+function omitAbsolutePathsFromWorkflowTransactionResponse(record, request) {
   if (!record) return record;
   return {
     ...record,
-    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map(omitAbsolutePathFromFileEntry) : record.pdfFiles,
+    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : record.pdfFiles,
     childDocuments: Array.isArray(record.childDocuments)
       ? record.childDocuments.map((doc) => ({
         ...doc,
-        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map(omitAbsolutePathFromFileEntry) : doc.pdfFiles,
-        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map(omitAbsolutePathFromFileEntry) : doc.rawFiles,
+        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.pdfFiles,
+        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.rawFiles,
       }))
       : record.childDocuments,
   };
@@ -1805,12 +1841,12 @@ async function handleWorkflowTransactionStart(request, response) {
   }
 }
 
-async function handleWorkflowTransactionGet(transactionNo, response) {
+async function handleWorkflowTransactionGet(transactionNo, request, response) {
   try {
     await ensureLocalCloudWorkflowTransaction(transactionNo);
     const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record, request));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดธุรกรรมได้",
@@ -1832,7 +1868,7 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
     const body = await readJsonBody(request);
     const regeneratePacket = body.regeneratePacket !== false;
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
   }
@@ -1851,7 +1887,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
       transactionNo,
       completedBy: actorForRequest(request, body.completedBy),
     });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
   }
@@ -1868,7 +1904,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
       cancelledBy: actorForRequest(request, body.cancelledBy),
     });
     const statusCode = result.httpStatus || 200;
-    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
+    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result, request), ...(result.code ? { code: result.code } : {}) });
   } catch (error) {
     const stableCodes = new Set([
       "CANCELLATION_CONFIRMATION_REQUIRED", "INVALID_DOCUMENT_NUMBER", "INVALID_CANCELLATION_REQUEST",
@@ -3716,7 +3752,7 @@ const server = createServer(async (request, response) => {
     ) {
       const transactionNo = decodeURIComponent(url.pathname.replace("/api/workflow-transactions/", ""));
       if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
-      await handleWorkflowTransactionGet(transactionNo, response);
+      await handleWorkflowTransactionGet(transactionNo, request, response);
       return;
     }
 
