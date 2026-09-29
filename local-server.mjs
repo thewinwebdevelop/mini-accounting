@@ -154,6 +154,7 @@ const {
   getAppUserProfile,
   updateAppUserProfile,
   listCompanyPositions,
+  profileRequesterFallback,
 } = require("./forms/user-profile.server.logic.js");
 const {
   extractLineMediaEvent,
@@ -839,7 +840,7 @@ function firstText(...values) {
   return values.map(value => String(value ?? "").trim()).find(Boolean) || "";
 }
 
-function buildLineExpensePayload(request, item, body = {}) {
+function buildLineExpensePayload(request, item, body = {}, profileFallback = {}) {
   const fields = item.extractedPayload?.fields && typeof item.extractedPayload.fields === "object" ? item.extractedPayload.fields : {};
   const lines = Array.isArray(body.expenseLines) && body.expenseLines.length
     ? body.expenseLines.slice(0, 50).map(line => ({
@@ -863,8 +864,8 @@ function buildLineExpensePayload(request, item, body = {}) {
   const payload = {
     accountingMonth: firstText(body.accountingMonth, fields.accountingMonth),
     expenseDate: firstText(body.expenseDate, fields.expenseDate),
-    requesterName: firstText(body.requesterName, request.auth?.displayName),
-    requesterRole: String(body.requesterRole || "").trim(),
+    requesterName: firstText(body.requesterName, profileFallback.requesterName, request.auth?.displayName),
+    requesterRole: firstText(body.requesterRole, profileFallback.requesterRole),
     requestType: ["reimbursement", "direct_payment"].includes(body.requestType) ? body.requestType : "reimbursement",
     requestTitle: firstText(body.requestTitle, fields.documentNo, fields.description, "ค่าใช้จ่ายจาก LINE"),
     businessPurpose: firstText(body.businessPurpose, fields.description),
@@ -874,6 +875,20 @@ function buildLineExpensePayload(request, item, body = {}) {
     expenseLines: lines,
   };
   return payload;
+}
+
+async function getLineConfirmationProfile(request) {
+  const userId = String(request.auth?.userId || "").trim();
+  if (!userId) return null;
+  try {
+    return await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId,
+    });
+  } catch (error) {
+    console.warn(`[line-intake] profile fallback unavailable userId=${userId} code=${error.code || "PROFILE_LOOKUP_FAILED"}`);
+    return null;
+  }
 }
 
 function lineDocumentSummary(result = {}) {
@@ -969,7 +984,8 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
     }
     const body = await readJsonBody(request);
     const scanned = await ensureLineIntakeScanned(item);
-    const payload = buildLineExpensePayload(request, scanned, body);
+    const profile = await getLineConfirmationProfile(request);
+    const payload = buildLineExpensePayload(request, scanned, body, profileRequesterFallback(profile));
     await assertKnownStockSkuReferences(payload.expenseLines);
     const errors = validateExpenseRequest(payload);
     if (errors.length) {

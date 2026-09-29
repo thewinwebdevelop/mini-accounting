@@ -2,6 +2,7 @@ const { sortCompanyPositions } = require("./company-position.logic.js");
 const {
   mapProfileRow,
   normalizeProfileInput,
+  formatProfileName,
 } = require("./user-profile.logic.js");
 const { supabaseRequest } = require("./supabase.logic.js");
 
@@ -98,8 +99,16 @@ async function listCompanyPositions({ client, request = supabaseRequest } = {}) 
   return sortCompanyPositions(Array.isArray(rows) ? rows : []);
 }
 
+function profileRequesterFallback(profile) {
+  return {
+    requesterName: formatProfileName(profile),
+    requesterRole: typeof profile?.companyPositionLabel === "string" ? profile.companyPositionLabel.trim() : "",
+  };
+}
+
 module.exports = {
   getAppUserProfile,
   updateAppUserProfile,
   listCompanyPositions,
+  profileRequesterFallback,
 };
