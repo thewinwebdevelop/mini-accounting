@@ -55,6 +55,13 @@ test("expense requester role is a master-backed searchable select", async () => 
   assert.doesNotMatch(html, /<option value="marketing">marketing<\/option>/);
 });
 
+test("expense new-document path loads profile autofill only after existing-document gates", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+  assert.match(html, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(html, /if \(!resumed\) \{[\s\S]*?isNewDocument: true[\s\S]*?workflowPrefillBanner\.load\(\)/);
+});
+
 test("expense form shows automatic document number instead of an editable sequence field", async () => {
   const html = await readFile(htmlPath, "utf8");
 

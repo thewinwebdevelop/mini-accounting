@@ -570,7 +570,16 @@ window.addEventListener("DOMContentLoaded", () => {
         loadExistingDocument().catch((error) => setStatus(error.message, "error"));
       } else {
         resumeExistingWorkflowDocument().then((resumed) => {
-          if (!resumed) prefillBanner.load();
+          if (!resumed) {
+            Promise.resolve(window.SweetHouseUserProfileAutofill?.loadProfile(fetch)).then((profileResult) => {
+              window.SweetHouseUserProfileAutofill?.autofillNewDocument({
+                form,
+                isNewDocument: true,
+                nameField: form.elements.requesterName,
+                profile: profileResult?.profile,
+              });
+            }).catch(() => {}).finally(() => prefillBanner.load());
+          }
         });
       }
     });

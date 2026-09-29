@@ -993,6 +993,14 @@ window.addEventListener("DOMContentLoaded", () => {
       } else {
         const resumed = await resumeExistingWorkflowReceipt();
         if (!resumed) {
+          const profileResult = await window.SweetHouseUserProfileAutofill?.loadProfile(fetch);
+          window.SweetHouseUserProfileAutofill?.autofillNewDocument({
+            form,
+            isNewDocument: true,
+            nameField: form.elements.requesterName,
+            positionField: form.elements.requesterRole,
+            profile: profileResult?.profile,
+          });
           // Only fetch cross-document prefill for a brand-new, never-saved
           // document: an existing draft/receipt already has its own real
           // data, so offering to overwrite it with an earlier document's data

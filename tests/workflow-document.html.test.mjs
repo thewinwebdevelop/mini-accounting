@@ -205,6 +205,15 @@ test("workflow document shell provides the generic document form", async () => {
   assert.match(html, /id="completeWorkflowDocument"/);
   assert.match(html, /src="\.\/workflow-document\.logic\.js"/);
   assert.match(html, /src="\.\/workflow-document\.logic\.browser\.js"/);
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+});
+
+test("workflow new-document path autofills requester name without a position field", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(browserLogic, /isNewDocument: true/);
+  assert.match(browserLogic, /nameField: form\.elements\.requesterName/);
+  assert.doesNotMatch(browserLogic, /positionField: form\.elements\.requesterRole/);
 });
 
 test("workflow document line items render as collapsible details with live summaries", async () => {

@@ -1185,6 +1185,7 @@
 
   <script src="./searchable-select.logic.browser.js"></script>
   <script src="./company-position.browser.js"></script>
+  <script src="./user-profile-autofill.browser.js"></script>
   <script src="./stock-line.logic.js"></script>
   <script src="./expense-request.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
@@ -2113,6 +2114,14 @@
       const resumed = await resumeExistingWorkflowRequest();
       if (!resumed) {
         addLine();
+        const profileResult = await window.SweetHouseUserProfileAutofill?.loadProfile(fetch);
+        window.SweetHouseUserProfileAutofill?.autofillNewDocument({
+          form,
+          isNewDocument: true,
+          nameField: form.elements.requesterName,
+          positionField: form.elements.requesterRole,
+          profile: profileResult?.profile,
+        });
         // Only fetch cross-document prefill for a brand-new, never-saved
         // document: an existing draft/request already has its own real data,
         // so offering to overwrite it with an earlier document's data would be
