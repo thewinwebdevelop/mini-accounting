@@ -135,8 +135,10 @@ function createDocumentFileSynchronizer({
     const { folder } = assertDocumentFolder(targetRootDir, folderPath);
     const dataDir = path.join(folder, "data");
     const rawDir = path.join(folder, "raw");
+    const pdfDir = path.join(folder, "pdf");
     await mkdir(dataDir, { recursive: true });
     await mkdir(rawDir, { recursive: true });
+    await mkdir(pdfDir, { recursive: true });
 
     const documentKind = String(record.documentKind || record.payload?.documentKind || "");
     const documentNo = String(record.documentNo || record.payload?.documentNo || "");
@@ -163,7 +165,11 @@ function createDocumentFileSynchronizer({
       const relativeToFolder = sourcePath.startsWith(`${folderPath}/`)
         ? sourcePath.slice(folderPath.length + 1)
         : (objectPath.startsWith(`${folderPath}/`) ? objectPath.slice(folderPath.length + 1) : "");
-      if (!relativeToFolder.startsWith("raw/") || relativeToFolder.includes("\\") || relativeToFolder.includes("..")) continue;
+      // JSON is written above; restore both user-uploaded evidence and
+      // generated PDFs so the filesystem-oriented readers can expose the
+      // same download links after a fresh Cloud Run instance starts.
+      const isRuntimeFile = relativeToFolder.startsWith("raw/") || relativeToFolder.startsWith("pdf/");
+      if (!isRuntimeFile || relativeToFolder.includes("\\") || relativeToFolder.includes("..")) continue;
       const targetPath = path.resolve(folder, relativeToFolder);
       if (!targetPath.startsWith(`${folder}${path.sep}`)) continue;
       await writeFile(targetPath, Buffer.from(await downloadObject(storageClient, objectPath)));
