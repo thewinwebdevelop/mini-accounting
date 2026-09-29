@@ -641,7 +641,9 @@
             </div>
             <div class="field span-6">
               <label for="requesterRole">ตำแหน่ง</label>
-              <input id="requesterRole" name="requesterRole" placeholder="เช่น ผู้จัดการ">
+              <select id="requesterRole" name="requesterRole" data-searchable>
+                <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
+              </select>
             </div>
           </div>
         </div>
@@ -838,6 +840,7 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./company-position.browser.js"></script>
   <script src="./stock-line.logic.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>

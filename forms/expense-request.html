@@ -961,8 +961,6 @@
                 <label for="requesterRole">แผนก/ตำแหน่ง</label>
                 <select id="requesterRole" name="requesterRole" data-searchable>
                   <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
-                  <option value="เจ้าของบริษัท">เจ้าของบริษัท</option>
-                  <option value="marketing">marketing</option>
                 </select>
               </div>
               <div class="field span-4">
@@ -1186,6 +1184,7 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./company-position.browser.js"></script>
   <script src="./stock-line.logic.js"></script>
   <script src="./expense-request.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
@@ -1204,6 +1203,7 @@
     } = window.ExpenseRequestLogic;
 
     const form = document.querySelector("#expenseForm");
+    const companyPositionLoader = window.SweetHouseCompanyPositions;
     const stockLineLogic = window.StockLineLogic || {
       isUsableStockSku: (stockSku) => String(stockSku?.status || "") !== "inactive",
       stockSkuLabel: (stockSku) => [stockSku?.sku, stockSku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${stockSku?.id || ""}`,
@@ -1715,6 +1715,7 @@
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
+      if (companyPositionLoader) await companyPositionLoader.loadInto(form.elements.requesterRole, { selectedValue: payload.requesterRole });
       restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
@@ -1778,6 +1779,7 @@
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
+      if (companyPositionLoader) await companyPositionLoader.loadInto(form.elements.requesterRole, { selectedValue: payload.requesterRole });
       restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
@@ -2092,6 +2094,7 @@
     applyWorkflowReturnLink();
 
     setDateDefaults();
+    await companyPositionLoader?.loadInto(form.elements.requesterRole);
     vendorPicker?.load();
     try {
       const stockResult = await fetch("/api/inventory/stock-skus");

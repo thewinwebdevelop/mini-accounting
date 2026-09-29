@@ -21,6 +21,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const queryDraftId = new URLSearchParams(location.search).get("draftId");
   const queryReceiptNo = new URLSearchParams(location.search).get("receiptNo");
   const form = document.querySelector("#substituteReceiptForm");
+  const companyPositionLoader = window.SweetHouseCompanyPositions;
   const statusBox = document.querySelector("#substituteReceiptStatus");
   const reloadSavedReceiptButton = document.querySelector("#reloadSavedReceipt");
   const legacyEvidenceLinks = document.querySelector("#legacyEvidenceLinks");
@@ -682,11 +683,13 @@ window.addEventListener("DOMContentLoaded", () => {
     state.legacyReadOnly = true;
     state.receiptNo = "";
     state.status = "draft";
-    fillForm({
+    const payload = {
       ...(draft.payload || {}),
       status: "draft",
       evidenceFiles: draft.evidenceFiles || draft.payload?.evidenceFiles || {},
-    });
+    };
+    await companyPositionLoader?.loadInto(form.elements.requesterRole, { selectedValue: payload.requesterRole || payload.preparedByRole });
+    fillForm(payload);
     renderLegacyEvidence(draft.evidenceFiles || draft.payload?.evidenceFiles || {}, draft.rawFiles || []);
     setLegacyReadOnly(true);
     setStatus(`โหลดแบบร่าง ${escapeHtml(draft.draftId)} แล้ว`, "success");
@@ -699,12 +702,14 @@ window.addEventListener("DOMContentLoaded", () => {
     state.legacyReadOnly = false;
     state.receiptNo = receipt.receiptNo || payload.receiptNo || receiptNo;
     state.status = receipt.status || payload.status || "pending_approval";
-    fillForm({
+    const payloadWithState = {
       ...payload,
       receiptNo: state.receiptNo,
       status: state.status,
       evidenceFiles: payload.evidenceFiles || receipt.evidenceFiles || {},
-    });
+    };
+    await companyPositionLoader?.loadInto(form.elements.requesterRole, { selectedValue: payloadWithState.requesterRole || payloadWithState.preparedByRole });
+    fillForm(payloadWithState);
     renderLegacyEvidence(payload.evidenceFiles || receipt.evidenceFiles || {}, receipt.rawFiles || []);
     setStatus(`โหลดเอกสาร ${escapeHtml(state.receiptNo)} แล้ว`, "success");
   }
@@ -979,7 +984,7 @@ window.addEventListener("DOMContentLoaded", () => {
   applyWorkflowReturnLink();
 
   fillForm();
-  Promise.all([refreshStockSkus(), refreshVendors(), refreshNextReceipt()])
+  Promise.all([refreshStockSkus(), refreshVendors(), refreshNextReceipt(), companyPositionLoader?.loadInto(form.elements.requesterRole)])
     .then(async () => {
       if (queryDraftId) {
         await loadDraft(queryDraftId);

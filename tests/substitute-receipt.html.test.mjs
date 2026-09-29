@@ -50,6 +50,14 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /src="\.\/stock-line\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.browser\.js"/);
+  assert.match(html, /src="\.\/company-position\.browser\.js"/);
+  assert.match(html, /name="requesterRole" data-searchable/);
+  assert.doesNotMatch(html, /<input id="requesterRole"/);
+});
+
+test("substitute receipt controller loads requester roles from the shared master", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /companyPositionLoader\??\.loadInto/);
 });
 
 test("substitute receipt stock line template is collapsible with a running summary", async () => {
