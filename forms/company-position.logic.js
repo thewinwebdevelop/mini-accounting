@@ -4,7 +4,7 @@ function mapCompanyPositionRow(row) {
     id: source.id || "",
     code: typeof source.code === "string" ? source.code : "",
     label: typeof source.label === "string" ? source.label : "",
-    status: source.status === "inactive" ? "inactive" : "active",
+    status: source.status === "active" ? "active" : "inactive",
     sortOrder: Number.isFinite(Number(source.sort_order)) ? Number(source.sort_order) : 0,
   };
 }

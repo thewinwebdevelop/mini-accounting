@@ -39,6 +39,36 @@ select id
 from public.app_users
 on conflict (user_id) do nothing;
 
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.app_user_profiles'::regclass
+      and conname = 'app_user_profiles_first_name_nonblank_check'
+  ) then
+    alter table public.app_user_profiles
+      add constraint app_user_profiles_first_name_nonblank_check
+      check (char_length(trim(first_name)) > 0) not valid;
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.app_user_profiles'::regclass
+      and conname = 'app_user_profiles_last_name_nonblank_check'
+  ) then
+    alter table public.app_user_profiles
+      add constraint app_user_profiles_last_name_nonblank_check
+      check (char_length(trim(last_name)) > 0) not valid;
+  end if;
+end
+$$;
+
 create index if not exists idx_app_user_profiles_company_position
   on public.app_user_profiles (company_position_id);
 

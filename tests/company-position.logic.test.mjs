@@ -41,3 +41,15 @@ test("preserves an inactive selected position for read display", () => {
     { id: "p-old", code: "old", label: "Old position", status: "inactive", sortOrder: 4 },
   );
 });
+
+test("treats malformed or missing statuses as inactive", () => {
+  assert.equal(mapCompanyPositionRow({ id: "p-unknown", status: "pending" }).status, "inactive");
+  assert.equal(mapCompanyPositionRow({ id: "p-missing" }).status, "inactive");
+  assert.deepEqual(
+    sortCompanyPositions([
+      { id: "p-unknown", code: "unknown", label: "Unknown", status: "pending", sort_order: 1 },
+      { id: "p-missing", code: "missing", label: "Missing", sort_order: 2 },
+    ]),
+    [],
+  );
+});
