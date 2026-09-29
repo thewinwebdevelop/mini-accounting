@@ -724,6 +724,8 @@ function safeStaticPath(urlPath) {
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
     "/company-settings/": "/company-settings.html",
+    "/user-profile": "/user-profile.html",
+    "/user-profile/": "/user-profile.html",
     "/inventory": "/inventory.html",
     "/inventory/": "/inventory.html",
     "/inventory-dashboard": "/inventory-dashboard.html",
