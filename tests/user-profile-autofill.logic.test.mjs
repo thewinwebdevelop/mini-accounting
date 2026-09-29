@@ -16,9 +16,17 @@ function field(value = "") {
   return { value };
 }
 
+function selectField(labels = []) {
+  const select = field("");
+  select.tagName = "SELECT";
+  select.options = labels.map((label) => ({ value: label, textContent: label }));
+  select.append = (option) => select.options.push(option);
+  return select;
+}
+
 test("joins first and last name for a new document", () => {
   const helper = loadHelper();
-  const form = { requesterName: field(), requesterRole: field() };
+  const form = { requesterName: field(), requesterRole: selectField(["เจ้าของบริษัท"]) };
 
   const result = helper.autofillNewDocument({
     form,
@@ -31,6 +39,23 @@ test("joins first and last name for a new document", () => {
   assert.equal(result.status, "filled");
   assert.equal(form.requesterName.value, "ชื่อ นามสกุล");
   assert.equal(form.requesterRole.value, "เจ้าของบริษัท");
+});
+
+test("does not add or autofill an inactive profile position in a new document", () => {
+  const helper = loadHelper();
+  const form = { requesterName: field(), requesterRole: selectField(["ผู้จัดการ"]) };
+
+  helper.autofillNewDocument({
+    form,
+    isNewDocument: true,
+    nameField: form.requesterName,
+    positionField: form.requesterRole,
+    profile: { firstName: "ชื่อ", lastName: "นามสกุล", companyPositionLabel: "ตำแหน่งปิดใช้งาน" },
+  });
+
+  assert.equal(form.requesterName.value, "ชื่อ นามสกุล");
+  assert.equal(form.requesterRole.value, "");
+  assert.deepEqual(form.requesterRole.options.map((option) => option.value), ["ผู้จัดการ"]);
 });
 
 test("does not overwrite typed requester fields", () => {

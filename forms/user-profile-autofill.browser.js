@@ -19,15 +19,10 @@
     if (!field || !value) return false;
     if (String(field.tagName || "").toUpperCase() === "SELECT") {
       const options = Array.from(field.options || field.querySelectorAll?.("option") || []);
-      let option = options.find((candidate) => clean(candidate.value) === value);
-      if (!option) {
-        option = typeof document !== "undefined" ? document.createElement("option") : null;
-        if (option) {
-          option.value = value;
-          option.textContent = value;
-          field.append(option);
-        }
-      }
+      const option = options.find((candidate) => clean(candidate.value) === value && !candidate.disabled);
+      if (!option) return false;
+    } else {
+      return false;
     }
     field.value = value;
     if (typeof Event === "function" && typeof field.dispatchEvent === "function") {
@@ -48,8 +43,7 @@
       filled = true;
     }
     if (positionField && !fieldValue(positionField) && position) {
-      setPositionValue(positionField, position);
-      filled = true;
+      filled = setPositionValue(positionField, position) || filled;
     }
     return { status: filled ? "filled" : "unchanged", form };
   }
