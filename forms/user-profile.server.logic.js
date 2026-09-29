@@ -74,7 +74,7 @@ async function updateAppUserProfile({ client, userId, input, request = supabaseR
   }
   await assertActivePosition({ client, positionId: normalized.companyPositionId, request });
 
-  await request(
+  const updatedRows = await request(
     client,
     `/rest/v1/app_user_profiles?user_id=eq.${encodeURIComponent(sessionUserId)}`,
     {
@@ -87,6 +87,22 @@ async function updateAppUserProfile({ client, userId, input, request = supabaseR
       },
     },
   );
+  if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+    await request(
+      client,
+      "/rest/v1/app_user_profiles?on_conflict=user_id",
+      {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: {
+          user_id: sessionUserId,
+          first_name: normalized.firstName,
+          last_name: normalized.lastName,
+          company_position_id: normalized.companyPositionId,
+        },
+      },
+    );
+  }
   return getAppUserProfile({ client, userId: sessionUserId, request });
 }
 

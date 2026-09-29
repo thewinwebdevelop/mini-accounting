@@ -227,6 +227,57 @@ test("updates only the allowlisted profile fields", async () => {
   });
 });
 
+test("inserts an absent profile row for the authenticated session user", async () => {
+  const recorder = createRecorder([
+    {
+      match: path => path.startsWith("/rest/v1/company_positions?") && path.includes("id=eq.position-1"),
+      value: [{ id: "position-1", label: "การตลาด", status: "active" }],
+    },
+    {
+      match: (path, options) => path.startsWith("/rest/v1/app_user_profiles?") && path.includes("user_id=eq.session-user") && options.method === "PATCH",
+      value: [],
+    },
+    {
+      match: (path, options) => path.startsWith("/rest/v1/app_user_profiles?") && path.includes("on_conflict=user_id") && options.method === "POST",
+      value: [profileRow({ first_name: "ใหม่", last_name: "ผู้ใช้" })],
+    },
+    {
+      match: path => path.startsWith("/rest/v1/app_user_profiles?") && path.includes("user_id=eq.session-user") && path.includes("select="),
+      value: [profileRow({ first_name: "ใหม่", last_name: "ผู้ใช้" })],
+    },
+  ]);
+
+  const profile = await updateAppUserProfile({
+    client: { marker: "admin" },
+    userId: "session-user",
+    input: {
+      firstName: "ใหม่",
+      lastName: "ผู้ใช้",
+      companyPositionId: "position-1",
+      userId: "attacker-user",
+      role: "admin",
+    },
+    request: recorder.request,
+  });
+
+  const insertCall = recorder.calls.find(call => call.options.method === "POST");
+  assert.equal(insertCall.path, "/rest/v1/app_user_profiles?on_conflict=user_id");
+  assert.deepEqual(insertCall.options.body, {
+    user_id: "session-user",
+    first_name: "ใหม่",
+    last_name: "ผู้ใช้",
+    company_position_id: "position-1",
+  });
+  assert.deepEqual(profile, {
+    firstName: "ใหม่",
+    lastName: "ผู้ใช้",
+    companyPositionId: "position-1",
+    companyPositionLabel: "การตลาด",
+    displayName: "LINE user",
+    pictureUrl: "https://example.com/p.png",
+  });
+});
+
 test("rejects a blank or inactive company position", async () => {
   const recorder = createRecorder([
     {
