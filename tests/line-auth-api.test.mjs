@@ -159,6 +159,10 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
     assert.equal(missing.status, 401);
     assert.equal((await missing.json()).code, "AUTH_REQUIRED");
 
+    const profilePage = await fetch(`${app.baseUrl}/user-profile`, { redirect: "manual" });
+    assert.equal(profilePage.status, 302);
+    assert.equal(profilePage.headers.get("location"), "/line-auth?returnTo=%2Fuser-profile");
+
     const tampered = await fetch(`${app.baseUrl}/api/company-settings`, {
       headers: { cookie: "sweet_house_session=not-valid" },
     });

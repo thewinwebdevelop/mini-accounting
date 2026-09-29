@@ -2,6 +2,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const form = document.querySelector("#userProfileForm");
   const message = document.querySelector("#userProfileMessage");
   const positionHint = document.querySelector("#companyPositionHint");
+  const authStatus = document.querySelector("[data-line-auth-status]");
+  const authenticatedContent = [...document.querySelectorAll("[data-authenticated-content]")];
 
   if (!form || !message) return;
 
@@ -27,6 +29,24 @@ window.addEventListener("DOMContentLoaded", () => {
     const result = await readJson(response);
     if (!response.ok) throw new Error(result.error || "ไม่สามารถโหลดข้อมูลได้");
     return result;
+  }
+
+  async function requireSession() {
+    const response = await fetch("/api/auth/me", { credentials: "same-origin" });
+    let session = {};
+    try {
+      session = await response.json();
+    } catch {
+      session = {};
+    }
+    if (!response.ok || session.authenticated !== true) {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.location.replace(`/line-auth?returnTo=${encodeURIComponent(returnTo)}`);
+      return false;
+    }
+    authenticatedContent.forEach((element) => { element.hidden = false; });
+    if (authStatus) authStatus.hidden = true;
+    return true;
   }
 
   function fillProfile(profile) {
@@ -58,6 +78,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   async function load() {
     try {
+      if (!await requireSession()) return;
       const [{ profile }, { positions }] = await Promise.all([
         api("/api/auth/profile"),
         api("/api/company-positions"),

@@ -421,7 +421,8 @@ function readRequestSession(request) {
 
 function requireAuthenticatedRequest(request, response, url) {
   const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
-  if (authMode !== "line" || !isProtectedApiPath || isPublicApiPath(url.pathname)) return true;
+  const isProtectedPagePath = authMode === "line" && ["/user-profile", "/user-profile/"].includes(url.pathname);
+  if (authMode !== "line" || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
   const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
   const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
@@ -442,6 +443,11 @@ function requireAuthenticatedRequest(request, response, url) {
     request.auth = readRequestSession(request);
     return true;
   } catch (error) {
+    if (isProtectedPagePath) {
+      if (error.code !== "SESSION_MISSING") response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+      redirect(response, `/line-auth?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
+      return false;
+    }
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
     return false;
   }

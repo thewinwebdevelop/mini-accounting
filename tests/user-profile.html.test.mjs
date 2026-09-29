@@ -28,3 +28,16 @@ test("user profile browser controller loads the profile and submits only editabl
   assert.doesNotMatch(source, /userId\s*:/);
   assert.doesNotMatch(source, /displayName\s*:/);
 });
+
+test("user profile page uses the LINE session gate before exposing the editable shell", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const source = await readFile(browserLogicPath, "utf8");
+
+  assert.match(html, /data-line-auth-status/);
+  assert.match(html, /https:\/\/static\.line-scdn\.net\/liff\/edge\/2\/sdk\.js/);
+  assert.match(html, /data-auth-gate="true"/);
+  assert.ok(html.indexOf("sdk.js") < html.indexOf("line-auth.browser.js"));
+  assert.match(html, /data-authenticated-content[^>]+hidden/);
+  assert.match(source, /fetch\("\/api\/auth\/me",\s*\{\s*credentials:\s*"same-origin"\s*\}\)/);
+  assert.match(source, /line-auth\?returnTo=/);
+});
