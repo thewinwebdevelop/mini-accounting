@@ -41,6 +41,7 @@ test("document file synchronizer materializes a cloud document into the temporar
   const folderPath = "documents/2026/REQ-2026-09-0002_demo";
   const documentFile = `${folderPath}/data/submission.json`;
   const rawFile = `${folderPath}/raw/receipt.jpg`;
+  const pdfFile = `${folderPath}/pdf/01_expense_request.pdf`;
   const client = {
     url: "https://project.supabase.co",
     serviceRoleKey: "server-secret",
@@ -49,10 +50,14 @@ test("document file synchronizer materializes a cloud document into the temporar
         return new Response(JSON.stringify([
           { object_path: documentFile, content_type: "application/json" },
           { object_path: rawFile, content_type: "image/jpeg" },
+          { object_path: pdfFile, content_type: "application/pdf" },
         ]), { status: 200 });
       }
       if (String(url).includes("/storage/v1/object") && String(url).endsWith("receipt.jpg")) {
         return new Response(Buffer.from("receipt-from-storage"), { status: 200 });
+      }
+      if (String(url).includes("/storage/v1/object") && String(url).endsWith("01_expense_request.pdf")) {
+        return new Response(Buffer.from("pdf-from-storage"), { status: 200 });
       }
       return new Response(JSON.stringify({}), { status: 200 });
     },
@@ -70,6 +75,7 @@ test("document file synchronizer materializes a cloud document into the temporar
     await synchronizer.materialize({ rootDir, record });
     assert.deepEqual(JSON.parse(await readFile(join(rootDir, folderPath, "data", "submission.json"), "utf8")), record.payload);
     assert.deepEqual(await readFile(join(rootDir, folderPath, "raw", "receipt.jpg")), Buffer.from("receipt-from-storage"));
+    assert.deepEqual(await readFile(join(rootDir, folderPath, "pdf", "01_expense_request.pdf")), Buffer.from("pdf-from-storage"));
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

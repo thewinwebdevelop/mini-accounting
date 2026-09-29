@@ -205,6 +205,65 @@ test("pending expense requests remain editable and save through the numbered end
   assert.equal(fetchLog.some((url) => url.includes("/api/expense-drafts")), false);
 });
 
+test("expense request restores requester role and exposes approve/complete lifecycle actions", async () => {
+  const { elements, form, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      payload: {
+        requestNo: "REQ-2026-09-0001",
+        status: "pending_approval",
+        accountingMonth: "2026-09",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        requesterRole: "marketing",
+        businessPurpose: "ทดสอบ lifecycle",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+      },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+    approveResponse: { requestNo: "REQ-2026-09-0001", status: "approved", pdfFiles: [] },
+    completeResponse: { requestNo: "REQ-2026-09-0001", status: "completed", pdfFiles: [] },
+  });
+
+  assert.equal(form.elements.requesterRole.value, "marketing");
+  assert.equal(elements.approveRequest.hidden, false, "pending approval must show approve action");
+  assert.equal(elements.completeRequest.hidden, true, "pending approval must not show complete action");
+
+  elements.approveRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(fetchLog.some((url) => url.endsWith("/api/expense-requests/REQ-2026-09-0001/approve")));
+  assert.equal(elements.completeRequest.hidden, false, "approved request must show complete action");
+
+  elements.completeRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(fetchLog.some((url) => url.endsWith("/api/expense-requests/REQ-2026-09-0001/complete")));
+  assert.equal(elements.completeRequest.hidden, true, "completed request must hide complete action");
+});
+
+test("expense approval review surfaces backend errors instead of leaving the confirm action silent", async () => {
+  const { context, elements } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    withReviewModal: true,
+    approveFailure: true,
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      payload: { requestNo: "REQ-2026-09-0001", status: "pending_approval", accountingMonth: "2026-09", expenseLines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  elements.approveRequest.dispatch("click");
+  await context.window._reviewModel.onConfirm();
+  assert.match(elements.saveStatus.textContent, /approve failed/);
+  assert.equal(elements.saveStatus.className, "status-box active error");
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {
@@ -307,7 +366,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, approveResponse = null, completeResponse = null, approveFailure = false, withReviewModal = false, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -356,6 +415,13 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     }
     if (url === "/api/inventory/stock-skus") {
       return { ok: true, json: async () => ({ stockSkus }) };
+    }
+    if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/approve")) {
+      if (approveFailure) return { ok: false, json: async () => ({ error: "approve failed" }) };
+      return { ok: true, json: async () => approveResponse ?? { requestNo: "REQ-2026-09-0001", status: "approved", pdfFiles: [] } };
+    }
+    if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/complete")) {
+      return { ok: true, json: async () => completeResponse ?? { requestNo: "REQ-2026-09-0001", status: "completed", pdfFiles: [] } };
     }
     if (url.includes("/api/expense-requests/REQ-")) {
       if (detailFailureCount > 0) {
@@ -412,6 +478,13 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
   vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
   vm.runInContext(await readFile(prefillBannerPath, "utf8"), context);
+  if (withReviewModal) {
+    window.WorkflowReviewModal = {
+      create: () => ({
+        open: (model) => { window._reviewModel = model; },
+      }),
+    };
+  }
   vm.runInContext(script, context);
 
   const bootResult = context.window._handlers.DOMContentLoaded();
@@ -531,6 +604,12 @@ test("real workflow-prefill.logic.js fills an expense_request end to end through
     .querySelectorAll(".line-row")
     .map((row) => row.querySelector('[name="lineDescription"]').value);
   assert.deepEqual(lineDescriptions, ["สินค้า A"], "the expenseLines patch must replace the line rows");
+});
+
+test("expense requester-role prefill keeps the searchable select trigger synchronized", async () => {
+  const banner = await readFile(prefillBannerPath, "utf8");
+  assert.match(banner, /element\.tagName === "SELECT"/);
+  assert.match(banner, /element\.dispatchEvent\(new Event\("change"/);
 });
 
 test("collectData includes the workflow context fields in the saved payload shape", async () => {

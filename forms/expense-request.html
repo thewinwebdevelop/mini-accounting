@@ -960,8 +960,8 @@
                 <label for="requesterRole">แผนก/ตำแหน่ง</label>
                 <select id="requesterRole" name="requesterRole" data-searchable>
                   <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
-                  <option>เจ้าของบริษัท</option>
-                  <option>marketing</option>
+                  <option value="เจ้าของบริษัท">เจ้าของบริษัท</option>
+                  <option value="marketing">marketing</option>
                 </select>
               </div>
               <div class="field span-4">
@@ -1105,6 +1105,8 @@
     <div class="bottom-action-bar">
       <button class="button secondary" type="button" id="saveDraft">บันทึกแบบร่าง</button>
       <button class="button primary" type="button" id="submitRequest">บันทึกใบเบิกจ่าย</button>
+      <button class="button primary" type="button" id="approveRequest" hidden>อนุมัติ</button>
+      <button class="button primary" type="button" id="completeRequest" hidden>เสร็จสิ้นเอกสาร</button>
     </div>
   </div>
 
@@ -1277,9 +1279,7 @@
       fields: {
         payee: ["paymentTargetName", "paymentBankName", "paymentAccountNo"],
         purpose: ["requestTitle", "businessPurpose"],
-        // requesterRole is also produced by the adapter but has never been
-        // applied here -- only requesterName rides along automatically.
-        parties: ["requesterName"],
+        parties: ["requesterName", "requesterRole"],
       },
       linesPatchKey: "expenseLines",
       applyLines(lines) {
@@ -1610,6 +1610,17 @@
       if (reloadSavedRequestButton) reloadSavedRequestButton.hidden = !show;
     }
 
+    // The searchable-select wrapper mirrors the native select only when it
+    // receives a change event. Loading a saved document sets the native value
+    // programmatically, so notify the wrapper as part of every select restore.
+    function restoreSelectValue(select, value) {
+      if (!select) return;
+      select.value = String(value ?? "");
+      if (typeof Event === "function" && typeof select.dispatchEvent === "function") {
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+
     async function reloadSavedRequest() {
       if (!currentRequestNo || !reloadSavedRequestButton) return;
       reloadSavedRequestButton.disabled = true;
@@ -1637,10 +1648,20 @@
       document.querySelector("#saveDraft").textContent = currentStatus === "pending_approval" ? "บันทึกการแก้ไข" : "บันทึกแบบร่าง";
       document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
       document.querySelector("#submitRequest").hidden = legacyReadOnly || currentStatus !== "draft";
+      const approveButton = document.querySelector("#approveRequest");
+      const completeButton = document.querySelector("#completeRequest");
+      if (approveButton) {
+        approveButton.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "pending_approval";
+        approveButton.hidden = legacyReadOnly || currentStatus !== "pending_approval";
+      }
+      if (completeButton) {
+        completeButton.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "approved";
+        completeButton.hidden = legacyReadOnly || currentStatus !== "approved";
+      }
     }
 
-    async function runMutation(work) {
-      if (legacyReadOnly || mutationInFlight || !["draft", "pending_approval"].includes(currentStatus)) return;
+    async function runMutation(work, { allowedStatuses = ["draft", "pending_approval"] } = {}) {
+      if (legacyReadOnly || mutationInFlight || !allowedStatuses.includes(currentStatus)) return;
       mutationInFlight = true;
       setReadOnlyMode(legacyReadOnly);
       try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
@@ -1693,7 +1714,7 @@
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
-      form.elements.requesterRole.value = payload.requesterRole || "";
+      restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
@@ -1756,7 +1777,7 @@
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
-      form.elements.requesterRole.value = payload.requesterRole || "";
+      restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
@@ -1912,6 +1933,47 @@
       updatePreview();
     }
 
+    function adoptLifecycleResult(result, expectedStatus) {
+      const requestNo = String(result?.requestNo || "");
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(requestNo) || requestNo !== currentRequestNo || result.status !== expectedStatus) {
+        throw new Error("เซิร์ฟเวอร์ส่งสถานะเอกสารไม่ถูกต้อง");
+      }
+      if (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles)) {
+        throw new Error("เซิร์ฟเวอร์ส่งข้อมูลไฟล์เอกสารไม่ครบถ้วน");
+      }
+      return result;
+    }
+
+    async function approveRequest() {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvedBy: "" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถอนุมัติใบเบิกจ่ายได้");
+      adoptLifecycleResult(result, "approved");
+      currentStatus = "approved";
+      setReadOnlyMode(false);
+      setSaveStatus(`อนุมัติใบเบิกจ่ายแล้ว: ${currentRequestNo}`, "success");
+    }
+
+    async function completeRequest() {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/complete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ completedBy: "" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถปิดใบเบิกจ่ายได้");
+      adoptLifecycleResult(result, "completed");
+      currentStatus = "completed";
+      setReadOnlyMode(false);
+      setSaveStatus(`เสร็จสิ้นเอกสารแล้ว: ${currentRequestNo}`, "success");
+    }
+
     async function rejectRequest(reason) {
       if (!currentRequestNo) return;
       const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/reject`, {
@@ -1955,13 +2017,14 @@
 
     function openReview(action) {
       if (mutationInFlight) return;
+      const work = action === "approve" ? approveRequest : submitRequest;
       if (!reviewModal) {
-        runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error"));
+        runMutation(work).catch((error) => setSaveStatus(error.message, "error"));
         return;
       }
       const model = buildReviewModel(action === "approve" ? "approve" : "submit");
-      model.onConfirm = () => runMutation(submitRequest);
-      model.onReject = (reason) => runMutation(() => rejectRequest(reason));
+      model.onConfirm = () => runMutation(work).catch((error) => setSaveStatus(error.message, "error"));
+      model.onReject = (reason) => runMutation(() => rejectRequest(reason)).catch((error) => setSaveStatus(error.message, "error"));
       reviewModal.open(model);
     }
 
@@ -1970,6 +2033,8 @@
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
     document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
     document.querySelector("#submitRequest").addEventListener("click", () => openReview("submit"));
+    document.querySelector("#approveRequest").addEventListener("click", () => openReview("approve"));
+    document.querySelector("#completeRequest").addEventListener("click", () => runMutation(completeRequest, { allowedStatuses: ["approved"] }).catch((error) => setSaveStatus(error.message, "error")));
     reloadSavedRequestButton?.addEventListener("click", reloadSavedRequest);
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);

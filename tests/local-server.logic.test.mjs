@@ -1968,6 +1968,49 @@ test("approveExpenseRequest moves a submitted request to approved and records mo
   }
 });
 
+test("approveExpenseRequest repairs a Supabase-shaped payload before regenerating files", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-cloud-payload-"));
+  try {
+    const submitted = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ค่าใช้จ่ายจาก Supabase",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        businessPurpose: "ทดสอบ payload cloud",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+      },
+    });
+    const stored = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    const cloudShapedPayload = { ...stored.payload };
+    delete cloudShapedPayload.evidence;
+    delete cloudShapedPayload.totals;
+    delete cloudShapedPayload.requestTypeLabel;
+    await writeFile(
+      join(rootDir, stored.folderPath, "data", "submission.json"),
+      `${JSON.stringify(cloudShapedPayload, null, 2)}\n`,
+      "utf8",
+    );
+
+    const approved = await approveExpenseRequest({
+      rootDir,
+      requestNo: submitted.requestNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+
+    assert.equal(approved.status, "approved");
+    const repaired = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.ok(repaired.payload.evidence);
+    assert.ok(repaired.payload.totals);
+    assert.equal(repaired.payload.requestTypeLabel, "เบิกคืนพนักงาน");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("rejectExpenseRequest returns a pending request to draft with a reason", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-reject-"));
   try {
@@ -2266,6 +2309,7 @@ test("saveExpenseSubmission renders signable approval lines in the reimbursement
     assert.match(reimbursementText, /ลงชื่อผู้ตรวจเอกสารบัญชี/);
     assert.match(reimbursementText, /ลงชื่อผู้อนุมัติ/);
     assert.match(reimbursementText, /ลงชื่อผู้จ่ายเงิน/);
+    assert.doesNotMatch(reimbursementText, /Checklist หลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

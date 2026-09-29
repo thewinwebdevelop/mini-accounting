@@ -5,7 +5,7 @@ import os
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
-from reportlab.platypus import PageBreak, Paragraph, Spacer
+from reportlab.platypus import Paragraph, Spacer
 
 from pdf_common import (
     document_header, detail_grid, totals_table, signature_table as shared_signatures,
@@ -78,14 +78,6 @@ def build_reimbursement_story(payload):
         ),
         reimbursement_summary(payload),
         signature_table(payload),
-        PageBreak(),
-        document_header(payload, "Checklist หลักฐาน", width=269 * mm),
-        Spacer(1, 12),
-        styled_table(
-            [[paragraph("รหัส"), paragraph("หลักฐาน"), paragraph("สถานะ"), paragraph("ชื่อไฟล์ raw")]] + evidence_rows(payload),
-            col_widths=[20 * mm, 75 * mm, 40 * mm, 134 * mm],
-            compact=True,
-        ),
     ])
     return story
 

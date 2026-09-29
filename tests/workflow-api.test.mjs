@@ -2111,6 +2111,7 @@ test("GET .../files/pdf/:fileName downloads the generated packet PDF", async () 
 
     const download = await fetch(`${baseUrl}/api/workflow-transactions/${txn.transactionNo}/files/pdf/${encodeURIComponent("99_ชุดรวมเอกสาร_workflow-transaction.pdf")}`);
     assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition") || "", /^attachment;/);
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });

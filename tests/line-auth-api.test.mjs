@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import serverLogic from "../forms/local-server.logic.js";
+import { signSession } from "../forms/session.logic.js";
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -334,6 +335,19 @@ test("employee cannot read another user's or legacy document files, while owner 
       body: JSON.stringify({ idToken: "valid-token" }),
     });
     const cookie = login.headers.get("set-cookie").split(";")[0];
+    const filePath = `/api/expense-requests/${other.requestNo}/files/raw/A1_receipt_001.txt`;
+    const fileToken = signSession({
+      purpose: "file-access",
+      path: filePath,
+      userId: "user-1",
+      lineUserId: "U123",
+      role: "owner",
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 600,
+    }, "x".repeat(32));
+    const tokenOnlyResponse = await fetch(`${ownerApp.baseUrl}${filePath}?fileToken=${encodeURIComponent(fileToken)}`, { headers: { cookie: "" } });
+    assert.equal(tokenOnlyResponse.status, 200, "a short-lived signed file token must work without a browser session cookie");
+    assert.equal(await tokenOnlyResponse.text(), "other");
     const response = await fetch(`${ownerApp.baseUrl}/api/expense-requests/${other.requestNo}/files/raw/A1_receipt_001.txt`, { headers: { cookie } });
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "other");

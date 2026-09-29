@@ -174,6 +174,7 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
+const { issueFileAccessToken, verifyFileAccessToken } = require("./forms/file-access.logic.js");
 const {
   ACTIONS,
   actorLabel,
@@ -182,6 +183,7 @@ const {
 } = require("./forms/authorization.logic.js");
 const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
 const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
+const { createCloudDocumentReader } = require("./forms/cloud-document-read.logic.js");
 const { createFileAdapter } = require("./forms/storage-file.adapter.js");
 const { validateStockSkuReferences } = require("./forms/stock-line.logic.js");
 const {
@@ -246,6 +248,12 @@ const documentDataAdapter = createDocumentDataAdapter({
     : undefined,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
+const cloudDocumentReader = createCloudDocumentReader({
+  cloudRun,
+  documentDataAdapter,
+  documentFileSynchronizer,
+  rebuildIndex: () => rebuildDocumentIndex(rootDir),
+});
 const cloudVendorRepository = cloudRun
   ? createSupabaseDataRepository({
     client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
@@ -294,20 +302,7 @@ async function resolveDocumentFileReference({ documentKind, documentNo, section,
 }
 
 async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad }) {
-  try {
-    return await localLoad();
-  } catch (error) {
-    if (!cloudRun || !documentFileSynchronizer) throw error;
-    const cloudRecord = await documentDataAdapter.get({
-      localResult: null,
-      documentKind,
-      documentNo,
-    });
-    if (!cloudRecord) throw error;
-    await documentFileSynchronizer.materialize({ record: cloudRecord });
-    await rebuildDocumentIndex(rootDir);
-    return localLoad();
-  }
+  return cloudDocumentReader.ensure({ documentKind, documentNo, localLoad });
 }
 
 async function ensureLocalCloudWorkflowTransaction(transactionNo) {
@@ -370,6 +365,14 @@ const mimeTypes = {
   ".pdf": "application/pdf",
 };
 
+function pdfResponseHeaders({ fileName, download = false } = {}) {
+  const safeFileName = String(fileName || "document.pdf").replace(/[\r\n\"]/g, "_");
+  return {
+    "content-type": "application/pdf",
+    "content-disposition": `${download ? "attachment" : "inline"}; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+  };
+}
+
 function sendJson(response, statusCode, data) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(data, (key, value) => (
@@ -423,6 +426,12 @@ function requireAuthenticatedRequest(request, response, url) {
     sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
     return false;
   }
+  const fileAccess = readFileAccessToken(request, url);
+  if (fileAccess) {
+    request.auth = fileAccess;
+    request.fileAccess = true;
+    return true;
+  }
   try {
     request.auth = readRequestSession(request);
     return true;
@@ -430,6 +439,22 @@ function requireAuthenticatedRequest(request, response, url) {
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
     return false;
   }
+}
+
+function readFileAccessToken(request, url) {
+  if (!['GET', 'HEAD'].includes(request.method)) return null;
+  const isFileRoute = Boolean(
+    parseExpenseRequestFileRoute(url.pathname)
+      || parseSubstituteReceiptFileRoute(url.pathname)
+      || parseWorkflowDocumentFileRoute(url.pathname)
+      || parseWorkflowTransactionFileRoute(url.pathname),
+  );
+  if (!isFileRoute) return null;
+  return verifyFileAccessToken({
+    token: url.searchParams.get("fileToken"),
+    secret: sessionSecret,
+    path: url.pathname,
+  });
 }
 
 function actorForRequest(request, suppliedActor) {
@@ -1418,7 +1443,9 @@ async function handleWorkflowDocumentFile(fileRoute, response) {
     const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
     const body = Buffer.isBuffer(served) ? served : served.body;
     const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {
@@ -1615,16 +1642,29 @@ function omitAbsolutePathFromFileEntry(file) {
 // file entry on the workflow-transaction GET/refresh/complete routes, without
 // touching the expense-request or substitute-receipt routes, which are out of
 // scope for this fix.
-function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
+function fileEntryWithAccessToken(file, request) {
+  const publicFile = omitAbsolutePathFromFileEntry(file);
+  if (!publicFile?.url || authMode !== "line" || !request?.auth) return publicFile;
+  const fileUrl = new URL(publicFile.url, "http://sweet-house.local");
+  const fileToken = issueFileAccessToken({
+    secret: sessionSecret,
+    path: fileUrl.pathname,
+    auth: request.auth,
+  });
+  fileUrl.searchParams.set("fileToken", fileToken);
+  return { ...publicFile, url: `${fileUrl.pathname}${fileUrl.search}` };
+}
+
+function omitAbsolutePathsFromWorkflowTransactionResponse(record, request) {
   if (!record) return record;
   return {
     ...record,
-    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map(omitAbsolutePathFromFileEntry) : record.pdfFiles,
+    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : record.pdfFiles,
     childDocuments: Array.isArray(record.childDocuments)
       ? record.childDocuments.map((doc) => ({
         ...doc,
-        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map(omitAbsolutePathFromFileEntry) : doc.pdfFiles,
-        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map(omitAbsolutePathFromFileEntry) : doc.rawFiles,
+        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.pdfFiles,
+        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.rawFiles,
       }))
       : record.childDocuments,
   };
@@ -1662,7 +1702,11 @@ async function handleWorkflowDocumentList(request, url, response) {
 
 async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   try {
-    const localRecord = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    const localRecord = await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const record = await documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
     if (!record) throw new Error("ไม่พบเอกสาร");
     const files = localRecord
@@ -1797,12 +1841,12 @@ async function handleWorkflowTransactionStart(request, response) {
   }
 }
 
-async function handleWorkflowTransactionGet(transactionNo, response) {
+async function handleWorkflowTransactionGet(transactionNo, request, response) {
   try {
     await ensureLocalCloudWorkflowTransaction(transactionNo);
     const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record, request));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดธุรกรรมได้",
@@ -1824,7 +1868,7 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
     const body = await readJsonBody(request);
     const regeneratePacket = body.regeneratePacket !== false;
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
   }
@@ -1843,7 +1887,7 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
       transactionNo,
       completedBy: actorForRequest(request, body.completedBy),
     });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
   }
@@ -1860,7 +1904,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
       cancelledBy: actorForRequest(request, body.cancelledBy),
     });
     const statusCode = result.httpStatus || 200;
-    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
+    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result, request), ...(result.code ? { code: result.code } : {}) });
   } catch (error) {
     const stableCodes = new Set([
       "CANCELLATION_CONFIRMATION_REQUIRED", "INVALID_DOCUMENT_NUMBER", "INVALID_CANCELLATION_REQUEST",
@@ -2024,7 +2068,9 @@ async function handleWorkflowTransactionFile(fileRoute, response) {
     });
     const body = await readFile(file.absolutePath);
     const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName, download: true })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {
@@ -2197,7 +2243,11 @@ async function handleSubstituteReceiptList(request, response) {
 
 async function handleSubmittedExpenseRequestGet(requestNo, response) {
   try {
-    const localResult = await getSubmittedExpenseRequest(rootDir, requestNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await documentDataAdapter.get({ localResult, documentKind: "expense_request", documentNo: requestNo });
     sendJson(response, 200, result);
   } catch (error) {
@@ -2207,7 +2257,11 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
 
 async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
   try {
-    const localResult = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await documentDataAdapter.get({ localResult, documentKind: "substitute_receipt", documentNo: receiptNo });
     sendJson(response, 200, result);
   } catch (error) {
@@ -3698,7 +3752,7 @@ const server = createServer(async (request, response) => {
     ) {
       const transactionNo = decodeURIComponent(url.pathname.replace("/api/workflow-transactions/", ""));
       if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
-      await handleWorkflowTransactionGet(transactionNo, response);
+      await handleWorkflowTransactionGet(transactionNo, request, response);
       return;
     }
 

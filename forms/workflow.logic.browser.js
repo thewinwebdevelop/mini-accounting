@@ -657,8 +657,6 @@ function fileGroupElements(label, files) {
     const link = document.createElement("a");
     link.className = "file-link";
     link.href = file.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
     link.textContent = file.name || file.path || "file";
     wrapper.appendChild(link);
   }
