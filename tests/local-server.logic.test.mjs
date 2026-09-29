@@ -2309,6 +2309,7 @@ test("saveExpenseSubmission renders signable approval lines in the reimbursement
     assert.match(reimbursementText, /ลงชื่อผู้ตรวจเอกสารบัญชี/);
     assert.match(reimbursementText, /ลงชื่อผู้อนุมัติ/);
     assert.match(reimbursementText, /ลงชื่อผู้จ่ายเงิน/);
+    assert.doesNotMatch(reimbursementText, /Checklist หลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
