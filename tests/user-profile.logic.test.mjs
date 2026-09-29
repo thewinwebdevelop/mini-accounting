@@ -25,7 +25,7 @@ test("rejects overlong profile fields", () => {
     /first name/i,
   );
   assert.throws(
-    () => normalizeProfileInput({ firstName: "ชื่อ", lastName: "a".repeat(121) }),
+    () => normalizeProfileInput({ firstName: "ชื่อ", lastName: "a".repeat(101) }),
     /last name/i,
   );
 });
@@ -70,5 +70,6 @@ test("migration preserves legacy blanks but rejects new blank profile writes", (
 
   assert.match(migration, /app_user_profiles_first_name_nonblank_check[\s\S]*?check \(char_length\(trim\(first_name\)\) > 0\)[\s\S]*?not valid/i);
   assert.match(migration, /app_user_profiles_last_name_nonblank_check[\s\S]*?check \(char_length\(trim\(last_name\)\) > 0\)[\s\S]*?not valid/i);
+  assert.match(migration, /app_user_profiles_last_name_check check \(char_length\(trim\(last_name\)\) <= 100\)/i);
   assert.match(migration, /if not exists[\s\S]*?app_user_profiles_first_name_nonblank_check/i);
 });

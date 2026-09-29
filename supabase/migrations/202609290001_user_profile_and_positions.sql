@@ -31,13 +31,39 @@ create table if not exists public.app_user_profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint app_user_profiles_first_name_check check (char_length(trim(first_name)) <= 100),
-  constraint app_user_profiles_last_name_check check (char_length(trim(last_name)) <= 120)
+  constraint app_user_profiles_last_name_check check (char_length(trim(last_name)) <= 100)
 );
 
 insert into public.app_user_profiles (user_id)
 select id
 from public.app_users
 on conflict (user_id) do nothing;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.app_user_profiles'::regclass
+      and conname = 'app_user_profiles_last_name_check'
+      and pg_get_constraintdef(oid) not like '%100%'
+  ) then
+    alter table public.app_user_profiles
+      drop constraint app_user_profiles_last_name_check;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.app_user_profiles'::regclass
+      and conname = 'app_user_profiles_last_name_check'
+  ) then
+    alter table public.app_user_profiles
+      add constraint app_user_profiles_last_name_check
+      check (char_length(trim(last_name)) <= 100) not valid;
+  end if;
+end
+$$;
 
 do $$
 begin

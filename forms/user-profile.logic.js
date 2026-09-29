@@ -18,7 +18,7 @@ function normalizeProfileInput(input) {
   if (!firstName) throw profileValidationError("First name is required");
   if (!lastName) throw profileValidationError("Last name is required");
   if (firstName.length > 100) throw profileValidationError("First name is too long");
-  if (lastName.length > 120) throw profileValidationError("Last name is too long");
+  if (lastName.length > 100) throw profileValidationError("Last name is too long");
 
   const companyPositionId = trimmedString(source.companyPositionId);
   return {
