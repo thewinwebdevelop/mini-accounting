@@ -9,8 +9,30 @@
       ));
   }
 
+  function useManualFallback(select, selected) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = select.id;
+    input.name = select.name;
+    input.placeholder = "เช่น ผู้จัดการ";
+    input.value = selected;
+    input.setAttribute("aria-label", select.getAttribute?.("aria-label") || "แผนก/ตำแหน่ง");
+
+    const host = select.parentNode;
+    if (host?.classList?.contains("searchable-select")) {
+      host.hidden = true;
+      host.parentNode?.append(input);
+    } else {
+      select.hidden = true;
+      host?.append(input);
+    }
+    select.id = `${select.id}Master`;
+    select.name = "";
+    return input;
+  }
+
   async function loadInto(select, { selectedValue } = {}) {
-    if (!select) return;
+    if (!select || String(select.tagName || "").toUpperCase() !== "SELECT") return;
     const selected = String(selectedValue ?? select.value ?? "");
     const existingOptions = select.querySelectorAll?.("option") || [];
     const placeholder = existingOptions.find((option) => option.value === "") || existingOptions[0];
@@ -24,6 +46,11 @@
       positions = sortPositions(result?.positions);
     } catch {
       positions = [];
+    }
+
+    if (!positions.length) {
+      useManualFallback(select, selected);
+      return;
     }
 
     select.replaceChildren();
