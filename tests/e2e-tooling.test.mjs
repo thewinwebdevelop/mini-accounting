@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -122,9 +122,88 @@ test("e2e.sh uses an explicitly configured Node runtime for installed Playwright
   assert.match(readFileSync(log, "utf8"), /@playwright\/test\/cli\.js\ntest\n--project\nchromium\n--list/);
 }));
 
-test("Playwright config exposes local and production smoke projects", async () => {
-  const { default: config } = await import("../playwright.config.mjs");
-  assert.deepEqual(config.projects.map(project => project.name), ["chromium", "mobile-chromium", "production-smoke"]);
-  assert.match(config.projects[0].use.baseURL, /^http:\/\/127\.0\.0\.1:/);
-  assert.match(config.projects[1].use.baseURL, /^http:\/\/127\.0\.0\.1:/);
+test("Playwright config exposes local projects without a fixed service URL", async () => {
+  const previous = process.env.E2E_LOCAL_BASE_URL;
+  try {
+    delete process.env.E2E_LOCAL_BASE_URL;
+    const { default: config } = await import("../playwright.config.mjs");
+    assert.deepEqual(config.projects.map(project => project.name), ["chromium", "mobile-chromium", "production-smoke"]);
+    assert.equal(config.projects[0].use.baseURL, undefined);
+    assert.equal(config.projects[1].use.baseURL, undefined);
+    process.env.E2E_LOCAL_BASE_URL = "http://127.0.0.1:54321";
+    const { default: configured } = await import("../playwright.config.mjs?runtime-url");
+    assert.equal(configured.projects[0].use.baseURL, "http://127.0.0.1:54321");
+    assert.equal(configured.projects[1].use.baseURL, "http://127.0.0.1:54321");
+  } finally {
+    if (previous === undefined) delete process.env.E2E_LOCAL_BASE_URL;
+    else process.env.E2E_LOCAL_BASE_URL = previous;
+  }
+});
+
+test("e2e.sh refuses a local service without a matching fixture run marker", () => inTemp(dir => {
+  const log = join(dir, "calls");
+  const playwright = fakeCommand(dir, "playwright", `echo called >> "${log}"`);
+  const result = run(e2eScript, {
+    E2E_PLAYWRIGHT_BIN: playwright,
+    E2E_PROJECT: "chromium",
+    E2E_LOCAL_BASE_URL: "http://127.0.0.1:54321",
+    E2E_RUN_ID: "expected-run",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /fixture|run marker|E2E_RUN_ID/i);
+  assert.throws(() => readFileSync(log));
+}));
+
+test("e2e.sh requires fixture URL and run identity for local execution", () => inTemp(dir => {
+  const playwright = fakeCommand(dir, "playwright", "exit 0");
+  const result = run(e2eScript, { E2E_PLAYWRIGHT_BIN: playwright, E2E_PROJECT: "chromium", E2E_LOCAL_BASE_URL: "", E2E_RUN_ID: "" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /E2E_LOCAL_BASE_URL|E2E_RUN_ID/);
+}));
+
+test("e2e.sh accepts a matching isolated fixture marker", async () => {
+  const server = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { createServer } from "node:http";
+    createServer((req, res) => {
+      if (req.url !== "/__e2e__/health") { res.writeHead(404); res.end(); return; }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ runId: "expected-run" }));
+    }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });
+  `], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      server.stdout.once("data", chunk => resolve(Number(chunk.toString().trim())));
+      server.once("error", reject);
+      server.once("exit", code => reject(new Error(`fixture server exited ${code}`)));
+    });
+    inTemp(dir => {
+      const log = join(dir, "calls");
+      const playwright = fakeCommand(dir, "playwright", `echo called >> "${log}"`);
+      const wrong = run(e2eScript, {
+        E2E_PLAYWRIGHT_BIN: playwright,
+        E2E_PROJECT: "chromium",
+        E2E_LOCAL_BASE_URL: `http://127.0.0.1:${port}`,
+        E2E_RUN_ID: "different-run",
+      });
+      assert.notEqual(wrong.status, 0);
+      assert.match(wrong.stderr, /run marker/);
+      assert.throws(() => readFileSync(log));
+      const result = run(e2eScript, {
+        E2E_PLAYWRIGHT_BIN: playwright,
+        E2E_PROJECT: "chromium",
+        E2E_LOCAL_BASE_URL: `http://127.0.0.1:${port}`,
+        E2E_RUN_ID: "expected-run",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(log, "utf8"), "called\n");
+    });
+  } finally {
+    server.kill();
+  }
+});
+
+test("e2e.sh --list includes the bootstrap spec without a fixture", () => {
+  const result = run(e2eScript, { E2E_PROJECT: "chromium", E2E_BASE_URL: "", E2E_LOCAL_BASE_URL: "", E2E_RUN_ID: "" }, ["--list"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /bootstrap\.spec\.mjs/);
 });

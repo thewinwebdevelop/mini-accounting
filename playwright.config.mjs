@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const localBaseURL = "http://127.0.0.1:4173";
+const localBaseURL = process.env.E2E_LOCAL_BASE_URL || undefined;
 
 export default defineConfig({
   testDir: "./e2e/specs",

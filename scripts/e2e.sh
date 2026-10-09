@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="${E2E_PROJECT:-chromium}"
+LIST_ONLY=0
 forwarded=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -13,6 +14,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --project=*) PROJECT="${1#--project=}"; shift ;;
+    --list) LIST_ONLY=1; forwarded+=("$1"); shift ;;
     *) forwarded+=("$1"); shift ;;
   esac
 done
@@ -42,7 +44,7 @@ if [ ! -x "$PLAYWRIGHT_BIN" ]; then
   exit 1
 fi
 
-if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ]; then
+if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ] || { [ "$PROJECT" != "production-smoke" ] && [ "$LIST_ONLY" -eq 0 ]; }; then
   RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
   if [ -n "${E2E_NODE_BIN:-}" ]; then
     NODE_BIN="$E2E_NODE_BIN"
@@ -64,11 +66,35 @@ if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ]; then
   fi
 fi
 
+if [ "$PROJECT" != "production-smoke" ] && [ "$LIST_ONLY" -eq 0 ]; then
+  if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
+    echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
+    exit 1
+  fi
+  "$NODE_BIN" --input-type=module - "$E2E_LOCAL_BASE_URL" "$E2E_RUN_ID" <<'NODE'
+const [rawUrl, expectedRunId] = process.argv.slice(2);
+try {
+  const url = new URL(rawUrl);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("fixture URL must be a plain loopback HTTP origin");
+  }
+  const marker = new URL("/__e2e__/health", url);
+  const response = await fetch(marker, { redirect: "error", signal: AbortSignal.timeout(3000) });
+  if (!response.ok || (await response.json()).runId !== expectedRunId) {
+    throw new Error("fixture run marker does not match E2E_RUN_ID");
+  }
+} catch (error) {
+  console.error(`E2E fixture verification failed: ${error.message}`);
+  process.exitCode = 1;
+}
+NODE
+fi
+
 args=(test --project "$PROJECT")
 if [ -n "${E2E_WORKERS:-}" ]; then args+=(--workers "$E2E_WORKERS"); fi
 if [ -n "${E2E_TRACE:-}" ]; then args+=(--trace "$E2E_TRACE"); fi
 if [ -n "${E2E_GREP:-}" ]; then args+=(--grep "$E2E_GREP"); fi
-args+=("${forwarded[@]}")
+if [ -n "${forwarded[0]-}" ]; then args+=("${forwarded[@]}"); fi
 cd "$REPO_DIR"
 if [ -n "${E2E_PLAYWRIGHT_BIN:-}" ]; then
   exec "$PLAYWRIGHT_BIN" "${args[@]}"
