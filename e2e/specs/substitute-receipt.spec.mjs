@@ -5,12 +5,15 @@ import { SubstituteReceiptPage } from "../pages/substitute-receipt.page.mjs";
 for (const receiptType of ["general_expense", "stock_purchase"]) {
   test(`supports ${receiptType} evidence, lifecycle and idempotent receive`, async ({ browser, authenticatedPage, localApp }) => {
     const receipt = new SubstituteReceiptPage(authenticatedPage);
+    if (receiptType === "stock_purchase") await receipt.ensureStockSku();
     await receipt.open();
     await receipt.fill({ receiptType, title: `E2E ${receiptType}`, vendor: "Fixture Supplies", quantity: "2", unitCost: "150" });
+    if (receiptType === "stock_purchase") expect(await receipt.selectedStockSkuId()).not.toBe("");
     await receipt.addEvidence("paymentSlip", "receipt-evidence.pdf", "%PDF-1.4 substitute evidence");
     await receipt.saveDraft();
     const draft = await receipt.detail();
     expect(draft).toMatchObject({ receiptNo: expect.any(String), status: "draft", ownerUserId: "employee-a", receiptType });
+    if (receiptType === "stock_purchase") expect(draft.payload?.lines?.[0]?.stockSkuId || draft.lines?.[0]?.stockSkuId).toBeTruthy();
     const submitted = await receipt.submit();
     expect(submitted.status).toBe("pending_approval");
     const accounting = await SubstituteReceiptPage.accountingPage(browser, localApp);
