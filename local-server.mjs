@@ -151,6 +151,12 @@ const {
   verifyLineIdToken,
 } = require("./forms/line-auth.logic.js");
 const {
+  getAppUserProfile,
+  updateAppUserProfile,
+  listCompanyPositions,
+  profileRequesterFallback,
+} = require("./forms/user-profile.server.logic.js");
+const {
   extractLineMediaEvent,
   isSupportedLineMedia,
   verifyLineWebhookSignature,
@@ -174,6 +180,11 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
+const {
+  buildMockProfileStore,
+  buildMockSessionUser,
+  parseMockAuthConfig,
+} = require("./forms/mock-auth.logic.js");
 const { issueFileAccessToken, verifyFileAccessToken } = require("./forms/file-access.logic.js");
 const {
   ACTIONS,
@@ -215,6 +226,9 @@ const allowNetwork = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_ALLOW_
 const listenHost = resolveListenHost(runtimeEnv);
 const maxBodyBytes = 80 * 1024 * 1024;
 const authMode = String(runtimeEnv.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const sessionAuthMode = authMode === "line" || authMode === "mock";
+const mockAuthConfig = parseMockAuthConfig(process.env);
+const mockProfileStore = mockAuthConfig.enabled ? buildMockProfileStore(mockAuthConfig) : null;
 const sessionSecret = String(runtimeEnv.SWEET_HOUSE_SESSION_SECRET || "");
 const sessionTtlSeconds = Math.max(300, Number(runtimeEnv.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
 const cookieSecure = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_COOKIE_SECURE || ""))
@@ -388,6 +402,7 @@ function sendAuthError(response, statusCode, code, error, { clearCookie = false 
 function isPublicApiPath(pathname) {
   return pathname === "/api/healthz"
     || pathname === "/api/auth/line-session"
+    || pathname === "/api/auth/mock-session"
     || pathname === "/api/auth/me"
     || pathname === "/api/auth/logout"
     || pathname === "/api/google-drive/oauth2callback"
@@ -398,6 +413,35 @@ function isPublicApiPath(pathname) {
 function originIsAllowed(request) {
   if (!appPublicOrigin || request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return true;
   return request.headers.origin === appPublicOrigin;
+}
+
+function isLoopbackHost(hostHeader) {
+  const rawHost = String(hostHeader || "").trim();
+  if (!rawHost) return false;
+  let hostname;
+  try {
+    hostname = new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]"
+    || hostname === "::1";
+}
+
+function mockAuthRequestIsAllowed(request) {
+  if (!isLoopbackHost(request.headers.host)) return false;
+  const origin = String(request.headers.origin || "").trim();
+  if (appPublicOrigin) return origin === appPublicOrigin;
+  if (!origin) return true;
+  try {
+    const parsedOrigin = new URL(origin);
+    return (parsedOrigin.protocol === "http:" || parsedOrigin.protocol === "https:")
+      && isLoopbackHost(parsedOrigin.host);
+  } catch {
+    return false;
+  }
 }
 
 function readRequestSession(request) {
@@ -415,7 +459,9 @@ function readRequestSession(request) {
 
 function requireAuthenticatedRequest(request, response, url) {
   const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
-  if (authMode !== "line" || !isProtectedApiPath || isPublicApiPath(url.pathname)) return true;
+  const authEnforced = sessionAuthMode;
+  const isProtectedPagePath = authEnforced && ["/user-profile", "/user-profile/"].includes(url.pathname);
+  if (!authEnforced || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
   const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
   const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
@@ -436,6 +482,12 @@ function requireAuthenticatedRequest(request, response, url) {
     request.auth = readRequestSession(request);
     return true;
   } catch (error) {
+    if (isProtectedPagePath) {
+      if (error.code !== "SESSION_MISSING") response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+      const authEntryPath = authMode === "mock" ? "/mock-auth" : "/line-auth";
+      redirect(response, `${authEntryPath}?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
+      return false;
+    }
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
     return false;
   }
@@ -458,7 +510,7 @@ function readFileAccessToken(request, url) {
 }
 
 function actorForRequest(request, suppliedActor) {
-  return authMode === "line" ? actorLabel(request.auth) : suppliedActor;
+  return sessionAuthMode ? actorLabel(request.auth) : suppliedActor;
 }
 
 function denyForbidden(response) {
@@ -467,7 +519,7 @@ function denyForbidden(response) {
 }
 
 function ensurePermission(request, response, action) {
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   try {
     assertPermission(request.auth, action);
     return true;
@@ -478,7 +530,7 @@ function ensurePermission(request, response, action) {
 }
 
 async function ensureDocumentAccess(request, response, { action, load }) {
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   let record;
   try {
     record = await load();
@@ -504,7 +556,7 @@ async function ensureDocumentWriteAccess(request, response, {
   existingAction = ACTIONS.DOCUMENT_EDIT,
 }) {
   if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return false;
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   const documentNo = String(payload?.[numberField] ?? "").trim();
   if (!documentNo) return true;
   return ensureDocumentAccess(request, response, {
@@ -528,7 +580,7 @@ async function loadDocumentForAuthorization({ documentKind, documentNo, localLoa
 }
 
 async function filterOwnedDocumentList(request, records, { numberField, load }) {
-  if (authMode !== "line" || request.auth?.role !== "employee") return records;
+  if (!sessionAuthMode || request.auth?.role !== "employee") return records;
   const visible = [];
   for (const record of records) {
     const documentNo = String(record?.[numberField] || "").trim();
@@ -549,7 +601,7 @@ async function filterOwnedDocumentList(request, records, { numberField, load }) 
 }
 
 async function bindLineOwner(request, payload, { numberField, loadExisting }) {
-  if (authMode !== "line") return payload;
+  if (!sessionAuthMode) return payload;
   const documentNo = String(payload?.[numberField] ?? "").trim();
   if (!documentNo) return { ...payload, ownerUserId: String(request.auth?.userId || "").trim() };
   const existing = await loadExisting(documentNo).catch((error) => {
@@ -603,13 +655,13 @@ async function handleLineSession(request, response) {
 }
 
 function handleAuthMe(request, response) {
-  if (authMode !== "line") {
+  if (authMode !== "line" && authMode !== "mock") {
     sendJson(response, 200, { authenticated: false, mode: "disabled", user: null });
     return;
   }
   try {
     const session = readRequestSession(request);
-    sendJson(response, 200, { authenticated: true, mode: "line", user: session });
+    sendJson(response, 200, { authenticated: true, mode: authMode, user: session });
   } catch (error) {
     if (error?.code === "SESSION_CONFIG_MISSING") {
       sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
@@ -619,9 +671,109 @@ function handleAuthMe(request, response) {
   }
 }
 
+function handleMockSession(request, response) {
+  if (authMode !== "mock" || !mockAuthConfig.enabled) {
+    sendAuthError(response, 404, "MOCK_AUTH_DISABLED", "Mock auth is disabled");
+    return;
+  }
+  if (!mockAuthRequestIsAllowed(request)) {
+    sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
+    return;
+  }
+  if (sessionSecret.length < 32) {
+    sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+    return;
+  }
+  const user = buildMockSessionUser(mockAuthConfig);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + sessionTtlSeconds;
+  let token;
+  try {
+    token = signSession({
+      userId: user.id,
+      lineUserId: user.lineUserId,
+      displayName: user.displayName,
+      pictureUrl: user.pictureUrl,
+      role: user.role,
+      iat: issuedAt,
+      exp: expiresAt,
+    }, sessionSecret);
+  } catch (error) {
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    throw error;
+  }
+  response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
+  sendJson(response, 200, { user, expiresAt });
+}
+
 function handleAuthLogout(response) {
   response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
   sendJson(response, 200, { ok: true });
+}
+
+function sendProfileOperationError(response, error, fallback) {
+  const providerCodes = new Set([
+    "SUPABASE_CONFIG_MISSING",
+    "SUPABASE_CONFIG_INVALID",
+    "SUPABASE_CLIENT_INVALID",
+    "SUPABASE_REQUEST_FAILED",
+  ]);
+  if (providerCodes.has(error?.code)) {
+    sendJson(response, 503, { code: "PROFILE_PROVIDER_UNAVAILABLE", error: "ระบบข้อมูลโปรไฟล์ยังไม่พร้อมใช้งาน" });
+    return;
+  }
+  sendOperationError(response, error, fallback);
+}
+
+async function handleAppUserProfileGet(request, response) {
+  try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { profile: mockProfileStore.getProfile(request.auth?.userId) });
+      return;
+    }
+    const profile = await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read user profile");
+  }
+}
+
+async function handleAppUserProfilePatch(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    if (authMode === "mock" && mockProfileStore) {
+      const profile = mockProfileStore.updateProfile(request.auth?.userId, payload);
+      sendJson(response, 200, { profile });
+      return;
+    }
+    const profile = await updateAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+      input: payload,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot save user profile");
+  }
+}
+
+async function handleCompanyPositionsGet(response) {
+  try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { positions: mockProfileStore.listPositions() });
+      return;
+    }
+    const positions = await listCompanyPositions({ client: createSupabaseAdminClient() });
+    sendJson(response, 200, { positions });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read company positions");
+  }
 }
 
 function sendOperationError(response, error, fallback) {
@@ -642,6 +794,8 @@ function safeStaticPath(urlPath) {
     "/": "/index.html",
     "/line-auth": "/line-auth.html",
     "/line-auth/": "/line-auth.html",
+    "/mock-auth": "/mock-auth.html",
+    "/mock-auth/": "/mock-auth.html",
     "/line-intake/auth": "/line-auth.html",
     "/line-intake/auth/": "/line-auth.html",
     "/line-intake": "/line-intake.html",
@@ -670,6 +824,8 @@ function safeStaticPath(urlPath) {
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
     "/company-settings/": "/company-settings.html",
+    "/user-profile": "/user-profile.html",
+    "/user-profile/": "/user-profile.html",
     "/inventory": "/inventory.html",
     "/inventory/": "/inventory.html",
     "/inventory-dashboard": "/inventory-dashboard.html",
@@ -783,7 +939,7 @@ function firstText(...values) {
   return values.map(value => String(value ?? "").trim()).find(Boolean) || "";
 }
 
-function buildLineExpensePayload(request, item, body = {}) {
+function buildLineExpensePayload(request, item, body = {}, profileFallback = {}) {
   const fields = item.extractedPayload?.fields && typeof item.extractedPayload.fields === "object" ? item.extractedPayload.fields : {};
   const lines = Array.isArray(body.expenseLines) && body.expenseLines.length
     ? body.expenseLines.slice(0, 50).map(line => ({
@@ -807,17 +963,31 @@ function buildLineExpensePayload(request, item, body = {}) {
   const payload = {
     accountingMonth: firstText(body.accountingMonth, fields.accountingMonth),
     expenseDate: firstText(body.expenseDate, fields.expenseDate),
-    requesterName: firstText(body.requesterName, request.auth?.displayName),
-    requesterRole: String(body.requesterRole || "").trim(),
+    requesterName: firstText(body.requesterName, profileFallback.requesterName, request.auth?.displayName),
+    requesterRole: firstText(body.requesterRole, profileFallback.requesterRole),
     requestType: ["reimbursement", "direct_payment"].includes(body.requestType) ? body.requestType : "reimbursement",
     requestTitle: firstText(body.requestTitle, fields.documentNo, fields.description, "ค่าใช้จ่ายจาก LINE"),
     businessPurpose: firstText(body.businessPurpose, fields.description),
     paymentTargetName: firstText(body.paymentTargetName, fields.vendorName),
     vendorSnapshot: { name: firstText(body.paymentTargetName, fields.vendorName), taxId: firstText(body.taxId, fields.taxId) },
-    ownerUserId: authMode === "line" ? String(request.auth?.userId || "") : "",
+    ownerUserId: sessionAuthMode ? String(request.auth?.userId || "") : "",
     expenseLines: lines,
   };
   return payload;
+}
+
+async function getLineConfirmationProfile(request) {
+  const userId = String(request.auth?.userId || "").trim();
+  if (!userId) return null;
+  try {
+    return await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId,
+    });
+  } catch (error) {
+    console.warn(`[line-intake] profile fallback unavailable userId=${userId} code=${error.code || "PROFILE_LOOKUP_FAILED"}`);
+    return null;
+  }
 }
 
 function lineDocumentSummary(result = {}) {
@@ -913,7 +1083,8 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
     }
     const body = await readJsonBody(request);
     const scanned = await ensureLineIntakeScanned(item);
-    const payload = buildLineExpensePayload(request, scanned, body);
+    const profile = await getLineConfirmationProfile(request);
+    const payload = buildLineExpensePayload(request, scanned, body, profileRequesterFallback(profile));
     await assertKnownStockSkuReferences(payload.expenseLines);
     const errors = validateExpenseRequest(payload);
     if (errors.length) {
@@ -1689,7 +1860,7 @@ async function handleWorkflowDocumentList(request, url, response) {
       documentKind: filters.documentKind || undefined,
       filters: cloudFilters,
     });
-    const visible = authMode === "line" && request.auth?.role === "employee"
+    const visible = sessionAuthMode && request.auth?.role === "employee"
       ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
       : documents;
     sendJson(response, 200, { documents: visible.map(omitAbsoluteFolderPath) });
@@ -3123,6 +3294,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/auth/mock-session") {
+    handleMockSession(request, response);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/auth/me") {
     handleAuthMe(request, response);
     return;
@@ -3130,6 +3306,21 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
     handleAuthLogout(response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfileGet(request, response);
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfilePatch(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/company-positions") {
+    await handleCompanyPositionsGet(response);
     return;
   }
 

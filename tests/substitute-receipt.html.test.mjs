@@ -50,6 +50,22 @@ test("substitute receipt page provides stock purchase form, evidence uploads, an
   assert.match(html, /src="\.\/stock-line\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.js"/);
   assert.match(html, /src="\.\/substitute-receipt\.logic\.browser\.js"/);
+  assert.match(html, /src="\.\/company-position\.browser\.js"/);
+  assert.match(html, /name="requesterRole" data-searchable/);
+  assert.doesNotMatch(html, /<input id="requesterRole"/);
+});
+
+test("substitute receipt controller loads requester roles from the shared master", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /companyPositionLoader\??\.loadInto/);
+});
+
+test("substitute receipt new-document path uses profile autofill only after resume checks", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+  assert.match(browserLogic, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(browserLogic, /if \(!resumed\) \{[\s\S]*?isNewDocument: true[\s\S]*?workflowPrefillBanner\.load\(\)/);
 });
 
 test("substitute receipt stock line template is collapsible with a running summary", async () => {

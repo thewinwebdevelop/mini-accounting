@@ -580,6 +580,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -640,7 +641,9 @@
             </div>
             <div class="field span-6">
               <label for="requesterRole">ตำแหน่ง</label>
-              <input id="requesterRole" name="requesterRole" placeholder="เช่น ผู้จัดการ">
+              <select id="requesterRole" name="requesterRole" data-searchable>
+                <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
+              </select>
             </div>
           </div>
         </div>
@@ -837,6 +840,8 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./company-position.browser.js"></script>
+  <script src="./user-profile-autofill.browser.js"></script>
   <script src="./stock-line.logic.js"></script>
   <script src="./substitute-receipt.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>

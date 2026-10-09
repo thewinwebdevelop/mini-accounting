@@ -47,6 +47,21 @@ test("expense form uses placeholders instead of sample values for user-entered f
   assert.match(html, /<option value="" selected disabled>เลือกแผนก\/ตำแหน่ง<\/option>/);
 });
 
+test("expense requester role is a master-backed searchable select", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /src="\.\/company-position\.browser\.js"/);
+  assert.match(html, /companyPositionLoader\.loadInto/);
+  assert.doesNotMatch(html, /<option value="เจ้าของบริษัท">เจ้าของบริษัท<\/option>/);
+  assert.doesNotMatch(html, /<option value="marketing">marketing<\/option>/);
+});
+
+test("expense new-document path loads profile autofill only after existing-document gates", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+  assert.match(html, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(html, /if \(!resumed\) \{[\s\S]*?isNewDocument: true[\s\S]*?workflowPrefillBanner\.load\(\)/);
+});
+
 test("expense form shows automatic document number instead of an editable sequence field", async () => {
   const html = await readFile(htmlPath, "utf8");
 
