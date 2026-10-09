@@ -161,6 +161,62 @@ test("e2e.sh requires fixture URL and run identity for local execution", () => i
   assert.match(result.stderr, /E2E_LOCAL_BASE_URL|E2E_RUN_ID/);
 }));
 
+for (const [description, baseUrl] of [
+  ["a non-loopback fixture URL", "http://example.com:4321/"],
+  ["a fixture URL with embedded credentials", "http://user:password@127.0.0.1:4321/"],
+]) {
+  test(`e2e.sh rejects ${description} before invoking Playwright`, () => inTemp(dir => {
+    const log = join(dir, "calls");
+    const playwright = fakeCommand(dir, "playwright", `echo called >> "${log}"`);
+    const result = run(e2eScript, {
+      E2E_PLAYWRIGHT_BIN: playwright,
+      E2E_PROJECT: "chromium",
+      E2E_LOCAL_BASE_URL: baseUrl,
+      E2E_RUN_ID: "expected-run",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /plain loopback HTTP origin/);
+    assert.throws(() => readFileSync(log));
+  }));
+}
+
+test("e2e.sh rejects a redirected fixture marker before invoking Playwright", async () => {
+  const server = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { createServer } from "node:http";
+    createServer((req, res) => {
+      if (req.url === "/__e2e__/health") {
+        res.writeHead(302, { location: "/marker-final" });
+        res.end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ runId: "expected-run" }));
+    }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });
+  `], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      server.stdout.once("data", chunk => resolve(Number(chunk.toString().trim())));
+      server.once("error", reject);
+      server.once("exit", code => reject(new Error(`fixture server exited ${code}`)));
+    });
+    inTemp(dir => {
+      const log = join(dir, "calls");
+      const playwright = fakeCommand(dir, "playwright", `echo called >> "${log}"`);
+      const result = run(e2eScript, {
+        E2E_PLAYWRIGHT_BIN: playwright,
+        E2E_PROJECT: "chromium",
+        E2E_LOCAL_BASE_URL: `http://127.0.0.1:${port}`,
+        E2E_RUN_ID: "expected-run",
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /fixture verification failed/i);
+      assert.throws(() => readFileSync(log));
+    });
+  } finally {
+    server.kill();
+  }
+});
+
 test("e2e.sh accepts a matching isolated fixture marker", async () => {
   const server = spawn(process.execPath, ["--input-type=module", "-e", `
     import { createServer } from "node:http";
