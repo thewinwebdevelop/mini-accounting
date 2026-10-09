@@ -226,6 +226,7 @@ const allowNetwork = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_ALLOW_
 const listenHost = resolveListenHost(runtimeEnv);
 const maxBodyBytes = 80 * 1024 * 1024;
 const authMode = String(runtimeEnv.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const sessionAuthMode = authMode === "line" || authMode === "mock";
 const mockAuthConfig = parseMockAuthConfig(process.env);
 const mockProfileStore = mockAuthConfig.enabled ? buildMockProfileStore(mockAuthConfig) : null;
 const sessionSecret = String(runtimeEnv.SWEET_HOUSE_SESSION_SECRET || "");
@@ -414,6 +415,35 @@ function originIsAllowed(request) {
   return request.headers.origin === appPublicOrigin;
 }
 
+function isLoopbackHost(hostHeader) {
+  const rawHost = String(hostHeader || "").trim();
+  if (!rawHost) return false;
+  let hostname;
+  try {
+    hostname = new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]"
+    || hostname === "::1";
+}
+
+function mockAuthRequestIsAllowed(request) {
+  if (!isLoopbackHost(request.headers.host)) return false;
+  const origin = String(request.headers.origin || "").trim();
+  if (appPublicOrigin) return origin === appPublicOrigin;
+  if (!origin) return true;
+  try {
+    const parsedOrigin = new URL(origin);
+    return (parsedOrigin.protocol === "http:" || parsedOrigin.protocol === "https:")
+      && isLoopbackHost(parsedOrigin.host);
+  } catch {
+    return false;
+  }
+}
+
 function readRequestSession(request) {
   if (!sessionSecret) throw Object.assign(new Error("Session configuration is missing"), { code: "SESSION_CONFIG_MISSING" });
   let cookies;
@@ -429,7 +459,7 @@ function readRequestSession(request) {
 
 function requireAuthenticatedRequest(request, response, url) {
   const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
-  const authEnforced = authMode === "line" || authMode === "mock";
+  const authEnforced = sessionAuthMode;
   const isProtectedPagePath = authEnforced && ["/user-profile", "/user-profile/"].includes(url.pathname);
   if (!authEnforced || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
   const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
@@ -480,7 +510,7 @@ function readFileAccessToken(request, url) {
 }
 
 function actorForRequest(request, suppliedActor) {
-  return authMode === "line" ? actorLabel(request.auth) : suppliedActor;
+  return sessionAuthMode ? actorLabel(request.auth) : suppliedActor;
 }
 
 function denyForbidden(response) {
@@ -489,7 +519,7 @@ function denyForbidden(response) {
 }
 
 function ensurePermission(request, response, action) {
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   try {
     assertPermission(request.auth, action);
     return true;
@@ -500,7 +530,7 @@ function ensurePermission(request, response, action) {
 }
 
 async function ensureDocumentAccess(request, response, { action, load }) {
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   let record;
   try {
     record = await load();
@@ -526,7 +556,7 @@ async function ensureDocumentWriteAccess(request, response, {
   existingAction = ACTIONS.DOCUMENT_EDIT,
 }) {
   if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return false;
-  if (authMode !== "line") return true;
+  if (!sessionAuthMode) return true;
   const documentNo = String(payload?.[numberField] ?? "").trim();
   if (!documentNo) return true;
   return ensureDocumentAccess(request, response, {
@@ -550,7 +580,7 @@ async function loadDocumentForAuthorization({ documentKind, documentNo, localLoa
 }
 
 async function filterOwnedDocumentList(request, records, { numberField, load }) {
-  if (authMode !== "line" || request.auth?.role !== "employee") return records;
+  if (!sessionAuthMode || request.auth?.role !== "employee") return records;
   const visible = [];
   for (const record of records) {
     const documentNo = String(record?.[numberField] || "").trim();
@@ -571,7 +601,7 @@ async function filterOwnedDocumentList(request, records, { numberField, load }) 
 }
 
 async function bindLineOwner(request, payload, { numberField, loadExisting }) {
-  if (authMode !== "line") return payload;
+  if (!sessionAuthMode) return payload;
   const documentNo = String(payload?.[numberField] ?? "").trim();
   if (!documentNo) return { ...payload, ownerUserId: String(request.auth?.userId || "").trim() };
   const existing = await loadExisting(documentNo).catch((error) => {
@@ -631,7 +661,7 @@ function handleAuthMe(request, response) {
   }
   try {
     const session = readRequestSession(request);
-    sendJson(response, 200, { authenticated: true, mode: "line", user: session });
+    sendJson(response, 200, { authenticated: true, mode: authMode, user: session });
   } catch (error) {
     if (error?.code === "SESSION_CONFIG_MISSING") {
       sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
@@ -646,22 +676,35 @@ function handleMockSession(request, response) {
     sendAuthError(response, 404, "MOCK_AUTH_DISABLED", "Mock auth is disabled");
     return;
   }
-  if (!sessionSecret) {
+  if (!mockAuthRequestIsAllowed(request)) {
+    sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
+    return;
+  }
+  if (sessionSecret.length < 32) {
     sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
     return;
   }
   const user = buildMockSessionUser(mockAuthConfig);
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + sessionTtlSeconds;
-  const token = signSession({
-    userId: user.id,
-    lineUserId: user.lineUserId,
-    displayName: user.displayName,
-    pictureUrl: user.pictureUrl,
-    role: user.role,
-    iat: issuedAt,
-    exp: expiresAt,
-  }, sessionSecret);
+  let token;
+  try {
+    token = signSession({
+      userId: user.id,
+      lineUserId: user.lineUserId,
+      displayName: user.displayName,
+      pictureUrl: user.pictureUrl,
+      role: user.role,
+      iat: issuedAt,
+      exp: expiresAt,
+    }, sessionSecret);
+  } catch (error) {
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    throw error;
+  }
   response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
   sendJson(response, 200, { user, expiresAt });
 }
@@ -927,7 +970,7 @@ function buildLineExpensePayload(request, item, body = {}, profileFallback = {})
     businessPurpose: firstText(body.businessPurpose, fields.description),
     paymentTargetName: firstText(body.paymentTargetName, fields.vendorName),
     vendorSnapshot: { name: firstText(body.paymentTargetName, fields.vendorName), taxId: firstText(body.taxId, fields.taxId) },
-    ownerUserId: authMode === "line" ? String(request.auth?.userId || "") : "",
+    ownerUserId: sessionAuthMode ? String(request.auth?.userId || "") : "",
     expenseLines: lines,
   };
   return payload;
@@ -1817,7 +1860,7 @@ async function handleWorkflowDocumentList(request, url, response) {
       documentKind: filters.documentKind || undefined,
       filters: cloudFilters,
     });
-    const visible = authMode === "line" && request.auth?.role === "employee"
+    const visible = sessionAuthMode && request.auth?.role === "employee"
       ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
       : documents;
     sendJson(response, 200, { documents: visible.map(omitAbsoluteFolderPath) });

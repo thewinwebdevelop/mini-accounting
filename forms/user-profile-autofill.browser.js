@@ -21,8 +21,6 @@
       const options = Array.from(field.options || field.querySelectorAll?.("option") || []);
       const option = options.find((candidate) => clean(candidate.value) === value && !candidate.disabled);
       if (!option) return false;
-    } else {
-      return false;
     }
     field.value = value;
     if (typeof Event === "function" && typeof field.dispatchEvent === "function") {

@@ -74,6 +74,22 @@ test("does not overwrite typed requester fields", () => {
   assert.equal(form.requesterRole.value, "ตำแหน่งเดิม");
 });
 
+test("fills a plain text position field when the position master is unavailable", () => {
+  const helper = loadHelper();
+  const form = { requesterName: field(), requesterRole: field() };
+
+  const result = helper.autofillNewDocument({
+    form,
+    isNewDocument: true,
+    nameField: form.requesterName,
+    positionField: form.requesterRole,
+    profile: { firstName: "ชื่อ", lastName: "นามสกุล", companyPositionLabel: "ผู้จัดการ" },
+  });
+
+  assert.equal(result.status, "filled");
+  assert.equal(form.requesterRole.value, "ผู้จัดการ");
+});
+
 test("does not autofill an existing document", () => {
   const helper = loadHelper();
   const form = { requesterName: field(""), requesterRole: field("") };
