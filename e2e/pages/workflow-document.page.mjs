@@ -16,4 +16,5 @@ export class WorkflowDocumentPage {
   async submit() { return this.action("submit"); } async approve() { return this.action("approve"); } async complete() { return this.action("complete"); }
   async pdfBody() { const detail = await this.detail(); const url = detail.pdfFiles?.[0]?.url || detail.pdfFiles?.[0]?.path; return Buffer.from(await (await this.page.request.get(url)).body()); }
   async assertMobileActions() { await expect(this.page.locator("#saveWorkflowDocument")).toBeVisible(); await expect(this.page.locator('input[type=file]').first()).toBeVisible(); }
+  async assertLineItemCollapse() { const row = this.page.locator("#lineItems .line-item").first(); await expect(row).toHaveAttribute("open", ""); await row.locator("summary.line-item-summary").click(); await expect(row).not.toHaveAttribute("open", ""); }
 }

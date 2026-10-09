@@ -11,7 +11,8 @@ for (const receiptType of ["general_expense", "stock_purchase"]) {
     await receipt.saveDraft();
     const draft = await receipt.detail();
     expect(draft).toMatchObject({ receiptNo: expect.any(String), status: "draft", ownerUserId: "employee-a", receiptType });
-    await receipt.submit();
+    const submitted = await receipt.submit();
+    expect(submitted.status).toBe("pending_approval");
     const accounting = await SubstituteReceiptPage.accountingPage(browser, localApp);
     try {
       const review = new SubstituteReceiptPage(accounting, draft.receiptNo);

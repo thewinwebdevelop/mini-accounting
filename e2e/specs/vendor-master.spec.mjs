@@ -9,7 +9,11 @@ test("requires duplicate confirmation, supports deactivate/reactivate, and prese
   const taxId = `010555${String(Date.now()).slice(-7)}`;
   const created = await vendors.create({ name, taxId });
   await vendors.expectVisible(name);
-  await vendors.expectDuplicateConfirmation({ name: `${name} copy`, taxId });
+  const duplicate = await vendors.expectDuplicateConfirmation({ name: `${name} copy`, taxId });
+  expect(duplicate.confirmationMessage).toContain("พบผู้ขายที่อาจซ้ำ");
+  expect(duplicate.confirmationMessage).toContain(name);
+  expect(duplicate.confirmationMessage).toContain(taxId);
+  expect(duplicate.vendor).toMatchObject({ name: `${name} copy`, taxId });
   await vendors.deactivate(created.id);
   await vendors.reload();
   await vendors.expectStatus(created.id, "inactive");

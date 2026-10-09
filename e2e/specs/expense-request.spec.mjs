@@ -6,7 +6,7 @@ test.describe("expense request journeys", () => {
   test("saves and resumes a draft with manual and Stock SKU lines, tax, evidence and owner", async ({ authenticatedPage, localApp }) => {
     const request = new ExpenseRequestPage(authenticatedPage);
     await request.open();
-    await request.fill({ title: "E2E expense draft", purpose: "Fixture operating supplies", vendor: "Fixture Supplies", beforeVat: "1000", vat: "70", withholding: "30" });
+    await request.fill({ title: "E2E expense draft", purpose: "Fixture operating supplies", vendor: "Fixture Supplies", beforeVat: "1000", vat: "70", withholding: "30", stockSku: true });
     await request.addEvidence("receipt", "expense-receipt.pdf", "%PDF-1.4 fixture evidence");
     await request.saveDraft();
     const saved = await request.detail();
@@ -16,6 +16,9 @@ test.describe("expense request journeys", () => {
     await expect(authenticatedPage.locator("#requestTitle")).toHaveValue("E2E expense draft");
     await expect(authenticatedPage.locator("#sumVat")).toHaveText("70.00");
     expect(saved.expenseLines?.[0]).toMatchObject({ amountBeforeVat: "1000", vatAmount: "70", withholdingTax: "30" });
+    expect(saved.expenseLines?.[0]?.stockSkuId || "").toBe("");
+    expect(saved.expenseLines?.[1]).toMatchObject({ stockSkuId: expect.anything(), description: "Fixture Stock SKU line" });
+    expect(saved.expenseLines?.[1]?.stockSkuId).not.toBe("");
     await request.submit();
     const submitted = await request.detail();
     expect(submitted.pdfFiles?.length).toBeGreaterThan(0);

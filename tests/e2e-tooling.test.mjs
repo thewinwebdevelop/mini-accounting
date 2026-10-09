@@ -127,7 +127,7 @@ test("Playwright config exposes local projects without a fixed service URL", asy
   try {
     delete process.env.E2E_LOCAL_BASE_URL;
     const { default: config } = await import("../playwright.config.mjs");
-    assert.deepEqual(config.projects.map(project => project.name), ["chromium", "mobile-chromium", "production-smoke"]);
+    assert.deepEqual(config.projects.map(project => project.name), ["chromium", "mobile-chromium", "cloud-runtime-mocked", "production-smoke"]);
     assert.equal(config.projects[0].use.baseURL, undefined);
     assert.equal(config.projects[1].use.baseURL, undefined);
     process.env.E2E_LOCAL_BASE_URL = "http://127.0.0.1:54321";

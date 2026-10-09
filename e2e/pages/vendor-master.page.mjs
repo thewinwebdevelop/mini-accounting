@@ -9,7 +9,22 @@ export class VendorMasterPage {
   async open() { await this.page.goto("/substitute-receipt-vendors"); await expect(this.page.locator("#vendorForm")).toBeVisible(); }
   async create({ name, taxId }) { await this.page.locator("#vendorName").fill(name); await this.page.locator("#vendorTaxId").fill(taxId); await this.page.locator("#vendorForm").evaluate((form) => form.requestSubmit()); await expect(this.page.locator("#vendorStatusBox")).toContainText("บันทึก"); const list = await json(await this.page.request.get("/api/vendors?includeInactive=1")); return list.vendors.find((vendor) => vendor.name === name); }
   async expectVisible(name) { await expect(this.page.locator("#vendorRows")).toContainText(name); }
-  async expectDuplicateConfirmation({ name, taxId }) { this.page.once("dialog", (dialog) => dialog.accept()); await this.page.locator("#vendorName").fill(name); await this.page.locator("#vendorTaxId").fill(taxId); await this.page.locator("#vendorForm").evaluate((form) => form.requestSubmit()); await expect(this.page.locator("#vendorStatusBox")).toContainText("บันทึก"); }
+  async expectDuplicateConfirmation({ name, taxId }) {
+    let confirmationMessage = "";
+    this.page.once("dialog", async (dialog) => {
+      confirmationMessage = dialog.message();
+      expect(dialog.type()).toBe("confirm");
+      expect(confirmationMessage).toContain("พบผู้ขายที่อาจซ้ำ");
+      expect(confirmationMessage).toContain(taxId);
+      await dialog.accept();
+    });
+    await this.page.locator("#vendorName").fill(name);
+    await this.page.locator("#vendorTaxId").fill(taxId);
+    await this.page.locator("#vendorForm").evaluate((form) => form.requestSubmit());
+    await expect(this.page.locator("#vendorStatusBox")).toContainText("บันทึก");
+    const list = await json(await this.page.request.get("/api/vendors?includeInactive=1"));
+    return { confirmationMessage, vendor: list.vendors.find((vendor) => vendor.name === name) };
+  }
   async status(id, status) {
     const current = await json(await this.page.request.get(`/api/vendors/${encodeURIComponent(id)}`));
     const matches = (await json(await this.page.request.get("/api/vendors?includeInactive=1"))).vendors.filter((vendor) => vendor.id !== id && (vendor.name === current.vendor.name || vendor.taxId === current.vendor.taxId));
