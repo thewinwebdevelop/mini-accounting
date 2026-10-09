@@ -43,7 +43,7 @@ test("pending and inactive users are denied while active users can logout", asyn
   expect(inactive.status).toBe(403);
   await context.close();
 
-  const activeContext = await browser.newContext();
+  const activeContext = await browser.newContext({ baseURL: localApp.baseUrl });
   await activeContext.addCookies([{ ...sessionCookie(createTestSession({ ...localApp.users.employeeA, secret: SECRET })), url: localApp.baseUrl }]);
   const activePage = await activeContext.newPage();
   await activePage.goto(localApp.baseUrl);

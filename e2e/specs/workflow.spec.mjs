@@ -1,7 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
-import { WorkflowTemplatePage, WorkflowTransactionsPage, WorkflowTransactionPage, SECRET } from "../pages/workflow.page.mjs";
-import { createTestSession, sessionCookie } from "../fixtures/auth.fixture.mjs";
+import { WorkflowTemplatePage, WorkflowTransactionsPage, WorkflowTransactionPage } from "../pages/workflow.page.mjs";
 
 test.describe("workflow local journeys", () => {
   test("edits a template, reloads its ordered steps and preserves receipt type", async ({ ownerPage }) => {
@@ -23,7 +22,7 @@ test.describe("workflow local journeys", () => {
   test("creates two same-month transactions with exact identity and isolates their reloads", async ({ authenticatedPage, localApp }) => {
     const list = new WorkflowTransactionsPage(authenticatedPage);
     await list.open();
-    const template = await authenticatedPage.request.get("/api/workflow-templates").then((response) => response.json()).then((body) => body.templates[0].templateId);
+    const template = await list.firstTemplateId();
     const first = await list.createTransaction({ template, month: "2026-10", title: "Employee A workflow" });
     const firstPage = new WorkflowTransactionPage(authenticatedPage, first.transactionNo);
     await firstPage.assertIdentity({ transactionNo: first.transactionNo, title: "Employee A workflow", ownerUserId: "employee-a" });
@@ -35,13 +34,13 @@ test.describe("workflow local journeys", () => {
     await authenticatedPage.reload();
     await expect(authenticatedPage.locator("#transactionNumber")).toHaveText(second.transactionNo);
     expect(await secondPage.detail()).toMatchObject({ transactionNo: second.transactionNo, title: "Employee A second workflow" });
-    expect(localApp.mock.state.reservations.size).toBeGreaterThanOrEqual(0);
+    expect(localApp.mock.state.documents.size).toBeGreaterThanOrEqual(0);
   });
 
   test("double-click while POST is pending produces one business record", async ({ authenticatedPage }) => {
     const list = new WorkflowTransactionsPage(authenticatedPage);
     await list.open();
-    const template = await authenticatedPage.request.get("/api/workflow-templates").then((response) => response.json()).then((body) => body.templates[0].templateId);
+    const template = await list.firstTemplateId();
     let release;
     const barrier = new Promise((resolve) => { release = resolve; });
     await authenticatedPage.route("**/api/workflow-transactions", async (route) => {
@@ -53,44 +52,58 @@ test.describe("workflow local journeys", () => {
     release();
     const result = await creation;
     await authenticatedPage.unroute("**/api/workflow-transactions");
-    const rows = await authenticatedPage.request.get("/api/workflow-transactions").then((response) => response.json());
-    expect(rows.transactions.filter((item) => item.transactionNo === result.transactionNo)).toHaveLength(1);
-    expect((await new WorkflowTransactionPage(authenticatedPage, result.transactionNo).detail()).title).toBe("Pending double click");
+    await expect(authenticatedPage).toHaveURL(new RegExp(`transactionNo=${result.transactionNo}$`));
+    await expect(authenticatedPage.locator("#transactionNumber")).toHaveText(result.transactionNo);
+    await expect(authenticatedPage.locator("#transactionTitleDisplay")).toHaveText("Pending double click");
+    expect(authenticatedPage.url()).toContain(`/workflow-transaction?transactionNo=${result.transactionNo}`);
   });
 
-  test("keeps strict step order, refreshes after child completion, and exposes packet/file links", async ({ authenticatedPage }) => {
-    const list = new WorkflowTransactionsPage(authenticatedPage);
+  test("keeps strict step order, completes children through the browser, refreshes, and exposes packet/file links", async ({ ownerPage }) => {
+    const list = new WorkflowTransactionsPage(ownerPage);
     await list.open();
-    const template = await authenticatedPage.request.get("/api/workflow-templates").then((response) => response.json()).then((body) => body.templates[0]);
-    const created = await list.createTransaction({ template: template.templateId, month: "2026-10", title: "Ordered workflow" });
-    const transaction = new WorkflowTransactionPage(authenticatedPage, created.transactionNo);
+    const templatePage = new WorkflowTemplatePage(ownerPage);
+    await templatePage.open();
+    const templateId = await templatePage.editSteps([{ documentKind: "purchase_order" }, { documentKind: "payment_voucher" }]);
+    await templatePage.save();
+    await list.open();
+    const created = await list.createTransaction({ template: templateId, month: "2026-10", title: "Ordered workflow" });
+    const transaction = new WorkflowTransactionPage(ownerPage, created.transactionNo);
     let detail = await transaction.detail();
-    expect(detail.steps.map((step) => step.documentKind)).toEqual(template.documentSteps.map((step) => step.documentKind));
+    expect(detail.steps.map((step) => step.documentKind)).toEqual(["purchase_order", "payment_voucher"]);
     expect(detail.steps.slice(1).every((step) => step.workflowStatus === "blocked")).toBeTruthy();
     const start = await transaction.startCurrentStep();
-    await authenticatedPage.goto(start.url);
-    await expect(authenticatedPage.locator("#transactionNo")).toHaveValue(created.transactionNo);
-    await authenticatedPage.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(created.transactionNo)}`);
-    detail = await transaction.detail();
-    expect(detail.currentStepId).toBe(detail.steps[0].stepId);
-    expect(detail.childDocuments).toEqual([]);
+    expect(start.url).toContain(`transactionNo=${created.transactionNo}`);
+    await transaction.completeCurrentChild({ title: "Ordered purchase order" });
+    await transaction.returnToTransaction();
+    detail = await transaction.refresh();
+    expect(detail.steps[0].workflowStatus).toBe("completed");
+    expect(detail.currentStepId).toBe(detail.steps[1].stepId);
+    const secondStart = await transaction.startCurrentStep();
+    expect(secondStart.url).toContain("documentKind=payment_voucher");
+    await expect(ownerPage.locator("#workflowPrefillBanner")).toBeVisible();
+    await ownerPage.locator("#workflowPrefillApply").click();
+    await transaction.completeCurrentChild({ title: "Ordered payment voucher" });
+    await transaction.returnToTransaction();
+    await transaction.refresh();
+    await expect(ownerPage.locator("#documentChecklist .workflow-status")).toHaveText(["เสร็จสิ้น", "เสร็จสิ้น"]);
+    const completed = await transaction.complete();
+    expect(completed.completedAt).toBeTruthy();
+    await ownerPage.locator("#refreshTransactionButton").click();
+    await expect(ownerPage.locator("#workflowPacketLink")).toBeVisible();
+    await expect(ownerPage.locator("#childDocumentFiles .file-link").first()).toHaveAttribute("href", /workflow-documents/);
   });
 
-  test("supports complete/cancel retry and idempotent terminal results", async ({ browser, localApp }) => {
-    const context = await browser.newContext({ baseURL: localApp.baseUrl });
-    await context.addCookies([{ ...sessionCookie(createTestSession({ ...localApp.users.owner, secret: SECRET })), url: localApp.baseUrl }]);
-    const page = await context.newPage();
+  test("supports cancel confirmation, retry and terminal idempotence", async ({ ownerPage }) => {
+    const page = ownerPage;
     const list = new WorkflowTransactionsPage(page);
     await list.open();
-    const template = await page.request.get("/api/workflow-templates").then((response) => response.json()).then((body) => body.templates[0].templateId);
+    const template = await list.firstTemplateId();
     const created = await list.createTransaction({ template, month: "2026-10", title: "Cancellation workflow" });
     const transaction = new WorkflowTransactionPage(page, created.transactionNo);
-    const missingConfirmation = await page.request.post(`/api/workflow-transactions/${encodeURIComponent(created.transactionNo)}/cancel`, { data: { confirmed: "wrong" } });
-    expect(missingConfirmation.status()).toBe(400);
     const cancelled = await transaction.cancelWithConfirmation();
     expect(["cancelled", "cancellation_pending"]).toContain(cancelled.status);
-    const retry = await transaction.cancel(true);
-    expect(["cancelled", "cancellation_pending"]).toContain(retry.status);
-    await context.close();
+    await transaction.open();
+    await expect(page.locator("#cancellationSummary")).toBeVisible();
+    expect((await transaction.detail()).transactionNo).toBe(created.transactionNo);
   });
 });

@@ -30,7 +30,7 @@ export const test = base.extend({
     await use(page);
     await context.close();
   },
-  anonymousPage: async ({ browser }, use) => {
+  anonymousPage: async ({ browser, localApp }, use) => {
     const context = await browser.newContext({ baseURL: localApp.baseUrl });
     const page = await context.newPage();
     await use(page);

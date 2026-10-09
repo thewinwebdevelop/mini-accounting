@@ -1,7 +1,5 @@
 import { expect } from "@playwright/test";
 
-const SECRET = "e2e-test-session-secret-012345678901234567890123";
-
 async function jsonResponse(response) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok()) throw new Error(`${response.url()} -> ${response.status()}: ${body.error || "request failed"}`);
@@ -49,17 +47,29 @@ export class WorkflowTransactionsPage {
 
   async open() { await this.page.goto("/workflow-transactions"); await expect(this.page.locator("#transactionsPage")).toBeVisible(); }
 
-  async createTransaction({ template, month, title, clicks = 1, idempotencyKey } = {}) {
+  async firstTemplateId() {
+    const option = this.page.locator("#startTemplateSelect option:not([value=''])").first();
+    await expect(option).toBeAttached();
+    return option.getAttribute("value");
+  }
+
+  async createTransaction({ template, month, title, clicks = 1, idempotencyKey, expectFailure = false } = {}) {
     await this.page.locator("#startTemplateSelect").selectOption(template);
     await this.page.locator("#startAccountingMonth").fill(month);
     await this.page.locator("#startTransactionTitle").fill(title);
-    if (idempotencyKey) {
-      return this.page.request.post("/api/workflow-transactions", { data: { templateId: template, accountingMonth: month, title, idempotencyKey } }).then(jsonResponse);
+    const requestKey = idempotencyKey;
+    if (requestKey) {
+      await this.page.addInitScript((key) => { window.crypto.randomUUID = () => key; }, requestKey);
+      await this.page.evaluate((key) => { window.crypto.randomUUID = () => key; }, requestKey);
     }
     const responsePromise = this.page.waitForResponse((response) => response.url().endsWith("/api/workflow-transactions") && response.request().method() === "POST");
     await this.page.locator("#startTransactionButton").click();
     for (let index = 1; index < clicks; index++) await this.page.locator("#startTransactionButton").dispatchEvent("click");
     const response = await responsePromise;
+    if (expectFailure) {
+      expect(response.ok()).toBeFalsy();
+      return { status: response.status(), url: this.page.url() };
+    }
     const result = await jsonResponse(response);
     await this.page.waitForURL(/\/workflow-transaction\?transactionNo=/);
     return { ...result, transactionNo: result.transactionNo || new URL(this.page.url()).searchParams.get("transactionNo"), url: this.page.url() };
@@ -77,7 +87,11 @@ export class WorkflowTransactionPage {
   }
 
   async detail() { return this.page.request.get(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}`).then(jsonResponse); }
-  async refresh() { return this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/refresh`, { data: { regeneratePacket: false } }).then(jsonResponse); }
+  async refresh() {
+    await this.page.locator("#refreshTransactionButton").click();
+    await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
+    return this.detail();
+  }
 
   async assertIdentity({ transactionNo, title, ownerUserId }) {
     const detail = await this.detail();
@@ -90,11 +104,49 @@ export class WorkflowTransactionPage {
   }
 
   async startCurrentStep() {
-    const detail = await this.detail();
-    const step = detail.steps.find((item) => item.stepId === detail.currentStepId);
-    const response = await this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/start-document/${encodeURIComponent(step.stepId)}`, { data: {} }).then(jsonResponse);
-    expect(response.transactionNo).toBe(this.transactionNo);
-    return response;
+    const before = new URL(this.page.url()).pathname;
+    expect(before).toBe("/workflow-transaction");
+    const responsePromise = this.page.waitForResponse((response) => response.url().includes("/start-document/") && response.request().method() === "POST");
+    await this.page.locator("[data-step-action]:not([disabled])").click();
+    const response = await responsePromise.then(jsonResponse);
+    await this.page.waitForURL((url) => url.pathname !== "/workflow-transaction");
+    expect(this.page.url()).toContain(`transactionNo=${this.transactionNo}`);
+    return { ...response, url: this.page.url() };
+  }
+
+  async completeCurrentChild({ title = "Workflow child" } = {}) {
+    const kind = new URL(this.page.url()).searchParams.get("documentKind");
+    if (kind === "purchase_order" || kind === "payment_voucher" || kind === "cash_spend_declaration" || kind === "payee_acknowledgement" || kind === "goods_receipt") {
+      await this.page.locator("#accountingMonth").fill("2026-10");
+      await this.page.locator("#documentDate").fill("2026-10-09");
+      await this.page.locator("#title").fill(title);
+      await this.page.locator("#businessPurpose").fill(`${title} purpose`);
+      const row = this.page.locator("#lineItems .line-item").first();
+      await row.locator('[name="description"]').fill("Fixture item");
+      await row.locator('[name="quantity"]').fill("1");
+      await row.locator('[name="unitCost"]').fill("100");
+      await row.locator('[name="vatMode"]').selectOption("none");
+      await this.page.locator("#saveWorkflowDocument").click();
+      await expect(this.page.locator("#workflowDocumentStatus")).toContainText("บันทึกเอกสาร");
+      await this.page.locator("#submitWorkflowDocument").click();
+      await expect(this.page.locator("#workflowReviewDialog")).toBeVisible();
+      await this.page.locator("#workflowReviewConfirm").click();
+      await expect(this.page.locator("#workflowDocumentStatus")).toContainText("ส่งเอกสาร");
+      await this.page.locator("#approveWorkflowDocument").click();
+      await expect(this.page.locator("#workflowReviewDialog")).toBeVisible();
+      await this.page.locator("#workflowReviewConfirm").click();
+      await expect(this.page.locator("#workflowDocumentStatus")).toContainText("อนุมัติเอกสาร");
+      await this.page.locator("#completeWorkflowDocument").click();
+      await expect(this.page.locator("#workflowDocumentStatus")).toContainText("เสร็จสิ้นแล้ว");
+      return;
+    }
+    throw new Error(`unsupported child form for ${kind}`);
+  }
+
+  async returnToTransaction() {
+    await this.page.locator("#workflowReturnLink").click();
+    await this.page.waitForURL(/\/workflow-transaction\?transactionNo=/);
+    await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
   }
 
   async childDocument(kind) {
@@ -103,11 +155,9 @@ export class WorkflowTransactionPage {
   }
 
   async complete() {
-    return this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/complete`, { data: {} }).then(jsonResponse);
-  }
-
-  async cancel(confirmText = "confirm") {
-    return this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`, { data: { confirmed: confirmText } }).then(jsonResponse);
+    await this.page.locator("#completeTransactionButton").click();
+    await expect(this.page.locator("#transactionStatus")).toContainText("ปิดงานธุรกรรมเรียบร้อยแล้ว");
+    return this.detail();
   }
 
   async cancelWithConfirmation() {
@@ -118,22 +168,3 @@ export class WorkflowTransactionPage {
     return this.detail();
   }
 }
-
-export async function createChildDocument(page, { transaction, step, title = "Workflow child" }) {
-  const payload = {
-    documentKind: step.documentKind,
-    accountingMonth: transaction.accountingMonth,
-    documentDate: `${transaction.accountingMonth}-09`,
-    title,
-    businessPurpose: `${transaction.title} child document`,
-    transactionNo: transaction.transactionNo,
-    workflowTemplateId: transaction.workflowTemplateId,
-    workflowStepId: step.stepId,
-    lines: [{ description: "Fixture item", quantity: "1", unitCost: "100", vatMode: "none", withholdingTax: "0" }],
-  };
-  const form = new FormData();
-  form.append("payload", JSON.stringify(payload));
-  return page.request.post("/api/workflow-documents", { multipart: { payload: JSON.stringify(payload) } }).then(jsonResponse);
-}
-
-export { SECRET };
