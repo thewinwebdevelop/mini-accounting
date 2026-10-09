@@ -39,12 +39,13 @@
 - Create: `playwright.config.mjs`
 - Create: `scripts/e2e.sh`
 - Modify: `scripts/test.sh`
+- Create: `e2e/specs/bootstrap.spec.mjs`
 - Create: `tests/e2e-tooling.test.mjs`
 - Test: `tests/e2e-tooling.test.mjs`
 
 **Interfaces:**
 - Produces `npm run e2e`, `npm run e2e:smoke`, and `scripts/e2e.sh` entry points.
-- `playwright.config.mjs` exports a config with projects `chromium`, `mobile-chromium`, and `production-smoke`; local projects use the app fixture server and production smoke requires `E2E_BASE_URL`.
+- `playwright.config.mjs` exports a config with projects `chromium`, `mobile-chromium`, and `production-smoke`; local projects consume a runtime-provided fixture URL and never fall back to a hardcoded service/port, while production smoke requires `E2E_BASE_URL`.
 - `scripts/e2e.sh` accepts `E2E_PROJECT`, `E2E_BASE_URL`, `E2E_WORKERS`, `E2E_TRACE`, and `E2E_GREP`; it refuses a production URL for full projects.
 
 - [ ] **Step 1: Write the failing tooling tests**
@@ -59,7 +60,7 @@
 
 - [ ] **Step 3: Implement the runner bootstrap**
 
-  Pin `@playwright/test`, add the Playwright config and scripts, and make `scripts/test.sh` locate the bundled Node runtime when present or a compatible PATH Node otherwise while preserving every existing test target. Do not silently skip the Python PDF suite when the required test runtime is missing.
+  Pin `@playwright/test`, add the Playwright config and scripts, and make `scripts/test.sh` locate the bundled Node runtime when present or a compatible PATH Node otherwise while preserving every existing test target. Local Playwright projects must read only a runtime-provided `E2E_LOCAL_BASE_URL`/fixture hook and must not contain a hardcoded localhost service fallback; Task 2 will provide the actual server fixture. Do not silently skip the Python PDF suite when the required test runtime is missing.
 
 - [ ] **Step 4: Run focused tooling tests**
 
@@ -67,16 +68,18 @@
 
   Expected: PASS with checks for project selection, runtime discovery and production URL refusal.
 
-- [ ] **Step 5: Install/pin browser dependencies and verify a no-op E2E run**
+- [ ] **Step 5: Add a bootstrap spec and verify a no-op E2E run**
+
+  Add `e2e/specs/bootstrap.spec.mjs` with a non-mutating assertion that the configured project and test run identity are present; it must not require the app fixture or external provider.
 
   Run: `npm ci` then `npx playwright install --with-deps chromium` where the environment permits it, followed by `./scripts/e2e.sh --list`.
 
-  Expected: the runner lists the configured specs without starting a production target.
+  Expected: the runner lists the bootstrap spec and configured projects without starting a production target; local browser execution remains deferred until Task 2 supplies the fixture URL.
 
 - [ ] **Step 6: Commit**
 
   ```bash
-  git add package.json package-lock.json playwright.config.mjs scripts/e2e.sh scripts/test.sh tests/e2e-tooling.test.mjs
+  git add package.json package-lock.json playwright.config.mjs scripts/e2e.sh scripts/test.sh e2e/specs/bootstrap.spec.mjs tests/e2e-tooling.test.mjs
   git commit -m "test: bootstrap portable playwright e2e runner"
   ```
 
