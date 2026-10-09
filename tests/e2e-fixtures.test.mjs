@@ -71,10 +71,26 @@ test("provider mock rejects unexpected outbound hosts and supports strict reques
     assert.equal(nearMiss.status, 404);
     const badQuery = await fetch(`${mock.baseUrls.google}/drive/v3/files?unexpected=true`);
     assert.equal(badQuery.status, 404);
-    const badShopeeBody = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_detail`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ order_sn_list: [], extra: true }) });
+    const badShopeeBody = await fetch(`${mock.baseUrls.shopee}/api/v2/auth/token/get?partner_id=1&timestamp=1&sign=s`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ partner_id: 1, code: "fixture", shop_id: 2, extra: true }) });
     assert.equal(badShopeeBody.status, 400);
     const badRpcBody = await fetch(`${mock.baseUrls.supabase}/rest/v1/rpc/allocate_workflow_transaction_number`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ p_accounting_month: "2026-10", p_request_key: "x", extra: true }) });
     assert.equal(badRpcBody.status, 400);
+    const shopeeAuth = await fetch(`${mock.baseUrls.shopee}/api/v2/shop/auth_partner?partner_id=1&timestamp=1&sign=s&redirect=http%3A%2F%2F127.0.0.1%2Fcallback`);
+    assert.equal(shopeeAuth.status, 200);
+    const shopeeOrders = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_list?partner_id=1&timestamp=1&sign=s&access_token=a&shop_id=2&time_range_field=update_time&time_from=1&time_to=2&page_size=10`);
+    assert.equal(shopeeOrders.status, 200);
+    const shopeeToken = await fetch(`${mock.baseUrls.shopee}/api/v2/auth/token/get?partner_id=1&timestamp=1&sign=s`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ partner_id: 1, code: "fixture", shop_id: 2 }) });
+    assert.equal(shopeeToken.status, 200);
+    const googleInit = await fetch(`${mock.baseUrls.google}/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "fixture.pdf", parents: ["root"] }) });
+    assert.equal(googleInit.status, 200);
+    const uploadSession = googleInit.headers.get("location");
+    assert.match(uploadSession, /\/upload-session\//);
+    const googleUpload = await fetch(uploadSession, { method: "PUT", headers: { "content-type": "application/pdf" }, body: Buffer.from("fixture-pdf") });
+    assert.equal(googleUpload.status, 200);
+    const uploadNearMiss = await fetch(`${mock.baseUrls.google}/upload-session/not-real`, { method: "PUT", body: Buffer.from("fixture") });
+    assert.equal(uploadNearMiss.status, 404);
+    const uploadBadQuery = await fetch(`${mock.baseUrls.google}/upload/drive/v3/files?uploadType=resumable&unexpected=true`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "fixture.pdf" }) });
+    assert.equal(uploadBadQuery.status, 404);
   } finally {
     await mock.stop();
   }
@@ -162,11 +178,14 @@ test("cloud app creates, retries, restarts, and survives a dropped document resp
     assert.equal(first.status, 200, `${firstText} requests=${JSON.stringify(runtime.mock.requests)}`);
     const firstBody = JSON.parse(firstText);
     assert.match(firstBody.transactionNo, /^TXN-2026-10-0001$/);
+    assert.equal(runtime.mock.state.documents.has("document:workflow_transaction:TXN-2026-10-0001"), true);
     const restarted = await runtime.restartApp();
     try {
       const retryAfterRestart = await fetch(`${restarted.baseUrl}api/workflow-transactions`, { method: "POST", headers, body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-10", title: "Cloud first retry", idempotencyKey: "cloud-request-1" }) });
-      assert.equal(retryAfterRestart.status, 200);
-      assert.equal((await retryAfterRestart.json()).transactionNo, firstBody.transactionNo);
+      const retryText = await retryAfterRestart.text();
+      assert.equal(retryAfterRestart.status, 200, `${retryText} requests=${JSON.stringify(restarted.mock.requests)}`);
+      assert.equal(JSON.parse(retryText).transactionNo, firstBody.transactionNo);
+      assert.equal(restarted.mock.requests.filter(request => request.path === "/rest/v1/documents" && request.method === "POST").length, 0);
       restarted.mock.scriptResponse({ type: "drop-after-persist", endpoint: "/rest/v1/documents" });
       const dropped = await create(restarted.baseUrl, "cloud-request-2", "Dropped response");
       assert.equal(dropped.status, 400);

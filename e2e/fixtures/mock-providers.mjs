@@ -10,12 +10,11 @@ const ENDPOINTS = {
     ["POST", "/rest/v1/document_files", "on_conflict=source_key"], ["GET", "/rest/v1/document_files", "query"], ["POST", "/rest/v1/storage_migration_records", "migration-conflict"],
     ["GET", "/rest/v1/company_settings", "query"], ["GET", "/rest/v1/vendors", "query"], ["GET", "/rest/v1/inventory_products", "query"],
     ["GET", "/rest/v1/inventory_stock_skus", "query"], ["GET", "/rest/v1/inventory_stock_movements", "query"],
-    ["GET", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"],
-    ["POST", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"],
+    ["GET", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"], ["POST", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"],
   ],
   line: [["GET", /^\/v2\/bot\/message\/[^/]+\/content$/, "none"], ["POST", "/v2/bot/message/reply", "none"], ["POST", "/oauth2/v2.1/verify", "none"]],
-  google: [["GET", "/drive/v3/files", "drive"], ["POST", "/drive/v3/files", "drive-create"], ["POST", "/upload/drive/v3/files", "upload"], ["POST", /^\/upload\/drive\/v3\/files\/[^/]+$/, "upload"], ["POST", "/token", "none"], ["GET", /^\/v4\/spreadsheets\/[^/]+$/, "sheets"], ["POST", /^\/v4\/spreadsheets\/[^/]+:batchUpdate$/, "sheets"], ["GET", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["PUT", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["POST", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+:append$/, "sheets-values"]],
-  shopee: ["order/get_order_list", "order/get_order_detail", "auth/token/get", "auth/access_token/get", "shop/auth_partner", "logistics/get_mass_tracking_number", "logistics/create_shipping_document_job", "logistics/get_shipping_document_job_status", "logistics/download_shipping_document_job", "logistics/get_mass_shipping_parameter", "logistics/mass_ship_order"].map(path => ["POST", `/api/v2/${path}`, "query"]),
+  google: [["GET", "/drive/v3/files", "drive"], ["POST", "/drive/v3/files", "drive-create"], ["POST", "/upload/drive/v3/files", "upload-init"], ["PATCH", /^\/upload\/drive\/v3\/files\/[^/]+$/, "upload-init"], ["PUT", /^\/upload-session\/[^/]+$/, "upload-body"], ["POST", "/token", "none"], ["GET", /^\/v4\/spreadsheets\/[^/]+$/, "sheets"], ["POST", /^\/v4\/spreadsheets\/[^/]+:batchUpdate$/, "sheets"], ["GET", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["PUT", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["POST", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+:append$/, "sheets-values"]],
+  shopee: [["GET", "/api/v2/shop/auth_partner", "shopee-auth"], ["GET", "/api/v2/order/get_order_list", "shopee-order-list"], ["GET", "/api/v2/order/get_order_detail", "shopee-order-detail"], ["POST", "/api/v2/auth/token/get", "shopee-token"], ["POST", "/api/v2/auth/access_token/get", "shopee-refresh"], ["POST", "/api/v2/logistics/get_mass_tracking_number", "shopee-tracking"], ["POST", "/api/v2/logistics/create_shipping_document_job", "shopee-create-job"], ["POST", "/api/v2/logistics/get_shipping_document_job_status", "shopee-job-status"], ["POST", "/api/v2/logistics/download_shipping_document_job", "shopee-job-download"], ["POST", "/api/v2/logistics/get_mass_shipping_parameter", "shopee-shipping-params"], ["POST", "/api/v2/logistics/mass_ship_order", "shopee-mass-ship"]],
   ocr: [["POST", "/", "none"]],
 };
 
@@ -25,17 +24,29 @@ function matchEndpoint(provider, method, pathname, search) {
     if (queryRule === "none" && search) continue;
     if (queryRule === "on_conflict=source_key" && search !== "?on_conflict=source_key") continue;
     if (queryRule === "migration-conflict" && search !== "?on_conflict=migration_name%2Csource_key" && search !== "?on_conflict=migration_name,source_key") continue;
-    if (["drive", "drive-create", "upload", "sheets", "sheets-values", "query", "migration-conflict"].includes(queryRule)) {
+    if (queryRule.startsWith("shopee-") && !validShopeeQuery(queryRule, search)) continue;
+    if (["drive", "drive-create", "upload", "upload-init", "sheets", "sheets-values", "query", "migration-conflict"].includes(queryRule)) {
       if (queryRule === "migration-conflict" && search !== "?on_conflict=migration_name%2Csource_key" && search !== "?on_conflict=migration_name,source_key") continue;
       if (queryRule !== "migration-conflict") {
         const keys = [...new URLSearchParams(search).keys()];
-        const allowed = queryRule === "drive" ? ["fields", "pageSize", "q"] : queryRule === "drive-create" ? ["fields"] : queryRule === "upload" ? ["fields", "uploadType"] : queryRule === "sheets" ? ["fields"] : queryRule === "sheets-values" ? ["valueInputOption", "insertDataOption"] : ["source_key", "limit", "owner_user_id", "status", "document_kind", "accounting_month", "order", "or"];
+        const allowed = queryRule === "drive" ? ["fields", "pageSize", "q"] : queryRule === "drive-create" ? ["fields"] : ["upload", "upload-init"].includes(queryRule) ? ["fields", "uploadType"] : queryRule === "sheets" ? ["fields"] : queryRule === "sheets-values" ? ["valueInputOption", "insertDataOption"] : ["source_key", "document_source_key", "limit", "owner_user_id", "status", "document_kind", "accounting_month", "order", "or"];
         if (keys.some(key => !allowed.includes(key))) continue;
       }
     }
     return { queryRule };
   }
   return null;
+}
+
+function validShopeeQuery(rule, search) {
+  const params = new URLSearchParams(search);
+  const keys = [...params.keys()];
+  const common = ["partner_id", "timestamp", "sign", "access_token", "shop_id"];
+  const operation = rule === "shopee-auth" ? ["redirect", "state"] : rule === "shopee-order-list" ? ["time_range_field", "time_from", "time_to", "page_size", "cursor"] : rule === "shopee-order-detail" ? ["order_sn_list"] : [];
+  if (keys.some(key => !common.includes(key) && !operation.includes(key))) return false;
+  if (!["partner_id", "timestamp", "sign"].every(key => params.get(key))) return false;
+  if (rule === "shopee-auth" && !params.get("redirect")) return false;
+  return true;
 }
 
 function parseJson(body) { try { return JSON.parse(body.toString("utf8")); } catch { return null; } }
@@ -46,7 +57,8 @@ function validBody(provider, method, pathname, body, endpoint) {
   if (!body.length || (provider === "supabase" && pathname.startsWith("/storage/v1/object/"))) return Boolean(body.length);
   if (provider === "line" && pathname.endsWith("/verify")) return exactForm(body, ["id_token", "client_id"], ["id_token", "client_id"]);
   if (provider === "google" && pathname === "/token") return exactForm(body, ["client_id", "client_secret", "code", "grant_type", "redirect_uri", "refresh_token"], ["grant_type"]);
-  if (provider === "google" && pathname.startsWith("/upload/drive/v3/files")) return body.length > 0;
+  if (provider === "google" && pathname.startsWith("/upload/drive/v3/files")) return exactKeys(valueOrEmpty(body), ["name", "parents"], ["name"]);
+  if (provider === "google" && pathname.startsWith("/upload-session/")) return body.length > 0;
   const value = parseJson(body);
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (provider === "line" && pathname.endsWith("/reply")) return exactKeys(value, ["replyToken", "messages"], ["replyToken", "messages"]);
@@ -59,20 +71,20 @@ function validBody(provider, method, pathname, body, endpoint) {
   if (provider === "supabase" && pathname === "/rest/v1/storage_migration_records") return Object.keys(value).every(key => ["migration_name", "source_key", "bucket_name", "object_path", "source_sha256", "byte_size", "content_type", "migrated_at"].includes(key));
   if (provider === "google" && pathname === "/drive/v3/files") return endpoint.queryRule === "drive-create" ? exactKeys(value, ["name", "mimeType", "parents"], ["name", "mimeType"]) : exactKeys(value, ["name", "mimeType", "parents"], []);
   if (provider === "google" && pathname.startsWith("/v4/spreadsheets/")) return pathname.includes(":batchUpdate") ? exactKeys(value, ["requests"], ["requests"]) : exactKeys(value, ["values"], ["values"]);
-  if (provider === "shopee") {
-    const allowed = pathname.endsWith("get_order_list") ? ["order_status", "time_range_field", "time_from", "time_to", "page_size", "cursor"]
-      : pathname.endsWith("get_order_detail") ? ["order_sn_list"]
-        : pathname.endsWith("auth/token/get") ? ["partner_id", "code", "shop_id"]
-          : pathname.endsWith("auth/access_token/get") ? ["partner_id", "shop_id", "refresh_token"]
-            : pathname.endsWith("get_mass_tracking_number") ? ["order_sn_list"]
-              : pathname.endsWith("create_shipping_document_job") ? ["order_list", "shipping_document_type"]
-                : pathname.endsWith("get_shipping_document_job_status") ? ["shipping_document_job_id"]
-                  : pathname.endsWith("download_shipping_document_job") ? ["shipping_document_job_id"]
-                    : pathname.endsWith("get_mass_shipping_parameter") ? ["order_list"]
-                      : pathname.endsWith("mass_ship_order") ? ["order_list", "pickup"] : [];
-    return exactKeys(value, allowed, []);
-  }
+  if (provider === "shopee") return shopeeBodyValid(pathname, value);
   return false;
+}
+function valueOrEmpty(body) { return parseJson(body) || {}; }
+function shopeeBodyValid(pathname, value) {
+  const allowed = pathname.endsWith("auth/token/get") ? ["partner_id", "code", "shop_id"]
+    : pathname.endsWith("auth/access_token/get") ? ["partner_id", "shop_id", "refresh_token"]
+      : pathname.endsWith("get_mass_tracking_number") ? ["package_list"]
+        : pathname.endsWith("create_shipping_document_job") ? ["package_list", "document_type"]
+          : pathname.endsWith("get_shipping_document_job_status") || pathname.endsWith("download_shipping_document_job") ? ["job_id"]
+            : pathname.endsWith("get_mass_shipping_parameter") ? ["package_list"]
+              : pathname.endsWith("mass_ship_order") ? ["package_list", "pickup"] : [];
+  const required = pathname.endsWith("auth/token/get") ? ["partner_id", "code", "shop_id"] : pathname.endsWith("auth/access_token/get") ? ["partner_id", "shop_id", "refresh_token"] : [];
+  return exactKeys(value, allowed, required);
 }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }
 
@@ -80,6 +92,7 @@ export async function createMockProviders({ profile = "local", runId = "run", st
   const requests = [];
   const state = suppliedState || { runId, documents: new Map(), reservations: new Map(), responseScript: [], sequences: new Map() };
   if (!state.sequences) state.sequences = new Map();
+  if (!state.uploadSessions) state.uploadSessions = new Map();
   const servers = [];
   const baseUrls = {};
   try {
@@ -98,10 +111,22 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         if (!validBody(provider, method, parsed.pathname, body, endpoint)) return json(response, 400, { error: "unexpected mock request body" });
         const candidate = state.responseScript[0];
         const scripted = candidate && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)) ? state.responseScript.shift() : null;
+        if (provider === "google" && endpoint.queryRule === "upload-init") {
+          const uploadId = `upload-${state.uploadSessions.size + 1}`;
+          state.uploadSessions.set(uploadId, { body: parseJson(body), fileId: parsed.pathname.split("/").at(-1) });
+          response.writeHead(200, { location: `${baseUrls.google}/upload-session/${uploadId}` });
+          response.end();
+          return;
+        }
+        if (provider === "google" && endpoint.queryRule === "upload-body") {
+          const uploadId = parsed.pathname.split("/").at(-1);
+          if (!state.uploadSessions.has(uploadId)) return json(response, 404, { error: "upload session not found" });
+          return json(response, 200, { id: uploadId, name: state.uploadSessions.get(uploadId).body?.name || "fixture-upload", webViewLink: `https://drive.google.com/file/d/${uploadId}` });
+        }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/rpc/allocate_workflow_transaction_number") {
           const value = parseJson(body); const key = String(value.p_request_key || ""); let reservation = state.reservations.get(key);
           if (!reservation) { const sequence = (state.sequences.get(value.p_accounting_month) || 0) + 1; state.sequences.set(value.p_accounting_month, sequence); reservation = { requestKey: key, accountingMonth: value.p_accounting_month, sequence, transactionNo: `TXN-${value.p_accounting_month}-${String(sequence).padStart(4, "0")}` }; state.reservations.set(key, reservation); }
-          const result = { sequence: reservation.sequence, transaction_no: reservation.transactionNo, existing: Boolean(state.documents.get(`workflow_transaction:${reservation.transactionNo}`)) };
+          const result = { sequence: reservation.sequence, transaction_no: reservation.transactionNo, existing: Boolean(state.documents.get(`document:workflow_transaction:${reservation.transactionNo}`)) };
           if (scripted?.type === "drop-after-persist") return response.destroy();
           return json(response, 200, [result]);
         }
