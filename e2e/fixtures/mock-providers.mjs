@@ -46,6 +46,7 @@ function validShopeeQuery(rule, search) {
   if (keys.some(key => !common.includes(key) && !operation.includes(key))) return false;
   if (!["partner_id", "timestamp", "sign"].every(key => params.get(key))) return false;
   if (rule === "shopee-auth" && !params.get("redirect")) return false;
+  if (["shopee-order-list", "shopee-order-detail"].includes(rule) && !["access_token", "shop_id"].every(key => params.get(key))) return false;
   if (rule === "shopee-order-list" && !["time_range_field", "time_from", "time_to", "page_size"].every(key => params.get(key))) return false;
   if (rule === "shopee-order-detail" && !params.get("order_sn_list")) return false;
   return true;

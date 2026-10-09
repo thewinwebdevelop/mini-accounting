@@ -79,6 +79,10 @@ test("provider mock rejects unexpected outbound hosts and supports strict reques
     assert.equal(shopeeAuth.status, 200);
     const shopeeOrders = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_list?partner_id=1&timestamp=1&sign=s&access_token=a&shop_id=2&time_range_field=update_time&time_from=1&time_to=2&page_size=10`);
     assert.equal(shopeeOrders.status, 200);
+    const orderMissingAccessToken = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_list?partner_id=1&timestamp=1&sign=s&shop_id=2&time_range_field=update_time&time_from=1&time_to=2&page_size=10`);
+    assert.equal(orderMissingAccessToken.status, 404);
+    const detailMissingShopId = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_detail?partner_id=1&timestamp=1&sign=s&access_token=a&order_sn_list=ORDER-1`);
+    assert.equal(detailMissingShopId.status, 404);
     const shopeeToken = await fetch(`${mock.baseUrls.shopee}/api/v2/auth/token/get?partner_id=1&timestamp=1&sign=s`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ partner_id: 1, code: "fixture", shop_id: 2 }) });
     assert.equal(shopeeToken.status, 200);
     const googleInit = await fetch(`${mock.baseUrls.google}/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "fixture.pdf", parents: ["root"] }) });
