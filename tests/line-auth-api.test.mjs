@@ -175,6 +175,68 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
   }
 });
 
+test("mock auth mode signs the configured local fixture and guards the profile page", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-mock-auth-"));
+  const app = await startApp({
+    NODE_ENV: "test",
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "mock",
+    SWEET_HOUSE_MOCK_USER_ID: "fixture-user",
+    SWEET_HOUSE_MOCK_ROLE: "owner",
+    SWEET_HOUSE_MOCK_DISPLAY_NAME: "ผู้ทดสอบ Local",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const page = await fetch(`${app.baseUrl}/user-profile`, { redirect: "manual" });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("location"), "/mock-auth?returnTo=%2Fuser-profile");
+
+    const login = await fetch(`${app.baseUrl}/api/auth/mock-session`, { method: "POST" });
+    assert.equal(login.status, 200);
+    assert.deepEqual((await login.json()).user, {
+      id: "fixture-user",
+      lineUserId: "U_LOCAL_MOCK_USER",
+      displayName: "ผู้ทดสอบ Local",
+      pictureUrl: "",
+      status: "active",
+      role: "owner",
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+
+    const me = await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).user.userId, "fixture-user");
+
+    const profile = await fetch(`${app.baseUrl}/api/auth/profile`, { headers: { cookie } });
+    assert.equal(profile.status, 200);
+    assert.equal((await profile.json()).profile.companyPositionLabel, "เจ้าของบริษัท");
+
+    const positions = await fetch(`${app.baseUrl}/api/company-positions`, { headers: { cookie } });
+    assert.equal(positions.status, 200);
+    assert.deepEqual((await positions.json()).positions.map(position => position.id), ["mock-owner", "mock-marketing"]);
+
+    const updated = await fetch(`${app.baseUrl}/api/auth/profile`, {
+      method: "PATCH",
+      headers: { cookie, origin: app.baseUrl, "content-type": "application/json" },
+      body: JSON.stringify({
+        firstName: "ชื่อใหม่",
+        lastName: "นามสกุลใหม่",
+        companyPositionId: "mock-marketing",
+        userId: "attacker-user",
+        role: "admin",
+      }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).profile.companyPositionLabel, "marketing");
+
+    const authenticatedPage = await fetch(`${app.baseUrl}/user-profile`, { headers: { cookie } });
+    assert.equal(authenticatedPage.status, 200);
+  } finally {
+    await stopApp(app.child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("line session owns new numbered documents and rejects privileged lifecycle actions for employees", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-owner-"));
   const upstream = await startUpstream();

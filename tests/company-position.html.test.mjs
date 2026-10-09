@@ -58,6 +58,26 @@ test("company-position loader keeps a selected legacy label as a snapshot option
   assert.equal(select.value, "ผู้จัดการเดิม");
 });
 
+test("company-position loader handles the real browser NodeList returned by querySelectorAll", async () => {
+  const select = await loadLoader({
+    positions: [{ id: "p-1", label: "Owner", status: "active", sort_order: 1 }],
+  });
+  const nativeQuerySelectorAll = select.querySelectorAll.bind(select);
+  select.querySelectorAll = (selector) => {
+    const options = nativeQuerySelectorAll(selector);
+    return { 0: options[0], length: options.length };
+  };
+
+  await assert.doesNotReject(() => contextAwareLoadInto(select));
+
+  async function contextAwareLoadInto(target) {
+    const { document } = buildFakeDomFromHtml("");
+    const context = vm.createContext({ window: { document }, document, fetch: async () => ({ ok: true, json: async () => ({ positions: [] }) }) });
+    vm.runInContext(await readFile(loaderPath, "utf8"), context);
+    return context.window.SweetHouseCompanyPositions.loadInto(target);
+  }
+});
+
 test("company-position loader falls back to editable text when the master request is rejected", async () => {
   const select = await loadLoader({ fetchError: true, selectedValue: "ตำแหน่งเดิม" });
   const fallback = select.parentNode.querySelector('input[name="requesterRole"]');

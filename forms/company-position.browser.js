@@ -34,7 +34,7 @@
   async function loadInto(select, { selectedValue } = {}) {
     if (!select || String(select.tagName || "").toUpperCase() !== "SELECT") return;
     const selected = String(selectedValue ?? select.value ?? "");
-    const existingOptions = select.querySelectorAll?.("option") || [];
+    const existingOptions = Array.from(select.querySelectorAll?.("option") || []);
     const placeholder = existingOptions.find((option) => option.value === "") || existingOptions[0];
     const placeholderText = placeholder?.textContent || select.dataset.placeholder || "เลือกแผนก/ตำแหน่ง";
     let positions = [];

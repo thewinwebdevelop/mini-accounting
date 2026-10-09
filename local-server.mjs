@@ -180,6 +180,11 @@ const {
   signSession,
   verifySession,
 } = require("./forms/session.logic.js");
+const {
+  buildMockProfileStore,
+  buildMockSessionUser,
+  parseMockAuthConfig,
+} = require("./forms/mock-auth.logic.js");
 const { issueFileAccessToken, verifyFileAccessToken } = require("./forms/file-access.logic.js");
 const {
   ACTIONS,
@@ -221,6 +226,8 @@ const allowNetwork = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_ALLOW_
 const listenHost = resolveListenHost(runtimeEnv);
 const maxBodyBytes = 80 * 1024 * 1024;
 const authMode = String(runtimeEnv.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const mockAuthConfig = parseMockAuthConfig(process.env);
+const mockProfileStore = mockAuthConfig.enabled ? buildMockProfileStore(mockAuthConfig) : null;
 const sessionSecret = String(runtimeEnv.SWEET_HOUSE_SESSION_SECRET || "");
 const sessionTtlSeconds = Math.max(300, Number(runtimeEnv.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
 const cookieSecure = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_COOKIE_SECURE || ""))
@@ -394,6 +401,7 @@ function sendAuthError(response, statusCode, code, error, { clearCookie = false 
 function isPublicApiPath(pathname) {
   return pathname === "/api/healthz"
     || pathname === "/api/auth/line-session"
+    || pathname === "/api/auth/mock-session"
     || pathname === "/api/auth/me"
     || pathname === "/api/auth/logout"
     || pathname === "/api/google-drive/oauth2callback"
@@ -421,8 +429,9 @@ function readRequestSession(request) {
 
 function requireAuthenticatedRequest(request, response, url) {
   const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
-  const isProtectedPagePath = authMode === "line" && ["/user-profile", "/user-profile/"].includes(url.pathname);
-  if (authMode !== "line" || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
+  const authEnforced = authMode === "line" || authMode === "mock";
+  const isProtectedPagePath = authEnforced && ["/user-profile", "/user-profile/"].includes(url.pathname);
+  if (!authEnforced || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
   const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
   const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
@@ -445,7 +454,8 @@ function requireAuthenticatedRequest(request, response, url) {
   } catch (error) {
     if (isProtectedPagePath) {
       if (error.code !== "SESSION_MISSING") response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
-      redirect(response, `/line-auth?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
+      const authEntryPath = authMode === "mock" ? "/mock-auth" : "/line-auth";
+      redirect(response, `${authEntryPath}?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
       return false;
     }
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
@@ -615,7 +625,7 @@ async function handleLineSession(request, response) {
 }
 
 function handleAuthMe(request, response) {
-  if (authMode !== "line") {
+  if (authMode !== "line" && authMode !== "mock") {
     sendJson(response, 200, { authenticated: false, mode: "disabled", user: null });
     return;
   }
@@ -629,6 +639,31 @@ function handleAuthMe(request, response) {
     }
     sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
   }
+}
+
+function handleMockSession(request, response) {
+  if (authMode !== "mock" || !mockAuthConfig.enabled) {
+    sendAuthError(response, 404, "MOCK_AUTH_DISABLED", "Mock auth is disabled");
+    return;
+  }
+  if (!sessionSecret) {
+    sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+    return;
+  }
+  const user = buildMockSessionUser(mockAuthConfig);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + sessionTtlSeconds;
+  const token = signSession({
+    userId: user.id,
+    lineUserId: user.lineUserId,
+    displayName: user.displayName,
+    pictureUrl: user.pictureUrl,
+    role: user.role,
+    iat: issuedAt,
+    exp: expiresAt,
+  }, sessionSecret);
+  response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
+  sendJson(response, 200, { user, expiresAt });
 }
 
 function handleAuthLogout(response) {
@@ -652,6 +687,10 @@ function sendProfileOperationError(response, error, fallback) {
 
 async function handleAppUserProfileGet(request, response) {
   try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { profile: mockProfileStore.getProfile(request.auth?.userId) });
+      return;
+    }
     const profile = await getAppUserProfile({
       client: createSupabaseAdminClient(),
       userId: request.auth?.userId,
@@ -665,6 +704,11 @@ async function handleAppUserProfileGet(request, response) {
 async function handleAppUserProfilePatch(request, response) {
   try {
     const payload = await readJsonBody(request);
+    if (authMode === "mock" && mockProfileStore) {
+      const profile = mockProfileStore.updateProfile(request.auth?.userId, payload);
+      sendJson(response, 200, { profile });
+      return;
+    }
     const profile = await updateAppUserProfile({
       client: createSupabaseAdminClient(),
       userId: request.auth?.userId,
@@ -678,6 +722,10 @@ async function handleAppUserProfilePatch(request, response) {
 
 async function handleCompanyPositionsGet(response) {
   try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { positions: mockProfileStore.listPositions() });
+      return;
+    }
     const positions = await listCompanyPositions({ client: createSupabaseAdminClient() });
     sendJson(response, 200, { positions });
   } catch (error) {
@@ -703,6 +751,8 @@ function safeStaticPath(urlPath) {
     "/": "/index.html",
     "/line-auth": "/line-auth.html",
     "/line-auth/": "/line-auth.html",
+    "/mock-auth": "/mock-auth.html",
+    "/mock-auth/": "/mock-auth.html",
     "/line-intake/auth": "/line-auth.html",
     "/line-intake/auth/": "/line-auth.html",
     "/line-intake": "/line-intake.html",
@@ -3198,6 +3248,11 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/auth/line-session") {
     await handleLineSession(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/mock-session") {
+    handleMockSession(request, response);
     return;
   }
 
