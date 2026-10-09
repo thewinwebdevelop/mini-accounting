@@ -20,7 +20,7 @@ function assertNoProductionSecrets(env = process.env) {
 async function createAppServer({ env, rootDir, mockBaseUrl }) {
   const child = spawn(process.execPath, [path.join(repoDir, "local-server.mjs")], {
     cwd: repoDir,
-    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files", NODE_OPTIONS: `${env.NODE_OPTIONS || ""} --import=${path.join(repoDir, "e2e/fixtures/outbound-guard.mjs")}`, E2E_ALLOWED_HOSTS: Object.values(env).filter(value => typeof value === "string" && value.startsWith("http://127.0.0.1:")).map(value => new URL(value).host).join(",") },
+    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files", NODE_OPTIONS: `${env.NODE_OPTIONS || ""} --import=${path.join(repoDir, "e2e/fixtures/outbound-guard.mjs")}`, E2E_ALLOWED_HOSTS: [mockBaseUrl, ...Object.values(env).filter(value => typeof value === "string" && value.startsWith("http://127.0.0.1:"))].map(value => new URL(value).host).join(","), E2E_OUTBOUND_GUARD_LOG: path.join(rootDir, "e2e-outbound-blocked.log") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";

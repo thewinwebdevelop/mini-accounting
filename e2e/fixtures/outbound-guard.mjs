@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+
 const allowedHosts = new Set(String(process.env.E2E_ALLOWED_HOSTS || "")
   .split(",")
   .map(value => value.trim())
@@ -7,6 +9,7 @@ const nativeFetch = globalThis.fetch;
 export function assertAllowedOutboundUrl(input) {
   const url = new URL(input instanceof URL ? input : String(input));
   if (!allowedHosts.has(url.host)) {
+    if (process.env.E2E_OUTBOUND_GUARD_LOG) appendFileSync(process.env.E2E_OUTBOUND_GUARD_LOG, `${url.host}\n`);
     throw new Error(`E2E outbound host blocked: ${url.host}`);
   }
   return url;

@@ -22,7 +22,7 @@ test("local environments use fresh isolated roots and the health marker", async 
     assert.notEqual(first.rootDir, second.rootDir);
     assert.match(first.baseUrl, /^http:\/\/127\.0\.0\.1:\d+\/$/);
     assert.deepEqual((await fetch(new URL("__e2e__/health", first.baseUrl)).then(r => r.json())).runId, first.runId);
-    assert.equal(first.mock.requests.some(request => request.host && !request.mock), false);
+    assert.equal(first.mock.requests.every(request => Object.values(first.mock.baseUrls).some(url => request.host === new URL(url).host)), true);
   } finally {
     await Promise.all([first.stop(), second.stop()]);
   }
@@ -60,11 +60,21 @@ test("provider mock rejects unexpected outbound hosts and supports strict reques
     assert.equal(mock.requests.at(-1).path, "/rest/v1/fixture_probe");
     const rejected = await fetch(`${mock.baseUrls.supabase}/not-allowlisted`, { method: "DELETE" });
     assert.equal(rejected.status, 404);
-    assert.match(await rejected.text(), /unexpected mock request/);
+    assert.match(await rejected.text(), /unexpected mock endpoint/);
     const wrongHost = await fetch(`${mock.baseUrls.supabase.replace("127.0.0.1", "localhost")}/rest/v1/fixture_probe`);
     assert.equal(wrongHost.status, 400);
     const wrongBody = await fetch(`${mock.baseUrls.line}/v2/bot/message/reply`, { method: "POST", body: "not-json" });
     assert.equal(wrongBody.status, 400);
+    const extraField = await fetch(`${mock.baseUrls.line}/v2/bot/message/reply`, { method: "POST", body: JSON.stringify({ replyToken: "fixture", messages: [], extra: true }) });
+    assert.equal(extraField.status, 400);
+    const nearMiss = await fetch(`${mock.baseUrls.supabase}/rest/v1/fixture_probe/near-miss`);
+    assert.equal(nearMiss.status, 404);
+    const badQuery = await fetch(`${mock.baseUrls.google}/drive/v3/files?unexpected=true`);
+    assert.equal(badQuery.status, 404);
+    const badShopeeBody = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_detail`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ order_sn_list: [], extra: true }) });
+    assert.equal(badShopeeBody.status, 400);
+    const badRpcBody = await fetch(`${mock.baseUrls.supabase}/rest/v1/rpc/allocate_workflow_transaction_number`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ p_accounting_month: "2026-10", p_request_key: "x", extra: true }) });
+    assert.equal(badRpcBody.status, 400);
   } finally {
     await mock.stop();
   }
@@ -134,6 +144,38 @@ test("cloud provider endpoint persists documents and reservations across restart
     try {
       assert.deepEqual(await fetch(`${restarted.mock.baseUrls.supabase}/rest/v1/e2e_documents`).then(r => r.json()), [document]);
       assert.deepEqual(await fetch(`${restarted.mock.baseUrls.supabase}/rest/v1/e2e_reservations`).then(r => r.json()), [reservation]);
+    } finally { await restarted.stop(); }
+  } finally { await runtime.stop(); }
+});
+
+test("cloud app creates, retries, restarts, and survives a dropped document response", async () => {
+  const runtime = await createCloudRuntimeMock({ workerIndex: 10 });
+  const session = createTestSession({ ...PERSONAS.owner, secret: "e2e-test-session-secret-012345678901234567890123" });
+  const headers = { "content-type": "application/json", origin: "http://127.0.0.1", cookie: `sweet_house_session=${encodeURIComponent(session)}` };
+  const create = (baseUrl, idempotencyKey, title) => fetch(`${baseUrl}api/workflow-transactions`, {
+    method: "POST", headers,
+    body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-10", title, idempotencyKey }),
+  });
+  try {
+    const first = await create(runtime.baseUrl, "cloud-request-1", "Cloud first");
+    const firstText = await first.text();
+    assert.equal(first.status, 200, `${firstText} requests=${JSON.stringify(runtime.mock.requests)}`);
+    const firstBody = JSON.parse(firstText);
+    assert.match(firstBody.transactionNo, /^TXN-2026-10-0001$/);
+    const restarted = await runtime.restartApp();
+    try {
+      const retryAfterRestart = await fetch(`${restarted.baseUrl}api/workflow-transactions`, { method: "POST", headers, body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-10", title: "Cloud first retry", idempotencyKey: "cloud-request-1" }) });
+      assert.equal(retryAfterRestart.status, 200);
+      assert.equal((await retryAfterRestart.json()).transactionNo, firstBody.transactionNo);
+      restarted.mock.scriptResponse({ type: "drop-after-persist", endpoint: "/rest/v1/documents" });
+      const dropped = await create(restarted.baseUrl, "cloud-request-2", "Dropped response");
+      assert.equal(dropped.status, 400);
+      const retryDropped = await fetch(`${restarted.baseUrl}api/workflow-transactions`, { method: "POST", headers, body: JSON.stringify({ templateId: "director_expense_transfer", accountingMonth: "2026-10", title: "Dropped response retry", idempotencyKey: "cloud-request-2" }) });
+      assert.equal(retryDropped.status, 200);
+      assert.match((await retryDropped.json()).transactionNo, /^TXN-2026-10-0002$/);
+      assert.equal(restarted.mock.state.documents.size, 2);
+      assert.equal(restarted.mock.requests.every(request => request.verified === true && Object.values(restarted.mock.baseUrls).some(url => request.host === new URL(url).host)), true);
+      await assert.rejects(access(path.join(restarted.rootDir, "e2e-outbound-blocked.log")));
     } finally { await restarted.stop(); }
   } finally { await runtime.stop(); }
 });
