@@ -66,6 +66,8 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
     DATA_BACKEND_DOCUMENTS: profile === "cloud-runtime-mocked" ? "supabase-read" : "local",
     LINE_OCR_PROVIDER: "http",
     LINE_OCR_API_KEY: "e2e-ocr-key",
+    LINE_CHANNEL_ID: "e2e-line-channel",
+    LINE_LIFF_ID: "e2e-liff-id",
   };
   let app;
   try {

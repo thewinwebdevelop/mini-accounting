@@ -6,6 +6,7 @@ const ENDPOINTS = {
   supabase: [
     ["GET", "/rest/v1/fixture_probe", "none"], ["GET", "/rest/v1/e2e_documents", "none"], ["POST", "/rest/v1/e2e_documents", "none"],
     ["GET", "/rest/v1/e2e_reservations", "none"], ["POST", "/rest/v1/e2e_reservations", "none"],
+    ["GET", "/rest/v1/app_users", "app-users"], ["POST", "/rest/v1/app_users", "app-users"],
     ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
     ["POST", "/rest/v1/document_files", "on_conflict=source_key"], ["GET", "/rest/v1/document_files", "query"], ["POST", "/rest/v1/storage_migration_records", "migration-conflict"],
     ["GET", "/rest/v1/company_settings", "query"], ["GET", "/rest/v1/vendors", "query"], ["GET", "/rest/v1/inventory_products", "query"],
@@ -72,6 +73,7 @@ function validBody(provider, method, pathname, body, endpoint, headers = {}) {
   if (provider === "supabase" && pathname.endsWith("allocate_workflow_transaction_number")) return exactKeys(value, ["p_accounting_month", "p_request_key"], ["p_accounting_month", "p_request_key"]);
   if (provider === "supabase" && pathname.endsWith("e2e_documents")) return exactKeys(value, ["documentNo", "title"], ["documentNo"]);
   if (provider === "supabase" && pathname.endsWith("e2e_reservations")) return exactKeys(value, ["requestKey", "transactionNo"], ["requestKey", "transactionNo"]);
+  if (provider === "supabase" && pathname === "/rest/v1/app_users") return Object.keys(value).every(key => ["line_user_id", "display_name", "picture_url", "last_login_at", "updated_at"].includes(key));
   if (provider === "supabase" && pathname === "/rest/v1/documents") return Object.keys(value).every(key => ["source_key", "document_kind", "document_no", "owner_user_id", "status", "accounting_month", "folder_path", "payload", "source_hash", "created_at", "updated_at"].includes(key));
   if (provider === "supabase" && pathname === "/rest/v1/document_files") return Object.keys(value).every(key => ["source_key", "document_source_key", "bucket_name", "object_path", "source_sha256", "byte_size", "content_type", "original_name", "migrated_at"].includes(key));
   if (provider === "supabase" && pathname === "/rest/v1/storage_migration_records") return Object.keys(value).every(key => ["migration_name", "source_key", "bucket_name", "object_path", "source_sha256", "byte_size", "content_type", "migrated_at"].includes(key));
@@ -96,9 +98,22 @@ function json(response, status, value) { response.writeHead(status, { "content-t
 
 export async function createMockProviders({ profile = "local", runId = "run", state: suppliedState = null } = {}) {
   const requests = [];
-  const state = suppliedState || { runId, documents: new Map(), reservations: new Map(), responseScript: [], sequences: new Map() };
+  const state = suppliedState || { runId, documents: new Map(), reservations: new Map(), responseScript: [], sequences: new Map(), appUsers: new Map() };
   if (!state.sequences) state.sequences = new Map();
   if (!state.uploadSessions) state.uploadSessions = new Map();
+  if (!state.appUsers) state.appUsers = new Map();
+  if (!state.appUsers.size) {
+    const personas = [
+      ["employee-a", "employee-a", "Employee A", "active", "employee"],
+      ["employee-b", "employee-b", "Employee B", "active", "employee"],
+      ["owner-1", "owner-1", "Owner", "active", "owner"],
+      ["accounting-1", "accounting-1", "Accounting", "active", "accounting"],
+      ["admin-1", "admin-1", "Admin", "active", "admin"],
+      ["pending-1", "pending-1", "Pending", "pending", ""],
+      ["inactive-1", "inactive-1", "Inactive", "inactive", ""],
+    ];
+    for (const [id, lineUserId, displayName, status, role] of personas) state.appUsers.set(lineUserId, { id, line_user_id: `U${lineUserId.replaceAll("-", "")}`, display_name: displayName, picture_url: "", status, app_user_roles: role ? { role_code: role } : null });
+  }
   const servers = [];
   const baseUrls = {};
   try {
@@ -117,6 +132,25 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         if (!validBody(provider, method, parsed.pathname, body, endpoint, request.headers)) return json(response, 400, { error: "unexpected mock request body" });
         const candidate = state.responseScript[0];
         const scripted = candidate && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)) ? state.responseScript.shift() : null;
+        if (provider === "line" && parsed.pathname.endsWith("/verify")) {
+          const token = new URLSearchParams(body.toString("utf8")).get("id_token") || "";
+          const lineUserId = token.replace(/^fixture-token-/, "") || "employee-a";
+          const row = state.appUsers.get(lineUserId) || [...state.appUsers.values()].find(candidate => candidate.id === lineUserId || candidate.id === `${lineUserId}-1`) || state.appUsers.get("employee-a");
+          return json(response, 200, { iss: "https://access.line.me", aud: "e2e-line-channel", sub: row.line_user_id, name: row.display_name, exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000) });
+        }
+        if (provider === "supabase" && parsed.pathname === "/rest/v1/app_users") {
+          const value = parseJson(body);
+          if (method === "POST" && value?.line_user_id) {
+            const existingKey = state.appUsers.has(value.line_user_id) ? value.line_user_id : [...state.appUsers.entries()].find(([, candidate]) => candidate.line_user_id === value.line_user_id)?.[0];
+            const existing = existingKey ? state.appUsers.get(existingKey) : { id: value.line_user_id, line_user_id: value.line_user_id, status: "pending", app_user_roles: null };
+            const key = existingKey || value.line_user_id;
+            state.appUsers.set(key, { ...existing, display_name: value.display_name || existing.display_name || "", picture_url: value.picture_url || existing.picture_url || "" });
+            return json(response, 201, [state.appUsers.get(key)]);
+          }
+          const lineUserId = new URLSearchParams(parsed.search).get("line_user_id")?.replace(/^eq\./, "");
+          const row = lineUserId && (state.appUsers.get(lineUserId) || [...state.appUsers.values()].find(candidate => candidate.line_user_id === lineUserId));
+          return json(response, 200, row ? [row] : []);
+        }
         if (provider === "google" && endpoint.queryRule === "upload-init") {
           const uploadId = `upload-${state.uploadSessions.size + 1}`;
           state.uploadSessions.set(uploadId, { body: parseJson(body), fileId: parsed.pathname.split("/").at(-1) });
