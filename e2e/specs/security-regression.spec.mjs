@@ -63,6 +63,27 @@ test("employee A and B cannot cross-read, download or mutate existing documents"
   await a.close(); await b.close();
 });
 
+test("owner, accounting and admin can read both documents and reach permitted mutation checks", async ({ localApp, seed }) => {
+  const documents = seed.documents.map(document => document.documentNo);
+  for (const role of ["owner", "accounting", "admin"]) {
+    const user = localApp.users[role];
+    const token = createTestSession({ ...user, secret: SECRET });
+    const headers = { cookie: `sweet_house_session=${token}`, origin: localApp.baseUrl.slice(0, -1) };
+    const first = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}`, { headers });
+    const second = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}`, { headers });
+    expect(first.status, `${role} cannot read document A`).toBe(200);
+    expect(second.status, `${role} cannot read document B`).toBe(200);
+    const detail = await first.json();
+    const filePath = detail.pdfFiles[0].url;
+    expect((await fetch(`${localApp.baseUrl.slice(0, -1)}${filePath}`, { headers })).status).toBe(200);
+    const mutationPath = role === "accounting"
+      ? "api/workflow-documents/purchase_order/fixture-missing/approve"
+      : "api/workflow-templates";
+    const mutation = await fetch(`${localApp.baseUrl}${mutationPath}`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}" });
+    expect(mutation.status, `${role} was incorrectly denied at the mutation permission boundary`).not.toBe(403);
+  }
+});
+
 test("unsafe return, traversal and expired file tokens are rejected", async ({ anonymousPage, localApp }) => {
   const login = new URL(`${localApp.baseUrl}/line-auth`);
   login.searchParams.set("returnTo", "//evil.example/steal");
