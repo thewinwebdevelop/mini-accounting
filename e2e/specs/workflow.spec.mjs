@@ -133,6 +133,8 @@ test.describe("workflow local journeys", () => {
     const linksBefore = await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => new URL(link.href).pathname));
     const cancellationBefore = requested.cancellation;
     const childBefore = requested.childDocuments.map(({ documentKind, documentNo, status, completedAt, workflowStepId }) => ({ documentKind, documentNo, status, completedAt, workflowStepId }));
+    await transaction.open();
+    await expect(page.locator("#cancellationSummary")).toBeVisible();
     const repeated = await transaction.cancelAgainInBrowser();
     expect(repeated.statusCode).toBe(200);
     expect(repeated.body.status).toBe("cancelled");
