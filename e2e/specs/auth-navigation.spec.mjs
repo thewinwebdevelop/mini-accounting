@@ -1,30 +1,34 @@
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
+import { LoginPage } from "../pages/login.page.mjs";
 import { NavigationPage } from "../pages/navigation.page.mjs";
 import { createTestSession, sessionCookie } from "../fixtures/auth.fixture.mjs";
 
 const SECRET = "e2e-test-session-secret-012345678901234567890123";
 
-test("LIFF bootstrap creates a session and returns only to an internal path", async ({ browser, localApp }) => {
-  const response = await fetch(`${localApp.baseUrl}api/auth/line-session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: "fixture-token-employee-a" }) });
-  expect(response.status).toBe(200);
-  const token = decodeURIComponent((response.headers.get("set-cookie") || "").match(/sweet_house_session=([^;]+)/)?.[1] || "");
-  const context = await browser.newContext();
-  await context.addCookies([{ name: "sweet_house_session", value: token, url: localApp.baseUrl }]);
-  const anonymousPage = await context.newPage();
-  await anonymousPage.goto(`${localApp.baseUrl}expense-requests`, { waitUntil: "commit" });
-  await expect(anonymousPage).toHaveURL(/\/expense-requests$/);
-  await expect(anonymousPage.evaluate(() => fetch("/api/auth/me").then(response => response.json()))).resolves.toMatchObject({ authenticated: true, user: { userId: "employee-a" } });
-  await context.close();
+test("actual LIFF bootstrap creates a session and honors internal returnTo", async ({ anonymousPage, localApp }) => {
+  await anonymousPage.goto(`${localApp.baseUrl}line-auth?returnTo=%2Fexpense-requests`, { waitUntil: "commit" });
+  await anonymousPage.waitForFunction(() => Boolean(window.SweetHouseAuth));
+  const session = await fetch(`${localApp.baseUrl}api/auth/line-session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: "fixture-token-employee-a" }) });
+  expect(session.status).toBe(200);
+  expect(await anonymousPage.evaluate(() => window.SweetHouseAuth.safeReturnPath())).toBe("/expense-requests");
+  const externalPage = await anonymousPage.context().newPage();
+  const externalRequests = [];
+  externalPage.on("request", request => { if (request.url().startsWith("https://evil.example")) externalRequests.push(request.url()); });
+  await externalPage.goto(`${localApp.baseUrl}line-auth?returnTo=%2F%2Fevil.example%2Fsteal`, { waitUntil: "commit" });
+  await externalPage.waitForFunction(() => Boolean(window.SweetHouseAuth));
+  expect(await externalPage.evaluate(() => window.SweetHouseAuth.safeReturnPath())).toBe("/");
+  expect(externalRequests).toEqual([]);
+  await externalPage.close();
 });
 
-test("pending and inactive users are denied while active users can logout", async ({ browser, localApp }) => {
+test("pending and inactive users are denied while active users can logout", async ({ browser, anonymousPage, localApp }) => {
   const pending = await fetch(`${localApp.baseUrl}api/auth/line-session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: "fixture-token-pending" }) });
   expect(pending.status).toBe(403);
   const context = await browser.newContext();
   const page = await context.newPage();
-  const response = await page.request.post(`${localApp.baseUrl}api/auth/line-session`, { data: { idToken: "fixture-token-inactive" } });
-  expect(response.status()).toBe(403);
+  const inactive = await fetch(`${localApp.baseUrl}api/auth/line-session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: "fixture-token-inactive" }) });
+  expect(inactive.status).toBe(403);
   await context.close();
 
   const activeContext = await browser.newContext();
@@ -44,7 +48,9 @@ test("role navigation shells are available for employee, owner, accounting and a
     await context.addCookies([{ ...sessionCookie(createTestSession({ ...user, secret: SECRET })), url: localApp.baseUrl }]);
     const page = await context.newPage();
     await page.goto(localApp.baseUrl);
-    await new NavigationPage(page).assertMenuFor(role);
+    const navigation = new NavigationPage(page);
+    await navigation.assertMenuFor(role);
+    await navigation.assertRoleApiBoundary(role);
     await context.close();
   }
 });

@@ -7,7 +7,7 @@ export const test = base.extend({
     const environment = await createE2EEnvironment({ profile: "local", workerIndex: testInfo.workerIndex });
     try { await use(environment); } finally { await environment.stop(); }
   }, { scope: "worker" }],
-  seed: async ({ localApp }, use) => use({ users: localApp.users, rootDir: localApp.rootDir, runId: localApp.runId }),
+  seed: async ({ localApp }, use) => use({ ...localApp.manifest, rootDir: localApp.rootDir }),
   mock: async ({ localApp }, use) => use(localApp.mock),
   authenticatedPage: async ({ browser, localApp }, use, testInfo) => {
     const persona = localApp.users.employeeA;

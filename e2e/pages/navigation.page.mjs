@@ -25,4 +25,14 @@ export class NavigationPage {
     expect(response.status()).toBe(expectedStatus);
     return response;
   }
+
+  async assertRoleApiBoundary(role) {
+    const me = await this.page.evaluate(() => fetch("/api/auth/me").then(response => response.json()));
+    expect(me.authenticated).toBeTruthy();
+    expect(me.user.role).toBe(role);
+    if (role === "employee") {
+      const status = await this.page.evaluate(() => fetch("/api/workflow-templates", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(response => response.status));
+      expect(status).toBe(403);
+    }
+  }
 }

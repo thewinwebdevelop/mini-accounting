@@ -96,7 +96,8 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
     await mock.stop();
     await rm(rootDir, { recursive: true, force: true });
   };
-  return { runId, baseUrl: app.baseUrl, rootDir, mock, stop, users: (await createFixtureData({ rootDir, runId })).users, app };
+  const manifest = await createFixtureData({ rootDir, runId });
+  return { runId, baseUrl: app.baseUrl, rootDir, mock, stop, users: manifest.users, manifest, app };
 }
 
 export { createAppServer, assertNoProductionSecrets };
