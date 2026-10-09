@@ -1,6 +1,6 @@
-async function downloadLineContent({ messageId, accessToken, fetchImpl = fetch, maxBytes = 20 * 1024 * 1024 }) {
+async function downloadLineContent({ messageId, accessToken, fetchImpl = fetch, maxBytes = 20 * 1024 * 1024, baseUrl = process.env.LINE_CONTENT_BASE_URL || "https://api-data.line.me" }) {
   if (!messageId || !accessToken) throw Object.assign(new Error("LINE content configuration is missing"), { code: "LINE_CONTENT_CONFIG_MISSING" });
-  const response = await fetchImpl(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+  const response = await fetchImpl(`${String(baseUrl).replace(/\/$/, "")}/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
     headers: { authorization: `Bearer ${accessToken}` },
   });
   if (!response.ok) throw Object.assign(new Error("ไม่สามารถดาวน์โหลดไฟล์จาก LINE ได้"), { code: "LINE_CONTENT_DOWNLOAD_FAILED" });
@@ -31,10 +31,10 @@ function buildIntakeReviewReply({ replyToken, intake, miniAppUrl }) {
   };
 }
 
-async function replyToLine({ replyToken, messages, accessToken, fetchImpl = fetch }) {
+async function replyToLine({ replyToken, messages, accessToken, fetchImpl = fetch, replyUrl = process.env.LINE_REPLY_URL || "https://api.line.me/v2/bot/message/reply" }) {
   if (!replyToken) return { skipped: true };
   if (!accessToken) throw Object.assign(new Error("LINE channel access token is missing"), { code: "LINE_BOT_CONFIG_MISSING" });
-  const response = await fetchImpl("https://api.line.me/v2/bot/message/reply", {
+  const response = await fetchImpl(replyUrl, {
     method: "POST",
     headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     body: JSON.stringify({ replyToken, messages }),

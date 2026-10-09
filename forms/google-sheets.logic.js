@@ -25,6 +25,8 @@ const expenseHeaders = [
   "ยอดจ่ายสุทธิ",
   "ลิงก์เอกสาร",
 ];
+function googleApiBaseUrl() { return String(process.env.GOOGLE_API_BASE_URL || "https://www.googleapis.com").replace(/\/$/, ""); }
+function googleSheetsBaseUrl() { return String(process.env.GOOGLE_SHEETS_API_BASE_URL || "https://sheets.googleapis.com").replace(/\/$/, ""); }
 
 function escapeSheetName(sheetName) {
   return `'${String(sheetName).replace(/'/g, "''")}'`;
@@ -51,7 +53,7 @@ async function findExpenseSpreadsheet({ accessToken, fetchImpl, title, parentId 
     `mimeType = '${spreadsheetMimeType}'`,
     "trashed = false",
   ].join(" and ");
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  const url = new URL(`${googleApiBaseUrl()}/drive/v3/files`);
   url.searchParams.set("q", query);
   url.searchParams.set("fields", "files(id,name,webViewLink)");
   url.searchParams.set("pageSize", "1");
@@ -66,7 +68,7 @@ async function findDriveFolderReadOnly({ accessToken, fetchImpl, name, parentId 
     "mimeType = 'application/vnd.google-apps.folder'",
     "trashed = false",
   ].join(" and ");
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  const url = new URL(`${googleApiBaseUrl()}/drive/v3/files`);
   url.searchParams.set("q", query);
   url.searchParams.set("fields", "files(id,name,webViewLink)");
   url.searchParams.set("pageSize", "1");
@@ -97,7 +99,7 @@ async function createExpenseSpreadsheet({ accessToken, fetchImpl, title, parentI
   return driveFetchJson({
     accessToken,
     fetchImpl,
-    url: "https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink",
+    url: `${googleApiBaseUrl()}/drive/v3/files?fields=id,name,webViewLink`,
     options: {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -156,14 +158,14 @@ async function ensureMonthlySheet({ accessToken, fetchImpl, spreadsheetId, sheet
   const metadata = await sheetsFetchJson({
     accessToken,
     fetchImpl,
-    url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
+    url: `${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
   });
   const exists = (metadata.sheets || []).some((sheet) => sheet.properties?.title === sheetName);
   if (!exists) {
     await sheetsFetchJson({
       accessToken,
       fetchImpl,
-      url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
+      url: `${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
       options: {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -181,7 +183,7 @@ async function ensureMonthlySheet({ accessToken, fetchImpl, spreadsheetId, sheet
 }
 
 async function getValues({ accessToken, fetchImpl, spreadsheetId, range }) {
-  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
+  const url = new URL(`${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
   const data = await sheetsFetchJson({ accessToken, fetchImpl, url: url.toString() });
   return data.values || [];
 }
@@ -255,7 +257,7 @@ async function findMonthlyExpenseSourceKeyConflicts({
     const metadata = await sheetsFetchJson({
       accessToken,
       fetchImpl,
-      url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(destination.id)}?fields=sheets.properties`,
+      url: `${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(destination.id)}?fields=sheets.properties`,
     });
     if ((metadata.sheets || []).some((sheet) => sheet.properties?.title === sheetName)) {
       await inspectLocation({ spreadsheetId: destination.id, sheetName });
@@ -266,7 +268,7 @@ async function findMonthlyExpenseSourceKeyConflicts({
 }
 
 async function updateValues({ accessToken, fetchImpl, spreadsheetId, range, values }) {
-  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
+  const url = new URL(`${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`);
   url.searchParams.set("valueInputOption", "USER_ENTERED");
   return sheetsFetchJson({
     accessToken,
@@ -281,7 +283,7 @@ async function updateValues({ accessToken, fetchImpl, spreadsheetId, range, valu
 }
 
 async function appendValues({ accessToken, fetchImpl, spreadsheetId, range, values }) {
-  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append`);
+  const url = new URL(`${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append`);
   url.searchParams.set("valueInputOption", "USER_ENTERED");
   url.searchParams.set("insertDataOption", "INSERT_ROWS");
   return sheetsFetchJson({
@@ -450,7 +452,7 @@ async function readMonthlyExpenseSheetMetadata({ accessToken, fetchImpl, spreads
   return sheetsFetchJson({
     accessToken,
     fetchImpl,
-    url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
+      url: `${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
   });
 }
 
@@ -631,7 +633,7 @@ async function deleteMonthlyExpenseRowsBySourceKey({
         await sheetsFetchJson({
           accessToken,
           fetchImpl,
-          url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(location.spreadsheetId)}:batchUpdate`,
+          url: `${googleSheetsBaseUrl()}/v4/spreadsheets/${encodeURIComponent(location.spreadsheetId)}:batchUpdate`,
           options: {
             method: "POST",
             headers: { "content-type": "application/json" },

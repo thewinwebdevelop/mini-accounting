@@ -220,6 +220,7 @@ const sessionTtlSeconds = Math.max(300, Number(runtimeEnv.SWEET_HOUSE_SESSION_TT
 const cookieSecure = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_COOKIE_SECURE || ""))
   || String(runtimeEnv.NODE_ENV || "").toLowerCase() === "production";
 const appPublicOrigin = String(runtimeEnv.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
+const e2eRunId = String(runtimeEnv.E2E_RUN_ID || "").trim();
 const googleOAuthRedirectUri = String(runtimeEnv.GOOGLE_OAUTH_REDIRECT_URI || "").trim();
 const lineChannelSecret = String(runtimeEnv.LINE_CHANNEL_SECRET || "");
 const lineChannelAccessToken = String(runtimeEnv.LINE_CHANNEL_ACCESS_TOKEN || "");
@@ -3085,6 +3086,11 @@ async function handleStaticFile(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "GET" && url.pathname === "/__e2e__/health") {
+    sendJson(response, 200, { ok: true, runId: e2eRunId });
+    return;
+  }
 
   if (request.method === "GET" && url.pathname === "/healthz") {
     sendJson(response, 200, healthPayload(runtimeEnv));

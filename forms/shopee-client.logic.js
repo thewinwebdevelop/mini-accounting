@@ -43,7 +43,7 @@ function apiError(response, body) {
   return error;
 }
 
-function createShopeeClient({ partnerId, partnerKey, fetchImpl = globalThis.fetch, baseUrl = DEFAULT_BASE_URL, now = Date.now }) {
+function createShopeeClient({ partnerId, partnerKey, fetchImpl = globalThis.fetch, baseUrl = process.env.SHOPEE_API_BASE_URL || DEFAULT_BASE_URL, now = Date.now }) {
   if (!partnerId || !partnerKey) throw new Error("Shopee client ต้องมี partnerId และ partnerKey");
 
   function buildAuthorizationUrl({ redirectUrl, state = "" } = {}) {

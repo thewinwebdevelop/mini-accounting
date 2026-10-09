@@ -31,8 +31,8 @@ function normalizeOcrResult(result = {}) {
 
 async function scanLineDocument({
   provider = "manual",
-  endpoint = "",
-  apiKey = "",
+  endpoint = process.env.LINE_OCR_API_URL || "",
+  apiKey = process.env.LINE_OCR_API_KEY || "",
   bytes,
   contentType,
   fileName,

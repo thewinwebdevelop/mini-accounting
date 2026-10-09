@@ -8,6 +8,8 @@ const driveScopes = [
 ];
 const driveScope = driveScopes.join(" ");
 const defaultDriveBasePath = "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี";
+function googleApiBaseUrl() { return String(process.env.GOOGLE_API_BASE_URL || "https://www.googleapis.com").replace(/\/$/, ""); }
+function googleOAuthTokenUrl() { return process.env.GOOGLE_OAUTH_TOKEN_URL || "https://oauth2.googleapis.com/token"; }
 
 function getConfigDir(rootDir) {
   return path.join(rootDir, "config");
@@ -166,7 +168,7 @@ async function exchangeGoogleOAuthCode({
     grant_type: "authorization_code",
     redirect_uri: redirectUri,
   });
-  const token = await fetchJson(fetchImpl, "https://oauth2.googleapis.com/token", {
+  const token = await fetchJson(fetchImpl, googleOAuthTokenUrl(), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
@@ -198,7 +200,7 @@ async function getValidAccessToken({ rootDir, fetchImpl = fetch, nowMs = () => D
     return token.access_token;
   }
 
-  const refreshed = await fetchJson(fetchImpl, "https://oauth2.googleapis.com/token", {
+  const refreshed = await fetchJson(fetchImpl, googleOAuthTokenUrl(), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -234,7 +236,7 @@ async function findDriveFolder({ accessToken, fetchImpl, name, parentId }) {
     `mimeType = '${driveFolderMimeType}'`,
     "trashed = false",
   ].join(" and ");
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  const url = new URL(`${googleApiBaseUrl()}/drive/v3/files`);
   url.searchParams.set("q", query);
   url.searchParams.set("fields", "files(id,name,webViewLink)");
   url.searchParams.set("pageSize", "1");
@@ -249,7 +251,7 @@ async function findDriveFile({ accessToken, fetchImpl, name, parentId }) {
     `mimeType != '${driveFolderMimeType}'`,
     "trashed = false",
   ].join(" and ");
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  const url = new URL(`${googleApiBaseUrl()}/drive/v3/files`);
   url.searchParams.set("q", query);
   url.searchParams.set("fields", "files(id,name,webViewLink)");
   url.searchParams.set("pageSize", "1");
@@ -261,7 +263,7 @@ async function createDriveFolder({ accessToken, fetchImpl, name, parentId }) {
   return driveFetchJson({
     accessToken,
     fetchImpl,
-    url: "https://www.googleapis.com/drive/v3/files",
+    url: `${googleApiBaseUrl()}/drive/v3/files`,
     options: {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -333,8 +335,8 @@ async function uploadFileToDrive({ accessToken, fetchImpl = fetch, file, parentI
   const fileStat = await stat(file.absolutePath);
   const mimeType = getMimeType(file.absolutePath);
   const endpoint = fileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=resumable&fields=id,name,webViewLink`
-    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink";
+    ? `${googleApiBaseUrl()}/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=resumable&fields=id,name,webViewLink`
+    : `${googleApiBaseUrl()}/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink`;
   const session = await fetchImpl(endpoint, {
     method: fileId ? "PATCH" : "POST",
     headers: {

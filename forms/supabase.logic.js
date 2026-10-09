@@ -25,7 +25,7 @@ function assertSupabaseConfiguration(env = process.env) {
 }
 
 function createSupabaseAdminClient({
-  url = process.env.SUPABASE_URL,
+  url = process.env.SUPABASE_API_BASE_URL || process.env.SUPABASE_URL,
   serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY,
   fetchImpl = DEFAULT_FETCH,
 } = {}) {
