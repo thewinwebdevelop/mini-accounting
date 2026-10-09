@@ -23,7 +23,9 @@ export async function createMockProviders({ profile = "local", runId = "run", st
   const state = suppliedState || { runId, documents: new Map(), reservations: new Map(), responseScript: [] };
   const servers = [];
   const baseUrls = {};
-  for (const provider of ["supabase", "line", "google", "shopee", "ocr"]) {
+  try {
+    for (const provider of ["supabase", "line", "google", "shopee", "ocr"]) {
+    let expectedHost = "";
     const server = createServer(async (request, response) => {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
@@ -32,9 +34,43 @@ export async function createMockProviders({ profile = "local", runId = "run", st
       const pathname = new URL(request.url || "/", "http://mock").pathname;
       const record = { provider, host: request.headers.host, method, path: pathname, body: redactE2ELog(body.toString("utf8")), mock: true };
       requests.push(record);
+      if (request.headers.host !== expectedHost) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "unexpected mock host", expectedHost, actualHost: request.headers.host }));
+        return;
+      }
       if (!allowed(provider, method, pathname)) {
         response.writeHead(404, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "unexpected mock request", provider, method, path: pathname }));
+        return;
+      }
+      if (!isExpectedBody(provider, method, pathname, body)) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "unexpected mock request body", provider, method, path: pathname }));
+        return;
+      }
+      if (provider === "supabase" && pathname === "/rest/v1/e2e_documents") {
+        if (method === "POST") {
+          const item = JSON.parse(body.toString("utf8"));
+          state.documents.set(String(item.documentNo), item);
+          response.writeHead(201, { "content-type": "application/json" });
+          response.end(JSON.stringify(item));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify([...state.documents.values()]));
+        return;
+      }
+      if (provider === "supabase" && pathname === "/rest/v1/e2e_reservations") {
+        if (method === "POST") {
+          const item = JSON.parse(body.toString("utf8"));
+          state.reservations.set(String(item.requestKey), item);
+          response.writeHead(201, { "content-type": "application/json" });
+          response.end(JSON.stringify(item));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify([...state.reservations.values()]));
         return;
       }
       const scripted = state.responseScript.shift();
@@ -47,7 +83,12 @@ export async function createMockProviders({ profile = "local", runId = "run", st
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     baseUrls[provider] = `http://127.0.0.1:${server.address().port}`;
-    servers.push(server);
+    expectedHost = `127.0.0.1:${server.address().port}`;
+      servers.push(server);
+    }
+  } catch (error) {
+    await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+    throw error;
   }
   let stopped = false;
   return {
@@ -59,4 +100,17 @@ export async function createMockProviders({ profile = "local", runId = "run", st
       await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
     },
   };
+}
+
+function isExpectedBody(provider, method, pathname, body) {
+  if (method === "GET" || method === "HEAD") return body.length === 0;
+  if (!body.length) return false;
+  if (provider === "line" && pathname.endsWith("/reply")) {
+    try { const value = JSON.parse(body); return typeof value.replyToken === "string" && Array.isArray(value.messages); } catch { return false; }
+  }
+  if (provider === "ocr") {
+    try { const value = JSON.parse(body); return typeof value.fileName === "string" && typeof value.base64 === "string"; } catch { return false; }
+  }
+  if (provider === "supabase" && pathname.startsWith("/storage/v1/object/")) return true;
+  try { JSON.parse(body); return true; } catch { return false; }
 }

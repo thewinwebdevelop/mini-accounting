@@ -10,7 +10,7 @@ import { assertHealth } from "../support/assertions.mjs";
 
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const NODE_ENV_ALLOWLIST = new Set(["PATH", "NODE_PATH", "LANG", "LC_ALL", "TZ"]);
-const PRODUCTION_KEYS = ["SUPABASE_SERVICE_ROLE_KEY", "GOOGLE_DRIVE_TOKEN_JSON", "GOOGLE_DRIVE_CONFIG_JSON", "LINE_CHANNEL_ACCESS_TOKEN", "SHOPEE_PARTNER_KEY"];
+const PRODUCTION_KEYS = ["SUPABASE_SERVICE_ROLE_KEY", "GOOGLE_DRIVE_TOKEN_JSON", "GOOGLE_DRIVE_CONFIG_JSON", "LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "LINE_OCR_API_KEY", "SHOPEE_PARTNER_KEY"];
 
 function assertNoProductionSecrets(env = process.env) {
   const inherited = PRODUCTION_KEYS.filter(key => String(env[key] || "").trim());
@@ -20,7 +20,7 @@ function assertNoProductionSecrets(env = process.env) {
 async function createAppServer({ env, rootDir, mockBaseUrl }) {
   const child = spawn(process.execPath, [path.join(repoDir, "local-server.mjs")], {
     cwd: repoDir,
-    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files" },
+    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files", NODE_OPTIONS: `${env.NODE_OPTIONS || ""} --import=${path.join(repoDir, "e2e/fixtures/outbound-guard.mjs")}`, E2E_ALLOWED_HOSTS: Object.values(env).filter(value => typeof value === "string" && value.startsWith("http://127.0.0.1:")).map(value => new URL(value).host).join(",") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -50,7 +50,7 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
   assertNoProductionSecrets();
   const runId = `e2e-${Date.now().toString(36)}-${process.pid}-${workerIndex}-${Math.random().toString(36).slice(2, 8)}`;
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "sweet-house-e2e-"));
-  const mock = await createMockProviders({ profile, runId, state: providerState });
+  let mock;
   const rootEnv = {
     PATH: process.env.PATH,
     NODE_PATH: process.env.NODE_PATH,
@@ -64,25 +64,28 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
     E2E_RUN_ID: runId,
     CLOUD_RUN: profile === "cloud-runtime-mocked" ? "1" : "",
     DATA_BACKEND_DOCUMENTS: profile === "cloud-runtime-mocked" ? "supabase-read" : "local",
-    LINE_VERIFY_URL: `${mock.baseUrls.line}/oauth2/v2.1/verify`,
-    LINE_CONTENT_BASE_URL: mock.baseUrls.line,
-    LINE_REPLY_URL: `${mock.baseUrls.line}/v2/bot/message/reply`,
     LINE_OCR_PROVIDER: "http",
-    LINE_OCR_API_URL: mock.baseUrls.ocr,
     LINE_OCR_API_KEY: "e2e-ocr-key",
-    SHOPEE_API_BASE_URL: mock.baseUrls.shopee,
-    GOOGLE_API_BASE_URL: mock.baseUrls.google,
-    GOOGLE_SHEETS_API_BASE_URL: mock.baseUrls.google,
-    GOOGLE_OAUTH_TOKEN_URL: `${mock.baseUrls.google}/token`,
   };
   let app;
   try {
+    mock = await createMockProviders({ profile, runId, state: providerState });
+    Object.assign(rootEnv, {
+      LINE_VERIFY_URL: `${mock.baseUrls.line}/oauth2/v2.1/verify`,
+      LINE_CONTENT_BASE_URL: mock.baseUrls.line,
+      LINE_REPLY_URL: `${mock.baseUrls.line}/v2/bot/message/reply`,
+      LINE_OCR_API_URL: mock.baseUrls.ocr,
+      SHOPEE_API_BASE_URL: mock.baseUrls.shopee,
+      GOOGLE_API_BASE_URL: mock.baseUrls.google,
+      GOOGLE_SHEETS_API_BASE_URL: mock.baseUrls.google,
+      GOOGLE_OAUTH_TOKEN_URL: `${mock.baseUrls.google}/token`,
+    });
     await createFixtureData({ rootDir, runId });
     app = await createAppServer({ env: rootEnv, rootDir, mockBaseUrl: mock.baseUrls.supabase });
     await assertHealth(app.baseUrl, runId);
   } catch (error) {
     if (app) await app.stop();
-    await mock.stop();
+    if (mock) await mock.stop();
     await rm(rootDir, { recursive: true, force: true });
     throw error;
   }
