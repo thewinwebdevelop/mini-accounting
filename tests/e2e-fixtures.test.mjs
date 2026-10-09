@@ -85,12 +85,18 @@ test("provider mock rejects unexpected outbound hosts and supports strict reques
     assert.equal(googleInit.status, 200);
     const uploadSession = googleInit.headers.get("location");
     assert.match(uploadSession, /\/upload-session\//);
-    const googleUpload = await fetch(uploadSession, { method: "PUT", headers: { "content-type": "application/pdf" }, body: Buffer.from("fixture-pdf") });
+    const googleUpload = await fetch(uploadSession, { method: "PUT", headers: { "content-type": "application/pdf", "content-length": "11" }, body: Buffer.from("fixture-pdf") });
     assert.equal(googleUpload.status, 200);
-    const uploadNearMiss = await fetch(`${mock.baseUrls.google}/upload-session/not-real`, { method: "PUT", body: Buffer.from("fixture") });
+    const textUpload = await fetch(uploadSession, { method: "PUT", headers: { "content-type": "text/plain" }, body: "not-binary-document" });
+    assert.equal(textUpload.status, 400);
+    const uploadNearMiss = await fetch(`${mock.baseUrls.google}/upload-session/not-real`, { method: "PUT", headers: { "content-type": "application/pdf", "content-length": "7" }, body: Buffer.from("fixture") });
     assert.equal(uploadNearMiss.status, 404);
     const uploadBadQuery = await fetch(`${mock.baseUrls.google}/upload/drive/v3/files?uploadType=resumable&unexpected=true`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "fixture.pdf" }) });
     assert.equal(uploadBadQuery.status, 404);
+    const authWithOperationKeys = await fetch(`${mock.baseUrls.shopee}/api/v2/shop/auth_partner?partner_id=1&timestamp=1&sign=s&redirect=http%3A%2F%2F127.0.0.1%2Fcallback&access_token=a&shop_id=2`);
+    assert.equal(authWithOperationKeys.status, 404);
+    const orderMissingOperationKey = await fetch(`${mock.baseUrls.shopee}/api/v2/order/get_order_list?partner_id=1&timestamp=1&sign=s&access_token=a&shop_id=2`);
+    assert.equal(orderMissingOperationKey.status, 404);
   } finally {
     await mock.stop();
   }

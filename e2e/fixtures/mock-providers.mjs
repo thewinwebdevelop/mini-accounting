@@ -41,24 +41,29 @@ function matchEndpoint(provider, method, pathname, search) {
 function validShopeeQuery(rule, search) {
   const params = new URLSearchParams(search);
   const keys = [...params.keys()];
-  const common = ["partner_id", "timestamp", "sign", "access_token", "shop_id"];
+  const common = rule === "shopee-auth" ? ["partner_id", "timestamp", "sign"] : ["partner_id", "timestamp", "sign", "access_token", "shop_id"];
   const operation = rule === "shopee-auth" ? ["redirect", "state"] : rule === "shopee-order-list" ? ["time_range_field", "time_from", "time_to", "page_size", "cursor"] : rule === "shopee-order-detail" ? ["order_sn_list"] : [];
   if (keys.some(key => !common.includes(key) && !operation.includes(key))) return false;
   if (!["partner_id", "timestamp", "sign"].every(key => params.get(key))) return false;
   if (rule === "shopee-auth" && !params.get("redirect")) return false;
+  if (rule === "shopee-order-list" && !["time_range_field", "time_from", "time_to", "page_size"].every(key => params.get(key))) return false;
+  if (rule === "shopee-order-detail" && !params.get("order_sn_list")) return false;
   return true;
 }
 
 function parseJson(body) { try { return JSON.parse(body.toString("utf8")); } catch { return null; } }
 function exactKeys(value, allowed, required) { const keys = Object.keys(value); return required.every(key => keys.includes(key)) && keys.every(key => allowed.includes(key)); }
 function exactForm(body, allowed, required) { const keys = [...new URLSearchParams(body.toString("utf8")).keys()]; return required.every(key => keys.includes(key)) && keys.every(key => allowed.includes(key)); }
-function validBody(provider, method, pathname, body, endpoint) {
+function validBody(provider, method, pathname, body, endpoint, headers = {}) {
   if (method === "GET" || method === "HEAD") return body.length === 0;
   if (!body.length || (provider === "supabase" && pathname.startsWith("/storage/v1/object/"))) return Boolean(body.length);
   if (provider === "line" && pathname.endsWith("/verify")) return exactForm(body, ["id_token", "client_id"], ["id_token", "client_id"]);
   if (provider === "google" && pathname === "/token") return exactForm(body, ["client_id", "client_secret", "code", "grant_type", "redirect_uri", "refresh_token"], ["grant_type"]);
   if (provider === "google" && pathname.startsWith("/upload/drive/v3/files")) return exactKeys(valueOrEmpty(body), ["name", "parents"], ["name"]);
-  if (provider === "google" && pathname.startsWith("/upload-session/")) return body.length > 0;
+  if (provider === "google" && pathname.startsWith("/upload-session/")) {
+    const contentType = String(headers["content-type"] || "").split(";", 1)[0].toLowerCase();
+    return body.length > 0 && /^(application\/pdf|image\/(?:png|jpeg|jpg|webp))$/.test(contentType) && Number(headers["content-length"]) === body.length;
+  }
   const value = parseJson(body);
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (provider === "line" && pathname.endsWith("/reply")) return exactKeys(value, ["replyToken", "messages"], ["replyToken", "messages"]);
@@ -108,7 +113,7 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         record.mock = true;
         record.verified = true;
         if (!endpoint) return json(response, 404, { error: "unexpected mock endpoint", provider, method, path: parsed.pathname, query: parsed.search });
-        if (!validBody(provider, method, parsed.pathname, body, endpoint)) return json(response, 400, { error: "unexpected mock request body" });
+        if (!validBody(provider, method, parsed.pathname, body, endpoint, request.headers)) return json(response, 400, { error: "unexpected mock request body" });
         const candidate = state.responseScript[0];
         const scripted = candidate && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)) ? state.responseScript.shift() : null;
         if (provider === "google" && endpoint.queryRule === "upload-init") {
