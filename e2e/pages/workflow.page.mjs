@@ -160,10 +160,27 @@ export class WorkflowTransactionPage {
     return this.detail();
   }
 
+  async completeAgainInBrowser() {
+    return this.page.evaluate(async (transactionNo) => {
+      const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(transactionNo)}/complete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      return { statusCode: response.status, body: await response.json() };
+    }, this.transactionNo);
+  }
+
   async cancelWithConfirmation() {
     await this.page.locator("#cancelTransactionButton").click();
     await expect(this.page.locator("#cancellationDialog")).toBeVisible();
     await this.page.locator("#confirmCancellationButton").click();
+    await expect(this.page.locator("#cancellationSummary")).toBeVisible();
+    return this.detail();
+  }
+
+  async retryCancellation() {
+    await this.page.locator("#retryCancellationButton").click();
     await expect(this.page.locator("#cancellationSummary")).toBeVisible();
     return this.detail();
   }
