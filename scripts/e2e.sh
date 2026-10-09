@@ -20,7 +20,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PROJECT" in
-  chromium|mobile-chromium)
+  chromium|mobile-chromium|cloud-runtime-mocked)
     if [ -n "${E2E_BASE_URL:-}" ]; then
       echo "E2E_BASE_URL is forbidden for full E2E projects" >&2
       exit 1
@@ -66,7 +66,7 @@ if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ] || { [ "$PROJECT" != "production-smoke" ] &&
   fi
 fi
 
-if [ "$PROJECT" != "production-smoke" ] && [ "$LIST_ONLY" -eq 0 ]; then
+if [ "$PROJECT" != "production-smoke" ] && [ "$PROJECT" != "cloud-runtime-mocked" ] && [ "$LIST_ONLY" -eq 0 ]; then
   if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
     echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
     exit 1

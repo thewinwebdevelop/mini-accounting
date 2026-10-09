@@ -16,6 +16,11 @@ export default defineConfig({
       testIgnore: /production-smoke\.spec\.mjs$/,
     },
     {
+      name: "cloud-runtime-mocked",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /workflow-cloud\.spec\.mjs$/,
+    },
+    {
       name: "production-smoke",
       use: { baseURL: process.env.E2E_BASE_URL },
       testMatch: /production-smoke\.spec\.mjs$/,
