@@ -14,7 +14,7 @@ test("actual LIFF bootstrap installs a session and navigates only to safe intern
     window.liff = { init: async () => {}, isLoggedIn: () => true, getIDToken: () => "fixture-token-employee-a", login: () => {} };
   });
   await page.goto("/line-auth?returnTo=%2Fexpense-requests", { waitUntil: "domcontentloaded" });
-  await page.waitForURL(/\/expense-requests$/, { timeout: 10000 });
+  await page.waitForURL(new URL("/expense-requests", localApp.baseUrl).toString(), { timeout: 10000 });
   const cookies = await context.cookies();
   expect(cookies.find(cookie => cookie.name === "sweet_house_session")?.value).toMatch(/\S+/);
   expect(await page.evaluate(() => fetch("/api/auth/me").then(response => response.json()))).toMatchObject({ authenticated: true, user: { userId: "employee-a" } });
@@ -29,7 +29,7 @@ test("actual LIFF bootstrap installs a session and navigates only to safe intern
     window.liff = { init: async () => {}, isLoggedIn: () => true, getIDToken: () => "fixture-token-employee-a", login: () => {} };
   });
   await externalPage.goto("/line-auth?returnTo=%2F%2Fevil.example%2Fsteal", { waitUntil: "domcontentloaded" });
-  await externalPage.waitForURL(/127\.0\.0\.1/, { timeout: 10000 });
+  await externalPage.waitForURL(new URL("/", localApp.baseUrl).toString(), { timeout: 10000 });
   expect(externalRequests).toEqual([]);
   await externalContext.close();
 });

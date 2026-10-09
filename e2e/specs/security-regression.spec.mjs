@@ -63,25 +63,35 @@ test("employee A and B cannot cross-read, download or mutate existing documents"
   await a.close(); await b.close();
 });
 
-test("owner, accounting and admin can read both documents and reach permitted mutation checks", async ({ localApp, seed }) => {
+test("role-appropriate mutations use existing resources and persist their outcomes", async ({ localApp, seed }) => {
   const documents = seed.documents.map(document => document.documentNo);
+  const headersFor = role => ({ cookie: `sweet_house_session=${createTestSession({ ...localApp.users[role], secret: SECRET })}`, origin: localApp.baseUrl.slice(0, -1) });
+  const employeeHeaders = headersFor("employeeA");
+  const denied = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}/approve`, { method: "POST", headers: { ...employeeHeaders, "content-type": "application/json" }, body: "{}" });
+  expect(denied.status).toBe(403);
+  expect((await (await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}`, { headers: headersFor("owner") })).json()).payload.status).toBe("pending_approval");
+
   for (const role of ["owner", "accounting", "admin"]) {
-    const user = localApp.users[role];
-    const token = createTestSession({ ...user, secret: SECRET });
-    const headers = { cookie: `sweet_house_session=${token}`, origin: localApp.baseUrl.slice(0, -1) };
-    const first = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}`, { headers });
-    const second = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}`, { headers });
-    expect(first.status, `${role} cannot read document A`).toBe(200);
-    expect(second.status, `${role} cannot read document B`).toBe(200);
-    const detail = await first.json();
-    const filePath = detail.pdfFiles[0].url;
-    expect((await fetch(`${localApp.baseUrl.slice(0, -1)}${filePath}`, { headers })).status).toBe(200);
-    const mutationPath = role === "accounting"
-      ? "api/workflow-documents/purchase_order/fixture-missing/approve"
-      : "api/workflow-templates";
-    const mutation = await fetch(`${localApp.baseUrl}${mutationPath}`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}" });
-    expect(mutation.status, `${role} was incorrectly denied at the mutation permission boundary`).not.toBe(403);
+    const headers = headersFor(role);
+    for (const documentNo of documents) {
+      const detail = await fetch(`${localApp.baseUrl}api/expense-requests/${documentNo}`, { headers });
+      expect(detail.status, `${role} cannot read ${documentNo}`).toBe(200);
+      const body = await detail.json();
+      expect((await fetch(`${localApp.baseUrl.slice(0, -1)}${body.pdfFiles[0].url}`, { headers })).status).toBe(200);
+    }
   }
+
+  const ownerApproval = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}/approve`, { method: "POST", headers: { ...headersFor("owner"), "content-type": "application/json" }, body: "{}" });
+  expect(ownerApproval.status).toBe(200);
+  expect((await (await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}`, { headers: headersFor("owner") })).json()).payload.status).toBe("approved");
+
+  const accountingRejection = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}/reject`, { method: "POST", headers: { ...headersFor("accounting"), "content-type": "application/json" }, body: JSON.stringify({ reason: "Fixture rejection" }) });
+  expect(accountingRejection.status).toBe(200);
+  expect((await (await fetch(`${localApp.baseUrl}api/expense-requests/${documents[1]}`, { headers: headersFor("accounting") })).json()).payload.status).toBe("draft");
+
+  const adminCompletion = await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}/complete`, { method: "POST", headers: { ...headersFor("admin"), "content-type": "application/json" }, body: "{}" });
+  expect(adminCompletion.status).toBe(200);
+  expect((await (await fetch(`${localApp.baseUrl}api/expense-requests/${documents[0]}`, { headers: headersFor("admin") })).json()).payload.status).toBe("completed");
 });
 
 test("unsafe return, traversal and expired file tokens are rejected", async ({ anonymousPage, localApp }) => {
