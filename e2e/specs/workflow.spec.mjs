@@ -1,4 +1,6 @@
 import { expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { test } from "../fixtures/playwright.fixture.mjs";
 import { WorkflowTemplatePage, WorkflowTransactionsPage, WorkflowTransactionPage } from "../pages/workflow.page.mjs";
 
@@ -108,21 +110,39 @@ test.describe("workflow local journeys", () => {
     await expect(ownerPage.locator("#childDocumentFiles .file-link").first()).toHaveAttribute("href", /workflow-documents/);
   });
 
-  test("supports cancel confirmation, retry and terminal idempotence", async ({ ownerPage }) => {
+  test("cancels a valid completed-child transaction and repeats cancellation idempotently", async ({ ownerPage, localApp }) => {
+    await mkdir(path.join(localApp.rootDir, "config"), { recursive: true });
+    await writeFile(path.join(localApp.rootDir, "config", "google-drive-config.json"), JSON.stringify({ clientId: "fixture-client", clientSecret: "fixture-secret" }));
+    await writeFile(path.join(localApp.rootDir, "config", "google-drive-token.json"), JSON.stringify({ refresh_token: "fixture-refresh", access_token: "fixture-access", expiresAt: Date.now() + 3600000 }));
     const page = ownerPage;
     const list = new WorkflowTransactionsPage(page);
     await list.open();
-    const template = await list.firstTemplateId();
+    const templatePage = new WorkflowTemplatePage(page);
+    await templatePage.open();
+    const template = await templatePage.editSteps([{ documentKind: "purchase_order" }]);
+    await templatePage.save();
+    await list.open();
     const created = await list.createTransaction({ template, month: "2026-10", title: "Cancellation workflow" });
     const transaction = new WorkflowTransactionPage(page, created.transactionNo);
+    await transaction.startCurrentStep();
+    await transaction.completeCurrentChild({ title: "Cancellation purchase order" });
+    await transaction.returnToTransaction();
+    await transaction.refresh();
     const requested = await transaction.cancelWithConfirmation();
-    const cancelled = requested.status === "cancellation_pending" ? await transaction.retryCancellation() : requested;
-    expect(["cancelled", "cancellation_pending"]).toContain(cancelled.status);
-    const linksBefore = await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+    expect(requested.status).toBe("cancelled");
+    const linksBefore = await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => new URL(link.href).pathname));
+    const cancellationBefore = requested.cancellation;
+    const childBefore = requested.childDocuments.map(({ documentKind, documentNo, status, completedAt, workflowStepId }) => ({ documentKind, documentNo, status, completedAt, workflowStepId }));
+    const repeated = await transaction.cancelAgainInBrowser();
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.body.status).toBe("cancelled");
+    expect(repeated.body.cancellation).toEqual(cancellationBefore);
+    expect(repeated.body.childDocuments.map(({ documentKind, documentNo, status, completedAt, workflowStepId }) => ({ documentKind, documentNo, status, completedAt, workflowStepId }))).toEqual(childBefore);
     await transaction.open();
     await expect(page.locator("#cancellationSummary")).toBeVisible();
     const after = await transaction.detail();
-    expect(after).toMatchObject({ transactionNo: created.transactionNo, status: cancelled.status });
-    expect(await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => link.getAttribute("href")))).toEqual(linksBefore);
+    expect(after).toMatchObject({ transactionNo: created.transactionNo, status: "cancelled" });
+    expect(after.cancellation).toEqual(cancellationBefore);
+    expect(await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => new URL(link.href).pathname))).toEqual(linksBefore);
   });
 });

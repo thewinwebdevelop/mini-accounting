@@ -171,6 +171,17 @@ export class WorkflowTransactionPage {
     }, this.transactionNo);
   }
 
+  async cancelAgainInBrowser() {
+    return this.page.evaluate(async (transactionNo) => {
+      const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(transactionNo)}/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      return { statusCode: response.status, body: await response.json() };
+    }, this.transactionNo);
+  }
+
   async cancelWithConfirmation() {
     await this.page.locator("#cancelTransactionButton").click();
     await expect(this.page.locator("#cancellationDialog")).toBeVisible();
