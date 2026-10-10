@@ -82,15 +82,16 @@ test.describe("inventory journeys", () => {
     const card = await inventory.stockCard(master.children[0].id);
     const original = card.movements.find((movement) => movement.referenceNo === draft.receiptNo);
     expect(original).toMatchObject({ movementType: "purchase_in", quantity: 8 });
-    let cancelled = await transaction.cancelAgainInBrowser();
+    await transaction.open();
+    let cancelled = await transaction.cancelWithConfirmationResponse();
     if (cancelled.statusCode === 202) {
-      await transaction.open();
-      cancelled = await transaction.cancelAgainInBrowser();
+      await expect(page.locator("#cancellationSummaryTitle")).toContainText("อยู่ระหว่างดำเนินการ");
+      cancelled = await transaction.retryCancellationResponse();
     }
     expect(cancelled).toMatchObject({ statusCode: 200, body: { transactionNo: created.transactionNo, status: "cancelled" } });
-    await transaction.open();
-    await expect(page.locator("#cancellationSummary")).toBeVisible();
-    const repeatedReversal = await transaction.cancelAgainInBrowser();
+    const persistedCancellation = await transaction.detail();
+    expect(persistedCancellation).toMatchObject({ transactionNo: created.transactionNo, status: "cancelled" });
+    const repeatedReversal = await transaction.repeatCancellationRequest();
     expect(repeatedReversal).toMatchObject({ statusCode: 200, body: { transactionNo: created.transactionNo, status: "cancelled" } });
 
     const after = await inventory.balance(master.children[0].id);

@@ -25,6 +25,7 @@ Implemented inventory and platform-order browser journeys with isolated `localAp
 - Final review was self-review because the task explicitly prohibited subagents.
 - The initial red run failed on missing page objects; subsequent failures were corrected for debounced search initialization and shipment-handoff URL matching.
 - Fix-round verification: focused Chromium `5 passed`; auth smoke `3 passed`; relevant Node suite `19 passed, 0 failed`; Playwright list `31 tests in 12 files`.
+- Final fix-round verification: cancellation uses the rendered transaction dialog and `#retryCancellationButton`; focused Chromium `5 passed`; auth smoke `3 passed`; relevant Node suite `19 passed, 0 failed`.
 
 ## Scope safety
 

@@ -190,9 +190,34 @@ export class WorkflowTransactionPage {
     return this.detail();
   }
 
+  async cancelWithConfirmationResponse() {
+    const responsePromise = this.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`) && response.request().method() === "POST");
+    await this.page.locator("#cancelTransactionButton").click();
+    await expect(this.page.locator("#cancellationDialog")).toBeVisible();
+    await this.page.locator("#confirmCancellationButton").click();
+    const response = await responsePromise;
+    const body = await response.json();
+    await expect(this.page.locator("#cancellationSummary")).toBeVisible();
+    return { statusCode: response.status(), body };
+  }
+
   async retryCancellation() {
     await this.page.locator("#retryCancellationButton").click();
     await expect(this.page.locator("#cancellationSummary")).toBeVisible();
     return this.detail();
+  }
+
+  async retryCancellationResponse() {
+    const responsePromise = this.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`) && response.request().method() === "POST");
+    await this.page.locator("#retryCancellationButton").click();
+    const response = await responsePromise;
+    const body = await response.json();
+    await expect(this.page.locator("#cancellationSummary")).toBeVisible();
+    return { statusCode: response.status(), body };
+  }
+
+  async repeatCancellationRequest() {
+    const response = await this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`, { data: { confirmed: true } });
+    return { statusCode: response.status(), body: await response.json() };
   }
 }
