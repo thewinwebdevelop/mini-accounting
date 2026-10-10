@@ -71,6 +71,9 @@ export class ShopeePage {
     await expect(this.page.locator("#shopeeShipmentOrders")).toContainText("orders:");
     await this.page.locator("#prepareShopeeShipmentButton").click();
     await expect(this.page.locator("#shopeeBatchChoices .shopee-batch")).toHaveCount(1);
+    const batchText = await this.page.locator("#shopeeBatchChoices .shopee-batch strong").innerText();
+    this.batchId = Number(batchText.match(/Batch #(\d+)/)?.[1] || 0);
+    expect(this.batchId).toBeGreaterThan(0);
   }
 
   async chooseFirstPickup() {
@@ -88,5 +91,19 @@ export class ShopeePage {
     await this.page.locator("#overlayShopeeLabelsButton").click();
     await expect(this.page.locator("#shopeeBatchChoices a[href*='/api/shopee/']")).toHaveCount(1);
     await expect(this.page.locator("#printShopeeLabelsButton")).toBeEnabled();
+  }
+
+  async persistedLabelArtifacts(shopId) {
+    const jobResponse = await this.api(`/api/shopee/shipment-batches/${this.batchId}/create-documents`, { method: "POST", data: { connectionId: shopId } });
+    const job = jobResponse.job;
+    expect(job).toMatchObject({ status: "ready" });
+    expect(job.downloadUrl).toContain(`/api/shopee/shipping-document-jobs/${job.id}/download`);
+    const source = await this.page.request.get(new URL(job.downloadUrl, this.page.url()).toString());
+    expect(source.status()).toBe(200);
+    expect((await source.body()).subarray(0, 4).toString()).toBe("%PDF");
+    const label = await this.page.request.get(`/api/shopee/shipment-batches/${this.batchId}/print-preview`);
+    expect(label.status()).toBe(200);
+    expect((await label.body()).subarray(0, 4).toString()).toBe("%PDF");
+    return { job, label };
   }
 }

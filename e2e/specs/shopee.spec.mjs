@@ -20,6 +20,8 @@ test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking
   mock.scriptResponse({ endpoint: "get_shipping_document_job_status", body: { response: { status: "READY" } } });
   mock.scriptResponse({ endpoint: "download_shipping_document_job", body: { response: { file_base64: validLabelPdf } } });
   const page = new ShopeePage(authenticatedPage);
+  const appShipmentRequests = [];
+  authenticatedPage.on("request", (request) => { if (request.url().includes("/api/shopee/shipment-batches/") || request.url().includes("/api/shopee/shipping-document-jobs/")) appShipmentRequests.push(request); });
   await page.openConnection(shopId);
   await expect(authenticatedPage.locator("#shopeeConnectionStatus")).toContainText("เชื่อมต่อแล้ว");
   const synced = await page.sync(shopId);
@@ -41,9 +43,18 @@ test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking
   await page.loadAndPrepare();
   await page.chooseFirstPickup();
   await page.arrangeRefreshAndLabels();
+  const artifacts = await page.persistedLabelArtifacts(shopId);
+  expect(artifacts.job.status).toBe("ready");
   const orders = await page.api(`/api/platform-orders?shopId=${encodeURIComponent(shopId)}`);
   expect(orders.orders[0]).toMatchObject({ orderNo: "ORDER-E2E-1", trackingNumber: "TRACK-E2E-1" });
   expect(mock.requests.filter((request) => request.provider === "shopee").map((request) => request.path)).toEqual(expect.arrayContaining(["/api/v2/order/get_order_list", "/api/v2/order/get_order_detail", "/api/v2/logistics/mass_ship_order", "/api/v2/logistics/get_mass_tracking_number"]));
+  const createRequest = mock.requests.find((request) => request.path === "/api/v2/logistics/create_shipping_document_job");
+  expect(createRequest?.body).toContain("ORDER-E2E-1");
+  const overlayRequest = mock.requests.find((request) => request.path === "/api/v2/logistics/download_shipping_document_job");
+  expect(overlayRequest?.body).toContain("job-e2e-1");
+  const overlayAppRequest = appShipmentRequests.find((request) => request.url().endsWith(`/api/shopee/shipment-batches/${page.batchId}/overlay-labels`));
+  expect(overlayAppRequest?.method()).toBe("POST");
+  expect(overlayAppRequest?.postData()).toContain(String(order.id));
 });
 
 test("Shopee connection starts auth in the rendered browser and partial arrange persists per-package state", async ({ authenticatedPage, localApp, mock }) => {

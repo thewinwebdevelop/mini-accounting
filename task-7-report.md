@@ -33,6 +33,12 @@ Implemented browser E2E coverage for LINE intake, Shopee integration, and admin 
 - Relevant Node tests: 25 passed.
 - Standard runner list: 38 tests in 15 files.
 
+## Round 3 verification
+
+- Persisted shipping-document job re-read as `ready`; source and custom-label downloads returned PDF bytes.
+- External shipping-document creation/download requests and app overlay request carried the expected batch/order/job identifiers.
+- Focused Chromium: 7 passed; auth smoke: 3 passed; relevant Node tests: 25 passed; runner list: 38 tests in 15 files.
+
 ## Scope note
 
 The existing user changes and `data/` directory were left untouched. The E2E fixture was extended only with synthetic LINE/Shopee credentials and a mock LINE review URL required to exercise the provider-backed journeys.
