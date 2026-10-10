@@ -66,6 +66,28 @@ if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ] || { [ "$PROJECT" != "production-smoke" ] &&
   fi
 fi
 
+if [ "$PROJECT" != "production-smoke" ]; then
+  PYTHON_RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
+  if [ -n "${SWEET_HOUSE_PYTHON_BIN:-}" ]; then
+    PYTHON_BIN="$SWEET_HOUSE_PYTHON_BIN"
+  elif [ -x "$PYTHON_RUNTIME_ROOT/python/bin/python3" ]; then
+    PYTHON_BIN="$PYTHON_RUNTIME_ROOT/python/bin/python3"
+  else
+    PYTHON_BIN="$(command -v python3 || true)"
+  fi
+  if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    echo "Required Python runtime not found" >&2
+    exit 1
+  fi
+  PYTHON_VERSION="$($PYTHON_BIN --version 2>&1)"
+  case "$PYTHON_VERSION" in
+    Python\ 3.*) ;;
+    *) echo "Python 3 is required (found $PYTHON_VERSION)" >&2; exit 1 ;;
+  esac
+  export SWEET_HOUSE_PYTHON_BIN="$PYTHON_BIN"
+  export SWEET_HOUSE_PYTHON="$PYTHON_BIN"
+fi
+
 if [ "$PROJECT" != "production-smoke" ] && [ "$PROJECT" != "cloud-runtime-mocked" ] && [ "$LIST_ONLY" -eq 0 ]; then
   if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
     echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2

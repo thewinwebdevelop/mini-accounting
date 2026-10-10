@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "../fixtures/playwright.fixture.mjs";
 import { ShopeePage } from "../pages/shopee.page.mjs";
 import { saveShopeeConnection } from "../../forms/shopee-auth.logic.js";
+import { upsertShopeeOrder } from "../../forms/platform-orders.logic.js";
 import { InventoryPage } from "../pages/inventory.page.mjs";
 
 test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking and labels use mock providers", async ({ authenticatedPage, localApp, mock }) => {
@@ -23,6 +24,11 @@ test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking
   await expect(authenticatedPage.locator("#shopeeConnectionStatus")).toContainText("เชื่อมต่อแล้ว");
   const synced = await page.sync(shopId);
   expect(synced.orders).toHaveLength(1);
+  mock.scriptResponse({ endpoint: "get_order_list", body: { response: { order_list: [{ order_sn: "ORDER-E2E-1", update_time: 1700000100 }] } } });
+  mock.scriptResponse({ endpoint: "get_order_detail", body: { response: { order_list: [{ order_sn: "ORDER-E2E-1", order_status: "READY_TO_SHIP", shipping_status: "READY_TO_SHIP", logistics_channel_id: "fixture-logistics", product_location_id: "fixture-location", itemList: [{ item_id: "item-1", model_id: "model-1", model_sku: "FIXTURE-SKU-1", item_name: "Fixture item", quantity: 1 }] }] } } });
+  const repeated = await page.sync(shopId);
+  expect(repeated.orders).toHaveLength(1);
+  expect(repeated.orders[0].orderNo).toBe("ORDER-E2E-1");
   await page.openOrders(shopId);
   const order = synced.orders[0];
   await page.selectOrders([order.id]);
@@ -38,6 +44,37 @@ test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking
   const orders = await page.api(`/api/platform-orders?shopId=${encodeURIComponent(shopId)}`);
   expect(orders.orders[0]).toMatchObject({ orderNo: "ORDER-E2E-1", trackingNumber: "TRACK-E2E-1" });
   expect(mock.requests.filter((request) => request.provider === "shopee").map((request) => request.path)).toEqual(expect.arrayContaining(["/api/v2/order/get_order_list", "/api/v2/order/get_order_detail", "/api/v2/logistics/mass_ship_order", "/api/v2/logistics/get_mass_tracking_number"]));
+});
+
+test("Shopee connection starts auth in the rendered browser and partial arrange persists per-package state", async ({ authenticatedPage, localApp, mock }) => {
+  const shopId = `partial-shop-${Date.now()}`;
+  const page = new ShopeePage(authenticatedPage);
+  await page.openConnection(shopId);
+  await authenticatedPage.route(`${mock.baseUrls.shopee}/**`, (route) => route.abort());
+  const authRequest = authenticatedPage.waitForRequest((request) => request.url().includes("/api/v2/shop/auth_partner"));
+  await authenticatedPage.locator("#shopeeConnectButton").click();
+  const request = await authRequest;
+  expect(new URL(request.url()).searchParams.get("redirect")).toContain("/api/shopee/callback");
+  await authenticatedPage.unroute(`${mock.baseUrls.shopee}/**`);
+
+  saveShopeeConnection(localApp.rootDir, { shopId, shopName: "Partial Shop", partnerId: "fixture-partner", accessToken: "access", refreshToken: "refresh", status: "connected" });
+  upsertShopeeOrder(localApp.rootDir, { shopId, orderSn: "PARTIAL-1", orderStatus: "READY_TO_SHIP", shippingStatus: "READY_TO_SHIP", packageNumber: "pkg-1", logisticsChannelId: "same-logistics", productLocationId: "same-location", items: [{ itemId: "p1", modelId: "m1", modelSku: "P1", itemName: "Partial one", quantity: 1 }] });
+  upsertShopeeOrder(localApp.rootDir, { shopId, orderSn: "PARTIAL-2", orderStatus: "READY_TO_SHIP", shippingStatus: "READY_TO_SHIP", packageNumber: "pkg-2", logisticsChannelId: "same-logistics", productLocationId: "same-location", items: [{ itemId: "p2", modelId: "m2", modelSku: "P2", itemName: "Partial two", quantity: 1 }] });
+  mock.scriptResponse({ endpoint: "get_mass_shipping_parameter", body: { response: { pickup: { address_list: [{ address_id: "partial-address", full_address: "Partial address", time_slot_list: [{ pickup_time_id: "partial-time", label: "11:00" }] }] } } } });
+  mock.scriptResponse({ endpoint: "mass_ship_order", body: { response: { result: [{ package_number: "pkg-1", success: true }, { package_number: "pkg-2", success: false, error: "provider rejected package" }] } } });
+  await page.openOrders(shopId);
+  const partialOrders = await page.api(`/api/platform-orders?shopId=${encodeURIComponent(shopId)}`);
+  await expect(authenticatedPage.locator("#shopeeOrderRows .shopee-order-row")).toHaveCount(2);
+  await page.selectOrders(partialOrders.orders.map((order) => order.id));
+  await authenticatedPage.locator("#openShopeeShipmentButton").click();
+  await expect.poll(() => new URL(authenticatedPage.url()).pathname).toBe("/shopee-shipment");
+  await page.loadAndPrepare();
+  await page.chooseFirstPickup();
+  await authenticatedPage.locator("#arrangeShopeeShipmentButton").click();
+  await expect(authenticatedPage.locator("#shopeeBatchStatus")).toContainText("นัดรับสินค้าสำเร็จ");
+  const persisted = await page.api(`/api/platform-orders?shopId=${encodeURIComponent(shopId)}`);
+  expect(persisted.orders.find((order) => order.orderNo === "PARTIAL-1")).toMatchObject({ shipmentActionStatus: "arranged" });
+  expect(persisted.orders.find((order) => order.orderNo === "PARTIAL-2")).toMatchObject({ shipmentActionStatus: "failed" });
 });
 
 test("Shopee UI retries a provider 401 with refreshed credentials and surfaces a transient provider failure before succeeding", async ({ authenticatedPage, localApp, mock }) => {

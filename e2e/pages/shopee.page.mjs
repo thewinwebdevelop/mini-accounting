@@ -44,6 +44,8 @@ export class ShopeePage {
     await expect(this.page.locator("#shopeeMappingStatus")).toContainText("บันทึก mapping แล้ว");
     await select.selectOption("");
     await expect(this.page.locator("#shopeeMappingStatus")).toContainText("บันทึก mapping แล้ว");
+    await this.page.reload();
+    await expect(this.page.locator("#shopeeMappingContent [data-shopee-mapping]").first()).toHaveValue("");
     await select.selectOption(String(stockSkuId));
     await expect(this.page.locator("#shopeeMappingStatus")).toContainText("บันทึก mapping แล้ว");
   }
@@ -66,6 +68,7 @@ export class ShopeePage {
 
   async loadAndPrepare() {
     await this.page.locator("#loadShopeeShipmentOrdersButton").click();
+    await expect(this.page.locator("#shopeeShipmentOrders")).toContainText("orders:");
     await this.page.locator("#prepareShopeeShipmentButton").click();
     await expect(this.page.locator("#shopeeBatchChoices .shopee-batch")).toHaveCount(1);
   }

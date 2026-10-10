@@ -72,6 +72,8 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
     LINE_INTAKE_MINI_APP_URL: "http://127.0.0.1/line-intake",
     SHOPEE_PARTNER_ID: "e2e-shopee-partner",
     SHOPEE_PARTNER_KEY: "e2e-shopee-partner-key",
+    SWEET_HOUSE_PYTHON_BIN: process.env.SWEET_HOUSE_PYTHON_BIN || "",
+    SWEET_HOUSE_PYTHON: process.env.SWEET_HOUSE_PYTHON || process.env.SWEET_HOUSE_PYTHON_BIN || "",
     LINE_LIFF_ID: "e2e-liff-id",
   };
   let app;

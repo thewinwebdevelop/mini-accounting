@@ -130,8 +130,8 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         record.verified = true;
         if (!endpoint) return json(response, 404, { error: "unexpected mock endpoint", provider, method, path: parsed.pathname, query: parsed.search });
         if (!validBody(provider, method, parsed.pathname, body, endpoint, request.headers)) return json(response, 400, { error: "unexpected mock request body" });
-        const candidate = state.responseScript[0];
-        const scripted = candidate && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)) ? state.responseScript.shift() : null;
+        const scriptIndex = state.responseScript.findIndex((candidate) => (!candidate.provider || candidate.provider === provider) && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)));
+        const scripted = scriptIndex >= 0 ? state.responseScript.splice(scriptIndex, 1)[0] : null;
         if (provider === "line" && parsed.pathname.endsWith("/verify")) {
           const token = new URLSearchParams(body.toString("utf8")).get("id_token") || "";
           const lineUserId = token.replace(/^fixture-token-/, "") || "employee-a";
