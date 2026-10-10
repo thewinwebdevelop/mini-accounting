@@ -114,10 +114,11 @@ fi
 
 args=(test --project "$PROJECT")
 if [ -n "${E2E_WORKERS:-}" ]; then args+=(--workers "$E2E_WORKERS"); fi
-if [ -n "${E2E_TRACE:-}" ]; then args+=(--trace "$E2E_TRACE"); fi
+if [ "$PROJECT" != "production-smoke" ] && [ -n "${E2E_TRACE:-}" ]; then args+=(--trace "$E2E_TRACE"); fi
 if [ -n "${E2E_GREP:-}" ]; then args+=(--grep "$E2E_GREP"); fi
 if [ -n "${forwarded[0]-}" ]; then args+=("${forwarded[@]}"); fi
 cd "$REPO_DIR"
+if [ "$PROJECT" = "production-smoke" ]; then export E2E_PRODUCTION_SMOKE_RUNNER=1; fi
 if [ -n "${E2E_PLAYWRIGHT_BIN:-}" ]; then
   exec "$PLAYWRIGHT_BIN" "${args[@]}"
 fi

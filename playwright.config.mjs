@@ -22,7 +22,7 @@ export default defineConfig({
     },
     {
       name: "production-smoke",
-      use: { baseURL: process.env.E2E_BASE_URL },
+      use: { baseURL: process.env.E2E_BASE_URL, trace: "off" },
       testMatch: /production-smoke\.spec\.mjs$/,
     },
   ],

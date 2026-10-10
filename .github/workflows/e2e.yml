@@ -1,0 +1,73 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      smoke_base_url:
+        description: "Read-only production/staging origin for the gated smoke job"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  full-e2e:
+    runs-on: ubuntu-latest
+    env:
+      E2E_RUN_ID: ci-${{ github.run_id }}
+      E2E_WORKERS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: ./scripts/test.sh
+      - run: npx node@22 --test tests/e2e-fixtures.test.mjs tests/e2e-artifacts.test.mjs
+      - run: ./scripts/e2e.sh --project chromium
+      - run: ./scripts/e2e.sh --project mobile-chromium
+      - run: ./scripts/e2e.sh --project cloud-runtime-mocked
+      - name: Write redacted failure artifacts
+        if: failure()
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readdir, readFile } from "node:fs/promises";
+          import { writeRedactedArtifacts } from "./e2e/specs/production-smoke.spec.mjs";
+          const dir = "test-results";
+          const events = [];
+          try {
+            for (const name of await readdir(dir, { recursive: true })) {
+              if (typeof name === "string" && /\.(log|json|txt|html)$/.test(name)) events.push({ file: name, body: await readFile(`${dir}/${name}`, "utf8") });
+            }
+          } catch {}
+          await writeRedactedArtifacts({ reportDir: "e2e-redacted", events });
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-redacted
+          path: e2e-redacted/
+          if-no-files-found: error
+
+  production-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.smoke_base_url != '' }}
+    runs-on: ubuntu-latest
+    env:
+      E2E_BASE_URL: ${{ inputs.smoke_base_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          cache: npm
+      - run: npm ci
+      - run: E2E_BASE_URL="$E2E_BASE_URL" ./scripts/e2e.sh --project production-smoke
