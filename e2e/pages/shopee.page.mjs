@@ -84,7 +84,9 @@ export class ShopeePage {
     await expect(this.page.locator("#shopeeBatchStatus")).toContainText("นัดรับ");
     await this.page.locator("#refreshShopeeTrackingButton").click();
     await this.page.locator("#createShopeeDocumentsButton").click();
+    await expect(this.page.locator("#shopeeBatchStatus")).toHaveText("ส่งคำขอใบปะหน้าแล้ว");
     await this.page.locator("#overlayShopeeLabelsButton").click();
-    await expect(this.page.locator("#shopeeBatchStatus")).toContainText("Custom Label");
+    await expect(this.page.locator("#shopeeBatchChoices a[href*='/api/shopee/']")).toHaveCount(1);
+    await expect(this.page.locator("#printShopeeLabelsButton")).toBeEnabled();
   }
 }

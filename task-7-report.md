@@ -24,6 +24,14 @@ Implemented browser E2E coverage for LINE intake, Shopee integration, and admin 
 - Shopee coverage now asserts repeat-sync upsert identity, rendered auth initiation, mapping-clear persistence after reload, and partial arrange state per package.
 - Settings coverage now checks the exact configured callback origin and extracts the generated PDF to verify the updated company marker.
 - Mock response scripts select the first matching provider/endpoint, preventing unrelated queued responses from making provider journeys flaky.
+- Label assertions now accept the real Thai request-status marker and require the rendered custom-label link plus enabled print action, while provider logs and persisted tracking remain asserted.
+
+## Round 2 verification
+
+- Focused Chromium: 7 passed.
+- Auth smoke: 3 passed.
+- Relevant Node tests: 25 passed.
+- Standard runner list: 38 tests in 15 files.
 
 ## Scope note
 
