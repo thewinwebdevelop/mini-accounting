@@ -57,19 +57,8 @@ export async function writeRedactedArtifacts({ reportDir, events = [] } = {}) {
   await writeFile(path.join(reportDir, "e2e-report.log"), `${redactedEvents.map(event => redactE2ELog(event)).join("\n")}\n`, "utf8");
 }
 
-// The smoke project is deliberately request-only. Node tests import this module without
-// registering a Playwright test; Playwright invokes the same function through APIRequestContext.
-if (process.env.E2E_PRODUCTION_SMOKE_RUNNER === "1") {
-  const { test } = await import("@playwright/test");
-  test("production health smoke is anonymous, read-only and allowlisted", async ({ request, baseURL }) => {
-    const report = await runProductionSmoke({
-      baseUrl: baseURL,
-      fetchImpl: (url, options = {}) => request.fetch(String(url), {
-        method: options.method,
-        headers: options.headers,
-        maxRedirects: 0,
-      }),
-    });
-    if (!report.ok) throw new Error("production smoke failed");
-  });
+// This module is both the direct smoke entrypoint and the unit-test target.
+if (process.argv[1]?.endsWith("production-smoke.spec.mjs")) {
+  const report = await runProductionSmoke({ baseUrl: process.env.E2E_BASE_URL });
+  process.stdout.write(`${JSON.stringify(report)}\n`);
 }

@@ -22,3 +22,11 @@ Implemented production smoke safeguards, redacted artifact output, CI coverage, 
 
 - Full Chromium/mobile/cloud E2E and the complete `scripts/test.sh` suite were not rerun in this task because the checkout already contains unrelated user changes, an untracked `data/` directory, and generated `test-results/`; those were preserved untouched. The local default Node is v16, while the pinned Playwright/test workflow requires Node 22.
 - No deployment or production smoke request was performed.
+
+## Round 1 fixes
+
+- Production smoke now runs directly through Node global `fetch`; `scripts/e2e.sh --project production-smoke` does not inspect or invoke Playwright, and the smoke module has no Playwright import.
+- CI enables `E2E_AUTO_FIXTURE=1`; the runner starts an owned temporary fixture, exports `E2E_LOCAL_BASE_URL` and `E2E_RUN_ID`, verifies its health marker, and cleans it up after full Chromium/mobile runs.
+- Redaction coverage now includes nested arrays/objects, storage state, trace-like structures, structured file bytes, and sensitive nested fields.
+
+Round 1 verification: 23 focused artifact/tooling tests passed; bundled Node 22 Chromium bootstrap passed 2 tests; smoke `--list` reported the direct Node HTTP runner.

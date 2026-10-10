@@ -25,7 +25,7 @@ Full local E2E creates its own isolated app environment through `e2e/fixtures/pl
 
 ## Read-only production smoke
 
-Smoke is request-level HTTP only. It sends anonymous `GET` and `HEAD` requests to the exact allowlist `/`, `/healthz`, `/api/healthz`, `/line-auth`, `/mobile-menu.css`, `/line-auth.browser.js`, and `/workflow-documents`; redirects, callbacks, mutations, query variants, cookies and non-allowlisted paths fail the run.
+Smoke is a direct Node `fetch` entrypoint, not a Playwright project. It sends anonymous `GET` and `HEAD` requests to the exact allowlist `/`, `/healthz`, `/api/healthz`, `/line-auth`, `/mobile-menu.css`, `/line-auth.browser.js`, and `/workflow-documents`; redirects, callbacks, mutations, query variants, cookies and non-allowlisted paths fail the run.
 
 ```sh
 E2E_BASE_URL="https://staging.example" ./scripts/e2e.sh --project production-smoke

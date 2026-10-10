@@ -38,6 +38,34 @@ case "$PROJECT" in
     ;;
 esac
 
+if [ "$PROJECT" = "production-smoke" ]; then
+  RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
+  if [ -n "${E2E_NODE_BIN:-}" ]; then
+    NODE_BIN="$E2E_NODE_BIN"
+  elif [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
+    NODE_BIN="$RUNTIME_ROOT/node/bin/node"
+  else
+    NODE_BIN="$(command -v node || true)"
+  fi
+  if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+    echo "Required Node runtime not found" >&2
+    exit 1
+  fi
+  NODE_VERSION="$($NODE_BIN --version)"
+  NODE_MAJOR="${NODE_VERSION#v}"
+  NODE_MAJOR="${NODE_MAJOR%%.*}"
+  if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$NODE_MAJOR" -lt 22 ]; then
+    echo "Node 22 or newer is required (found $NODE_VERSION)" >&2
+    exit 1
+  fi
+  if [ "$LIST_ONLY" -eq 1 ]; then
+    echo "production-smoke: direct Node HTTP smoke (no Playwright)"
+    exit 0
+  fi
+  cd "$REPO_DIR"
+  exec "$NODE_BIN" "$REPO_DIR/e2e/specs/production-smoke.spec.mjs"
+fi
+
 PLAYWRIGHT_BIN="${E2E_PLAYWRIGHT_BIN:-$REPO_DIR/node_modules/.bin/playwright}"
 if [ ! -x "$PLAYWRIGHT_BIN" ]; then
   echo "Playwright executable not found; run npm ci" >&2
@@ -90,8 +118,36 @@ fi
 
 if [ "$PROJECT" != "production-smoke" ] && [ "$PROJECT" != "cloud-runtime-mocked" ] && [ "$LIST_ONLY" -eq 0 ]; then
   if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
-    echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
-    exit 1
+    if [ "${E2E_AUTO_FIXTURE:-}" != "1" ]; then
+      echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
+      exit 1
+    fi
+    FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sweet-house-e2e-runner.XXXXXX")"
+    FIXTURE_ENV="$FIXTURE_DIR/env"
+    "$NODE_BIN" --input-type=module - "$REPO_DIR" "$FIXTURE_ENV" "$PROJECT" <<'NODE' &
+const [repoDir, envFile, profile] = process.argv.slice(2);
+const { writeFile } = await import("node:fs/promises");
+const { createE2EEnvironment } = await import(`${repoDir}/e2e/fixtures/app-server.fixture.mjs`);
+const environment = await createE2EEnvironment({ profile, workerIndex: 0 });
+await writeFile(envFile, `E2E_LOCAL_BASE_URL=${environment.baseUrl}\nE2E_RUN_ID=${environment.runId}\n`);
+const stop = async () => { await environment.stop(); process.exit(0); };
+process.once("SIGTERM", stop);
+process.once("SIGINT", stop);
+await new Promise(() => {});
+NODE
+    FIXTURE_PID=$!
+    cleanup_fixture() { kill "$FIXTURE_PID" 2>/dev/null || true; wait "$FIXTURE_PID" 2>/dev/null || true; rm -rf "$FIXTURE_DIR"; }
+    trap cleanup_fixture EXIT
+    for _ in $(seq 1 60); do
+      if [ -s "$FIXTURE_ENV" ]; then break; fi
+      if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then echo "isolated fixture failed to start" >&2; exit 1; fi
+      sleep 0.25
+    done
+    if [ ! -s "$FIXTURE_ENV" ]; then echo "isolated fixture startup timed out" >&2; exit 1; fi
+    # The file is written by the child fixture process and contains only its own URLs.
+    E2E_LOCAL_BASE_URL="$(sed -n 's/^E2E_LOCAL_BASE_URL=//p' "$FIXTURE_ENV")"
+    E2E_RUN_ID="$(sed -n 's/^E2E_RUN_ID=//p' "$FIXTURE_ENV")"
+    export E2E_LOCAL_BASE_URL E2E_RUN_ID
   fi
   "$NODE_BIN" --input-type=module - "$E2E_LOCAL_BASE_URL" "$E2E_RUN_ID" <<'NODE'
 const [rawUrl, expectedRunId] = process.argv.slice(2);

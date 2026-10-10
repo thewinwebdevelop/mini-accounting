@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { runProductionSmoke, writeRedactedArtifacts } from "../e2e/specs/production-smoke.spec.mjs";
+import { redactE2ELog } from "../e2e/support/redaction.mjs";
 
 function response(status, body = "ok", headers = {}) {
   return { status, headers: new Headers(headers), text: async () => body };
@@ -70,4 +71,25 @@ test("artifact writer redacts credentials, cookies, file tokens and business byt
   } finally {
     await rm(reportDir, { recursive: true, force: true });
   }
+});
+
+test("recursive redaction removes nested secrets, storage state, traces and structured bytes", () => {
+  const redacted = redactE2ELog({
+    nested: [{ cookie: "nested-cookie", document: "REAL BUSINESS TEXT" }],
+    storageState: { cookies: [{ value: "session-value" }], origins: [{ localStorage: [{ value: "oauth-secret" }] }] },
+    trace: { request: { body: "PDF-CONTENTS" } },
+    metadata: { fileToken: "file-token-secret", authorization: "Bearer service-key-12345678901234567890" },
+  });
+  for (const secret of ["nested-cookie", "REAL BUSINESS TEXT", "session-value", "oauth-secret", "PDF-CONTENTS", "file-token-secret", "service-key-"]) {
+    assert.doesNotMatch(redacted, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(redacted, /\[REDACTED\]/);
+});
+
+test("production smoke has no Playwright import or launch path", async () => {
+  const smokeSource = await readFile(new URL("../e2e/specs/production-smoke.spec.mjs", import.meta.url), "utf8");
+  const runnerSource = await readFile(new URL("../scripts/e2e.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(smokeSource, /@playwright|APIRequestContext|request\.fetch/);
+  assert.match(runnerSource, /production-smoke: direct Node HTTP smoke/);
+  assert.match(runnerSource, /exec "\$NODE_BIN" "\$REPO_DIR\/e2e\/specs\/production-smoke\.spec\.mjs"/);
 });

@@ -20,6 +20,7 @@ jobs:
     env:
       E2E_RUN_ID: ci-${{ github.run_id }}
       E2E_WORKERS: "2"
+      E2E_AUTO_FIXTURE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
