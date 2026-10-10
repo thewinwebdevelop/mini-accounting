@@ -178,7 +178,7 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         if (provider === "supabase" && parsed.pathname === "/rest/v1/e2e_reservations") { if (method === "POST") { const value = parseJson(body); state.reservations.set(String(value.requestKey), value); return json(response, 201, value); } return json(response, 200, [...state.reservations.values()]); }
         if (scripted?.type === "timeout") return;
         if (scripted?.type === "drop") return response.destroy();
-        if (provider === "line" && parsed.pathname.endsWith("/content")) { response.writeHead(200, { "content-type": "application/octet-stream" }); return response.end(Buffer.from("fixture-bytes")); }
+        if (provider === "line" && parsed.pathname.endsWith("/content")) { response.writeHead(200, { "content-type": scripted?.contentType || "image/jpeg" }); return response.end(Buffer.from(scripted?.bytes || "fixture-bytes")); }
         return json(response, scripted?.status || 200, scripted?.body || (provider === "ocr" ? { fields: {}, confidence: 0.5 } : { ok: true, runId }));
       });
       server.listen(0, "127.0.0.1"); await once(server, "listening"); baseUrls[provider] = `http://127.0.0.1:${server.address().port}`; expectedHost = `127.0.0.1:${server.address().port}`; servers.push(server);

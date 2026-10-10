@@ -1,0 +1,61 @@
+import { readFile } from "node:fs/promises";
+import { expect, test } from "../fixtures/playwright.fixture.mjs";
+import { ShopeePage } from "../pages/shopee.page.mjs";
+import { saveShopeeConnection } from "../../forms/shopee-auth.logic.js";
+import { InventoryPage } from "../pages/inventory.page.mjs";
+
+test("Shopee connection, sync/upsert, mapping clear, shipment grouping, tracking and labels use mock providers", async ({ authenticatedPage, localApp, mock }) => {
+  const shopId = `shop-${Date.now()}`;
+  const validLabelPdf = (await readFile(new URL("../../output/pdf/vat-samples-2026-09-24/01_purchase_order.pdf", import.meta.url))).toString("base64");
+  const inventory = new InventoryPage(authenticatedPage, localApp);
+  const master = await inventory.createMaster({ suffix: `${Date.now()}`, childCount: 1 });
+  saveShopeeConnection(localApp.rootDir, { shopId, shopName: "Fixture Shop", partnerId: "fixture-partner", accessToken: "access", refreshToken: "refresh", status: "connected" });
+  mock.scriptResponse({ endpoint: "get_order_list", body: { response: { order_list: [{ order_sn: "ORDER-E2E-1", update_time: 1700000000 }] } } });
+  mock.scriptResponse({ endpoint: "get_order_detail", body: { response: { order_list: [{ order_sn: "ORDER-E2E-1", order_status: "READY_TO_SHIP", shipping_status: "READY_TO_SHIP", logistics_channel_id: "fixture-logistics", product_location_id: "fixture-location", itemList: [{ item_id: "item-1", model_id: "model-1", model_sku: "FIXTURE-SKU-1", item_name: "Fixture item", quantity: 1 }] }] } } });
+  mock.scriptResponse({ endpoint: "get_mass_shipping_parameter", body: { response: { pickup: { address_list: [{ address_id: "address-1", full_address: "Fixture address", time_slot_list: [{ pickup_time_id: "time-1", label: "10:00" }] }] } } } });
+  mock.scriptResponse({ endpoint: "mass_ship_order", body: { response: { result: [{ package_number: "", success: true }] } } });
+  mock.scriptResponse({ endpoint: "get_mass_tracking_number", body: { response: { result: [{ package_number: "", tracking_number: "TRACK-E2E-1" }] } } });
+  mock.scriptResponse({ endpoint: "create_shipping_document_job", body: { response: { job_id: "job-e2e-1" } } });
+  mock.scriptResponse({ endpoint: "get_shipping_document_job_status", body: { response: { status: "READY" } } });
+  mock.scriptResponse({ endpoint: "download_shipping_document_job", body: { response: { file_base64: validLabelPdf } } });
+  const page = new ShopeePage(authenticatedPage);
+  await page.openConnection(shopId);
+  await expect(authenticatedPage.locator("#shopeeConnectionStatus")).toContainText("เชื่อมต่อแล้ว");
+  const synced = await page.sync(shopId);
+  expect(synced.orders).toHaveLength(1);
+  await page.openOrders(shopId);
+  const order = synced.orders[0];
+  await page.selectOrders([order.id]);
+  await page.openMapping(shopId, [order.id]);
+  await page.editAndClearMapping(master.children[0].id);
+  await page.openOrders(shopId);
+  await page.selectOrders([order.id]);
+  await authenticatedPage.locator("#openShopeeShipmentButton").click();
+  await expect.poll(() => new URL(authenticatedPage.url()).pathname).toBe("/shopee-shipment");
+  await page.loadAndPrepare();
+  await page.chooseFirstPickup();
+  await page.arrangeRefreshAndLabels();
+  const orders = await page.api(`/api/platform-orders?shopId=${encodeURIComponent(shopId)}`);
+  expect(orders.orders[0]).toMatchObject({ orderNo: "ORDER-E2E-1", trackingNumber: "TRACK-E2E-1" });
+  expect(mock.requests.filter((request) => request.provider === "shopee").map((request) => request.path)).toEqual(expect.arrayContaining(["/api/v2/order/get_order_list", "/api/v2/order/get_order_detail", "/api/v2/logistics/mass_ship_order", "/api/v2/logistics/get_mass_tracking_number"]));
+});
+
+test("Shopee UI retries a provider 401 with refreshed credentials and surfaces a transient provider failure before succeeding", async ({ authenticatedPage, localApp, mock }) => {
+  const shopId = `retry-shop-${Date.now()}`;
+  saveShopeeConnection(localApp.rootDir, { shopId, shopName: "Retry Shop", partnerId: "fixture-partner", accessToken: "expired", refreshToken: "refresh", status: "connected" });
+  const orderList = { response: { order_list: [] } };
+  mock.scriptResponse({ endpoint: "get_order_list", status: 401, body: { message: "expired" } });
+  mock.scriptResponse({ endpoint: "auth/access_token/get", body: { access_token: "refreshed", refresh_token: "refresh-2", expire_in: 3600 } });
+  mock.scriptResponse({ endpoint: "get_order_list", body: orderList });
+  const page = new ShopeePage(authenticatedPage);
+  await page.openConnection(shopId);
+  await page.sync(shopId);
+  expect(mock.requests.filter((request) => request.path === "/api/v2/auth/access_token/get")).toHaveLength(1);
+
+  mock.scriptResponse({ endpoint: "get_order_list", status: 504, body: { message: "provider timeout" } });
+  await authenticatedPage.locator("#syncShopeeOrdersButton").click();
+  await expect(authenticatedPage.locator("#shopeeConnectionStatus")).toContainText("provider timeout");
+  mock.scriptResponse({ endpoint: "get_order_list", body: orderList });
+  await page.sync(shopId);
+  await expect(authenticatedPage.locator("#shopeeConnectionStatus")).toContainText("Sync orders สำเร็จ");
+});

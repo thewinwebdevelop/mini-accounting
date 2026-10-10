@@ -67,6 +67,11 @@ export async function createE2EEnvironment({ profile = "local", workerIndex = 0,
     LINE_OCR_PROVIDER: "http",
     LINE_OCR_API_KEY: "e2e-ocr-key",
     LINE_CHANNEL_ID: "e2e-line-channel",
+    LINE_CHANNEL_SECRET: "e2e-line-channel-secret",
+    LINE_CHANNEL_ACCESS_TOKEN: "e2e-line-access-token",
+    LINE_INTAKE_MINI_APP_URL: "http://127.0.0.1/line-intake",
+    SHOPEE_PARTNER_ID: "e2e-shopee-partner",
+    SHOPEE_PARTNER_KEY: "e2e-shopee-partner-key",
     LINE_LIFF_ID: "e2e-liff-id",
   };
   let app;

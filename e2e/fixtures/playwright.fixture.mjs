@@ -30,6 +30,14 @@ export const test = base.extend({
     await use(page);
     await context.close();
   },
+  adminPage: async ({ browser, localApp }, use) => {
+    const persona = localApp.users.admin;
+    const context = await browser.newContext({ baseURL: localApp.baseUrl });
+    await context.addCookies([{ ...sessionCookie(createTestSession({ ...persona, secret: "e2e-test-session-secret-012345678901234567890123" })), url: localApp.baseUrl }]);
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
   anonymousPage: async ({ browser, localApp }, use) => {
     const context = await browser.newContext({ baseURL: localApp.baseUrl });
     const page = await context.newPage();
