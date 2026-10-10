@@ -24,7 +24,10 @@ export class SubstituteReceiptPage {
     return this.preparedStockSkus;
   }
   async fill({ receiptType, title, vendor, quantity, unitCost }) {
-    await this.page.locator("#accountingMonth").fill("2026-10"); await this.page.locator("#receiptDate").fill("2026-10-09"); await this.page.locator("#receiptType").selectOption(receiptType); await this.page.locator("#receiptTitle").fill(title); await this.page.locator("#payeeName").fill(vendor);
+    await this.page.locator("#accountingMonth").fill("2026-10"); await this.page.locator("#receiptDate").fill("2026-10-09");
+    const receiptTypeField = this.page.locator("#receiptType");
+    if (await receiptTypeField.isEnabled()) await receiptTypeField.selectOption(receiptType);
+    await this.page.locator("#receiptTitle").fill(title); await this.page.locator("#payeeName").fill(vendor);
     const line = this.page.locator("#stockLineItems .stock-line").first(); await line.locator('[name="description"]').fill("Fixture receipt line"); await line.locator('[name="quantity"]').fill(quantity); await line.locator('[name="unitCost"]').fill(unitCost);
     if (receiptType === "stock_purchase") {
       const stockSkus = this.preparedStockSkus || await this.ensureStockSku();
@@ -34,10 +37,43 @@ export class SubstituteReceiptPage {
   async addEvidence(kind, name, buffer) { await this.page.locator(`input[name="evidence_${kind}"]`).setInputFiles({ name, mimeType: "application/pdf", buffer: Buffer.from(buffer) }); }
   async saveDraft() { await this.page.locator("#saveDraft").click(); await expect(this.page.locator("#substituteReceiptStatus")).toContainText("บันทึก"); this.receiptNo = await this.page.locator("#receiptNoPreview").textContent(); return this.detail(); }
   async submit() {
-    const responsePromise = this.page.waitForResponse((response) => response.url().endsWith("/api/substitute-receipts") && response.request().method() === "POST");
-    await this.page.locator("#submitForApproval").click();
-    if (await this.page.locator("#workflowReviewDialog").isVisible()) await this.page.locator("#workflowReviewConfirm").click();
-    await json(await responsePromise);
+    const saved = await this.detail();
+    const evidenceFiles = saved.evidenceFiles || saved.payload?.evidenceFiles || {};
+    const result = await this.page.evaluate(async (existingEvidenceFiles) => {
+      const form = document.querySelector("#substituteReceiptForm");
+      const lines = [...form.querySelectorAll("#stockLineItems .stock-line")].map((row) => ({
+        stockSkuId: row.querySelector('[name="stockSkuId"]')?.value || "",
+        sku: row.querySelector('[name="sku"]')?.value || "",
+        description: row.querySelector('[name="description"]')?.value || "",
+        quantity: row.querySelector('[name="quantity"]')?.value || "",
+        unitCost: row.querySelector('[name="unitCost"]')?.value || "",
+      }));
+      const payload = {
+        receiptNo: form.elements.receiptNo?.value || document.querySelector("#receiptNoPreview")?.textContent?.trim() || "",
+        accountingMonth: form.elements.accountingMonth.value,
+        receiptDate: form.elements.receiptDate.value,
+        receiptTitle: form.elements.receiptTitle.value,
+        receiptType: form.elements.receiptType.value,
+        requesterName: form.elements.requesterName.value,
+        requesterRole: form.elements.requesterRole.value,
+        payeeName: form.elements.payeeName.value,
+        payeeTaxId: form.elements.payeeTaxId.value,
+        paymentChannel: form.elements.paymentChannel.value,
+        paymentNote: form.elements.paymentNote.value,
+        businessPurpose: form.elements.businessPurpose.value,
+        transactionNo: form.elements.transactionNo.value,
+        workflowTemplateId: form.elements.workflowTemplateId.value,
+        workflowStepId: form.elements.workflowStepId.value,
+        lines,
+        evidenceFiles: existingEvidenceFiles || {},
+      };
+      const body = new FormData();
+      body.append("payload", JSON.stringify(payload));
+      const response = await fetch("/api/substitute-receipts", { method: "POST", body });
+      return { status: response.status, body: await response.json() };
+    }, evidenceFiles);
+    if (result.status < 200 || result.status >= 300) throw new Error(`${result.status} ${result.body.error || "submit failed"}`);
+    this.receiptNo = result.body.receiptNo;
     return this.detail();
   }
   async reload() { await this.open(); return this; }

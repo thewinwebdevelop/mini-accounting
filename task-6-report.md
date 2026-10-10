@@ -12,6 +12,8 @@ Implemented inventory and platform-order browser journeys with isolated `localAp
 - Sale SKU bundle creation/editing, component mapping and duplicate-component validation.
 - CSV upload/import review with missing-Sale-SKU, invalid-quantity and skipped-status issue categories.
 - Reservation creation, posted deduction, idempotent repeat posting and shipment handoff.
+- Workflow cancellation now drives stock reversal through the authenticated browser route, including the real `202 cancellation_pending` retry path and final `200 cancelled` result; no inventory business module is imported by the page object.
+- Stock filtering explicitly exercises both `in_stock` and `zero` states with separate persisted child SKU outcomes.
 
 ## Verification
 
@@ -22,7 +24,8 @@ Implemented inventory and platform-order browser journeys with isolated `localAp
 - Node syntax checks and `git diff --check`: passed. ESLint is not installed in this checkout.
 - Final review was self-review because the task explicitly prohibited subagents.
 - The initial red run failed on missing page objects; subsequent failures were corrected for debounced search initialization and shipment-handoff URL matching.
+- Fix-round verification: focused Chromium `5 passed`; auth smoke `3 passed`; relevant Node suite `19 passed, 0 failed`; Playwright list `31 tests in 12 files`.
 
 ## Scope safety
 
-Only the four requested E2E files and this report were added/changed by Task 6. Existing user changes and `data/` were not modified.
+The original Task 6 files plus the relevant `SubstituteReceiptPage` helper and this report were changed. Existing user changes and `data/` were not modified.

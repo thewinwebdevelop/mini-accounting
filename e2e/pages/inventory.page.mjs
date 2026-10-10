@@ -1,8 +1,4 @@
 import { expect } from "@playwright/test";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const { reversePurchaseInMovementsByReference } = require("../../forms/inventory.logic.js");
 
 async function json(response) {
   const body = await response.json().catch(() => ({}));
@@ -179,17 +175,6 @@ export class InventoryPage {
       contentType: response.headers()["content-type"] || "",
       body: Buffer.from(await response.body()),
     }));
-  }
-
-  async reversePurchaseIn({ referenceNo, originalMovementId }) {
-    return reversePurchaseInMovementsByReference({
-      rootDir: this.localApp.rootDir,
-      referenceType: "substitute_receipt",
-      referenceNo,
-      expectedOriginalMovementIds: [originalMovementId],
-      reversalDate: "2026-10-10",
-      cancellationReference: `workflow_transaction:TXN-2026-10-${referenceNo.slice(-4)}`,
-    });
   }
 
   async openStockList(search = "") {
