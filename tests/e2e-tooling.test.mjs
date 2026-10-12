@@ -154,9 +154,9 @@ test("e2e.sh refuses a local service without a matching fixture run marker", () 
   assert.throws(() => readFileSync(log));
 }));
 
-test("e2e.sh requires fixture URL and run identity for local execution", () => inTemp(dir => {
+test("e2e.sh supports opting out of automatic fixture startup", () => inTemp(dir => {
   const playwright = fakeCommand(dir, "playwright", "exit 0");
-  const result = run(e2eScript, { E2E_PLAYWRIGHT_BIN: playwright, E2E_PROJECT: "chromium", E2E_LOCAL_BASE_URL: "", E2E_RUN_ID: "" });
+  const result = run(e2eScript, { E2E_PLAYWRIGHT_BIN: playwright, E2E_PROJECT: "chromium", E2E_LOCAL_BASE_URL: "", E2E_RUN_ID: "", E2E_AUTO_FIXTURE: "0" });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /E2E_LOCAL_BASE_URL|E2E_RUN_ID/);
 }));
@@ -263,3 +263,46 @@ test("e2e.sh --list includes the bootstrap spec without a fixture", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /bootstrap\.spec\.mjs/);
 });
+
+for (const exitStatus of [0, 7]) {
+  test(`e2e.sh bootstraps and cleans its fixture while preserving exit ${exitStatus} and args`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sweet-house-runner-cleanup-"));
+    try {
+      const log = join(dir, "calls");
+      const playwright = fakeCommand(dir, "playwright", `printf '%s\\n' "$E2E_LOCAL_BASE_URL" "$E2E_RUN_ID" "$@" > "${log}"\nexit ${exitStatus}`);
+      const result = run(e2eScript, {
+        E2E_PLAYWRIGHT_BIN: playwright, E2E_NODE_BIN: process.execPath,
+        E2E_PROJECT: "chromium", E2E_BASE_URL: "", E2E_AUTO_FIXTURE: "",
+        E2E_LOCAL_BASE_URL: "", E2E_RUN_ID: "", TMPDIR: dir,
+      }, ["--grep", "a spaced pattern"]);
+      assert.equal(result.status, exitStatus, result.stderr);
+      const [baseUrl, runId, ...args] = readFileSync(log, "utf8").trim().split("\n");
+      assert.match(runId, /^e2e-/);
+      assert.deepEqual(args, ["test", "--project", "chromium", "--grep", "a spaced pattern"]);
+      await assert.rejects(fetch(new URL("/__e2e__/health", baseUrl), { signal: AbortSignal.timeout(1000) }));
+      const { readdirSync } = await import("node:fs");
+      assert.deepEqual(readdirSync(dir).sort(), ["calls", "playwright"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const project of ["chromium", "production-smoke"]) {
+  test(`e2e.sh supports runtime paths containing spaces for ${project}`, () => inTemp(dir => {
+    const bin = join(dir, "runtime with spaces");
+    mkdirSync(bin);
+    const log = join(dir, "calls");
+    const node = fakeCommand(bin, "node", `if [ "$1" = "--version" ]; then echo v24.0.0; exit 0; fi\nprintf '%s\\n' "$@" > "${log}"`);
+    const python = fakeCommand(bin, "python3", 'if [ "$1" = "--version" ]; then echo "Python 3.12.7"; exit 0; fi\nexit 1');
+    const result = run(e2eScript, {
+      E2E_NODE_BIN: node,
+      SWEET_HOUSE_PYTHON_BIN: python,
+      E2E_PLAYWRIGHT_BIN: "",
+      E2E_PROJECT: project,
+      E2E_BASE_URL: project === "production-smoke" ? "https://example.invalid" : "",
+    }, project === "chromium" ? ["--list"] : []);
+    assert.equal(result.status, 0, result.stderr);
+    const calls = readFileSync(log, "utf8");
+    if (project === "chromium") assert.match(calls, /@playwright\/test\/cli\.js\ntest\n--project\nchromium\n--list/);
+    else assert.match(calls, /e2e\/specs\/production-smoke\.spec\.mjs\n/);
+  }));
+}

@@ -17,5 +17,6 @@ export function assertAllowedOutboundUrl(input) {
 
 globalThis.fetch = async function guardedFetch(input, init) {
   assertAllowedOutboundUrl(input instanceof Request ? input.url : input);
-  return nativeFetch(input, init);
+  // Reject redirects even when init or a Request explicitly opts into following them.
+  return nativeFetch(input, { ...init, redirect: "error" });
 };

@@ -4,13 +4,13 @@ import path from "node:path";
 import { redactE2ELog } from "../support/redaction.mjs";
 
 const ALLOWLIST = Object.freeze([
-  { path: "/", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/healthz", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/api/healthz", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/line-auth", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/mobile-menu.css", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/line-auth.browser.js", methods: ["GET", "HEAD"], statuses: [200] },
-  { path: "/workflow-documents", methods: ["GET", "HEAD"], statuses: [401, 403] },
+  { path: "/", methods: ["GET"], statuses: [200] },
+  { path: "/healthz", methods: ["GET"], statuses: [200] },
+  { path: "/api/healthz", methods: ["GET"], statuses: [200] },
+  { path: "/line-auth", methods: ["GET"], statuses: [200] },
+  { path: "/mobile-menu.css", methods: ["GET"], statuses: [200] },
+  { path: "/line-auth.browser.js", methods: ["GET"], statuses: [200] },
+  { path: "/api/workflow-documents", methods: ["GET"], statuses: [401, 403] },
 ]);
 
 function assertBaseUrl(baseUrl) {

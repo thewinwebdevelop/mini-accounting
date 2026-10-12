@@ -5,6 +5,7 @@
 Use the pinned Node 22 and Python 3 runtimes, then install the lockfile and browser:
 
 ```sh
+python3 -m pip install pypdf reportlab pdfplumber uharfbuzz
 npm ci
 npx playwright install --with-deps chromium
 ```
@@ -21,11 +22,13 @@ Full local E2E creates its own isolated app environment through `e2e/fixtures/pl
 ./scripts/e2e.sh --project cloud-runtime-mocked
 ```
 
+The runner automatically starts and cleans up an isolated fixture, including when tests fail. To use an externally managed fixture, supply both `E2E_LOCAL_BASE_URL` and `E2E_RUN_ID`; the runner verifies its loopback origin and run marker and leaves its lifecycle to the caller. Set `E2E_AUTO_FIXTURE=0` to require those values instead of starting a fixture. `--list` needs no running fixture.
+
 `E2E_WORKERS`, `E2E_TRACE`, and `E2E_GREP` are optional. The cloud profile keeps mocked Supabase state across app restart and exercises allocation/retry behavior. Mobile uses the Pixel 7 viewport. Browser failures are written under `test-results/`; CI uploads only the redacted report.
 
 ## Read-only production smoke
 
-Smoke is a direct Node `fetch` entrypoint, not a Playwright project. It sends anonymous `GET` and `HEAD` requests to the exact allowlist `/`, `/healthz`, `/api/healthz`, `/line-auth`, `/mobile-menu.css`, `/line-auth.browser.js`, and `/workflow-documents`; redirects, callbacks, mutations, query variants, cookies and non-allowlisted paths fail the run.
+Smoke is a direct Node `fetch` entrypoint, not a Playwright project. It sends anonymous `GET` requests to the exact allowlist `/`, `/healthz`, `/api/healthz`, `/line-auth`, `/mobile-menu.css`, `/line-auth.browser.js`, and `/api/workflow-documents`. Public routes must return 200; the protected API must return 401 or 403. The `/workflow-documents` HTML shell is public and is not an auth gate. Redirects, callbacks, mutations, query variants, cookies and non-allowlisted paths fail the run.
 
 ```sh
 E2E_BASE_URL="https://staging.example" ./scripts/e2e.sh --project production-smoke

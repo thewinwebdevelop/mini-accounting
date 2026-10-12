@@ -51,7 +51,7 @@ if [ "$PROJECT" = "production-smoke" ]; then
     echo "Required Node runtime not found" >&2
     exit 1
   fi
-  NODE_VERSION="$($NODE_BIN --version)"
+  NODE_VERSION="$("$NODE_BIN" --version)"
   NODE_MAJOR="${NODE_VERSION#v}"
   NODE_MAJOR="${NODE_MAJOR%%.*}"
   if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$NODE_MAJOR" -lt 22 ]; then
@@ -107,7 +107,7 @@ if [ "$PROJECT" != "production-smoke" ]; then
     echo "Required Python runtime not found" >&2
     exit 1
   fi
-  PYTHON_VERSION="$($PYTHON_BIN --version 2>&1)"
+  PYTHON_VERSION="$("$PYTHON_BIN" --version 2>&1)"
   case "$PYTHON_VERSION" in
     Python\ 3.*) ;;
     *) echo "Python 3 is required (found $PYTHON_VERSION)" >&2; exit 1 ;;
@@ -118,7 +118,7 @@ fi
 
 if [ "$PROJECT" != "production-smoke" ] && [ "$PROJECT" != "cloud-runtime-mocked" ] && [ "$LIST_ONLY" -eq 0 ]; then
   if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
-    if [ "${E2E_AUTO_FIXTURE:-}" != "1" ]; then
+    if [ "${E2E_AUTO_FIXTURE:-1}" != "1" ]; then
       echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
       exit 1
     fi
@@ -176,6 +176,7 @@ if [ -n "${forwarded[0]-}" ]; then args+=("${forwarded[@]}"); fi
 cd "$REPO_DIR"
 if [ "$PROJECT" = "production-smoke" ]; then export E2E_PRODUCTION_SMOKE_RUNNER=1; fi
 if [ -n "${E2E_PLAYWRIGHT_BIN:-}" ]; then
-  exec "$PLAYWRIGHT_BIN" "${args[@]}"
+  "$PLAYWRIGHT_BIN" "${args[@]}"
+else
+  "$NODE_BIN" "$REPO_DIR/node_modules/@playwright/test/cli.js" "${args[@]}"
 fi
-exec "$NODE_BIN" "$REPO_DIR/node_modules/@playwright/test/cli.js" "${args[@]}"
