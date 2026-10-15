@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +102,28 @@ async function stopApp(child) {
   await new Promise(resolve => child.once("exit", resolve));
 }
 
+function rawRequest(url, { method = "GET", headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const request = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method,
+      headers,
+    }, response => {
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.on("end", () => resolve({
+        status: response.statusCode,
+        json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 test("LINE session route creates a cookie and /me returns the resolved app user", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-auth-"));
   const upstream = await startUpstream();
@@ -159,6 +181,10 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
     assert.equal(missing.status, 401);
     assert.equal((await missing.json()).code, "AUTH_REQUIRED");
 
+    const profilePage = await fetch(`${app.baseUrl}/user-profile`, { redirect: "manual" });
+    assert.equal(profilePage.status, 302);
+    assert.equal(profilePage.headers.get("location"), "/line-auth?returnTo=%2Fuser-profile");
+
     const tampered = await fetch(`${app.baseUrl}/api/company-settings`, {
       headers: { cookie: "sweet_house_session=not-valid" },
     });
@@ -167,6 +193,126 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
   } finally {
     await stopApp(app.child);
     await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("mock auth mode signs the configured local fixture and guards the profile page", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-mock-auth-"));
+  const app = await startApp({
+    NODE_ENV: "test",
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "mock",
+    SWEET_HOUSE_MOCK_USER_ID: "fixture-user",
+    SWEET_HOUSE_MOCK_ROLE: "owner",
+    SWEET_HOUSE_MOCK_DISPLAY_NAME: "ผู้ทดสอบ Local",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const page = await fetch(`${app.baseUrl}/user-profile`, { redirect: "manual" });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("location"), "/mock-auth?returnTo=%2Fuser-profile");
+
+    const login = await fetch(`${app.baseUrl}/api/auth/mock-session`, { method: "POST" });
+    assert.equal(login.status, 200);
+    assert.deepEqual((await login.json()).user, {
+      id: "fixture-user",
+      lineUserId: "U_LOCAL_MOCK_USER",
+      displayName: "ผู้ทดสอบ Local",
+      pictureUrl: "",
+      status: "active",
+      role: "owner",
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+
+    const me = await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie } });
+    assert.equal(me.status, 200);
+    const meBody = await me.json();
+    assert.equal(meBody.mode, "mock");
+    assert.equal(meBody.user.userId, "fixture-user");
+
+    const profile = await fetch(`${app.baseUrl}/api/auth/profile`, { headers: { cookie } });
+    assert.equal(profile.status, 200);
+    assert.equal((await profile.json()).profile.companyPositionLabel, "เจ้าของบริษัท");
+
+    const positions = await fetch(`${app.baseUrl}/api/company-positions`, { headers: { cookie } });
+    assert.equal(positions.status, 200);
+    assert.deepEqual((await positions.json()).positions.map(position => position.id), ["mock-owner", "mock-marketing"]);
+
+    const updated = await fetch(`${app.baseUrl}/api/auth/profile`, {
+      method: "PATCH",
+      headers: { cookie, origin: app.baseUrl, "content-type": "application/json" },
+      body: JSON.stringify({
+        firstName: "ชื่อใหม่",
+        lastName: "นามสกุลใหม่",
+        companyPositionId: "mock-marketing",
+        userId: "attacker-user",
+        role: "admin",
+      }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).profile.companyPositionLabel, "marketing");
+
+    const authenticatedPage = await fetch(`${app.baseUrl}/user-profile`, { headers: { cookie } });
+    assert.equal(authenticatedPage.status, 200);
+  } finally {
+    await stopApp(app.child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("mock auth enforces employee permissions and confines mock login to loopback", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-mock-auth-guard-"));
+  const app = await startApp({
+    NODE_ENV: "test",
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "mock",
+    SWEET_HOUSE_MOCK_USER_ID: "employee-fixture",
+    SWEET_HOUSE_MOCK_ROLE: "employee",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const hostile = await rawRequest(`${app.baseUrl}/api/auth/mock-session`, {
+      method: "POST",
+      headers: { host: "evil.example.test" },
+    });
+    assert.equal(hostile.status, 403);
+    assert.equal((await hostile.json()).code, "ORIGIN_FORBIDDEN");
+
+    const login = await fetch(`${app.baseUrl}/api/auth/mock-session`, { method: "POST" });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const forbidden = await fetch(`${app.baseUrl}/api/company-settings`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ companyName: "ไม่ควรบันทึก" }),
+    });
+    assert.equal(forbidden.status, 403);
+    assert.equal((await forbidden.json()).code, "AUTH_FORBIDDEN");
+  } finally {
+    await stopApp(app.child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("mock auth reports invalid short session secrets without crashing", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-mock-auth-config-"));
+  const app = await startApp({
+    NODE_ENV: "test",
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "mock",
+    SWEET_HOUSE_SESSION_SECRET: "short",
+    SWEET_HOUSE_MOCK_USER_ID: "config-fixture",
+    SWEET_HOUSE_MOCK_ROLE: "owner",
+  });
+  try {
+    const login = await fetch(`${app.baseUrl}/api/auth/mock-session`, { method: "POST" });
+    assert.equal(login.status, 503);
+    assert.equal((await login.json()).code, "AUTH_CONFIG_MISSING");
+    const health = await fetch(`${app.baseUrl}/api/healthz`);
+    assert.equal(health.status, 200);
+  } finally {
+    await stopApp(app.child);
     await rm(rootDir, { recursive: true, force: true });
   }
 });

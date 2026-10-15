@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const {
+  rowToAppUser,
   resolveLineAppUser,
   verifyLineIdToken,
 } = require("../forms/line-auth.logic.js");
@@ -126,4 +127,29 @@ test("resolveLineAppUser accepts Supabase one-to-one role objects", async () => 
   });
 
   assert.equal(user.role, "admin");
+});
+
+test("rowToAppUser keeps editable profile fields out of the auth identity", () => {
+  const user = rowToAppUser({
+    id: "user-profile",
+    line_user_id: "U789",
+    display_name: "LINE identity",
+    picture_url: "https://example.com/line.png",
+    first_name: "Editable",
+    last_name: "Profile",
+    company_position_id: "position-1",
+    status: "active",
+    app_user_roles: { role_code: "employee" },
+  });
+
+  assert.deepEqual(user, {
+    id: "user-profile",
+    lineUserId: "U789",
+    displayName: "LINE identity",
+    pictureUrl: "https://example.com/line.png",
+    status: "active",
+    role: "employee",
+  });
+  assert.equal("firstName" in user, false);
+  assert.equal("companyPositionId" in user, false);
 });
