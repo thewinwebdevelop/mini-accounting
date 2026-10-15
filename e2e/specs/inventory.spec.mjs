@@ -36,7 +36,7 @@ test.describe("inventory journeys", () => {
     // PDF/report generation, and a workflow cancellation reversal. The
     // shared CI runner can spend most of a minute on the complete journey
     // before the final cancellation request is reached.
-    test.setTimeout(120_000);
+    test.setTimeout(300_000);
     const inventory = new InventoryPage(ownerPage, localApp);
     const master = await inventory.createMaster({ suffix: `${testInfo.workerIndex}-${Date.now()}`, childCount: 1 });
     const page = ownerPage;
