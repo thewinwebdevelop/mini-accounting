@@ -16,7 +16,9 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
 FONT_CANDIDATES = (
+    str(SCRIPT_DIR / "fonts" / "Sarabun-Regular.ttf"),
     "/Library/Fonts/Arial Unicode.ttf",
     "/System/Library/Fonts/Supplemental/Tahoma.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
