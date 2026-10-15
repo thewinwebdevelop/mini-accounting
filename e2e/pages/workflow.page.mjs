@@ -206,7 +206,15 @@ export class WorkflowTransactionPage {
   }
 
   async cancelWithConfirmationResponse() {
-    const responsePromise = this.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`) && response.request().method() === "POST");
+    const expectedPath = `/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`;
+    const responsePromise = this.page.waitForResponse((response) => {
+      if (response.request().method() !== "POST") return false;
+      try {
+        return new URL(response.url()).pathname.replace(/\/$/, "") === expectedPath;
+      } catch {
+        return response.url().includes(expectedPath);
+      }
+    });
     await this.page.locator("#cancelTransactionButton").click();
     await expect(this.page.locator("#cancellationDialog")).toBeVisible();
     await this.page.locator("#confirmCancellationButton").click();
