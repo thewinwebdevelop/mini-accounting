@@ -23,7 +23,9 @@ function fakeCommand(dir, name, body) {
 function run(script, env, args = []) {
   return spawnSync("/bin/bash", [script, ...args], {
     cwd: root,
-    env: { ...process.env, ...env },
+    // CI sets E2E_WORKERS for the real browser matrix. Keep shell-contract
+    // tests isolated unless a case explicitly opts into that setting.
+    env: { ...process.env, E2E_WORKERS: "", ...env },
     encoding: "utf8",
   });
 }
