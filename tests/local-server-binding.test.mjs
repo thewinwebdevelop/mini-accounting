@@ -41,6 +41,22 @@ async function waitForServerPort(child, extraPatterns = []) {
   });
 }
 
+async function waitForStdoutPattern(stdout, pattern, timeoutMs = 1000) {
+  if (pattern.test(stdout())) return;
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      reject(new Error(`expected stdout pattern was not printed: ${pattern}; stdout: ${stdout()}`));
+    }, timeoutMs);
+    const interval = setInterval(() => {
+      if (!pattern.test(stdout())) return;
+      clearTimeout(timeout);
+      clearInterval(interval);
+      resolve();
+    }, 10);
+  });
+}
+
 function spawnLocalServer(rootDir, extraEnv = {}) {
   const env = { ...process.env, PORT: "0", SWEET_HOUSE_ROOT_DIR: rootDir };
   delete env.SWEET_HOUSE_ALLOW_NETWORK;
@@ -137,6 +153,7 @@ test("local server binds all interfaces and prints a Thai warning under SWEET_HO
       );
     }
 
+    await waitForStdoutPattern(stdout, /เข้าถึงจากเครือข่าย/);
     const text = stdout();
     assert.match(text, /เข้าถึงจากเครือข่าย/, "should warn (in Thai) that the server is reachable from the network");
     assert.match(text, /ไม่มี.*ยืนยันตัวตน|ไม่มีระบบยืนยันตัวตน/, "should mention there is no authentication");
