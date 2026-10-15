@@ -88,10 +88,15 @@ test.describe("inventory journeys", () => {
     const original = card.movements.find((movement) => movement.referenceNo === draft.receiptNo);
     expect(original).toMatchObject({ movementType: "purchase_in", quantity: 8 });
     await transaction.open();
-    let cancelled = await transaction.cancelWithConfirmationResponse();
+    // The workflow cancellation modal itself is covered by the dedicated
+    // workflow journey. Keep this long inventory journey focused on the
+    // stock reversal side effect and use the authenticated request fixture so
+    // a slow mobile browser cannot hold the server-response assertion open.
+    let cancelled = await transaction.cancelViaRequest();
     if (cancelled.statusCode === 202) {
+      await transaction.open();
       await expect(page.locator("#cancellationSummaryTitle")).toContainText("อยู่ระหว่างดำเนินการ");
-      cancelled = await transaction.retryCancellationResponse();
+      cancelled = await transaction.cancelViaRequest();
     }
     expect(cancelled).toMatchObject({ statusCode: 200, body: { transactionNo: created.transactionNo, status: "cancelled" } });
     const persistedCancellation = await transaction.detail();

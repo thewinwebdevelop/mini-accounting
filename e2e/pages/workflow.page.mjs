@@ -243,4 +243,9 @@ export class WorkflowTransactionPage {
     const response = await this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`, { data: { confirmed: true } });
     return { statusCode: response.status(), body: await response.json() };
   }
+
+  async cancelViaRequest() {
+    const response = await this.page.request.post(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/cancel`, { data: { confirmed: true } });
+    return { statusCode: response.status(), body: await response.json() };
+  }
 }
