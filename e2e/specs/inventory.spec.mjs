@@ -33,10 +33,10 @@ test.describe("inventory journeys", () => {
 
   test("records purchase-in, exposes balance/card/dashboard/report/PDF, and reverses through workflow cancellation once", async ({ ownerPage, browser, localApp }, testInfo) => {
     // This journey intentionally covers the full stock-purchase lifecycle,
-    // PDF/report generation, and a workflow cancellation reversal. On the
-    // shared CI runner the cancellation can exceed Playwright's 30s default
-    // while the other worker is exercising another full journey.
-    test.setTimeout(60_000);
+    // PDF/report generation, and a workflow cancellation reversal. The
+    // shared CI runner can spend most of a minute on the complete journey
+    // before the final cancellation request is reached.
+    test.setTimeout(120_000);
     const inventory = new InventoryPage(ownerPage, localApp);
     const master = await inventory.createMaster({ suffix: `${testInfo.workerIndex}-${Date.now()}`, childCount: 1 });
     const page = ownerPage;
