@@ -163,6 +163,15 @@ window.addEventListener("DOMContentLoaded", () => {
     window.SearchableSelect?.enhance(select);
   }
 
+  function refreshStockSkuOptions() {
+    lineItems.querySelectorAll(".line-item").forEach((row) => {
+      const select = row.querySelector('[name="stockSkuId"]');
+      const selectedId = row.dataset.stockSkuId || select?.value || "";
+      renderStockSkuOptions(select, selectedId);
+      applyStockLineMode(row);
+    });
+  }
+
   function applyStockLineMode(row) {
     const checkbox = row.querySelector('[name="isStockItem"]');
     const field = row.querySelector("[data-stock-sku-field]");
@@ -560,12 +569,17 @@ window.addEventListener("DOMContentLoaded", () => {
 
   applyDocumentKindLabel();
   applyDocumentListLink();
+  // Establish the editable form synchronously. The stock-SKU request below
+  // may be slow on a shared runner; waiting for it before calling fillForm()
+  // lets that later callback erase values the user has already entered.
+  fillForm();
   vendorPicker?.load();
   api("/api/inventory/stock-skus")
     .then((result) => { state.stockSkus = result.stockSkus || []; })
     .catch(() => { state.stockSkus = []; })
     .finally(() => {
-      fillForm();
+      refreshStockSkuOptions();
+      updatePreview();
       if (state.documentNo) {
         loadExistingDocument().catch((error) => setStatus(error.message, "error"));
       } else {

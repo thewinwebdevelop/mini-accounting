@@ -116,6 +116,7 @@ async function setupWorkflowDocumentLifecycleSandbox({
   fetchHandler,
   vendorPickerVendors = [],
   stockSkus = [],
+  stockSkusDelay = 0,
   search,
 } = {}) {
   const realHtml = await readFile(htmlPath, "utf8");
@@ -124,7 +125,10 @@ async function setupWorkflowDocumentLifecycleSandbox({
   const stubFetch = async (route, options = {}) => {
     calls.push({ route, options });
     if (route === "/api/vendors") return jsonResponse({ vendors: vendorPickerVendors });
-    if (route === "/api/inventory/stock-skus") return jsonResponse({ stockSkus });
+    if (route === "/api/inventory/stock-skus") {
+      if (stockSkusDelay) await new Promise((resolve) => setTimeout(resolve, stockSkusDelay));
+      return jsonResponse({ stockSkus });
+    }
     return fetchHandler(route, options, calls);
   };
   const window = { fetch: stubFetch, document: fakeDocument };
@@ -282,6 +286,26 @@ test("workflow document line items switch between manual entry and an active Sto
   assert.equal(field.hidden, true);
   assert.equal(row.dataset.stockSkuId, "");
   assert.equal(select.value, "");
+});
+
+test("workflow document initialization does not erase input while Stock SKU loading is pending", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "",
+    stockSkusDelay: 30,
+    fetchHandler() {
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  elements.title.value = "กรอกระหว่างโหลด";
+  elements.businessPurpose.value = "วัตถุประสงค์ระหว่างโหลด";
+  elements.title.dispatch("input");
+  elements.businessPurpose.dispatch("input");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(elements.title.value, "กรอกระหว่างโหลด");
+  assert.equal(elements.businessPurpose.value, "วัตถุประสงค์ระหว่างโหลด");
 });
 
 test("workflow line item keeps stock controls in full-width rows", async () => {
