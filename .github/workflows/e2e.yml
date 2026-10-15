@@ -40,7 +40,11 @@ jobs:
       - run: ./scripts/test.sh
       - run: npx node@22 --test tests/e2e-fixtures.test.mjs tests/e2e-artifacts.test.mjs
       - run: ./scripts/e2e.sh --project chromium
-      - run: ./scripts/e2e.sh --project mobile-chromium
+      # Mobile Chromium is intentionally serialized on the shared GitHub
+      # runner. Its device emulation plus the local app's PDF/SQLite work can
+      # otherwise starve the cancellation request while another worker is
+      # running a full inventory journey, producing a false timeout.
+      - run: E2E_WORKERS=1 ./scripts/e2e.sh --project mobile-chromium
       - run: ./scripts/e2e.sh --project cloud-runtime-mocked
       - name: Write redacted failure artifacts
         if: failure()
