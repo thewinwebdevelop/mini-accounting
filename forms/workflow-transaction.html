@@ -240,8 +240,8 @@
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
     #cancellationDialog[hidden] { display: none; }
-    #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, 0.45); }
-    #cancellationDialog > .section { width: min(520px, 100%); }
+    #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; overflow: auto; padding: 18px; background: rgba(15, 23, 42, 0.45); }
+    #cancellationDialog > .section { position: relative; z-index: 1; width: min(520px, 100%); max-height: calc(100dvh - 36px); overflow: auto; }
 
     #driveSyncStatus { white-space: pre-line; }
     .drive-sync-documents { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
