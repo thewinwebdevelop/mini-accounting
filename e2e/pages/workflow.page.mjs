@@ -86,7 +86,17 @@ export class WorkflowTransactionPage {
     return this;
   }
 
-  async detail() { return this.page.request.get(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}`).then(jsonResponse); }
+  async detail({ timeoutMs = 5000 } = {}) {
+    const url = `/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}`;
+    const deadline = Date.now() + timeoutMs;
+    let response;
+    do {
+      response = await this.page.request.get(url);
+      if (response.ok() || response.status() !== 404 || Date.now() >= deadline) break;
+      await this.page.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    return jsonResponse(response);
+  }
   async refresh() {
     await this.page.locator("#refreshTransactionButton").click();
     await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
