@@ -86,6 +86,7 @@ export class ShopeePage {
     await this.page.locator("#arrangeShopeeShipmentButton").click();
     await expect(this.page.locator("#shopeeBatchStatus")).toContainText("นัดรับ");
     await this.page.locator("#refreshShopeeTrackingButton").click();
+    await expect(this.page.locator("#shopeeBatchStatus")).toHaveText("Refresh Tracking แล้ว");
     await this.page.locator("#createShopeeDocumentsButton").click();
     await expect(this.page.locator("#shopeeBatchStatus")).toHaveText("ส่งคำขอใบปะหน้าแล้ว");
     await this.page.locator("#overlayShopeeLabelsButton").click();
