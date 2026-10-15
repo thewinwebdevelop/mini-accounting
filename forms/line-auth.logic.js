@@ -125,6 +125,7 @@ async function resolveLineAppUser({
 
 module.exports = {
   LINE_VERIFY_URL,
+  rowToAppUser,
   resolveLineAppUser,
   verifyLineIdToken,
 };
