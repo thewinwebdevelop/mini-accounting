@@ -242,6 +242,8 @@
     #cancellationDialog[hidden] { display: none; }
     #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; overflow: auto; padding: 18px; background: rgba(15, 23, 42, 0.45); }
     #cancellationDialog > .section { position: relative; z-index: 1; width: min(520px, 100%); max-height: calc(100dvh - 36px); overflow: auto; }
+    #cancellationDialog .topbar-actions { flex-wrap: wrap; }
+    #cancellationDialog .topbar-actions .button { flex: 1 1 140px; }
 
     #driveSyncStatus { white-space: pre-line; }
     .drive-sync-documents { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
