@@ -207,6 +207,25 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     return result[0] || null;
   }
 
+  async function allocateWorkflowTransactionNumber({ accountingMonth, requestKey = "" } = {}) {
+    const response = await supabaseRequest(client, "/rest/v1/rpc/allocate_workflow_transaction_number", {
+      method: "POST",
+      body: {
+        p_accounting_month: String(accountingMonth || ""),
+        p_request_key: String(requestKey || ""),
+      },
+    });
+    const row = firstRow(response);
+    if (!row || !Number.isFinite(Number(row.sequence)) || !row.transaction_no) {
+      throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase workflow transaction allocation was invalid");
+    }
+    return {
+      sequence: String(row.sequence),
+      transactionNo: String(row.transaction_no),
+      existing: row.existing === true,
+    };
+  }
+
   return Object.freeze({
     now,
     listCompanySettings: query => listTable("company_settings", query, value => value),
@@ -261,6 +280,7 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
       source_payload: record.sourcePayload ?? record.source_payload ?? {},
     }, mapInventoryRecord, "inventory product"),
     upsertDocument: record => upsertTable("documents", toDocumentCloudRecord(record), mapDocumentRecord, "document"),
+    allocateWorkflowTransactionNumber,
     getDocument,
     listDocuments,
     upsertDocumentFile: record => upsertTable("document_files", toDocumentFileCloudRecord(record), mapDocumentFile, "document file"),

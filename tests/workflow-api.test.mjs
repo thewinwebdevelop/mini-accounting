@@ -93,6 +93,24 @@ test("starting a workflow transaction creates a TXN record from a template", asy
   }
 });
 
+test("starting a workflow transaction accepts a durable number allocated outside the local runtime", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-"));
+  try {
+    const result = await serverLogic.startWorkflowTransaction({
+      rootDir,
+      templateId: "stock_no_tax_invoice_company_bank",
+      accountingMonth: "2026-09",
+      title: "เลขจากฐานข้อมูลกลาง",
+      ownerUserId: "00000000-0000-0000-0000-000000000007",
+      allocation: { sequence: "9", transactionNo: "TXN-2026-09-0009" },
+    });
+    assert.equal(result.transactionNo, "TXN-2026-09-0009");
+    assert.equal(result.ownerUserId, "00000000-0000-0000-0000-000000000007");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // getNextWorkflowTransactionInfo used to scan documents/YYYY/MM/workflow-
 // transactions/TXN-... folder names on disk, a second source of truth
 // independent from allocateWorkflowTransactionNumber's document_number_

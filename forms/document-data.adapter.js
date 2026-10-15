@@ -165,7 +165,21 @@ function createDocumentDataAdapter({ env = process.env, client, logger = () => {
     }
   }
 
-  return Object.freeze({ mode, save, shadowRead, list, get, buildDocumentCloudRecord });
+  async function allocateWorkflowTransactionNumber(input) {
+    if (!cloud || typeof cloud.allocateWorkflowTransactionNumber !== "function") {
+      throw adapterError("DOCUMENT_CLOUD_ALLOCATOR_MISSING", "Cloud workflow transaction allocator is unavailable");
+    }
+    try {
+      return await cloud.allocateWorkflowTransactionNumber(input);
+    } catch (error) {
+      throw adapterError("DATA_CLOUD_ALLOCATION_FAILED", "Cloud workflow transaction allocation failed; retry is required", {
+        retryable: true,
+        causeCode: error?.code || "CLOUD_ERROR",
+      });
+    }
+  }
+
+  return Object.freeze({ mode, save, shadowRead, list, get, allocateWorkflowTransactionNumber, buildDocumentCloudRecord });
 }
 
 module.exports = { buildDocumentCloudRecord, createDocumentDataAdapter, stripPrivatePaths };

@@ -272,6 +272,19 @@ test("buildWorkflowTransactionPayload snapshots template and creates TXN folder 
   assert.deepEqual(payload.steps.map((step) => step.workflowStatus), ["not_started", "blocked", "blocked", "blocked"]);
 });
 
+test("buildWorkflowTransactionPayload preserves the authenticated owner", () => {
+  const template = DEFAULT_WORKFLOW_TEMPLATES[0];
+  const payload = workflowLogic.buildWorkflowTransactionPayload({
+    sequence: "7",
+    accountingMonth: "2026-09",
+    title: "เจ้าของรายการ",
+    ownerUserId: "00000000-0000-0000-0000-000000000007",
+    template,
+  });
+
+  assert.equal(payload.ownerUserId, "00000000-0000-0000-0000-000000000007");
+});
+
 test("buildWorkflowTransactionPayload snapshot is a deep copy that cannot corrupt the shared template", () => {
   const template = DEFAULT_WORKFLOW_TEMPLATES.find((item) => item.templateId === "stock_no_tax_invoice_company_bank");
   const payload = workflowLogic.buildWorkflowTransactionPayload({

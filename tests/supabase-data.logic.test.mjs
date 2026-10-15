@@ -73,3 +73,30 @@ test("repository maps document records and keeps payload opaque", async () => {
   assert.deepEqual(row.payload, { privateField: "value" });
   assert.equal(JSON.parse(calls[0].options.body).owner_user_id, "user-1");
 });
+
+test("repository allocates workflow transaction numbers through the durable Supabase RPC", async () => {
+  const calls = [];
+  const repository = createSupabaseDataRepository({
+    client: fakeClient(calls, () => [{
+      sequence: 4,
+      transaction_no: "TXN-2026-09-0004",
+      existing: false,
+    }]),
+  });
+
+  const result = await repository.allocateWorkflowTransactionNumber({
+    accountingMonth: "2026-09",
+    requestKey: "create-request-1",
+  });
+
+  assert.deepEqual(result, {
+    sequence: "4",
+    transactionNo: "TXN-2026-09-0004",
+    existing: false,
+  });
+  assert.match(calls[0].url, /\/rest\/v1\/rpc\/allocate_workflow_transaction_number$/);
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    p_accounting_month: "2026-09",
+    p_request_key: "create-request-1",
+  });
+});

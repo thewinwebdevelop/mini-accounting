@@ -6,6 +6,7 @@ function createDocumentCloudRepository(options = {}) {
     getDocument: repository.getDocument,
     listDocuments: repository.listDocuments,
     upsertDocument: repository.upsertDocument,
+    allocateWorkflowTransactionNumber: repository.allocateWorkflowTransactionNumber,
     getDocumentFile: repository.getDocumentFile,
     upsertDocumentFile: repository.upsertDocumentFile,
   });

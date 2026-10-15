@@ -366,6 +366,16 @@ const transactionsListState = {
   transactions: [],
 };
 
+let transactionStartInFlight = false;
+let transactionStartRequestKey = "";
+
+function createTransactionStartRequestKey() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `workflow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function renderStartTemplateOptions(select, templates) {
   select.replaceChildren();
   const placeholder = document.createElement("option");
@@ -475,10 +485,11 @@ async function startTransaction() {
 
   const root = document.querySelector("#transactionsPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+  if (!transactionStartRequestKey) transactionStartRequestKey = createTransactionStartRequestKey();
 
   const transaction = await fetchJson(transactionsUrl, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, idempotencyKey: transactionStartRequestKey }),
   });
 
   location.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
@@ -493,8 +504,16 @@ function initTransactionsPage() {
   if (form) form.addEventListener("submit", (event) => event.preventDefault());
 
   startButton.addEventListener("click", () => {
+    if (transactionStartInFlight) return;
+    transactionStartInFlight = true;
+    startButton.disabled = true;
     clearStatusBox(statusBox);
-    startTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+    startTransaction()
+      .catch((error) => setStatusBox(statusBox, error.message, "error"))
+      .finally(() => {
+        transactionStartInFlight = false;
+        startButton.disabled = false;
+      });
   });
 
   loadTransactionsPageData().catch((error) => setStatusBox(statusBox, error.message, "error"));

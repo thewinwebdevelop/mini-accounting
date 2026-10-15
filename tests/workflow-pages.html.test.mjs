@@ -569,6 +569,42 @@ test("starting a transaction posts templateId/accountingMonth/title and navigate
     "/workflow-transaction?transactionNo=TXN-2026-09-0007",
     "a successful start must navigate straight to the new transaction's detail page",
   );
+  assert.equal(typeof capturedPayload.idempotencyKey, "string");
+  assert.ok(capturedPayload.idempotencyKey.length > 0);
+});
+
+test("starting a transaction ignores a second click while the create request is in flight", async () => {
+  const templates = workflowLogic.getDefaultWorkflowTemplates();
+  const target = templates[0];
+  let calls = 0;
+  let resolveStart;
+  const pendingResponse = new Promise((resolve) => { resolveStart = resolve; });
+
+  const { elements } = await setupTransactionsPageSandbox({
+    templates,
+    transactions: [],
+    onStart: (payload) => {
+      calls += 1;
+      return pendingResponse.then(() => ({
+        ok: true,
+        json: async () => ({ transactionNo: "TXN-2026-09-0008", title: payload.title }),
+      }));
+    },
+  });
+
+  elements.startTemplateSelect.value = target.templateId;
+  elements.startAccountingMonth.value = "2026-09";
+  elements.startTransactionTitle.value = "กดซ้ำต้องสร้างครั้งเดียว";
+
+  elements.startTransactionButton.dispatch("click");
+  elements.startTransactionButton.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(calls, 1);
+  assert.equal(elements.startTransactionButton.disabled, true);
+  resolveStart();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(elements.startTransactionButton.disabled, false);
 });
 
 test("starting a transaction without picking a template raises a Thai validation error and does not POST", async () => {

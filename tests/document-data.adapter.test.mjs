@@ -164,3 +164,30 @@ test("document list can scope shadow comparison to the same bounded document kin
   assert.equal(query.get("or"), "(document_kind.eq.purchase_order,document_kind.eq.payment_voucher,document_kind.eq.goods_receipt)");
   assert.deepEqual(logs, []);
 });
+
+test("document adapter exposes durable workflow number allocation in Supabase mode", async () => {
+  const calls = [];
+  const client = createSupabaseAdminClient({
+    url: "https://project.supabase.co",
+    serviceRoleKey: "secret",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify([{
+        sequence: 8,
+        transaction_no: "TXN-2026-09-0008",
+        existing: false,
+      }]), { status: 200 });
+    },
+  });
+  const adapter = createDocumentDataAdapter({ env: { DATA_BACKEND_DOCUMENTS: "supabase-read" }, client });
+
+  assert.deepEqual(await adapter.allocateWorkflowTransactionNumber({
+    accountingMonth: "2026-09",
+    requestKey: "create-request-8",
+  }), {
+    sequence: "8",
+    transactionNo: "TXN-2026-09-0008",
+    existing: false,
+  });
+  assert.match(calls[0].url, /\/rest\/v1\/rpc\/allocate_workflow_transaction_number$/);
+});

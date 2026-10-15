@@ -1826,6 +1826,7 @@ async function handleWorkflowTransactionStart(request, response) {
     const templateId = typeof body.templateId === "string" ? body.templateId.trim() : "";
     const accountingMonth = typeof body.accountingMonth === "string" ? body.accountingMonth.trim() : "";
     const title = typeof body.title === "string" ? body.title.trim() : "";
+    const requestKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
 
     if (!templateId) throw new Error("ระบุรหัส template");
     if (!isValidAccountingMonth(accountingMonth)) {
@@ -1833,7 +1834,50 @@ async function handleWorkflowTransactionStart(request, response) {
     }
     if (!title) throw new Error("ระบุชื่อธุรกรรม");
 
-    const result = await startWorkflowTransaction({ rootDir, templateId, accountingMonth, title });
+    let allocation = null;
+    if (cloudRun) {
+      allocation = await documentDataAdapter.allocateWorkflowTransactionNumber({
+        accountingMonth,
+        requestKey,
+      });
+      if (allocation.existing) {
+        const existingCloud = await documentDataAdapter.get({
+          localResult: null,
+          documentKind: "workflow_transaction",
+          documentNo: allocation.transactionNo,
+        });
+        if (existingCloud) {
+          const existing = await ensureLocalCloudWorkflowTransaction(allocation.transactionNo);
+          if (existing) {
+            sendJson(response, 200, existing);
+            return;
+          }
+        }
+      }
+      if (allocation.existing) {
+        // The durable request reservation exists but its document row does not.
+        // This is a retry after a cloud write failed; reuse the same number and
+        // complete the original create instead of allocating another number.
+        allocation = { ...allocation, existing: false };
+      }
+    }
+
+    const result = await startWorkflowTransaction({
+      rootDir,
+      templateId,
+      accountingMonth,
+      title,
+      ownerUserId: String(request.auth?.userId || "").trim(),
+      allocation,
+    });
+    if (cloudRun) {
+      await documentDataAdapter.save({
+        documentKind: "workflow_transaction",
+        documentNo: result.transactionNo,
+        payload: result,
+        localSave: async () => result,
+      });
+    }
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {

@@ -4141,6 +4141,8 @@ async function startWorkflowTransaction({
   templateId,
   accountingMonth,
   title,
+  ownerUserId = "",
+  allocation = null,
   now = () => new Date().toISOString(),
 }) {
   const template = await getWorkflowTemplate(rootDir, templateId);
@@ -4166,11 +4168,15 @@ async function startWorkflowTransaction({
   // transactionNo) can never collide with a concurrent call's folderPath
   // either — a plain recursive mkdir is enough, and the bare-reservation/rename
   // dance no longer earns its keep.
-  const { sequence } = await allocateWorkflowTransactionNumber(rootDir, accountingMonth);
+  const selectedAllocation = allocation || await allocateWorkflowTransactionNumber(rootDir, accountingMonth);
+  const { sequence, transactionNo } = selectedAllocation;
   const transaction = buildWorkflowTransactionPayload(
-    { accountingMonth, title, sequence, template },
+    { accountingMonth, title, sequence, ownerUserId, template },
     { now },
   );
+  if (transactionNo && transaction.transactionNo !== transactionNo) {
+    throw new Error("เลขที่ธุรกรรมจากฐานข้อมูลไม่ตรงกับเดือนบัญชี");
+  }
 
   const absoluteFolderPath = path.join(rootDir, transaction.folderPath);
   await mkdir(absoluteFolderPath, { recursive: true });
