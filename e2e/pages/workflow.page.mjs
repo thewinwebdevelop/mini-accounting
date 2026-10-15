@@ -83,6 +83,11 @@ export class WorkflowTransactionPage {
     this.transactionNo = transactionNo || new URL(this.page.url()).searchParams.get("transactionNo");
     await this.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(this.transactionNo)}`);
     await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
+    // The detail page performs a refresh after its first GET so that a page
+    // opened immediately after completing a child shows the current step.
+    // Wait for that browser-side refresh to settle before a test starts a
+    // second mutation (especially cancellation on a slow mobile runner).
+    await this.page.waitForLoadState("networkidle");
     return this;
   }
 
