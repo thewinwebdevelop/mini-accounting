@@ -6,13 +6,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const statusNode = document.querySelector("#shopeeCustomLabelStatus");
   const progressNode = document.querySelector("#shopeeCustomLabelProgress");
   const fileInfoNode = document.querySelector("#shopeeCustomLabelFileInfo");
-  const previewButton = document.querySelector("#previewShopeeCustomLabelButton");
   const saveButton = document.querySelector("#saveShopeeCustomLabelButton");
   const downloadButton = document.querySelector("#downloadShopeeCustomLabelButton");
   const printButton = document.querySelector("#printShopeeCustomLabelButton");
   const comparisonButton = document.querySelector("#openShopeeCustomLabelComparisonButton");
-  const originalFrame = document.querySelector("#shopeeCustomLabelOriginalFrame");
-  const previewFrame = document.querySelector("#shopeeCustomLabelPreviewFrame");
   const suggestionsNode = document.querySelector("#customLabelStockSkuSuggestions");
   const state = { job: null, entries: new Map(), currentPage: 1, stockSkus: [] };
 
@@ -68,12 +65,9 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     fileInfoNode.textContent = `${job.originalFileName || "ไฟล์ PDF"} — ${job.pageCount} หน้า`;
     pageNode.disabled = false;
-    originalFrame.src = `${job.sourceUrl}#page=${state.currentPage}`;
-    previewFrame.src = job.previewUrl ? `${job.previewUrl}#page=${state.currentPage}` : "about:blank";
-    downloadButton.hidden = !downloadUrlFor(job);
-    printButton.hidden = !job.outputUrl;
-    comparisonButton.hidden = !job.comparisonUrl;
-    comparisonButton.href = job.comparisonUrl || "#";
+    downloadButton.hidden = true;
+    printButton.hidden = true;
+    comparisonButton.hidden = false;
     renderPageOptions();
     renderItems();
     updateActions();
@@ -181,14 +175,9 @@ window.addEventListener("DOMContentLoaded", () => {
   function updateActions() {
     let complete = false;
     try { buildPayload(); complete = true; } catch { complete = false; }
-    previewButton.disabled = !state.job || !complete;
     saveButton.disabled = !state.job || !complete;
-  }
-
-  function updateFrames() {
-    if (!state.job) return;
-    originalFrame.src = `${state.job.sourceUrl}#page=${state.currentPage}`;
-    previewFrame.src = state.job.previewUrl ? `${state.job.previewUrl}#page=${state.currentPage}` : "about:blank";
+    comparisonButton.hidden = !state.job;
+    comparisonButton.disabled = !state.job || !complete;
   }
 
   async function upload() {
@@ -206,28 +195,44 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function transform(action) {
+  async function save() {
     const payload = buildPayload();
-    previewButton.disabled = true;
     saveButton.disabled = true;
+    comparisonButton.disabled = true;
     try {
-      const result = await api(`/api/shopee/custom-labels/${encodeURIComponent(state.job.id)}/${action}`, {
+      const result = await api(`/api/shopee/custom-labels/${encodeURIComponent(state.job.id)}/save`, {
         method: "POST",
         body: payload,
       });
       state.job = result.job;
-      if (action === "save") {
-        downloadButton.hidden = !downloadUrlFor(state.job);
-        printButton.hidden = !state.job.outputUrl;
-        comparisonButton.hidden = !state.job.comparisonUrl;
-        comparisonButton.href = state.job.comparisonUrl || "#";
-        setStatus("บันทึก mapping และสร้าง PDF ใหม่เรียบร้อยแล้ว", "success");
-      } else {
-        setStatus("สร้าง Preview แล้ว — เลื่อนดู PDF สองฝั่งและตรวจหน้าเดียวกันได้เลย", "success");
-        comparisonButton.hidden = !state.job.comparisonUrl;
-        comparisonButton.href = state.job.comparisonUrl || "#";
-      }
-      updateFrames();
+      downloadButton.hidden = !downloadUrlFor(state.job);
+      printButton.hidden = !state.job.outputUrl;
+      setStatus("บันทึก mapping และสร้าง PDF ใหม่เรียบร้อยแล้ว", "success");
+    } finally {
+      updateActions();
+    }
+  }
+
+  async function openComparison() {
+    const payload = buildPayload();
+    const reviewWindow = window.open("about:blank", "_blank");
+    if (reviewWindow) reviewWindow.opener = null;
+    saveButton.disabled = true;
+    comparisonButton.disabled = true;
+    try {
+      const result = await api(`/api/shopee/custom-labels/${encodeURIComponent(state.job.id)}/preview`, {
+        method: "POST",
+        body: payload,
+      });
+      state.job = result.job;
+      const comparisonUrl = state.job.comparisonUrl;
+      if (!comparisonUrl) throw new Error("สร้างไฟล์ PDF เทียบไม่สำเร็จ");
+      setStatus("กำลังเปิด PDF เทียบซ้าย-ขวา...", "success");
+      if (reviewWindow && !reviewWindow.closed) reviewWindow.location.href = comparisonUrl;
+      else window.location.assign(comparisonUrl);
+    } catch (error) {
+      if (reviewWindow && !reviewWindow.closed) reviewWindow.close();
+      throw error;
     } finally {
       updateActions();
     }
@@ -251,6 +256,8 @@ window.addEventListener("DOMContentLoaded", () => {
         if (target.dataset.customLabelItemQuantity) entry.quantity = target.value;
       }
     }
+    downloadButton.hidden = true;
+    printButton.hidden = true;
     updateActions();
   });
   itemsNode.addEventListener("click", (event) => {
@@ -261,6 +268,8 @@ window.addEventListener("DOMContentLoaded", () => {
       const entry = state.entries.get(pageKey(pageNumber, itemIndex));
       entry.bundle.push({ sku: "", quantity: 1 });
       renderItems();
+      downloadButton.hidden = true;
+      printButton.hidden = true;
       updateActions();
     }
     if (remove) {
@@ -269,18 +278,19 @@ window.addEventListener("DOMContentLoaded", () => {
       if (entry.bundle.length > 1) entry.bundle.splice(bundleIndex, 1);
       else entry.bundle[0] = { sku: "", quantity: 1 };
       renderItems();
+      downloadButton.hidden = true;
+      printButton.hidden = true;
       updateActions();
     }
   });
   pageNode.addEventListener("change", () => {
     state.currentPage = Number(pageNode.value);
     renderItems();
-    updateFrames();
   });
   fileNode.addEventListener("change", () => { fileInfoNode.textContent = fileNode.files?.[0]?.name || "ยังไม่ได้เลือกไฟล์"; });
   uploadButton.addEventListener("click", () => upload().catch((error) => setStatus(error.message, "error")));
-  previewButton.addEventListener("click", () => transform("preview").catch((error) => setStatus(error.message, "error")));
-  saveButton.addEventListener("click", () => transform("save").catch((error) => setStatus(error.message, "error")));
+  saveButton.addEventListener("click", () => save().catch((error) => setStatus(error.message, "error")));
+  comparisonButton.addEventListener("click", () => openComparison().catch((error) => setStatus(error.message, "error")));
   downloadButton.addEventListener("click", () => {
     const url = downloadUrlFor(state.job);
     if (!url) {
