@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>แบบฟอร์มใบเบิกจ่าย - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -241,6 +242,46 @@
       gap: 5px;
     }
 
+    .stock-item-field {
+      display: grid;
+      gap: 3px;
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field {
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field[hidden] {
+      display: none !important;
+    }
+
+    .stock-item-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-top: 8px;
+      width: fit-content;
+      color: var(--brand);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .stock-item-toggle input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      min-height: 15px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .stock-item-field small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     .span-2 { grid-column: span 2; }
     .span-3 { grid-column: span 3; }
     .span-4 { grid-column: span 4; }
@@ -319,7 +360,7 @@
     }
 
     .line-row {
-      overflow: hidden;
+      overflow: visible;
       border: 1px solid #d9e2ec;
       border-radius: 8px;
       background: #fbfdff;
@@ -353,6 +394,8 @@
     }
 
     .line-title {
+      display: block;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -593,12 +636,45 @@
       font-weight: 800;
     }
 
+    #workflowPrefillGroups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 8px;
+    }
+
     .prefill-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      min-width: 0;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+      line-height: 1.45;
       font-size: 12px;
       font-weight: 700;
+    }
+
+    .prefill-group:hover {
+      border-color: #60a5fa;
+      background: #f8fbff;
+    }
+
+    .prefill-group input[type="checkbox"] {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      margin: 2px 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .prefill-group span {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .bottom-action-bar {
@@ -762,6 +838,7 @@
       }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <div class="app">
@@ -807,7 +884,8 @@
           <div class="menu-group">
             <div class="menu-group-title">ระบบ</div>
             <a class="menu-item" href="/">หน้าหลัก</a>
-            <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
+          <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
             <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
             <button class="menu-item" type="button" id="resetForm">ล้างฟอร์ม</button>
           </div>
@@ -883,8 +961,6 @@
                 <label for="requesterRole">แผนก/ตำแหน่ง</label>
                 <select id="requesterRole" name="requesterRole" data-searchable>
                   <option value="" selected disabled>เลือกแผนก/ตำแหน่ง</option>
-                  <option>เจ้าของบริษัท</option>
-                  <option>marketing</option>
                 </select>
               </div>
               <div class="field span-4">
@@ -1021,7 +1097,6 @@
           <div class="errors" id="errors"></div>
           <div class="status-box" id="saveStatus"></div>
           <button class="button secondary" type="button" id="reloadSavedRequest" hidden>โหลดรายละเอียดซ้ำ</button>
-          <div class="hint">เปิดผ่าน http://localhost:8787/expense-request แล้วกด บันทึกใบเบิกจ่าย เพื่อเก็บข้อมูล PDF และ raw files ลงโฟลเดอร์มาตรฐาน ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น</div>
         </div>
       </aside>
     </main>
@@ -1029,6 +1104,25 @@
     <div class="bottom-action-bar">
       <button class="button secondary" type="button" id="saveDraft">บันทึกแบบร่าง</button>
       <button class="button primary" type="button" id="submitRequest">บันทึกใบเบิกจ่าย</button>
+      <button class="button primary" type="button" id="approveRequest" hidden>อนุมัติ</button>
+      <button class="button primary" type="button" id="completeRequest" hidden>เสร็จสิ้นเอกสาร</button>
+    </div>
+  </div>
+
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button type="button" class="button secondary" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button type="button" class="button danger" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button type="button" class="button primary" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
     </div>
   </div>
 
@@ -1043,6 +1137,13 @@
           <label>วันที่</label>
           <input name="lineDate" type="date">
         </div>
+        <div class="stock-item-field">
+          <label class="stock-item-toggle"><input name="isStockItem" type="checkbox"><span>เป็นสต๊อกสินค้า</span></label>
+          <small>เลือก Stock SKU จากรายการที่มีอยู่ในระบบ</small>
+        </div>
+        <label class="field stock-sku-field" data-stock-sku-field hidden>Stock SKU
+          <select name="stockSkuId" data-searchable data-stock-sku data-display-lines="2"></select>
+        </label>
         <div class="field">
           <label>หมวด</label>
           <select name="lineCategory" data-searchable>
@@ -1083,11 +1184,15 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./company-position.browser.js"></script>
+  <script src="./user-profile-autofill.browser.js"></script>
+  <script src="./stock-line.logic.js"></script>
   <script src="./expense-request.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script>
   window.addEventListener("DOMContentLoaded", async () => {
     const {
@@ -1099,6 +1204,11 @@
     } = window.ExpenseRequestLogic;
 
     const form = document.querySelector("#expenseForm");
+    const companyPositionLoader = window.SweetHouseCompanyPositions;
+    const stockLineLogic = window.StockLineLogic || {
+      isUsableStockSku: (stockSku) => String(stockSku?.status || "") !== "inactive",
+      stockSkuLabel: (stockSku) => [stockSku?.sku, stockSku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${stockSku?.id || ""}`,
+    };
     const lineItems = document.querySelector("#lineItems");
     const lineTemplate = document.querySelector("#lineTemplate");
     const output = document.querySelector("#output");
@@ -1113,6 +1223,17 @@
       checkbox: saveVendorPresetCheckbox,
       mapping: { name: ["paymentTargetName"], taxId: ["paymentTargetTaxId"], bankName: ["paymentBankName"], accountNo: ["paymentAccountNo"], paymentChannel: ["paymentChannel"], defaultBusinessPurpose: ["businessPurpose"] },
       onError: (error) => setSaveStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
+    });
+    const reviewModal = window.WorkflowReviewModal?.create({
+      dialog: document.querySelector("#workflowReviewDialog"),
+      title: document.querySelector("#workflowReviewDialogTitle"),
+      content: document.querySelector("#workflowReviewContent"),
+      reasonField: document.querySelector("#workflowReviewReasonField"),
+      reasonInput: document.querySelector("#workflowReviewReason"),
+      reasonError: document.querySelector("#workflowReviewReasonError"),
+      confirm: document.querySelector("#workflowReviewConfirm"),
+      reject: document.querySelector("#workflowReviewReject"),
+      cancel: document.querySelector("#workflowReviewCancel"),
     });
 
     // --- Workflow context (Task 9) -----------------------------------
@@ -1160,9 +1281,7 @@
       fields: {
         payee: ["paymentTargetName", "paymentBankName", "paymentAccountNo"],
         purpose: ["requestTitle", "businessPurpose"],
-        // requesterRole is also produced by the adapter but has never been
-        // applied here -- only requesterName rides along automatically.
-        parties: ["requesterName"],
+        parties: ["requesterName", "requesterRole"],
       },
       linesPatchKey: "expenseLines",
       applyLines(lines) {
@@ -1183,6 +1302,7 @@
     let legacyReadOnly = false;
     let mutationInFlight = false;
     let currentStatus = "draft";
+    let stockSkus = [];
     const moneyIds = {
       amountBeforeVat: document.querySelector("#sumBeforeVat"),
       vatAmount: document.querySelector("#sumVat"),
@@ -1242,13 +1362,18 @@
       updatePreview();
     }
 
+    function isEditableRequestStatus() {
+      return currentStatus === "draft" || currentStatus === "pending_approval";
+    }
+
     function addLine() {
-      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+      if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
       lineItems.querySelectorAll(".line-row").forEach((row) => {
         row.open = false;
       });
       const node = lineTemplate.content.firstElementChild.cloneNode(true);
       node.querySelector('[name="lineDate"]').value = todayInputValue();
+      setupStockLine(node);
       lineItems.append(node);
       updatePreview();
     }
@@ -1257,6 +1382,7 @@
       const node = lineTemplate.content.firstElementChild.cloneNode(true);
       node.open = open;
       node.querySelector('[name="lineDate"]').value = line.date || todayInputValue();
+      setupStockLine(node, line.stockSkuId || "");
       node.querySelector('[name="lineCategory"]').value = line.category || "";
       node.querySelector('[name="lineDescription"]').value = line.description || "";
       node.querySelector('[name="lineVendor"]').value = line.vendor || "";
@@ -1265,6 +1391,63 @@
       node.dataset.vatConfirmationRequired = line.vatConfirmationRequired ? "true" : "";
       node.querySelector('[name="lineWht"]').value = line.withholdingTax || "";
       lineItems.append(node);
+    }
+
+    function renderStockSkuOptions(row, selectedId = "") {
+      const select = row.querySelector('[name="stockSkuId"]');
+      if (!select) return;
+      const makeOption = (label, value) => {
+        const option = document.createElement("option");
+        option.textContent = label;
+        option.value = String(value ?? "");
+        return option;
+      };
+      const options = [makeOption("เลือก Stock SKU", "")];
+      stockSkus.filter(stockLineLogic.isUsableStockSku).forEach((stockSku) => {
+        const option = makeOption(stockLineLogic.stockSkuLabel(stockSku), stockSku.id);
+        option.dataset.description = stockLineLogic.stockSkuLabel(stockSku);
+        option.dataset.unitCost = stockSku.defaultUnitCost || "";
+        options.push(option);
+      });
+      select.replaceChildren(...options);
+      select.value = selectedId || "";
+      window.SearchableSelect?.enhance(select);
+    }
+
+    function applyStockLineMode(row) {
+      const enabled = !!row.querySelector('[name="isStockItem"]')?.checked;
+      const field = row.querySelector("[data-stock-sku-field]");
+      const select = row.querySelector('[name="stockSkuId"]');
+      if (field) field.hidden = !enabled;
+      if (select) {
+        select.required = enabled;
+        if (!enabled) select.value = "";
+      }
+      row.dataset.stockSkuId = enabled ? (select?.value || "") : "";
+    }
+
+    function setupStockLine(row, selectedId = "") {
+      const checkbox = row.querySelector('[name="isStockItem"]');
+      const select = row.querySelector('[name="stockSkuId"]');
+      renderStockSkuOptions(row, selectedId);
+      checkbox.checked = !!selectedId;
+      row.dataset.stockSkuId = selectedId || "";
+      checkbox.addEventListener("change", () => {
+        applyStockLineMode(row);
+        updatePreview();
+      });
+      select.addEventListener("change", () => {
+        const selected = select.selectedOptions[0];
+        row.dataset.stockSkuId = select.value || "";
+        if (selected?.dataset.description) {
+          row.querySelector('[name="lineDescription"]').value = selected.dataset.description;
+        }
+        if (selected?.dataset.unitCost && !row.querySelector('[name="lineBeforeVat"]').value) {
+          row.querySelector('[name="lineBeforeVat"]').value = selected.dataset.unitCost;
+        }
+        updatePreview();
+      });
+      applyStockLineMode(row);
     }
 
     function fileSizeLabel(bytes) {
@@ -1311,12 +1494,16 @@
     }
 
     function collectData() {
-      const requestType = new FormData(form).get("requestType");
+      // Mutation controls are disabled before save/submit work starts. A
+      // disabled radio is omitted from FormData, so read the checked option
+      // directly to preserve the user's request type during that window.
+      const requestType = form.querySelector('input[name="requestType"]:checked')?.value || "";
       const expenseLines = [...lineItems.querySelectorAll(".line-row")].map((row) => ({
         date: row.querySelector('[name="lineDate"]').value,
         category: row.querySelector('[name="lineCategory"]').value,
         description: row.querySelector('[name="lineDescription"]').value,
         vendor: row.querySelector('[name="lineVendor"]').value,
+        ...(row.dataset.stockSkuId ? { stockSkuId: row.dataset.stockSkuId } : {}),
         amountBeforeVat: row.querySelector('[name="lineBeforeVat"]').value,
         vatAmount: row.querySelector('[name="lineVat"]').value,
         ...(row.dataset.vatConfirmationRequired === "true" ? { vatConfirmationRequired: true } : {}),
@@ -1425,6 +1612,17 @@
       if (reloadSavedRequestButton) reloadSavedRequestButton.hidden = !show;
     }
 
+    // The searchable-select wrapper mirrors the native select only when it
+    // receives a change event. Loading a saved document sets the native value
+    // programmatically, so notify the wrapper as part of every select restore.
+    function restoreSelectValue(select, value) {
+      if (!select) return;
+      select.value = String(value ?? "");
+      if (typeof Event === "function" && typeof select.dispatchEvent === "function") {
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+
     async function reloadSavedRequest() {
       if (!currentRequestNo || !reloadSavedRequestButton) return;
       reloadSavedRequestButton.disabled = true;
@@ -1441,17 +1639,31 @@
 
     function setReadOnlyMode(readOnly) {
       legacyReadOnly = !!readOnly;
-      const locked = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      const editable = currentStatus === "draft" || currentStatus === "pending_approval";
+      const locked = legacyReadOnly || mutationInFlight || !editable;
       const controls = [document.querySelector("#saveDraft"), document.querySelector("#submitRequest"), document.querySelector("#resetForm"), document.querySelector("#addLine"), document.querySelector("#refreshRequestNo"), document.querySelector("#copyJson"), document.querySelector("#copyMarkdown"), ...document.querySelectorAll(".file-input"), ...form.querySelectorAll("input, select, textarea")];
       controls.forEach((control) => { if (control) control.disabled = locked; });
       lineItems.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = locked; });
-      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft"; });
-      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      form.querySelectorAll("input, select, textarea").forEach((control) => { control.disabled = legacyReadOnly || mutationInFlight || !editable; });
+      document.querySelector("#saveDraft").disabled = legacyReadOnly || mutationInFlight || !editable;
+      document.querySelector("#saveDraft").hidden = legacyReadOnly || !editable;
+      document.querySelector("#saveDraft").textContent = currentStatus === "pending_approval" ? "บันทึกการแก้ไข" : "บันทึกแบบร่าง";
       document.querySelector("#submitRequest").disabled = legacyReadOnly || mutationInFlight || currentStatus !== "draft";
+      document.querySelector("#submitRequest").hidden = legacyReadOnly || currentStatus !== "draft";
+      const approveButton = document.querySelector("#approveRequest");
+      const completeButton = document.querySelector("#completeRequest");
+      if (approveButton) {
+        approveButton.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "pending_approval";
+        approveButton.hidden = legacyReadOnly || currentStatus !== "pending_approval";
+      }
+      if (completeButton) {
+        completeButton.disabled = legacyReadOnly || mutationInFlight || currentStatus !== "approved";
+        completeButton.hidden = legacyReadOnly || currentStatus !== "approved";
+      }
     }
 
-    async function runMutation(work) {
-      if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+    async function runMutation(work, { allowedStatuses = ["draft", "pending_approval"] } = {}) {
+      if (legacyReadOnly || mutationInFlight || !allowedStatuses.includes(currentStatus)) return;
       mutationInFlight = true;
       setReadOnlyMode(legacyReadOnly);
       try { await work(); } finally { mutationInFlight = false; setReadOnlyMode(legacyReadOnly); }
@@ -1504,7 +1716,8 @@
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
-      form.elements.requesterRole.value = payload.requesterRole || "";
+      if (companyPositionLoader) await companyPositionLoader.loadInto(form.elements.requesterRole, { selectedValue: payload.requesterRole });
+      restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
@@ -1559,11 +1772,16 @@
       currentStatus = request.status || request.payload?.status || "pending_approval";
       currentFolderPath = request.folderPath || request.payload?.folderPath || "";
       currentCreatedAt = request.payload?.createdAt || "";
-      const payload = request.payload ?? {};
+      // Local detail responses keep fields under payload, while the
+      // Supabase-read adapter exposes the same payload fields at the top
+      // level. Accept both shapes so a successful draft reload never blanks
+      // the form and re-runs validation against empty values.
+      const payload = request.payload ?? request;
       form.elements.accountingMonth.value = payload.accountingMonth || currentMonthInputValue();
       form.elements.requestTitle.value = payload.requestTitle || "";
       form.elements.requesterName.value = payload.requesterName || "";
-      form.elements.requesterRole.value = payload.requesterRole || "";
+      if (companyPositionLoader) await companyPositionLoader.loadInto(form.elements.requesterRole, { selectedValue: payload.requesterRole });
+      restoreSelectValue(form.elements.requesterRole, payload.requesterRole);
       form.elements.requesterContact.value = payload.requesterContact || "";
       form.elements.expenseDate.value = payload.expenseDate || todayInputValue();
       form.elements.businessPurpose.value = payload.businessPurpose || "";
@@ -1599,6 +1817,28 @@
       setSaveStatus(`โหลดใบเบิกจ่ายแล้ว: ${request.requestNo} - เมื่อบันทึกจะ regenerate PDF ในโฟลเดอร์เดิม`, "success");
     }
 
+    // A workflow step can be reopened without a requestNo in the URL. Resolve
+    // the existing child first so saving the form updates that document and
+    // regenerates its fixed files instead of allocating another REQ number.
+    async function resumeExistingWorkflowRequest() {
+      if (currentRequestNo || !workflowContext.transactionNo || !workflowContext.workflowStepId) return false;
+      try {
+        const response = await fetch(`/api/workflow-transactions/${encodeURIComponent(workflowContext.transactionNo)}`);
+        if (!response.ok) return false;
+        const transaction = await response.json();
+        const child = (transaction.childDocuments || []).find((document) => (
+          document.documentKind === "expense_request" && document.workflowStepId === workflowContext.workflowStepId
+        )) || (transaction.childDocuments || []).find((document) => (
+          document.documentKind === "expense_request" && document.documentNo
+        ));
+        if (!child?.documentNo) return false;
+        await loadSubmittedRequest(child.documentNo);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     async function saveDraft() {
       if (location.protocol === "file:") {
         setSaveStatus("ต้องเปิดผ่าน local server เช่น http://localhost:8787/ ก่อนจึงจะบันทึกแบบร่างได้", "error");
@@ -1614,8 +1854,9 @@
       const formData = new FormData();
       formData.append("payload", JSON.stringify(data));
       appendUploadsToFormData(formData);
-      setSaveStatus("กำลังบันทึกแบบร่าง...");
-      const response = await fetch("/api/expense-drafts", {
+      const isPendingEdit = currentStatus === "pending_approval";
+      setSaveStatus(isPendingEdit ? "กำลังบันทึกการแก้ไข..." : "กำลังบันทึกแบบร่าง...");
+      const response = await fetch(isPendingEdit ? "/api/expense-requests" : "/api/expense-drafts", {
         method: "POST",
         body: formData,
       });
@@ -1625,10 +1866,11 @@
         return;
       }
 
-      adoptNumberedResult(result, "draft");
+      const expectedStatus = isPendingEdit ? "pending_approval" : "draft";
+      adoptNumberedResult(result, expectedStatus);
       let vendorPresetError = "";
       try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
-      currentStatus = "draft";
+      currentStatus = expectedStatus;
       currentDraftId = "";
       currentFolderPath = result.folderPath || currentFolderPath;
       currentCreatedAt = result.createdAt || currentCreatedAt;
@@ -1642,10 +1884,11 @@
       try { await loadSubmittedRequest(currentRequestNo); showReloadSavedRequest(false); } catch (error) { showReloadSavedRequest(true); setSaveStatus("บันทึกสำเร็จแต่โหลดรายละเอียดไม่สำเร็จ; กดโหลดซ้ำ", "error"); return; }
       // The detail reload updates the status panel; restore the preset result
       // afterward so a failed optional vendor save remains visible.
-      setSaveStatus(vendorPresetError || `บันทึกแบบร่างแล้ว: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
+      setSaveStatus(vendorPresetError || `${isPendingEdit ? "บันทึกการแก้ไขแล้ว" : "บันทึกแบบร่างแล้ว"}: ${currentRequestNo}`, vendorPresetError ? "error" : "success");
     }
 
     async function submitRequest() {
+      if (currentStatus !== "draft") return;
       const data = collectData();
       const errors = validateExpenseRequest(data);
       if (errors.length) {
@@ -1694,11 +1937,108 @@
       updatePreview();
     }
 
+    function adoptLifecycleResult(result, expectedStatus) {
+      const requestNo = String(result?.requestNo || "");
+      if (!/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(requestNo) || requestNo !== currentRequestNo || result.status !== expectedStatus) {
+        throw new Error("เซิร์ฟเวอร์ส่งสถานะเอกสารไม่ถูกต้อง");
+      }
+      if (result.pdfFiles !== undefined && !Array.isArray(result.pdfFiles)) {
+        throw new Error("เซิร์ฟเวอร์ส่งข้อมูลไฟล์เอกสารไม่ครบถ้วน");
+      }
+      return result;
+    }
+
+    async function approveRequest() {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvedBy: "" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถอนุมัติใบเบิกจ่ายได้");
+      adoptLifecycleResult(result, "approved");
+      currentStatus = "approved";
+      setReadOnlyMode(false);
+      setSaveStatus(`อนุมัติใบเบิกจ่ายแล้ว: ${currentRequestNo}`, "success");
+    }
+
+    async function completeRequest() {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/complete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ completedBy: "" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถปิดใบเบิกจ่ายได้");
+      adoptLifecycleResult(result, "completed");
+      currentStatus = "completed";
+      setReadOnlyMode(false);
+      setSaveStatus(`เสร็จสิ้นเอกสารแล้ว: ${currentRequestNo}`, "success");
+    }
+
+    async function rejectRequest(reason) {
+      if (!currentRequestNo) return;
+      const response = await fetch(`/api/expense-requests/${encodeURIComponent(currentRequestNo)}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rejectedBy: "", reason }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถส่งกลับแก้ไขได้");
+      adoptNumberedResult({ ...result, status: "draft", evidenceFiles: result.evidenceFiles || {}, rawFiles: result.rawFiles || [], pdfFiles: result.pdfFiles || [] }, "draft");
+      currentStatus = "draft";
+      await loadSubmittedRequest(currentRequestNo);
+      setSaveStatus(`ส่งใบเบิกจ่าย ${currentRequestNo} กลับไปแก้ไขแล้ว`, "success");
+    }
+
+    function buildReviewModel(mode) {
+      const data = collectData();
+      const totals = calculateExpenseTotals(data.expenseLines);
+      const files = Object.values(savedEvidenceFileState).flatMap((items) => Array.isArray(items) ? items : [])
+        .map((file) => ({ name: file.originalName || file.storedName, url: file.url || "" }));
+      Object.values(uploadedFileState).flatMap((items) => items || []).forEach((file) => files.push({ name: file.name }));
+      return {
+        mode,
+        documentLabel: "ใบเบิกจ่าย",
+        documentNo: currentRequestNo || nextRequestInfo.requestNo || "ฉบับใหม่",
+        fields: [
+          { label: "วันที่เอกสาร", value: data.expenseDate },
+          { label: "ผู้ขอเบิก", value: data.requesterName },
+          { label: "ผู้รับเงิน/คู่ค้า", value: data.paymentTargetName },
+          { label: "วัตถุประสงค์", value: data.businessPurpose },
+          { label: "ยอดจ่ายสุทธิ", value: totals.netPayment },
+        ],
+        lines: data.expenseLines.map((line) => ({
+          description: [line.category, line.description].filter(Boolean).join(" - ") || "ยังไม่ได้กรอกรายละเอียด",
+          quantity: "",
+          unitCost: [line.amountBeforeVat, line.vatAmount].filter(Boolean).join(" + "),
+        })),
+        files,
+      };
+    }
+
+    function openReview(action) {
+      if (mutationInFlight) return;
+      const work = action === "approve" ? approveRequest : submitRequest;
+      if (!reviewModal) {
+        runMutation(work).catch((error) => setSaveStatus(error.message, "error"));
+        return;
+      }
+      const model = buildReviewModel(action === "approve" ? "approve" : "submit");
+      model.onConfirm = () => runMutation(work).catch((error) => setSaveStatus(error.message, "error"));
+      model.onReject = (reason) => runMutation(() => rejectRequest(reason)).catch((error) => setSaveStatus(error.message, "error"));
+      reviewModal.open(model);
+    }
+
     document.querySelector("#addLine").addEventListener("click", addLine);
     document.querySelector("#copyMarkdown").addEventListener("click", () => copyOutput("markdown"));
     document.querySelector("#copyJson").addEventListener("click", () => copyOutput("json"));
     document.querySelector("#saveDraft").addEventListener("click", () => runMutation(saveDraft).catch((error) => setSaveStatus(error.message, "error")));
-    document.querySelector("#submitRequest").addEventListener("click", () => runMutation(submitRequest).catch((error) => setSaveStatus(error.message, "error")));
+    document.querySelector("#submitRequest").addEventListener("click", () => openReview("submit"));
+    document.querySelector("#approveRequest").addEventListener("click", () => openReview("approve"));
+    document.querySelector("#completeRequest").addEventListener("click", () => runMutation(completeRequest, { allowedStatuses: ["approved"] }).catch((error) => setSaveStatus(error.message, "error")));
     reloadSavedRequestButton?.addEventListener("click", reloadSavedRequest);
     document.querySelector("#refreshRequestNo").addEventListener("click", updateNextRequestNo);
     form.elements.accountingMonth.addEventListener("change", updateNextRequestNo);
@@ -1734,7 +2074,7 @@
       });
       card.addEventListener("drop", (event) => {
         event.preventDefault();
-        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+        if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
         card.classList.remove("dragging");
         setFiles(evidenceKey, event.dataTransfer.files);
       });
@@ -1745,7 +2085,7 @@
     form.addEventListener("change", updatePreview);
     lineItems.addEventListener("click", (event) => {
       if (event.target.matches("[data-remove-line]")) {
-        if (legacyReadOnly || mutationInFlight || currentStatus !== "draft") return;
+        if (legacyReadOnly || mutationInFlight || !isEditableRequestStatus()) return;
         event.target.closest(".line-row").remove();
         updatePreview();
       }
@@ -1755,7 +2095,14 @@
     applyWorkflowReturnLink();
 
     setDateDefaults();
+    await companyPositionLoader?.loadInto(form.elements.requesterRole);
     vendorPicker?.load();
+    try {
+      const stockResult = await fetch("/api/inventory/stock-skus");
+      if (stockResult.ok) stockSkus = (await stockResult.json()).stockSkus || [];
+    } catch {
+      stockSkus = [];
+    }
     await updateNextRequestNo();
     const draftIdFromUrl = new URLSearchParams(location.search).get("draftId");
     const requestNoFromUrl = new URLSearchParams(location.search).get("requestNo");
@@ -1764,12 +2111,23 @@
     } else if (requestNoFromUrl) {
       await loadSubmittedRequest(requestNoFromUrl);
     } else {
-      addLine();
-      // Only fetch cross-document prefill for a brand-new, never-saved
-      // document: an existing draft/request already has its own real data,
-      // so offering to overwrite it with an earlier document's data would be
-      // wrong.
-      workflowPrefillBanner.load();
+      const resumed = await resumeExistingWorkflowRequest();
+      if (!resumed) {
+        addLine();
+        const profileResult = await window.SweetHouseUserProfileAutofill?.loadProfile(fetch);
+        window.SweetHouseUserProfileAutofill?.autofillNewDocument({
+          form,
+          isNewDocument: true,
+          nameField: form.elements.requesterName,
+          positionField: form.elements.requesterRole,
+          profile: profileResult?.profile,
+        });
+        // Only fetch cross-document prefill for a brand-new, never-saved
+        // document: an existing draft/request already has its own real data,
+        // so offering to overwrite it with an earlier document's data would be
+        // wrong.
+        workflowPrefillBanner.load();
+      }
     }
   });
   </script>

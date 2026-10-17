@@ -244,6 +244,7 @@ function buildWorkflowTransactionPayload(data = {}, options = {}) {
     transactionNo,
     accountingMonth: `${year}-${month}`,
     title,
+    ownerUserId: String(data.ownerUserId ?? "").trim(),
     workflowTemplateId: templateSnapshot.templateId,
     templateSnapshot,
     folderPath,

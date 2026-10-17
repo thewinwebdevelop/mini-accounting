@@ -31,6 +31,16 @@ def make_pdf(path, sizes):
 
 
 class ShippingLabelOverlayTest(unittest.TestCase):
+    def test_overlay_prefers_the_bundled_unicode_font(self):
+        module = load_overlay_module()
+        bundled_font = ROOT / "scripts" / "fonts" / "Sarabun-Regular.ttf"
+
+        module._font_name()
+        registered_font = module.pdfmetrics.getFont(module.FONT_NAME)
+
+        self.assertTrue(bundled_font.is_file())
+        self.assertEqual(Path(registered_font.face.filename).resolve(), bundled_font.resolve())
+
     def test_overlay_preserves_page_sizes_and_embeds_utf8_thai_text(self):
         module = load_overlay_module()
         with tempfile.TemporaryDirectory() as directory:

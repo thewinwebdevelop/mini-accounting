@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>เอกสารประกอบ Workflow - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="./workflow-review-modal.css">
   <style>
     :root {
       --ink: #1f2933;
@@ -126,6 +127,46 @@
       gap: 5px;
     }
 
+    .stock-item-field {
+      display: grid;
+      gap: 3px;
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field {
+      grid-column: 1 / -1;
+    }
+
+    .stock-sku-field[hidden] {
+      display: none !important;
+    }
+
+    .stock-item-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-top: 8px;
+      width: fit-content;
+      color: var(--brand);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .stock-item-toggle input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      min-height: 15px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .stock-item-field small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     .field-badge {
       display: inline-flex;
       align-items: center;
@@ -204,8 +245,10 @@
     .line-item:not([open]) .line-item-summary::before { content: "▸"; }
 
     .line-item-title {
+      display: block;
       flex: 1;
       min-width: 0;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -278,6 +321,37 @@
     }
 
     .file-card input { min-height: 42px; }
+
+    .existing-files {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .existing-files[hidden] { display: none !important; }
+
+    .existing-files strong {
+      color: var(--brand-strong);
+      font-size: 12px;
+    }
+
+    .existing-files ul {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .existing-files a {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
 
     .actions {
       display: flex;
@@ -361,12 +435,45 @@
     .prefill-banner[hidden] { display: none; }
     .prefill-banner p { margin: 0; font-size: 12px; font-weight: 800; }
 
+    #workflowPrefillGroups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 8px;
+    }
+
     .prefill-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-start;
+      min-width: 0;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      background: #ffffff;
+      cursor: pointer;
+      line-height: 1.45;
       font-size: 12px;
       font-weight: 700;
+    }
+
+    .prefill-group:hover {
+      border-color: #60a5fa;
+      background: #f8fbff;
+    }
+
+    .prefill-group input[type="checkbox"] {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      margin: 2px 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+
+    .prefill-group span {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .return-link {
@@ -412,10 +519,10 @@
       <div class="prefill-banner" id="workflowPrefillBanner" hidden>
         <p>พบข้อมูลจากเอกสารก่อนหน้าใน Workflow นี้ เลือกกลุ่มข้อมูลที่ต้องการนำมาใช้</p>
         <div id="workflowPrefillGroups"></div>
-        <div class="actions">
+  <div class="actions">
           <button type="button" id="workflowPrefillApply" class="button primary">ใช้ข้อมูลเดิม</button>
           <button type="button" id="workflowPrefillDismiss" class="button secondary">กรอกใหม่</button>
-        </div>
+  </div>
       </div>
 
       <section class="section">
@@ -494,6 +601,10 @@
               <input name="evidence_evidence" type="file" multiple>
             </label>
           </div>
+          <div id="existingEvidenceFiles" class="existing-files" hidden aria-live="polite">
+            <strong>ไฟล์ที่อัปโหลดไว้แล้ว</strong>
+            <ul data-existing-evidence-list></ul>
+          </div>
         </div>
       </section>
 
@@ -551,6 +662,23 @@
     </aside>
   </main>
 
+  <div class="workflow-review-dialog" id="workflowReviewDialog" role="dialog" aria-modal="true" aria-labelledby="workflowReviewDialogTitle" hidden>
+    <div class="workflow-review-card">
+      <h2 id="workflowReviewDialogTitle">ตรวจสอบเอกสาร</h2>
+      <div id="workflowReviewContent"></div>
+      <label class="workflow-review-reason" id="workflowReviewReasonField" hidden>
+        เหตุผลที่ไม่อนุมัติ *
+        <textarea id="workflowReviewReason" maxlength="1000"></textarea>
+        <small id="workflowReviewReasonError"></small>
+      </label>
+      <div class="actions">
+        <button class="button secondary" type="button" id="workflowReviewCancel">ย้อนกลับ</button>
+        <button class="button secondary" type="button" id="workflowReviewReject" hidden>ไม่อนุมัติ</button>
+        <button class="button primary" type="button" id="workflowReviewConfirm">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+
   <template id="lineTemplate">
     <details class="line-item" open>
       <summary class="line-item-summary">
@@ -558,6 +686,13 @@
         <span class="line-item-total" data-line-total>0.00 บาท</span>
       </summary>
       <div class="line-item-fields">
+        <div class="stock-item-field">
+          <label class="stock-item-toggle"><input name="isStockItem" type="checkbox"><span>เป็นสต๊อกสินค้า</span></label>
+          <small>เลือก Stock SKU จากรายการที่มีอยู่ในระบบ</small>
+        </div>
+        <label class="field stock-sku-field" data-stock-sku-field hidden>Stock SKU
+          <select name="stockSkuId" data-searchable data-stock-sku data-display-lines="2"></select>
+        </label>
         <div class="field">
           <label>รายละเอียด</label>
           <input name="description">
@@ -598,13 +733,16 @@
   </template>
 
   <script src="./searchable-select.logic.browser.js"></script>
+  <script src="./stock-line.logic.js"></script>
   <script src="./workflow.logic.js"></script>
   <script src="./workflow-document.logic.js"></script>
   <script src="./vendor-picker.logic.browser.js"></script>
   <script src="./document-lifecycle.logic.js"></script>
   <script src="./workflow-prefill.logic.js"></script>
   <script src="./workflow-prefill-banner.browser.js"></script>
+  <script src="./workflow-review-modal.browser.js"></script>
   <script src="./workflow-return-link.browser.js"></script>
+  <script src="./user-profile-autofill.browser.js"></script>
   <script>
     (function () {
       var params = new URLSearchParams(location.search);

@@ -180,6 +180,7 @@
     .status-box.active { display: block; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -224,6 +225,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -325,7 +327,7 @@
         <div class="section-body">
           <div class="field">
             <label for="stockCardSkuSelect">เลือก SKU</label>
-            <select id="stockCardSkuSelect" data-searchable></select>
+            <select id="stockCardSkuSelect" data-searchable data-display-lines="2"></select>
           </div>
           <div class="table-wrap">
             <table>

@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT="${E2E_PROJECT:-chromium}"
+LIST_ONLY=0
+forwarded=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project)
+      if [ "$#" -lt 2 ]; then echo "--project requires a value" >&2; exit 1; fi
+      PROJECT="$2"
+      shift 2
+      ;;
+    --project=*) PROJECT="${1#--project=}"; shift ;;
+    --list) LIST_ONLY=1; forwarded+=("$1"); shift ;;
+    *) forwarded+=("$1"); shift ;;
+  esac
+done
+
+case "$PROJECT" in
+  chromium|mobile-chromium|cloud-runtime-mocked)
+    if [ -n "${E2E_BASE_URL:-}" ]; then
+      echo "E2E_BASE_URL is forbidden for full E2E projects" >&2
+      exit 1
+    fi
+    ;;
+  production-smoke)
+    if [ -z "${E2E_BASE_URL:-}" ]; then
+      echo "E2E_BASE_URL is required for production-smoke" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Unknown E2E_PROJECT: $PROJECT" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$PROJECT" = "production-smoke" ]; then
+  RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
+  if [ -n "${E2E_NODE_BIN:-}" ]; then
+    NODE_BIN="$E2E_NODE_BIN"
+  elif [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
+    NODE_BIN="$RUNTIME_ROOT/node/bin/node"
+  else
+    NODE_BIN="$(command -v node || true)"
+  fi
+  if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+    echo "Required Node runtime not found" >&2
+    exit 1
+  fi
+  NODE_VERSION="$("$NODE_BIN" --version)"
+  NODE_MAJOR="${NODE_VERSION#v}"
+  NODE_MAJOR="${NODE_MAJOR%%.*}"
+  if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$NODE_MAJOR" -lt 22 ]; then
+    echo "Node 22 or newer is required (found $NODE_VERSION)" >&2
+    exit 1
+  fi
+  if [ "$LIST_ONLY" -eq 1 ]; then
+    echo "production-smoke: direct Node HTTP smoke (no Playwright)"
+    exit 0
+  fi
+  cd "$REPO_DIR"
+  exec "$NODE_BIN" "$REPO_DIR/e2e/specs/production-smoke.spec.mjs"
+fi
+
+PLAYWRIGHT_BIN="${E2E_PLAYWRIGHT_BIN:-$REPO_DIR/node_modules/.bin/playwright}"
+if [ ! -x "$PLAYWRIGHT_BIN" ]; then
+  echo "Playwright executable not found; run npm ci" >&2
+  exit 1
+fi
+
+if [ -z "${E2E_PLAYWRIGHT_BIN:-}" ] || { [ "$PROJECT" != "production-smoke" ] && [ "$LIST_ONLY" -eq 0 ]; }; then
+  RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
+  if [ -n "${E2E_NODE_BIN:-}" ]; then
+    NODE_BIN="$E2E_NODE_BIN"
+  elif [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
+    NODE_BIN="$RUNTIME_ROOT/node/bin/node"
+  else
+    NODE_BIN="$(command -v node || true)"
+  fi
+  if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+    echo "Required Node runtime not found" >&2
+    exit 1
+  fi
+  NODE_VERSION="$("$NODE_BIN" --version)"
+  NODE_MAJOR="${NODE_VERSION#v}"
+  NODE_MAJOR="${NODE_MAJOR%%.*}"
+  if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$NODE_MAJOR" -lt 22 ]; then
+    echo "Node 22 or newer is required (found $NODE_VERSION)" >&2
+    exit 1
+  fi
+fi
+
+if [ "$PROJECT" != "production-smoke" ]; then
+  PYTHON_RUNTIME_ROOT="${SWEET_HOUSE_RUNTIME_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies}"
+  if [ -n "${SWEET_HOUSE_PYTHON_BIN:-}" ]; then
+    PYTHON_BIN="$SWEET_HOUSE_PYTHON_BIN"
+  elif [ -x "$PYTHON_RUNTIME_ROOT/python/bin/python3" ]; then
+    PYTHON_BIN="$PYTHON_RUNTIME_ROOT/python/bin/python3"
+  else
+    PYTHON_BIN="$(command -v python3 || true)"
+  fi
+  if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    echo "Required Python runtime not found" >&2
+    exit 1
+  fi
+  PYTHON_VERSION="$("$PYTHON_BIN" --version 2>&1)"
+  case "$PYTHON_VERSION" in
+    Python\ 3.*) ;;
+    *) echo "Python 3 is required (found $PYTHON_VERSION)" >&2; exit 1 ;;
+  esac
+  export SWEET_HOUSE_PYTHON_BIN="$PYTHON_BIN"
+  export SWEET_HOUSE_PYTHON="$PYTHON_BIN"
+fi
+
+if [ "$PROJECT" != "production-smoke" ] && [ "$PROJECT" != "cloud-runtime-mocked" ] && [ "$LIST_ONLY" -eq 0 ]; then
+  if [ -z "${E2E_LOCAL_BASE_URL:-}" ] || [ -z "${E2E_RUN_ID:-}" ]; then
+    if [ "${E2E_AUTO_FIXTURE:-1}" != "1" ]; then
+      echo "E2E_LOCAL_BASE_URL and E2E_RUN_ID are required from the isolated fixture" >&2
+      exit 1
+    fi
+    FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sweet-house-e2e-runner.XXXXXX")"
+    FIXTURE_ENV="$FIXTURE_DIR/env"
+    "$NODE_BIN" --input-type=module - "$REPO_DIR" "$FIXTURE_ENV" "$PROJECT" <<'NODE' &
+const [repoDir, envFile, profile] = process.argv.slice(2);
+const { writeFile } = await import("node:fs/promises");
+const { createE2EEnvironment } = await import(`${repoDir}/e2e/fixtures/app-server.fixture.mjs`);
+const environment = await createE2EEnvironment({ profile, workerIndex: 0 });
+await writeFile(envFile, `E2E_LOCAL_BASE_URL=${environment.baseUrl}\nE2E_RUN_ID=${environment.runId}\n`);
+const stop = async () => { await environment.stop(); process.exit(0); };
+process.once("SIGTERM", stop);
+process.once("SIGINT", stop);
+await new Promise(() => {});
+NODE
+    FIXTURE_PID=$!
+    cleanup_fixture() { kill "$FIXTURE_PID" 2>/dev/null || true; wait "$FIXTURE_PID" 2>/dev/null || true; rm -rf "$FIXTURE_DIR"; }
+    trap cleanup_fixture EXIT
+    for _ in $(seq 1 60); do
+      if [ -s "$FIXTURE_ENV" ]; then break; fi
+      if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then echo "isolated fixture failed to start" >&2; exit 1; fi
+      sleep 0.25
+    done
+    if [ ! -s "$FIXTURE_ENV" ]; then echo "isolated fixture startup timed out" >&2; exit 1; fi
+    # The file is written by the child fixture process and contains only its own URLs.
+    E2E_LOCAL_BASE_URL="$(sed -n 's/^E2E_LOCAL_BASE_URL=//p' "$FIXTURE_ENV")"
+    E2E_RUN_ID="$(sed -n 's/^E2E_RUN_ID=//p' "$FIXTURE_ENV")"
+    export E2E_LOCAL_BASE_URL E2E_RUN_ID
+  fi
+  "$NODE_BIN" --input-type=module - "$E2E_LOCAL_BASE_URL" "$E2E_RUN_ID" <<'NODE'
+const [rawUrl, expectedRunId] = process.argv.slice(2);
+try {
+  const url = new URL(rawUrl);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("fixture URL must be a plain loopback HTTP origin");
+  }
+  const marker = new URL("/__e2e__/health", url);
+  const response = await fetch(marker, { redirect: "error", signal: AbortSignal.timeout(3000) });
+  if (!response.ok || (await response.json()).runId !== expectedRunId) {
+    throw new Error("fixture run marker does not match E2E_RUN_ID");
+  }
+} catch (error) {
+  console.error(`E2E fixture verification failed: ${error.message}`);
+  process.exitCode = 1;
+}
+NODE
+fi
+
+args=(test --project "$PROJECT")
+if [ -n "${E2E_WORKERS:-}" ]; then args+=(--workers "$E2E_WORKERS"); fi
+if [ "$PROJECT" != "production-smoke" ] && [ -n "${E2E_TRACE:-}" ]; then args+=(--trace "$E2E_TRACE"); fi
+if [ -n "${E2E_GREP:-}" ]; then args+=(--grep "$E2E_GREP"); fi
+if [ -n "${forwarded[0]-}" ]; then args+=("${forwarded[@]}"); fi
+cd "$REPO_DIR"
+if [ "$PROJECT" = "production-smoke" ]; then export E2E_PRODUCTION_SMOKE_RUNNER=1; fi
+if [ -n "${E2E_PLAYWRIGHT_BIN:-}" ]; then
+  "$PLAYWRIGHT_BIN" "${args[@]}"
+else
+  "$NODE_BIN" "$REPO_DIR/node_modules/@playwright/test/cli.js" "${args[@]}"
+fi

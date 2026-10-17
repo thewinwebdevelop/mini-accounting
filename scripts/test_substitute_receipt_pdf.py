@@ -74,6 +74,133 @@ class SubstituteReceiptPdfTests(unittest.TestCase):
         self.assertIn("จ่ายเงินสด 500 บาท", rendered)
         self.assertIn("โอนเงิน 2,000 บาท", rendered)
 
+    def test_pdf_renders_legacy_additional_note_once_as_the_single_note(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0009",
+            "receiptDate": "2026-09-04",
+            "receiptType": "general_expense",
+            "payeeName": "ร้านตัวอย่าง",
+            "additionalNote": "จ่ายเงินสด 500 บาท และโอนเงิน 2,000 บาท",
+            "businessPurpose": "ค่าใช้จ่ายตัวอย่าง",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": "1", "unitCost": "2500", "lineTotal": "2500.00"}],
+            "totals": {"totalAmount": "2500.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertIn("หมายเหตุเพิ่มเติม", rendered)
+        self.assertIn("จ่ายเงินสด 500 บาท และโอนเงิน 2,000 บาท", rendered)
+        self.assertNotIn("หมายเหตุ: -", rendered)
+
+    def test_pdf_omits_vendor_address_and_payment_reference(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0010",
+            "receiptDate": "2026-09-04",
+            "receiptType": "general_expense",
+            "payeeName": "ร้านตัวอย่าง",
+            "payeeTaxId": "0105550000001",
+            "paymentChannel": "โอนผ่านบัญชีบริษัท",
+            "paymentReference": "BANK-REFERENCE-001",
+            "vendorSnapshot": {"address": "99/9 ถนนสุขุมวิท กรุงเทพฯ 10110"},
+            "businessPurpose": "ค่าใช้จ่ายตัวอย่าง",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": "1", "unitCost": "2500"}],
+            "totals": {"totalAmount": "2500.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertNotIn("เลขอ้างอิงชำระเงิน", rendered)
+        self.assertNotIn("BANK-REFERENCE-001", rendered)
+        self.assertNotIn("ที่อยู่", rendered)
+        self.assertNotIn("99/9 ถนนสุขุมวิท กรุงเทพฯ 10110", rendered)
+
+    def test_pdf_acknowledgement_includes_requester_name_and_position(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0012",
+            "receiptDate": "2026-09-04",
+            "receiptType": "general_expense",
+            "payeeName": "ร้านตัวอย่าง",
+            "requesterName": "คุณต้า",
+            "requesterRole": "ผู้จัดการ",
+            "businessPurpose": "ค่าใช้จ่ายตัวอย่าง",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": "1", "unitCost": "2500"}],
+            "totals": {"totalAmount": "2500.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertIn("คุณต้า", rendered)
+        self.assertIn("ผู้จัดการ", rendered)
+        self.assertIn("ข้าพเจ้า คุณต้า (ผู้เบิกจ่าย)", rendered)
+
+    def test_pdf_acknowledgement_does_not_leave_fill_in_placeholders(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0013",
+            "receiptDate": "2026-09-04",
+            "receiptType": "general_expense",
+            "payeeName": "ร้านตัวอย่าง",
+            "businessPurpose": "ค่าใช้จ่ายตัวอย่าง",
+            "lines": [{"description": "ค่าใช้จ่าย", "quantity": "1", "unitCost": "2500"}],
+            "totals": {"totalAmount": "2500.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertNotIn("ข้าพเจ้า ........................................", rendered)
+        self.assertNotIn("ตำแหน่ง ........................................", rendered)
+
+    def test_stock_purchase_pdf_shows_description_without_stock_sku(self):
+        payload = {
+            "documentKind": "substitute_receipt",
+            "receiptNo": "SR-2026-09-0011",
+            "receiptDate": "2026-09-04",
+            "receiptType": "stock_purchase",
+            "payeeName": "ร้านตัวอย่าง",
+            "lines": [{
+                "sku": "SKU-ONLY-001",
+                "description": "รายละเอียดเสื้อ A สีขาว",
+                "quantity": "2",
+                "unitCost": "100",
+                "lineTotal": "200.00",
+            }],
+            "totals": {"totalAmount": "200.00"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "pdf"
+            raw_dir = Path(tmp) / "raw"
+            output_dir.mkdir()
+            raw_dir.mkdir()
+            output_paths, _ = build_substitute_receipt_outputs(payload, str(output_dir), str(raw_dir))
+            with pdfplumber.open(output_paths[0]) as pdf:
+                rendered = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        self.assertNotIn("Stock SKU", rendered)
+        self.assertNotIn("SKU-ONLY-001", rendered)
+        self.assertIn("รายละเอียดเสื้อ A สีขาว", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

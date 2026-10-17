@@ -465,11 +465,12 @@ test("CLI enforces gates, redacts paths, emits JSON, and returns exact exit stat
     await writeIssued(rootDir, "expense_request", "REQ-2026-09-0080", { requestNo: "REQ-2026-09-0080", documentKind: "expense_request", accountingMonth: "2026-09" }, "cli");
     const cli = join(process.cwd(), "scripts", "migrate-issued-record-statuses.mjs");
     const base = [cli, "--root", rootDir, "--at", AT];
-    const dry = await execFileAsync(process.execPath, base, { encoding: "utf8" });
+    const cliEnv = { ...process.env, NODE_NO_WARNINGS: "1" };
+    const dry = await execFileAsync(process.execPath, base, { encoding: "utf8", env: cliEnv });
     assert.deepEqual(Object.keys(JSON.parse(dry.stdout)).sort(), ["at", "changes", "counts", "errors", "legacyDrafts", "mode", "planDigest", "rootLabel", "schemaVersion", "unchanged"].sort());
-    await assert.rejects(() => execFileAsync(process.execPath, [...base, "--unknown"], { encoding: "utf8" }));
-    await assert.rejects(() => execFileAsync(process.execPath, [cli, "--root", rootDir], { encoding: "utf8" }));
-    await assert.rejects(() => execFileAsync(process.execPath, [...base, "--apply"], { encoding: "utf8" }));
+    await assert.rejects(() => execFileAsync(process.execPath, [...base, "--unknown"], { encoding: "utf8", env: cliEnv }));
+    await assert.rejects(() => execFileAsync(process.execPath, [cli, "--root", rootDir], { encoding: "utf8", env: cliEnv }));
+    await assert.rejects(() => execFileAsync(process.execPath, [...base, "--apply"], { encoding: "utf8", env: cliEnv }));
     assert.equal(dry.stdout.includes(rootDir), false);
     assert.equal(dry.stderr, "");
   } finally {

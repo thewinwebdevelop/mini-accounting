@@ -41,6 +41,22 @@ async function waitForServerPort(child, extraPatterns = []) {
   });
 }
 
+async function waitForStdoutPattern(stdout, pattern, timeoutMs = 1000) {
+  if (pattern.test(stdout())) return;
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      reject(new Error(`expected stdout pattern was not printed: ${pattern}; stdout: ${stdout()}`));
+    }, timeoutMs);
+    const interval = setInterval(() => {
+      if (!pattern.test(stdout())) return;
+      clearTimeout(timeout);
+      clearInterval(interval);
+      resolve();
+    }, 10);
+  });
+}
+
 function spawnLocalServer(rootDir, extraEnv = {}) {
   const env = { ...process.env, PORT: "0", SWEET_HOUSE_ROOT_DIR: rootDir };
   delete env.SWEET_HOUSE_ALLOW_NETWORK;
@@ -92,6 +108,10 @@ test("local server binds loopback only by default (no network opt-in)", async ()
     const loopback = await tryConnect("127.0.0.1", port);
     assert.equal(loopback.connected, true, "loopback connection should succeed by default");
 
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true, runtime: "local", version: "unknown" });
+
     const externalIp = firstExternalIPv4();
     if (externalIp) {
       const external = await tryConnect(externalIp, port);
@@ -133,6 +153,7 @@ test("local server binds all interfaces and prints a Thai warning under SWEET_HO
       );
     }
 
+    await waitForStdoutPattern(stdout, /เข้าถึงจากเครือข่าย/);
     const text = stdout();
     assert.match(text, /เข้าถึงจากเครือข่าย/, "should warn (in Thai) that the server is reachable from the network");
     assert.match(text, /ไม่มี.*ยืนยันตัวตน|ไม่มีระบบยืนยันตัวตน/, "should mention there is no authentication");

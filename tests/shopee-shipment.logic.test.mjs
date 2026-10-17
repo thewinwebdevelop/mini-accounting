@@ -211,7 +211,7 @@ test("renderBatchLabels overlays mapped Stock SKU onto the downloaded batch PDF"
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-shipment-label-"));
   try {
     const sourcePath = join(rootDir, "source.pdf");
-    const python = process.env.SWEET_HOUSE_PYTHON_BIN || "/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
+    const python = process.env.SWEET_HOUSE_PYTHON_BIN || process.env.SWEET_HOUSE_PYTHON || "python3";
     await execFileAsync(python, ["-c", `from reportlab.pdfgen import canvas
 c=canvas.Canvas(${JSON.stringify(sourcePath)}, pagesize=(400,600))
 c.drawString(20,20,'Shopee label')

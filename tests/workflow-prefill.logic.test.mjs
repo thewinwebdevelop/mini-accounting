@@ -69,7 +69,7 @@ test("the five generic workflow-document adapters extract payee name, purpose, l
   }
 });
 
-test("applyWorkflowContextToGoodsReceipt clears quantity while keeping description and stockSkuId", () => {
+test("applyWorkflowContextToGoodsReceipt preserves quantity while keeping description and stockSkuId", () => {
   const context = {
     lines: [{ description: "กระดาษ A4", quantity: "10", unitCost: "120.00", lineTotal: "1200.00", stockSkuId: "SKU-001" }],
   };
@@ -77,7 +77,7 @@ test("applyWorkflowContextToGoodsReceipt clears quantity while keeping descripti
 
   assert.equal(patch.lines[0].description, "กระดาษ A4");
   assert.equal(patch.lines[0].stockSkuId, "SKU-001");
-  assert.equal(patch.lines[0].quantity, "");
+  assert.equal(patch.lines[0].quantity, "10");
 });
 
 test("applyWorkflowContextToExpenseRequest maps payee/purpose fields and one expenseLines entry per canonical line (D10)", () => {
@@ -621,7 +621,7 @@ for (const kind of ALL_KINDS) {
       assert.equal(patch.requesterName, "คุณต้า");
       assert.ok(Array.isArray(patch.lines) && patch.lines.length === 1);
       if (kind === "goods_receipt") {
-        assert.equal(patch.lines[0].quantity, "", "goods_receipt must always clear quantity");
+        assert.equal(patch.lines[0].quantity, "2", "goods_receipt should carry the source quantity as the editable default");
         assert.equal(patch.lines[0].description, "รายการตัวอย่าง");
         assert.equal(patch.lines[0].stockSkuId, "SKU-9");
       } else {

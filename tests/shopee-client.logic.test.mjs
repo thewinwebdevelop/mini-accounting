@@ -78,3 +78,34 @@ test("refreshAccessToken calls the public token endpoint", async () => {
   assert.match(request.url, /auth\/access_token\/get/);
   assert.equal(request.options.method, "POST");
 });
+
+test("exchangeAuthorizationCode exchanges Shopee callback code for tokens", async () => {
+  let request;
+  const client = createShopeeClient({
+    partnerId: "12345",
+    partnerKey: "secret",
+    baseUrl: "https://partner.example.com",
+    now: () => 1700000000,
+    fetchImpl: async (url, options) => {
+      request = { url: String(url), options };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ response: { access_token: "access-1", refresh_token: "refresh-1", expire_in: 14400 } }),
+      };
+    },
+  });
+
+  const result = await client.exchangeAuthorizationCode({ code: "auth-code", shopId: "shop-1" });
+
+  assert.equal(result.accessToken, "access-1");
+  assert.equal(result.refreshToken, "refresh-1");
+  assert.equal(result.expireIn, 14400);
+  assert.match(request.url, /\/api\/v2\/auth\/token\/get/);
+  assert.equal(request.options.method, "POST");
+  assert.deepEqual(JSON.parse(request.options.body), {
+    partner_id: 12345,
+    code: "auth-code",
+    shop_id: "shop-1",
+  });
+});

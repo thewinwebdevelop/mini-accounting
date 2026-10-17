@@ -3,8 +3,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const statusNode = document.querySelector("#shopeeConnectionStatus");
   const connectButton = document.querySelector("#shopeeConnectButton");
   const syncButton = document.querySelector("#syncShopeeOrdersButton");
+  const params = new URLSearchParams(window.location.search);
   const savedShopId = localStorage.getItem("shopeeShopId") || "";
-  shopIdNode.value = savedShopId;
+  shopIdNode.value = params.get("shopId") || savedShopId;
+  if (shopIdNode.value) localStorage.setItem("shopeeShopId", shopIdNode.value);
 
   const api = async (route, options = {}) => {
     const request = { ...options, headers: { ...(options.headers || {}) } };
@@ -38,7 +40,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   connectButton.addEventListener("click", async () => {
     try {
-      if (!shopId()) throw new Error("ระบุ Shop ID ก่อน Connect");
+      setStatus("กำลังเปิดหน้า Shopee เพื่อ Login และอนุมัติสิทธิ์...");
       const result = await api("/api/shopee/authorize", { method: "POST", body: { origin: window.location.origin } });
       window.location.href = result.authorizationUrl;
     } catch (error) { setStatus(error.message, "error"); }
@@ -53,5 +55,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (error) { setStatus(error.message, "error"); }
   });
 
+  if (params.get("shopee_error")) setStatus(params.get("shopee_error"), "error");
+  else if (params.get("connected") === "1") setStatus(`เชื่อมต่อ Shopee สำเร็จ: Shop ${shopId()}`, "success");
   loadConnection().catch((error) => setStatus(error.message, "error"));
 });

@@ -1,0 +1,52 @@
+.workflow-review-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(16, 42, 67, 0.48);
+}
+
+.workflow-review-dialog[hidden] { display: none; }
+
+.workflow-review-card {
+  display: grid;
+  gap: 14px;
+  width: min(760px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: auto;
+  padding: 20px;
+  background: #ffffff;
+  border: 1px solid #cbd2d9;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(16, 42, 67, 0.24);
+}
+
+.workflow-review-card h2,
+.workflow-review-card h3 { margin: 0; color: #102a43; }
+.workflow-review-card h2 { font-size: 20px; }
+.workflow-review-card h3 { font-size: 14px; }
+.workflow-review-heading { display: flex; justify-content: space-between; gap: 12px; color: #66788a; }
+.workflow-review-heading strong { color: #102a43; }
+.workflow-review-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
+.workflow-review-field { padding: 8px 10px; background: #f5f7fa; border-radius: 7px; }
+.workflow-review-field dt { color: #66788a; font-size: 11px; font-weight: 800; }
+.workflow-review-field dd { margin: 2px 0 0; overflow-wrap: anywhere; font-weight: 700; }
+.workflow-review-section { display: grid; gap: 7px; }
+.workflow-review-section p { margin: 0; color: #66788a; }
+.workflow-review-lines,
+.workflow-review-files { display: grid; gap: 7px; margin: 0; padding-left: 22px; }
+.workflow-review-lines li { display: grid; gap: 2px; }
+.workflow-review-lines span { color: #66788a; font-size: 12px; }
+.workflow-review-files a { color: #0f766e; overflow-wrap: anywhere; font-weight: 700; }
+.workflow-review-reason { display: grid; gap: 6px; }
+.workflow-review-reason[hidden] { display: none; }
+.workflow-review-reason textarea { width: 100%; min-height: 80px; padding: 9px 10px; border: 1px solid #bcccdc; border-radius: 7px; resize: vertical; }
+.workflow-review-reason small { color: #b91c1c; }
+.workflow-review-card .button.danger { color: #ffffff; background: #b91c1c; border-color: #b91c1c; }
+
+@media (max-width: 620px) {
+  .workflow-review-fields { grid-template-columns: 1fr; }
+  .workflow-review-card { padding: 16px; }
+}

@@ -219,6 +219,32 @@ test("server revalidates vendor IDs, isolates document edits, and permits an old
   }
 });
 
+test("cloud-backed document saves resolve preset vendors through the injected repository", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-cloud-vendor-resolver-"));
+  try {
+    const cloudVendor = { ...vendor, id: "VENDOR-CLOUD-001", status: "active" };
+    const vendorResolver = async (vendorId) => vendorId === cloudVendor.id ? cloudVendor : null;
+    const expenseDraft = await server.saveExpenseDraft({
+      rootDir,
+      payload: expenseInput(cloudVendor.id),
+      vendorResolver,
+    });
+    const expenseDisk = JSON.parse(await readFile(join(rootDir, expenseDraft.folderPath, "data", "submission.json"), "utf8"));
+    assert.equal(expenseDisk.vendorId, cloudVendor.id);
+
+    const workflowPayload = workflow.buildWorkflowDocumentPayload({
+      documentKind: "payment_voucher", accountingMonth: "2026-09", documentDate: "2026-09-01",
+      title: "ใบสำคัญจ่ายจาก cloud vendor", businessPurpose: "ทดสอบ cloud vendor", payeeName: cloudVendor.name,
+      vendorId: cloudVendor.id, lines: [{ description: "ของ", quantity: "1", unitCost: "100" }],
+    });
+    const workflowDraft = await server.saveWorkflowDocument({ rootDir, payload: workflowPayload, vendorResolver });
+    const workflowDisk = JSON.parse(await readFile(join(rootDir, workflowDraft.folderPath, "data", "workflow-document.json"), "utf8"));
+    assert.equal(workflowDisk.vendorId, cloudVendor.id);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("clearing a saved vendor switches to a document-only snapshot without stale master fields", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-vendor-switch-"));
   try {

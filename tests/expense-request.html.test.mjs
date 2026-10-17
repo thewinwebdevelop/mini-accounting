@@ -22,6 +22,13 @@ test("expense form keeps copy/export controls in the backup tools section", asyn
   assert.match(html, /<button class="button secondary" type="button" id="copyMarkdown">Copy Markdown<\/button>/);
 });
 
+test("expense form does not show the obsolete localhost helper hint", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.doesNotMatch(html, /เปิดผ่าน http:\/\/localhost:8787\/expense-request/);
+  assert.doesNotMatch(html, /ปุ่ม Copy ใช้เป็นทางเลือกสำรองเท่านั้น/);
+});
+
 test("expense form uses placeholders instead of sample values for user-entered fields", async () => {
   const html = await readFile(htmlPath, "utf8");
 
@@ -38,6 +45,21 @@ test("expense form uses placeholders instead of sample values for user-entered f
   assert.doesNotMatch(html, /<option selected>marketing<\/option>/);
   assert.match(html, /placeholder="เช่น ค่าแพ็คสินค้า"/);
   assert.match(html, /<option value="" selected disabled>เลือกแผนก\/ตำแหน่ง<\/option>/);
+});
+
+test("expense requester role is a master-backed searchable select", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /src="\.\/company-position\.browser\.js"/);
+  assert.match(html, /companyPositionLoader\.loadInto/);
+  assert.doesNotMatch(html, /<option value="เจ้าของบริษัท">เจ้าของบริษัท<\/option>/);
+  assert.doesNotMatch(html, /<option value="marketing">marketing<\/option>/);
+});
+
+test("expense new-document path loads profile autofill only after existing-document gates", async () => {
+  const html = await readFile(htmlPath, "utf8");
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+  assert.match(html, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(html, /if \(!resumed\) \{[\s\S]*?isNewDocument: true[\s\S]*?workflowPrefillBanner\.load\(\)/);
 });
 
 test("expense form shows automatic document number instead of an editable sequence field", async () => {
@@ -61,6 +83,53 @@ test("expense line template is collapsible with a summary for each item", async 
   assert.match(html, /function updateLineSummaries/);
 });
 
+test("expense lines switch between manual entry and an active Stock SKU", async () => {
+  const { elements } = await setupExpenseRequestSandbox({
+    stockSkus: [
+      { id: 201, sku: "BAG-201", productName: "ถุงแพ็คสินค้า", defaultUnitCost: "12.50", status: "active" },
+      { id: 202, sku: "BAG-202", productName: "ถุงที่ปิดใช้งาน", status: "inactive" },
+    ],
+  });
+
+  const row = elements.lineItems.querySelector(".line-row");
+  const checkbox = row.querySelector('[name="isStockItem"]');
+  const field = row.querySelector("[data-stock-sku-field]");
+  const select = row.querySelector('[name="stockSkuId"]');
+  assert.ok(row.querySelector(".stock-item-toggle"), "stock checkbox and label should share one row");
+
+  assert.equal(field.hidden, true);
+  assert.equal(select.querySelectorAll("option").length, 2, "inactive SKUs must not be offered");
+
+  checkbox.checked = true;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, false);
+  assert.equal(select.required, true);
+
+  select.value = "201";
+  select.selectedOptions = [select.querySelectorAll("option")[1]];
+  select.dispatch("change");
+  assert.equal(row.dataset.stockSkuId, "201");
+  assert.equal(row.querySelector('[name="lineDescription"]').value, "BAG-201 - ถุงแพ็คสินค้า");
+  assert.equal(row.querySelector('[name="lineBeforeVat"]').value, "12.50");
+
+  checkbox.checked = false;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, true);
+  assert.equal(row.dataset.stockSkuId, "");
+  assert.equal(select.value, "");
+});
+
+test("expense line item keeps stock controls in full-width rows", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.match(html, /\.line-row\s*\{[\s\S]*?overflow:\s*visible/);
+  assert.match(html, /\.stock-item-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-sku-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-item-toggle input\[type="checkbox"\][\s\S]*?width:\s*15px[\s\S]*?height:\s*15px/);
+  assert.match(html, /\.stock-item-toggle\s*\{[\s\S]*?padding-top:\s*8px/);
+  assert.match(html, /\.stock-sku-field\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
+});
+
 test("expense form exposes navigation menu and bottom submit bar", async () => {
   const html = await readFile(htmlPath, "utf8");
   const topbar = html.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1] ?? "";
@@ -78,6 +147,9 @@ test("expense form exposes navigation menu and bottom submit bar", async () => {
   assert.match(html, /\.menu-panel \{[\s\S]*?left: 0;/);
   assert.match(bottomBar, /id="saveDraft"/);
   assert.match(bottomBar, /id="submitRequest"/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewConfirm"/);
+  assert.match(html, /id="workflowReviewReject"/);
   assert.doesNotMatch(topbar, /id="saveDraft"|id="submitRequest"/);
   assert.doesNotMatch(html, /id="draftList"/);
   assert.doesNotMatch(html, /แบบร่างล่าสุด/);
@@ -117,6 +189,96 @@ test("expense form validates canonical identity, authoritative status, and prese
   assert.match(html, /target="_blank" rel="noreferrer"/);
 });
 
+test("pending expense requests remain editable and save through the numbered endpoint", async () => {
+  const { elements, form, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      evidenceFiles: {},
+      rawFiles: [],
+      payload: {
+        requestNo: "REQ-2026-09-0001",
+        status: "pending_approval",
+        accountingMonth: "2026-09",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        businessPurpose: "ก่อนแก้ไข",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+      },
+    },
+  });
+
+  assert.equal(elements.saveDraft.hidden, false);
+  assert.equal(elements.submitRequest.hidden, true);
+  form.elements.businessPurpose.value = "แก้ไขหลังส่ง";
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.ok(fetchLog.some((url) => url.includes("/api/expense-requests/REQ-2026-09-0001")));
+  assert.equal(fetchLog.some((url) => url.includes("/api/expense-drafts")), false);
+});
+
+test("expense request restores requester role and exposes approve/complete lifecycle actions", async () => {
+  const { elements, form, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      payload: {
+        requestNo: "REQ-2026-09-0001",
+        status: "pending_approval",
+        accountingMonth: "2026-09",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        requesterRole: "marketing",
+        businessPurpose: "ทดสอบ lifecycle",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+      },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+    approveResponse: { requestNo: "REQ-2026-09-0001", status: "approved", pdfFiles: [] },
+    completeResponse: { requestNo: "REQ-2026-09-0001", status: "completed", pdfFiles: [] },
+  });
+
+  assert.equal(form.elements.requesterRole.value, "marketing");
+  assert.equal(elements.approveRequest.hidden, false, "pending approval must show approve action");
+  assert.equal(elements.completeRequest.hidden, true, "pending approval must not show complete action");
+
+  elements.approveRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(fetchLog.some((url) => url.endsWith("/api/expense-requests/REQ-2026-09-0001/approve")));
+  assert.equal(elements.completeRequest.hidden, false, "approved request must show complete action");
+
+  elements.completeRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(fetchLog.some((url) => url.endsWith("/api/expense-requests/REQ-2026-09-0001/complete")));
+  assert.equal(elements.completeRequest.hidden, true, "completed request must hide complete action");
+});
+
+test("expense approval review surfaces backend errors instead of leaving the confirm action silent", async () => {
+  const { context, elements } = await setupExpenseRequestSandbox({
+    search: "?requestNo=REQ-2026-09-0001",
+    withReviewModal: true,
+    approveFailure: true,
+    saveResponse: {
+      requestNo: "REQ-2026-09-0001",
+      status: "pending_approval",
+      payload: { requestNo: "REQ-2026-09-0001", status: "pending_approval", accountingMonth: "2026-09", expenseLines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  elements.approveRequest.dispatch("click");
+  await context.window._reviewModel.onConfirm();
+  assert.match(elements.saveStatus.textContent, /approve failed/);
+  assert.equal(elements.saveStatus.className, "status-box active error");
+});
+
 // --- Task 9: workflow context wiring --------------------------------------
 
 test("expense request form preserves workflow context query params", async () => {
@@ -130,10 +292,39 @@ test("expense request form preserves workflow context query params", async () =>
   assert.match(html, /sanitizeWorkflowReturnTo/);
 });
 
+test("expense form resumes the existing workflow request before offering prefill", async () => {
+  const { elements, fetchLog } = await setupExpenseRequestSandbox({
+    search: "?transactionNo=TXN-2026-09-0001&workflowTemplateId=tpl-1&workflowStepId=step-1",
+    workflowTransactionResponse: {
+      childDocuments: [{
+        documentKind: "expense_request",
+        documentNo: "REQ-2026-09-0007",
+        workflowStepId: "step-1",
+        status: "draft",
+      }],
+    },
+    saveResponse: {
+      requestNo: "REQ-2026-09-0007",
+      status: "draft",
+      payload: { requestNo: "REQ-2026-09-0007", status: "draft", expenseLines: [] },
+      evidenceFiles: {},
+      rawFiles: [],
+    },
+  });
+
+  assert.equal(elements.requestNoPreview.value, "REQ-2026-09-0007");
+  assert.ok(fetchLog.some((url) => url === "/api/workflow-transactions/TXN-2026-09-0001"));
+  assert.ok(fetchLog.some((url) => url === "/api/expense-requests/REQ-2026-09-0007"));
+  assert.equal(fetchLog.some((url) => url.includes("/prefill")), false, "an existing workflow document must not offer prefill");
+});
+
 test("expense request form shows the cross-document prefill banner", async () => {
   const html = await readFile(htmlPath, "utf8");
   assert.match(html, /workflow-prefill\.logic\.js/);
   assert.match(html, /id="workflowPrefillBanner"/);
+  assert.match(html, /#workflowPrefillGroups\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(html, /\.prefill-group input\[type="checkbox"\]\s*\{[\s\S]*?width:\s*18px[\s\S]*?min-height:\s*18px/);
+  assert.match(html, /\.prefill-group span\s*\{[\s\S]*?min-width:\s*0/);
   assert.match(html, /ใช้ข้อมูลเดิม/);
   assert.match(html, /กรอกใหม่/);
 });
@@ -190,7 +381,7 @@ function extractInlineControllerScript(html) {
 // drop and file-input listeners onto them during boot exactly like a real
 // page load, which is unrelated to the workflow wiring under test but no
 // longer needs to be faked away.
-async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [] } = {}) {
+async function setupExpenseRequestSandbox({ search = "", prefillResponse = null, workflowTransactionResponse = null, nextRequestNo = "REQ-2026-09-0001", saveResponse = null, approveResponse = null, completeResponse = null, approveFailure = false, withReviewModal = false, detailFailureCount = 0, vendorPickerFailure = false, vendorPickerVendors = [], stockSkus = [] } = {}) {
   const html = await readFile(htmlPath, "utf8");
   const script = extractInlineControllerScript(html);
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(html);
@@ -211,7 +402,11 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     get(key) {
       const found = this._entries.find(([entryKey]) => entryKey === key);
       if (found) return found[1];
-      if (this._form && key === "requestType") return this._form._requestType ?? "reimbursement";
+      if (this._form && key === "requestType") {
+        const selected = this._form.querySelectorAll('input[name="requestType"]')
+          .find((input) => input.checked && !input.disabled);
+        return selected?.value || null;
+      }
       return null;
     }
   }
@@ -224,11 +419,24 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
     if (url.includes("/prefill")) {
       return { ok: true, json: async () => prefillResponse ?? { availableGroups: [] } };
     }
+    if (url.includes("/api/workflow-transactions/") && !url.includes("/prefill")) {
+      return { ok: true, json: async () => workflowTransactionResponse ?? {} };
+    }
     if (url.includes("/api/expense-requests/next")) {
       return { ok: true, json: async () => ({ sequence: "1", requestNo: nextRequestNo }) };
     }
     if (url === "/api/vendors") {
       return { ok: true, json: async () => ({ vendors: vendorPickerVendors }) };
+    }
+    if (url === "/api/inventory/stock-skus") {
+      return { ok: true, json: async () => ({ stockSkus }) };
+    }
+    if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/approve")) {
+      if (approveFailure) return { ok: false, json: async () => ({ error: "approve failed" }) };
+      return { ok: true, json: async () => approveResponse ?? { requestNo: "REQ-2026-09-0001", status: "approved", pdfFiles: [] } };
+    }
+    if (url.includes("/api/expense-requests/REQ-") && url.endsWith("/complete")) {
+      return { ok: true, json: async () => completeResponse ?? { requestNo: "REQ-2026-09-0001", status: "completed", pdfFiles: [] } };
     }
     if (url.includes("/api/expense-requests/REQ-")) {
       if (detailFailureCount > 0) {
@@ -285,6 +493,13 @@ async function setupExpenseRequestSandbox({ search = "", prefillResponse = null,
   context.window.sanitizeWorkflowReturnTo = context.sanitizeWorkflowReturnTo;
   vm.runInContext(await readFile(prefillLogicPath, "utf8"), context);
   vm.runInContext(await readFile(prefillBannerPath, "utf8"), context);
+  if (withReviewModal) {
+    window.WorkflowReviewModal = {
+      create: () => ({
+        open: (model) => { window._reviewModel = model; },
+      }),
+    };
+  }
   vm.runInContext(script, context);
 
   const bootResult = context.window._handlers.DOMContentLoaded();
@@ -406,6 +621,12 @@ test("real workflow-prefill.logic.js fills an expense_request end to end through
   assert.deepEqual(lineDescriptions, ["สินค้า A"], "the expenseLines patch must replace the line rows");
 });
 
+test("expense requester-role prefill keeps the searchable select trigger synchronized", async () => {
+  const banner = await readFile(prefillBannerPath, "utf8");
+  assert.match(banner, /element\.tagName === "SELECT"/);
+  assert.match(banner, /element\.dispatchEvent\(new Event\("change"/);
+});
+
 test("collectData includes the workflow context fields in the saved payload shape", async () => {
   const html = await readFile(htmlPath, "utf8");
   // The three workflow keys must appear inside collectData()'s returned
@@ -500,6 +721,69 @@ test("real expense controller selects an active vendor and submits its identity 
 
   assert.equal(capturedPayloads.at(-1).vendorId, savedVendor.id);
   assert.equal(capturedPayloads.at(-1).paymentTargetName, savedVendor.name);
+});
+
+test("expense submit keeps the selected request type while mutation controls are disabled", async () => {
+  const saved = {
+    requestNo: "REQ-2026-09-0001",
+    status: "pending_approval",
+    evidenceFiles: {},
+    rawFiles: [],
+    payload: {
+      accountingMonth: "2026-09",
+      requestType: "reimbursement",
+      requesterName: "ผู้ขอ",
+      businessPurpose: "ทดสอบประเภทคำขอ",
+      paymentTargetName: "ร้านทดสอบ",
+      expenseLines: [{ description: "ของทดสอบ", amountBeforeVat: "10", vatAmount: "0", withholdingTax: "0" }],
+    },
+  };
+  const { elements, form, capturedPayloads } = await setupExpenseRequestSandbox({ saveResponse: saved });
+  form.elements.accountingMonth.value = "2026-09";
+  form.elements.requesterName.value = "ผู้ขอ";
+  form.elements.businessPurpose.value = "ทดสอบประเภทคำขอ";
+  form.elements.paymentTargetName.value = "ร้านทดสอบ";
+  const row = form.querySelector(".line-row");
+  row.querySelector('[name="lineDescription"]').value = "ของทดสอบ";
+  row.querySelector('[name="lineBeforeVat"]').value = "10";
+
+  elements.submitRequest.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(capturedPayloads.at(-1).requestType, "reimbursement");
+});
+
+test("expense controller restores fields from a flattened Supabase detail response", async () => {
+  const cloudResponse = {
+    requestNo: "REQ-2026-09-0001",
+    status: "draft",
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าแพ็คสินค้า",
+    requestType: "reimbursement",
+    requesterName: "ผู้ขอ",
+    businessPurpose: "ซื้อวัสดุแพ็คสินค้า",
+    paymentTargetName: "ผู้ขายจาก Supabase",
+    expenseLines: [{ description: "กล่อง", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+    evidenceFiles: {},
+    rawFiles: [],
+  };
+  const { elements, form } = await setupExpenseRequestSandbox({ saveResponse: cloudResponse });
+  form.elements.accountingMonth.value = "2026-09";
+  form.elements.requestTitle.value = cloudResponse.requestTitle;
+  form.elements.requesterName.value = cloudResponse.requesterName;
+  form.elements.businessPurpose.value = cloudResponse.businessPurpose;
+  form.elements.paymentTargetName.value = cloudResponse.paymentTargetName;
+  const row = form.querySelector(".line-row");
+  row.querySelector('[name="lineDescription"]').value = "กล่อง";
+  row.querySelector('[name="lineBeforeVat"]').value = "100";
+
+  elements.saveDraft.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(form.elements.requesterName.value, cloudResponse.requesterName);
+  assert.equal(form.elements.businessPurpose.value, cloudResponse.businessPurpose);
+  assert.equal(form.elements.paymentTargetName.value, cloudResponse.paymentTargetName);
+  assert.equal(elements.errors.textContent, "");
 });
 
 test("expense controller renders an old inactive vendor snapshot when no active preset is available", async () => {

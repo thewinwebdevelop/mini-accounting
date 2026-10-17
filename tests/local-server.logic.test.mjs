@@ -22,6 +22,8 @@ const {
 const {
   approveExpenseRequest,
   approveSubstituteReceipt,
+  rejectExpenseRequest,
+  rejectSubstituteReceipt,
   completeExpenseRequest,
   completeSubstituteReceipt,
   getExpenseDraft,
@@ -1966,6 +1968,89 @@ test("approveExpenseRequest moves a submitted request to approved and records mo
   }
 });
 
+test("approveExpenseRequest repairs a Supabase-shaped payload before regenerating files", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-cloud-payload-"));
+  try {
+    const submitted = await saveExpenseSubmission({
+      rootDir,
+      payload: {
+        accountingMonth: "2026-09",
+        requestTitle: "ค่าใช้จ่ายจาก Supabase",
+        requestType: "reimbursement",
+        requesterName: "ผู้ขอ",
+        businessPurpose: "ทดสอบ payload cloud",
+        paymentTargetName: "ร้านทดสอบ",
+        expenseLines: [{ description: "สินค้า", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+      },
+    });
+    const stored = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    const cloudShapedPayload = { ...stored.payload };
+    delete cloudShapedPayload.evidence;
+    delete cloudShapedPayload.totals;
+    delete cloudShapedPayload.requestTypeLabel;
+    await writeFile(
+      join(rootDir, stored.folderPath, "data", "submission.json"),
+      `${JSON.stringify(cloudShapedPayload, null, 2)}\n`,
+      "utf8",
+    );
+
+    const approved = await approveExpenseRequest({
+      rootDir,
+      requestNo: submitted.requestNo,
+      approvedBy: "บัญชี",
+      expenseRecorder: async () => ({ syncStatus: "not_required" }),
+    });
+
+    assert.equal(approved.status, "approved");
+    const repaired = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.ok(repaired.payload.evidence);
+    assert.ok(repaired.payload.totals);
+    assert.equal(repaired.payload.requestTypeLabel, "เบิกคืนพนักงาน");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejectExpenseRequest returns a pending request to draft with a reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-reject-"));
+  try {
+    const submitted = await saveExpenseSubmission({ rootDir, payload: validExpensePayload() });
+    const rejected = await rejectExpenseRequest({
+      rootDir,
+      requestNo: submitted.requestNo,
+      rejectedBy: "บัญชี",
+      reason: "กรุณาแนบใบเสร็จเพิ่มเติม",
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+    assert.equal(rejected.status, "draft");
+    const loaded = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
+    assert.equal(loaded.payload.rejectionReason, "กรุณาแนบใบเสร็จเพิ่มเติม");
+    assert.equal(loaded.payload.statusHistory.at(-1).note, "rejected");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rejectSubstituteReceipt returns a pending receipt to draft with a reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-reject-"));
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({ rootDir, payload: validSubstituteReceiptPayload(), uploads: validSlipUpload() });
+    const rejected = await rejectSubstituteReceipt({
+      rootDir,
+      receiptNo: submitted.receiptNo,
+      rejectedBy: "บัญชี",
+      reason: "กรุณาตรวจสอบรายการสินค้า",
+      now: () => "2026-09-04T10:00:00.000Z",
+    });
+    assert.equal(rejected.status, "draft");
+    const loaded = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(loaded.payload.rejectionReason, "กรุณาตรวจสอบรายการสินค้า");
+    assert.equal(loaded.payload.statusHistory.at(-1).note, "rejected");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("completeExpenseRequest transitions approved request to completed", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
   try {
@@ -2224,6 +2309,7 @@ test("saveExpenseSubmission renders signable approval lines in the reimbursement
     assert.match(reimbursementText, /ลงชื่อผู้ตรวจเอกสารบัญชี/);
     assert.match(reimbursementText, /ลงชื่อผู้อนุมัติ/);
     assert.match(reimbursementText, /ลงชื่อผู้จ่ายเงิน/);
+    assert.doesNotMatch(reimbursementText, /Checklist หลักฐาน/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -2336,7 +2422,7 @@ test("getSubmittedExpenseRequest returns editable saved request data with raw ev
   }
 });
 
-test("saveExpenseSubmission rejects edits after submission", async () => {
+test("saveExpenseSubmission allows edits while pending approval without resetting history or evidence", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-expense-"));
 
   try {
@@ -2399,12 +2485,47 @@ test("saveExpenseSubmission rejects edits after submission", async () => {
 
     const saved = await getSubmittedExpenseRequest(rootDir, submitted.requestNo);
     assert.equal(saved.payload.requesterName, "คุณส่ง");
+    assert.equal(saved.payload.requestTitle, "แก้ไขหลังส่ง");
+    assert.equal(saved.payload.status, "pending_approval");
+    assert.equal(saved.payload.statusHistory.length, 1);
+    assert.equal(saved.payload.statusHistory[0].toStatus, "pending_approval");
+    assert.equal(saved.evidenceFiles.receipt[0].storedName, "A1_receipt_001.jpg");
     const requests = await listExpenseRequests(rootDir);
     assert.equal(requests.filter((request) => request.status === "pending_approval").length, 1);
     const submittedRecord = requests.find((request) => request.requestNo === submitted.requestNo);
     assert.equal(submittedRecord.syncStatus, "synced");
     assert.equal(submittedRecord.driveFolderUrl, "https://drive.google.com/drive/folders/drive-folder-123");
     assert.equal(submittedRecord.editUrl, "/expense-request?requestNo=REQ-2026-09-0001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveSubstituteReceiptSubmission allows edits while pending approval without resetting history or evidence", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-substitute-edit-"));
+
+  try {
+    const submitted = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: validSubstituteReceiptPayload({ receiptTitle: "ก่อนแก้ไข" }),
+      uploads: validSlipUpload(),
+    });
+
+    const repeated = await saveSubstituteReceiptSubmission({
+      rootDir,
+      payload: { receiptNo: submitted.receiptNo, receiptTitle: "แก้ไขหลังส่ง" },
+      uploads: [],
+      createStockMovements: false,
+    });
+
+    assert.equal(repeated.receiptNo, submitted.receiptNo);
+    assert.equal(repeated.status, "pending_approval");
+    const saved = await getSubmittedSubstituteReceipt(rootDir, submitted.receiptNo);
+    assert.equal(saved.payload.receiptTitle, "แก้ไขหลังส่ง");
+    assert.equal(saved.payload.status, "pending_approval");
+    assert.equal(saved.payload.statusHistory.length, 1);
+    assert.equal(saved.payload.statusHistory[0].toStatus, "pending_approval");
+    assert.equal(saved.evidenceFiles.paymentSlip[0].storedName, "B1_payment-slip_001.jpg");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -2604,7 +2725,9 @@ test("syncExpenseRequestToDrive uploads a submitted request folder with Google D
     assert.equal(result.uploadedFileCount, 4);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].rootDir, rootDir);
-    assert.equal(calls[0].folderPath, submitted.folderPath);
+    assert.equal(calls[0].drivePath, "2026/09/ใบเบิกค่าใช้จ่าย");
+    assert.equal(calls[0].layoutVersion, 2);
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith(`${submitted.requestNo}__`)));
 
     const metadata = JSON.parse(await readFile(join(submitted.absoluteFolderPath, "data", "drive-sync.json"), "utf8"));
     assert.equal(metadata.syncStatus, "synced");
@@ -2654,7 +2777,10 @@ test("syncSubstituteReceiptToDrive uploads a submitted receipt folder with Googl
     assert.equal(result.uploadedFileCount, 5);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].rootDir, rootDir);
-    assert.equal(calls[0].folderPath, submitted.folderPath);
+    assert.equal(calls[0].drivePath, "2026/09/ใบรับรองแทนใบเสร็จรับเงิน");
+    assert.equal(calls[0].layoutVersion, 2);
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith(`${submitted.receiptNo}__`)));
+    assert.ok(calls[0].files.some((file) => file.relativePath.startsWith("raw/")));
 
     const metadata = JSON.parse(await readFile(join(submitted.absoluteFolderPath, "data", "drive-sync.json"), "utf8"));
     assert.equal(metadata.syncStatus, "synced");

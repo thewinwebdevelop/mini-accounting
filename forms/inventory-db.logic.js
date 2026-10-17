@@ -196,6 +196,14 @@ function ensureInventorySchema(db) {
       CHECK (status IN ('connected', 'expired', 'revoked', 'error'))
     );
 
+    CREATE TABLE IF NOT EXISTS shopee_oauth_states (
+      state TEXT PRIMARY KEY,
+      return_url TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT NOT NULL DEFAULT ''
+    );
+
     CREATE TABLE IF NOT EXISTS shopee_sync_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       shop_id TEXT NOT NULL,
