@@ -21,3 +21,34 @@ test("every page hamburger menu exposes the workflow transaction and template li
 
   assert.ok(pagesWithMenus.length > 0, "expected at least one page with a hamburger menu");
 });
+
+test("every Shopee page reuses the shared header component", async () => {
+  const shopeePages = [
+    "shopee-connection.html",
+    "shopee-orders.html",
+    "shopee-mapping.html",
+    "shopee-shipment.html",
+    "shopee-custom-label.html",
+  ];
+  const sharedHeader = await readFile(path.join(formsDir, "shopee-header.browser.js"), "utf8");
+
+  assert.match(
+    sharedHeader,
+    /href="\/shopee-custom-label"[^>]*>Custom Label จาก PDF<\/a>/,
+    "shared header: missing Shopee custom label link",
+  );
+
+  for (const fileName of shopeePages) {
+    const html = await readFile(path.join(formsDir, fileName), "utf8");
+    assert.match(
+      html,
+      /<shopee-header\b[^>]*><\/shopee-header>/,
+      `${fileName}: missing shared Shopee header component`,
+    );
+    assert.match(
+      html,
+      /<script src="\/shopee-header\.browser\.js"><\/script>/,
+      `${fileName}: missing shared Shopee header script`,
+    );
+  }
+});

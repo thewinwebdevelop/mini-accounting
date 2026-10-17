@@ -19,7 +19,8 @@ test("standalone Shopee custom label page exposes upload, editors, comparison pa
   assert.match(html, /data-custom-label-quantity/);
   assert.match(html, /data-custom-label-remove/);
   assert.match(html, /shopee-custom-label\.logic\.browser\.js/);
-  assert.match(html, /href="\/shopee-custom-label"/);
+  assert.match(html, /<shopee-header\b[^>]*page-title="Shopee Custom Label จาก PDF"[^>]*><\/shopee-header>/);
+  assert.match(html, /<script src="\/shopee-header\.browser\.js"><\/script>/);
   assert.doesNotMatch(html, /id="previewShopeeCustomLabelButton"/);
   assert.doesNotMatch(html, /custom-label-compare-section/);
 });
