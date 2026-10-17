@@ -44,6 +44,15 @@ function normalizeMappingKey(productName, optionName) {
   };
 }
 
+function customLabelStorageObjectPath(jobId, kind) {
+  const id = cleanText(jobId);
+  if (!/^\d+$/.test(id)) throw new Error("job id ไม่ถูกต้อง");
+  if (!["source", "preview", "output", "comparison"].includes(kind)) {
+    throw new Error("custom label artifact kind ไม่ถูกต้อง");
+  }
+  return `shopee-custom-labels/${id}/${kind}.pdf`;
+}
+
 function parsePositiveInteger(value, fieldName) {
   const normalized = cleanText(value);
   if (!/^[1-9]\d*$/.test(normalized)) {
@@ -398,16 +407,20 @@ async function createCustomLabelComparison(rootDir, jobId, options = {}) {
   const generatedPath = job.outputFilePath || job.previewFilePath;
   if (!generatedPath) throw new Error("กรุณาสร้าง Preview หรือ Save PDF ก่อนเปิดไฟล์เทียบ");
   const outputPath = path.join(jobDirectory(rootDir, job), "comparison.pdf");
-  await runPdfCommand([
-    "compare",
-    "--original", job.sourceFilePath,
-    "--generated", generatedPath,
-    "--output", outputPath,
-  ], options);
+  await compareCustomLabelFiles(job.sourceFilePath, generatedPath, outputPath, options);
   return {
     path: outputPath,
     fileName: "shopee-custom-label-comparison.pdf",
   };
+}
+
+async function compareCustomLabelFiles(originalPath, generatedPath, outputPath, options = {}) {
+  await runPdfCommand([
+    "compare",
+    "--original", originalPath,
+    "--generated", generatedPath,
+    "--output", outputPath,
+  ], options);
 }
 
 function getCustomLabelFile(rootDir, jobId, kind) {
@@ -432,6 +445,8 @@ module.exports = {
   aggregateManualSkus,
   createCustomLabelJob,
   createCustomLabelComparison,
+  compareCustomLabelFiles,
+  customLabelStorageObjectPath,
   getCustomLabelJob,
   getCustomLabelFile,
   loadCustomLabelMappings,

@@ -15,6 +15,7 @@ const {
   loadCustomLabelMappings,
   normalizeMappingKey,
   pythonExecutable,
+  customLabelStorageObjectPath,
   saveCustomLabelMappings,
   validateBundle,
 } = customLabel;
@@ -32,6 +33,15 @@ test("custom label PDF commands use the Cloud Run Python virtualenv", () => {
     if (previousPythonBin === undefined) delete process.env.SWEET_HOUSE_PYTHON_BIN;
     else process.env.SWEET_HOUSE_PYTHON_BIN = previousPythonBin;
   }
+});
+
+test("custom label artifacts use a stable storage path", () => {
+  assert.equal(
+    customLabelStorageObjectPath(42, "output"),
+    "shopee-custom-labels/42/output.pdf",
+  );
+  assert.throws(() => customLabelStorageObjectPath("bad", "output"), /job/i);
+  assert.throws(() => customLabelStorageObjectPath(42, "unknown"), /kind/i);
 });
 
 test("normalizeMappingKey converts Shopee Thai private-use tone glyphs and removes PDF markers", () => {

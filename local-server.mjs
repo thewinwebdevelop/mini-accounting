@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -146,6 +147,8 @@ const {
 const {
   getCustomLabelFile,
   getCustomLabelJob,
+  compareCustomLabelFiles,
+  customLabelStorageObjectPath,
   createCustomLabelComparison,
   parseCustomLabelUpload,
   previewCustomLabel,
@@ -178,7 +181,11 @@ const {
 const { scanLineDocument } = require("./forms/line-ocr.logic.js");
 const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
 const { createSupabaseDataRepository } = require("./forms/supabase-data.logic.js");
-const { createSupabaseStorageClient } = require("./forms/supabase-storage.logic.js");
+const {
+  createSupabaseStorageClient,
+  downloadStorageObject,
+  uploadStorageObject,
+} = require("./forms/supabase-storage.logic.js");
 const { resolveGoogleOAuthRedirectUri } = require("./forms/google-oauth-config.logic.js");
 const {
   SESSION_COOKIE_NAME,
@@ -262,6 +269,13 @@ const documentFileSynchronizer = cloudRun
     rootDir,
     client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
     storageClient: createSupabaseStorageClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY, bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET }),
+  })
+  : null;
+const customLabelStorageClient = cloudRun
+  ? createSupabaseStorageClient({
+    url: runtimeEnv.SUPABASE_URL,
+    serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY,
+    bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET,
   })
   : null;
 const documentDataAdapter = createDocumentDataAdapter({
@@ -2788,6 +2802,47 @@ function publicCustomLabelJob(job) {
   };
 }
 
+async function persistCustomLabelArtifact(jobId, kind, filePath) {
+  if (!customLabelStorageClient) return;
+  await uploadStorageObject(customLabelStorageClient, {
+    objectPath: customLabelStorageObjectPath(jobId, kind),
+    body: await readFile(filePath),
+    contentType: "application/pdf",
+  });
+}
+
+async function readPersistedCustomLabelArtifact(jobId, kind) {
+  if (!customLabelStorageClient) throw new Error("Custom label storage is unavailable");
+  return downloadStorageObject(customLabelStorageClient, customLabelStorageObjectPath(jobId, kind));
+}
+
+async function createPersistedCustomLabelComparison(jobId) {
+  const directory = await mkdtemp(path.join(tmpdir(), "sweet-house-custom-label-comparison-"));
+  try {
+    const sourcePath = path.join(directory, "source.pdf");
+    const generatedPath = path.join(directory, "generated.pdf");
+    const outputPath = path.join(directory, "comparison.pdf");
+    await writeFile(sourcePath, await readPersistedCustomLabelArtifact(jobId, "source"));
+    let generated;
+    try {
+      generated = await readPersistedCustomLabelArtifact(jobId, "output");
+    } catch {
+      generated = await readPersistedCustomLabelArtifact(jobId, "preview");
+    }
+    await writeFile(generatedPath, generated);
+    await compareCustomLabelFiles(sourcePath, generatedPath, outputPath, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+    });
+    await persistCustomLabelArtifact(jobId, "comparison", outputPath);
+    return {
+      body: await readFile(outputPath),
+      fileName: "shopee-custom-label-comparison.pdf",
+    };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function handleCustomLabelUpload(request, response) {
   try {
     const body = await readRequestBody(request);
@@ -2796,6 +2851,7 @@ async function handleCustomLabelUpload(request, response) {
     const job = await parseCustomLabelUpload(rootDir, file, {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
     });
+    await persistCustomLabelArtifact(job.id, "source", job.sourceFilePath);
     sendJson(response, 200, { job: publicCustomLabelJob(job) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถอ่านไฟล์ใบปะหน้า Shopee ได้");
@@ -2824,6 +2880,11 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
       parsedPayload: body.parsedPayload || undefined,
     });
+    await persistCustomLabelArtifact(
+      job.id,
+      action === "preview" ? "preview" : "output",
+      action === "preview" ? job.previewFilePath : job.outputFilePath,
+    );
     sendJson(response, 200, { job: publicCustomLabelJob(job) });
   } catch (error) {
     sendOperationError(response, error, `ไม่สามารถ${action === "preview" ? "สร้าง preview" : "บันทึก"} custom label ได้`);
@@ -2832,9 +2893,17 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
 
 async function handleCustomLabelFile(jobId, kind, response, disposition = "inline") {
   try {
-    const file = getCustomLabelFile(rootDir, jobId, kind);
-    const body = await readFile(file.path);
-    const safeName = String(file.fileName || `${kind}.pdf`).replace(/[\r\n"]+/g, "_");
+    let body;
+    let fileName;
+    try {
+      const file = getCustomLabelFile(rootDir, jobId, kind);
+      body = await readFile(file.path);
+      fileName = file.fileName;
+    } catch {
+      body = await readPersistedCustomLabelArtifact(jobId, kind);
+      fileName = kind === "source" ? "source.pdf" : `${kind}.pdf`;
+    }
+    const safeName = String(fileName || `${kind}.pdf`).replace(/[\r\n"]+/g, "_");
     response.writeHead(200, {
       "content-type": "application/pdf",
       "content-disposition": `${disposition}; filename="${safeName}"`,
@@ -2849,13 +2918,23 @@ async function handleCustomLabelFile(jobId, kind, response, disposition = "inlin
 
 async function handleCustomLabelComparison(jobId, response) {
   try {
-    const file = await createCustomLabelComparison(rootDir, jobId, {
-      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
-    });
-    const body = await readFile(file.path);
+    let body;
+    let fileName;
+    try {
+      const file = await createCustomLabelComparison(rootDir, jobId, {
+        pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+      });
+      await persistCustomLabelArtifact(jobId, "comparison", file.path);
+      body = await readFile(file.path);
+      fileName = file.fileName;
+    } catch {
+      const persisted = await createPersistedCustomLabelComparison(jobId);
+      body = persisted.body;
+      fileName = persisted.fileName;
+    }
     response.writeHead(200, {
       "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${file.fileName}"`,
+      "content-disposition": `inline; filename="${fileName}"`,
       "content-length": String(body.length),
     });
     response.end(body);
