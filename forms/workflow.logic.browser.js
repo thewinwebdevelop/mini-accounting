@@ -366,6 +366,16 @@ const transactionsListState = {
   transactions: [],
 };
 
+let transactionStartInFlight = false;
+let transactionStartRequestKey = "";
+
+function createTransactionStartRequestKey() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `workflow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function renderStartTemplateOptions(select, templates) {
   select.replaceChildren();
   const placeholder = document.createElement("option");
@@ -406,30 +416,31 @@ function renderTransactionRows(list, transactions) {
   }
 
   for (const transaction of transactions) {
+    const renderedTransaction = normalizeTransactionForRendering(transaction);
     const row = document.createElement("tr");
 
     const statusCell = document.createElement("td");
     const statusBadge = document.createElement("span");
-    statusBadge.className = `status ${transaction.status || ""}`.trim();
-    statusBadge.textContent = transactionStatusLabel(transaction.status);
+    statusBadge.className = `status ${renderedTransaction.status || ""}`.trim();
+    statusBadge.textContent = transactionStatusLabel(renderedTransaction.status);
     statusCell.appendChild(statusBadge);
 
     const noCell = document.createElement("td");
-    noCell.textContent = transaction.transactionNo || "-";
+    noCell.textContent = renderedTransaction.transactionNo || "-";
 
     const titleCell = document.createElement("td");
-    titleCell.textContent = transaction.title || "-";
+    titleCell.textContent = renderedTransaction.title || "-";
 
     const templateCell = document.createElement("td");
-    templateCell.textContent = transaction.templateSnapshot?.name || transaction.workflowTemplateId || "-";
+    templateCell.textContent = renderedTransaction.templateSnapshot?.name || renderedTransaction.workflowTemplateId || "-";
 
     const currentStepCell = document.createElement("td");
-    currentStepCell.textContent = currentStepLabelForTransaction(transaction);
+    currentStepCell.textContent = currentStepLabelForTransaction(renderedTransaction);
 
     const actionCell = document.createElement("td");
     const openLink = document.createElement("a");
     openLink.className = "button secondary small";
-    openLink.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
+    openLink.href = `/workflow-transaction?transactionNo=${encodeURIComponent(renderedTransaction.transactionNo)}`;
     openLink.textContent = "เปิดธุรกรรม";
     actionCell.appendChild(openLink);
 
@@ -474,10 +485,11 @@ async function startTransaction() {
 
   const root = document.querySelector("#transactionsPage");
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
+  if (!transactionStartRequestKey) transactionStartRequestKey = createTransactionStartRequestKey();
 
   const transaction = await fetchJson(transactionsUrl, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, idempotencyKey: transactionStartRequestKey }),
   });
 
   location.href = `/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`;
@@ -492,8 +504,16 @@ function initTransactionsPage() {
   if (form) form.addEventListener("submit", (event) => event.preventDefault());
 
   startButton.addEventListener("click", () => {
+    if (transactionStartInFlight) return;
+    transactionStartInFlight = true;
+    startButton.disabled = true;
     clearStatusBox(statusBox);
-    startTransaction().catch((error) => setStatusBox(statusBox, error.message, "error"));
+    startTransaction()
+      .catch((error) => setStatusBox(statusBox, error.message, "error"))
+      .finally(() => {
+        transactionStartInFlight = false;
+        startButton.disabled = false;
+      });
   });
 
   loadTransactionsPageData().catch((error) => setStatusBox(statusBox, error.message, "error"));
@@ -656,8 +676,6 @@ function fileGroupElements(label, files) {
     const link = document.createElement("a");
     link.className = "file-link";
     link.href = file.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
     link.textContent = file.name || file.path || "file";
     wrapper.appendChild(link);
   }
@@ -730,6 +748,13 @@ const DRIVE_SYNC_STATUS_LABELS = {
   sync_failed: "ซิงก์ Google Drive ไม่สำเร็จ",
 };
 
+const DRIVE_SYNC_ITEM_STATES = {
+  synced: { text: "ขึ้น Google Drive แล้ว", className: "completed" },
+  already_synced: { text: "มีใน Google Drive อยู่แล้ว (ไม่อัปโหลดซ้ำ)", className: "completed" },
+  sync_failed: { text: "ไม่สำเร็จ", className: "sync_failed" },
+  waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
+};
+
 // A failed sync's `message` (set by syncWorkflowTransactionToDrive) names, in
 // Thai, every document that did not make it into Drive and why; `error` is
 // only the first underlying error, kept as the fallback for an older record.
@@ -742,19 +767,39 @@ function driveSyncStatusText(driveSync) {
   return label;
 }
 
-const DRIVE_SYNC_ITEM_STATES = {
-  synced: { text: "ขึ้น Google Drive แล้ว", className: "completed" },
-  already_synced: { text: "มีใน Google Drive อยู่แล้ว (ไม่อัปโหลดซ้ำ)", className: "completed" },
-  sync_failed: { text: "ไม่สำเร็จ", className: "sync_failed" },
-  waiting_for_documents: { text: "รอเอกสารย่อยขึ้น Google Drive ครบก่อน", className: "not_started" },
-};
+function safeDriveFolderUrl(value) {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "drive.google.com" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function workflowDriveFolderUrl(transaction) {
+  return safeDriveFolderUrl(transaction?.driveSync?.transactionFolder?.driveFolderUrl)
+    || safeDriveFolderUrl(transaction?.driveSync?.driveFolderUrl);
+}
+
+function renderWorkflowDriveFolderLink(link, transaction) {
+  if (!link) return;
+  const url = workflowDriveFolderUrl(transaction);
+  if (url) {
+    link.href = url;
+    link.hidden = false;
+  } else {
+    link.href = "#";
+    link.hidden = true;
+  }
+}
 
 function driveSyncItemState(entry) {
   if (entry.syncStatus === "synced") return entry.alreadySynced ? "already_synced" : "synced";
   return entry.syncStatus;
 }
 
-function driveSyncItem({ title, state, url, detail }) {
+function driveSyncItem({ title, state, detail }) {
   const { text, className } = DRIVE_SYNC_ITEM_STATES[state] || { text: state || "-", className: "" };
   const item = document.createElement("li");
   item.className = "drive-sync-document";
@@ -769,16 +814,6 @@ function driveSyncItem({ title, state, url, detail }) {
   status.textContent = text;
   item.appendChild(status);
 
-  if (url) {
-    const link = document.createElement("a");
-    link.className = "file-link";
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = "เปิดใน Google Drive";
-    item.appendChild(link);
-  }
-
   if (detail) {
     const note = document.createElement("span");
     note.className = "muted";
@@ -788,9 +823,9 @@ function driveSyncItem({ title, state, url, detail }) {
   return item;
 }
 
-// One row per child document (in step order, as the server reports them)
-// plus the transaction's own folder, so a user can see exactly which document
-// did not make it into Drive and why, and open the ones that did.
+// Keep the per-document result/status list for auditability. The only Drive
+// link is the workflow root shown separately above, because every child row
+// resolves to that same folder.
 function renderDriveSyncDocuments(list, transaction) {
   if (!list) return;
   list.replaceChildren();
@@ -803,7 +838,6 @@ function renderDriveSyncDocuments(list, transaction) {
     list.appendChild(driveSyncItem({
       title: `${documentKindLabelFor(entry.documentKind)} ${entry.documentNo || "-"}`,
       state: driveSyncItemState(entry),
-      url: entry.syncStatus === "synced" ? entry.driveFolderUrl : "",
       detail: entry.syncStatus === "sync_failed" ? (entry.message || entry.error) : "",
     }));
   }
@@ -812,7 +846,6 @@ function renderDriveSyncDocuments(list, transaction) {
   list.appendChild(driveSyncItem({
     title: `โฟลเดอร์ธุรกรรม ${transaction.transactionNo || "-"} (ชุดรวม PDF และสรุป)`,
     state: driveSyncItemState(folder),
-    url: folder.syncStatus === "synced" ? folder.driveFolderUrl : "",
     detail: folder.syncStatus === "sync_failed" ? (folder.message || folder.error) : "",
   }));
 }
@@ -839,6 +872,7 @@ function renderDriveSyncSection(section, statusEl, button, transaction, document
   }
 
   if (statusEl) statusEl.textContent = driveSyncStatusText(transaction.driveSync);
+  renderWorkflowDriveFolderLink(document.querySelector("#workflowDriveFolderLink"), transaction);
   renderDriveSyncDocuments(documentsList, transaction);
 
   const syncGoogleDrive = !!transaction.templateSnapshot?.syncGoogleDrive;
@@ -999,7 +1033,23 @@ function setTransactionSyncButtonsDisabled(disabled) {
   if (cancelButton) cancelButton.disabled = disabled || transactionCancellationInFlight || cancellationLocked();
 }
 
+function normalizeTransactionForRendering(transaction = {}) {
+  // A cancellation overlay is only authoritative when it carries durable
+  // completion evidence. If an old/stale response says "cancelled" but only
+  // has the request/pending portion of the overlay, keep the durable
+  // completion visible instead of showing a misleading cancellation banner.
+  const cancellation = transaction.cancellation;
+  const hasCompletedCancellation = cancellation
+    && typeof cancellation.cancelledAt === "string"
+    && cancellation.cancelledAt.trim();
+  if (transaction.status === "cancelled" && transaction.completedAt && !hasCompletedCancellation) {
+    return { ...transaction, status: "completed" };
+  }
+  return transaction;
+}
+
 function renderTransaction(transaction, childDocuments = []) {
+  transaction = normalizeTransactionForRendering(transaction);
   transactionPageState.transaction = transaction;
   transactionPageState.childDocuments = childDocuments;
 

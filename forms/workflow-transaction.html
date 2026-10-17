@@ -236,14 +236,16 @@
       white-space: pre-line;
     }
     .status-box.active { display: block; }
+    .status-box[hidden] { display: none; }
     .status-box.success { border-color: #86efac; background: #f0fdf4; color: #166534; }
     .status-box.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
     #cancellationDialog[hidden] { display: none; }
-    #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, 0.45); }
-    #cancellationDialog > .section { width: min(520px, 100%); }
+    #cancellationDialog { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; overflow: auto; padding: 18px; background: rgba(15, 23, 42, 0.45); }
+    #cancellationDialog > .section { position: relative; z-index: 1; width: min(520px, 100%); max-height: calc(100dvh - 36px); overflow: auto; }
+    #cancellationDialog .topbar-actions { flex-wrap: wrap; }
+    #cancellationDialog .topbar-actions .button { flex: 1 1 140px; }
 
     #driveSyncStatus { white-space: pre-line; }
-    .status.sync_failed { color: #991b1b; background: #fee2e2; }
     .drive-sync-documents { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
     .drive-sync-documents[hidden] { display: none; }
     .drive-sync-document {
@@ -257,11 +259,12 @@
       background: #ffffff;
     }
     .drive-sync-document .title { font-weight: 800; }
-
+    .status.sync_failed { color: #991b1b; background: #fee2e2; }
     @media (max-width: 640px) {
       .checklist-item { flex-wrap: wrap; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <!--
@@ -278,9 +281,8 @@
     complete is enabled only once every step is completed; sync-drive is the
     manual fallback shown when the template's syncGoogleDrive toggle is off,
     and the retry shown whenever a sync did not get everything into Drive. It
-    sends every child document through its own sync action, then the
-    transaction folder; #driveSyncDocuments shows each one's result. Sheets
-    sync is a separate, manual parent action shown only after the transaction
+    sync uploads the workflow bundle into one root folder. Sheets sync is a
+    separate, manual parent action shown only after the transaction
     has a persisted completedAt value. A child REQ/SR Sheet row blocks that
     action for review; it is never replaced or changed by this page.
   -->
@@ -326,6 +328,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -338,7 +341,7 @@
     <div class="topbar-actions">
       <button class="button secondary small" type="button" id="refreshTransactionButton">รีเฟรชสถานะ</button>
       <button class="button secondary small" type="button" id="cancelTransactionButton">ยกเลิก Workflow</button>
-      <a class="button secondary small" id="workflowPacketLink" href="#" hidden>ดาวน์โหลดชุดรวมเอกสาร Workflow</a>
+      <a class="button secondary small" id="workflowPacketLink" href="#" hidden>ดาวน์โหลดชุดรวมเอกสาร Workflow (PDF เดียว)</a>
       <a class="button secondary small" href="/workflow-transactions">รายการธุรกรรมทั้งหมด</a>
     </div>
   </header>
@@ -379,6 +382,7 @@
       </div>
       <div class="section-body">
         <div id="driveSyncStatus" class="muted">-</div>
+        <a class="button secondary" id="workflowDriveFolderLink" href="#" target="_blank" rel="noreferrer" hidden>เปิดโฟลเดอร์หลักของ Workflow ใน Google Drive</a>
         <button class="button secondary" type="button" id="syncDriveButton" hidden>ซิงก์ Google Drive</button>
         <ul class="drive-sync-documents" id="driveSyncDocuments" aria-label="ผลการซิงก์ Google Drive แยกตามเอกสาร" hidden></ul>
       </div>

@@ -15,6 +15,7 @@ const workflowPrefillBannerPath = new URL("../forms/workflow-prefill-banner.brow
 const substituteReceiptLogicPath = new URL("../forms/substitute-receipt.logic.js", import.meta.url);
 const expenseRequestLogicPath = new URL("../forms/expense-request.logic.js", import.meta.url);
 const vendorPickerPath = new URL("../forms/vendor-picker.logic.browser.js", import.meta.url);
+const reviewModalPath = new URL("../forms/workflow-review-modal.browser.js", import.meta.url);
 
 // Runs a dual-mode "*.logic.js" file the way an actual browser would: no
 // require, no module — just a window global to hang the export off of. This is
@@ -114,6 +115,9 @@ async function setupWorkflowDocumentLifecycleSandbox({
   status = "draft",
   fetchHandler,
   vendorPickerVendors = [],
+  stockSkus = [],
+  stockSkusDelay = 0,
+  search,
 } = {}) {
   const realHtml = await readFile(htmlPath, "utf8");
   const { elementsById, document: fakeDocument } = buildFakeDomFromHtml(realHtml);
@@ -121,6 +125,10 @@ async function setupWorkflowDocumentLifecycleSandbox({
   const stubFetch = async (route, options = {}) => {
     calls.push({ route, options });
     if (route === "/api/vendors") return jsonResponse({ vendors: vendorPickerVendors });
+    if (route === "/api/inventory/stock-skus") {
+      if (stockSkusDelay) await new Promise((resolve) => setTimeout(resolve, stockSkusDelay));
+      return jsonResponse({ stockSkus });
+    }
     return fetchHandler(route, options, calls);
   };
   const window = { fetch: stubFetch, document: fakeDocument };
@@ -130,7 +138,7 @@ async function setupWorkflowDocumentLifecycleSandbox({
   const context = vm.createContext({
     window,
     document: fakeDocument,
-    location: { search: `?documentKind=${documentKind}&documentNo=${documentNo}` },
+    location: { search: search ?? `?documentKind=${documentKind}&documentNo=${documentNo}` },
     URLSearchParams,
     FormData: RecordedFormData,
     fetch: stubFetch,
@@ -140,6 +148,7 @@ async function setupWorkflowDocumentLifecycleSandbox({
   vm.runInContext(await readFile(workflowDocumentLogicPath, "utf8"), context);
   vm.runInContext(await readFile(documentLifecycleLogicPath, "utf8"), context);
   vm.runInContext(await readFile(workflowPrefillBannerPath, "utf8"), context);
+  vm.runInContext(await readFile(reviewModalPath, "utf8"), context);
   vm.runInContext(await readFile(vendorPickerPath, "utf8"), context);
   vm.runInContext(await readFile(browserLogicPath, "utf8"), context);
   context.window._handlers.DOMContentLoaded();
@@ -200,6 +209,15 @@ test("workflow document shell provides the generic document form", async () => {
   assert.match(html, /id="completeWorkflowDocument"/);
   assert.match(html, /src="\.\/workflow-document\.logic\.js"/);
   assert.match(html, /src="\.\/workflow-document\.logic\.browser\.js"/);
+  assert.match(html, /src="\.\/user-profile-autofill\.browser\.js"/);
+});
+
+test("workflow new-document path autofills requester name without a position field", async () => {
+  const browserLogic = await readFile(browserLogicPath, "utf8");
+  assert.match(browserLogic, /SweetHouseUserProfileAutofill\?\.loadProfile\(fetch\)/);
+  assert.match(browserLogic, /isNewDocument: true/);
+  assert.match(browserLogic, /nameField: form\.elements\.requesterName/);
+  assert.doesNotMatch(browserLogic, /positionField: form\.elements\.requesterRole/);
 });
 
 test("workflow document line items render as collapsible details with live summaries", async () => {
@@ -227,6 +245,77 @@ test("workflow document line items render as collapsible details with live summa
   addLine.dispatch("click");
   const second = lineItems.querySelectorAll(".line-item")[1];
   assert.match(second.querySelector("[data-line-title]").textContent, /รายการ 2 - ยังไม่ได้กรอก/);
+});
+
+test("workflow document line items switch between manual entry and an active Stock SKU", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "",
+    stockSkus: [
+      { id: 101, sku: "TOP-101", productName: "เสื้อ", color: "ดำ", size: "M", defaultUnitCost: "250", status: "active" },
+      { id: 102, sku: "TOP-102", productName: "เสื้อที่ปิดใช้งาน", status: "inactive" },
+    ],
+    fetchHandler() {
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  const row = elements.lineItems.querySelector(".line-item");
+  const checkbox = row.querySelector('[name="isStockItem"]');
+  const field = row.querySelector("[data-stock-sku-field]");
+  const select = row.querySelector('[name="stockSkuId"]');
+  assert.ok(row.querySelector(".stock-item-toggle"), "stock checkbox and label should share one row");
+
+  assert.equal(field.hidden, true);
+  assert.equal(select.querySelectorAll("option").length, 2, "inactive SKUs must not be offered");
+
+  checkbox.checked = true;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, false);
+  assert.equal(select.required, true);
+
+  select.value = "101";
+  select.selectedOptions = [select.querySelectorAll("option")[1]];
+  select.dispatch("change");
+  assert.equal(row.dataset.stockSkuId, "101");
+  assert.equal(row.querySelector('input[name="description"]').value, "TOP-101 - เสื้อ");
+  assert.equal(row.querySelector('input[name="unitCost"]').value, "250");
+
+  checkbox.checked = false;
+  checkbox.dispatch("change");
+  assert.equal(field.hidden, true);
+  assert.equal(row.dataset.stockSkuId, "");
+  assert.equal(select.value, "");
+});
+
+test("workflow document initialization does not erase input while Stock SKU loading is pending", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "",
+    stockSkusDelay: 30,
+    fetchHandler() {
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  elements.title.value = "กรอกระหว่างโหลด";
+  elements.businessPurpose.value = "วัตถุประสงค์ระหว่างโหลด";
+  elements.title.dispatch("input");
+  elements.businessPurpose.dispatch("input");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(elements.title.value, "กรอกระหว่างโหลด");
+  assert.equal(elements.businessPurpose.value, "วัตถุประสงค์ระหว่างโหลด");
+});
+
+test("workflow line item keeps stock controls in full-width rows", async () => {
+  const html = await readFile(htmlPath, "utf8");
+
+  assert.match(html, /\.stock-item-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-sku-field\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
+  assert.match(html, /\.stock-item-toggle input\[type="checkbox"\][\s\S]*?width:\s*15px[\s\S]*?height:\s*15px/);
+  assert.match(html, /\.stock-item-toggle\s*\{[\s\S]*?padding-top:\s*8px/);
+  assert.match(html, /\.stock-sku-field\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
 });
 
 test("workflow document shell validates returnTo before showing the return link", async () => {
@@ -274,6 +363,9 @@ test("workflow document shell shows a prefill banner with apply/dismiss actions"
   assert.match(html, /ใช้ข้อมูลเดิม/);
   assert.match(html, /กรอกใหม่/);
   assert.match(html, /id="workflowPrefillGroups"/);
+  assert.match(html, /#workflowPrefillGroups\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(html, /\.prefill-group input\[type="checkbox"\]\s*\{[\s\S]*?width:\s*18px[\s\S]*?min-height:\s*18px/);
+  assert.match(html, /\.prefill-group span\s*\{[\s\S]*?min-width:\s*0/);
 });
 
 test("workflow document shell loads workflow-prefill.logic.js before its own controller", async () => {
@@ -383,11 +475,43 @@ test("workflow document shell loads canonical lifecycle logic before the browser
   const controllerIndex = html.indexOf("workflow-document.logic.browser.js");
   assert.ok(lifecycleIndex !== -1 && lifecycleIndex < controllerIndex, "canonical lifecycle logic must load before the controller");
   assert.match(html, /id="submitWorkflowDocument"/);
+  assert.match(html, /id="workflowReviewDialog"/);
+  assert.match(html, /id="workflowReviewConfirm"/);
+  assert.match(html, /id="workflowReviewReject"/);
+  assert.match(html, /id="workflowReviewReason"/);
   assert.match(html, /id="approveWorkflowDocument"/);
   assert.match(html, /id="completeWorkflowDocument"/);
   assert.match(html, /ส่งตรวจอนุมัติ/);
   assert.match(html, /อนุมัติ/);
   assert.match(html, /เสร็จสิ้นเอกสาร/);
+});
+
+test("workflow document submit opens a review modal before posting", async () => {
+  const { elements, calls } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    status: "draft",
+    fetchHandler(route) {
+      if (route === "/api/workflow-documents/purchase_order/PO-2026-09-0001") {
+        return jsonResponse({
+          status: "draft",
+          documentNo: "PO-2026-09-0001",
+          payload: lifecyclePayload("draft", "purchase_order"),
+          rawFiles: [],
+        });
+      }
+      if (route.endsWith("/submit")) return jsonResponse({ status: "pending_approval", documentNo: "PO-2026-09-0001", pdfFiles: [] });
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  elements.submitWorkflowDocument.dispatch("click");
+  await settleBrowserWork();
+  assert.equal(elements.workflowReviewDialog.hidden, false);
+  assert.equal(calls.some(({ route }) => route.endsWith("/submit")), false);
+
+  elements.workflowReviewConfirm.dispatch("click");
+  await settleBrowserWork();
+  assert.equal(calls.some(({ route }) => route.endsWith("/submit")), true);
 });
 
 test("all lightweight kinds render canonical lifecycle actions, preserve editable non-draft saves, and use exact routes", async () => {
@@ -417,6 +541,9 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
 
     submit.dispatch("click");
     await settleBrowserWork();
+    assert.equal(elements.workflowReviewDialog.hidden, false, `${documentKind}: submit requires review`);
+    elements.workflowReviewConfirm.dispatch("click");
+    await settleBrowserWork();
     assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/submit`);
     assert.equal(save.hidden, false, `${documentKind}: pending approval remains saveable under O9`);
     assert.equal(approve.hidden, false, `${documentKind}: pending approval exposes approve`);
@@ -427,6 +554,9 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
     assert.equal(approve.hidden, false, `${documentKind}: authoritative pending save does not reset status`);
 
     approve.dispatch("click");
+    await settleBrowserWork();
+    assert.equal(elements.workflowReviewDialog.hidden, false, `${documentKind}: approve requires review`);
+    elements.workflowReviewConfirm.dispatch("click");
     await settleBrowserWork();
     assert.equal(calls.at(-1).route, `/api/workflow-documents/${encodeURIComponent(documentKind)}/PO-2026-09-0001/approve`);
     assert.equal(complete.hidden, false, `${documentKind}: approved exposes complete`);
@@ -441,6 +571,63 @@ test("all lightweight kinds render canonical lifecycle actions, preserve editabl
     assert.equal(save.hidden, true, `${documentKind}: completed document remains locked`);
     assert.equal(submit.hidden, true, `${documentKind}: completed hides lifecycle actions`);
   }
+});
+
+test("reopening a goods receipt renders links for previously uploaded evidence", async () => {
+  const documentNo = "GR-2026-09-0001";
+  const rawUrl = `/workflow-documents/goods_receipt/${documentNo}/raw/evidence_001.pdf`;
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "goods_receipt",
+    documentNo,
+    fetchHandler(route) {
+      if (route === `/api/workflow-documents/goods_receipt/${documentNo}`) {
+        return jsonResponse({
+          status: "draft",
+          documentNo,
+          payload: lifecyclePayload("draft", "goods_receipt"),
+          rawFiles: [{ name: "evidence_001.pdf", url: rawUrl }],
+          pdfFiles: [],
+        });
+      }
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  const evidence = elements.existingEvidenceFiles;
+  assert.equal(evidence.hidden, false);
+  assert.match(evidence.querySelector("a").textContent, /evidence_001\.pdf/);
+  assert.equal(evidence.querySelector("a").href, rawUrl);
+});
+
+test("workflow goods receipt URL without documentNo resumes the matching draft and its evidence", async () => {
+  const transactionNo = "TXN-2026-09-0002";
+  const documentNo = "GR-2026-09-0002";
+  const rawUrl = `/workflow-documents/goods_receipt/${documentNo}/raw/evidence_001.jpeg`;
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "goods_receipt",
+    documentNo: "",
+    search: `?documentKind=goods_receipt&transactionNo=${transactionNo}&workflowStepId=step-004`,
+    fetchHandler(route) {
+      if (route === `/api/workflow-transactions/${transactionNo}`) {
+        return jsonResponse({
+          childDocuments: [{ documentKind: "goods_receipt", documentNo, workflowStepId: "step-004", status: "draft" }],
+        });
+      }
+      if (route === `/api/workflow-documents/goods_receipt/${documentNo}`) {
+        return jsonResponse({
+          status: "draft",
+          documentNo,
+          payload: { ...lifecyclePayload("draft", "goods_receipt"), documentNo },
+          rawFiles: [{ name: "evidence_001.jpeg", url: rawUrl }],
+          pdfFiles: [],
+        });
+      }
+      return jsonResponse({ status: "draft", payload: {} });
+    },
+  });
+
+  assert.equal(elements.existingEvidenceFiles.hidden, false);
+  assert.equal(elements.existingEvidenceFiles.querySelector("a").href, rawUrl);
 });
 
 test("real workflow shell selects one active vendor and submits it for every lightweight kind", async () => {
@@ -885,11 +1072,10 @@ test("real workflow-prefill.logic.js fills a purchase_order end to end through t
   assert.match(requesterBadge.textContent, /PO-2026-09-0001/);
 });
 
-test("real workflow-prefill.logic.js never prefills goods_receipt line quantities", async () => {
-  // Binding rule: a goods_receipt's quantity must reflect what actually
-  // arrived, so it must never be prefilled from an earlier document's
-  // quantity — a short delivery must stay visible instead of being papered
-  // over. Descriptions still carry over.
+test("real workflow-prefill.logic.js prefills goods_receipt line quantities as editable defaults", async () => {
+  // The prior document's quantity is the useful default. The goods receipt
+  // form remains editable so a short delivery can still be corrected before
+  // saving.
   const canonicalContext = {
     payee: { name: "ร้านค้าจริง" },
     purpose: { title: "หัวข้อจริง", businessPurpose: "วัตถุประสงค์จริง" },
@@ -922,8 +1108,8 @@ test("real workflow-prefill.logic.js never prefills goods_receipt line quantitie
   );
   assert.deepEqual(
     lineQuantities(lineItems),
-    ["", ""],
-    "goods_receipt quantities must never be prefilled, so a short delivery stays visible",
+    ["5", "2"],
+    "goods_receipt quantities should follow the source document as editable defaults",
   );
 });
 

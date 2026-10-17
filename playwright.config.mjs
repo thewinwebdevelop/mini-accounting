@@ -1,0 +1,29 @@
+import { defineConfig, devices } from "@playwright/test";
+
+const localBaseURL = process.env.E2E_LOCAL_BASE_URL || undefined;
+
+export default defineConfig({
+  testDir: "./e2e/specs",
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: localBaseURL },
+      testIgnore: /production-smoke\.spec\.mjs$/,
+    },
+    {
+      name: "mobile-chromium",
+      use: { ...devices["Pixel 7"], browserName: "chromium", baseURL: localBaseURL },
+      testIgnore: /production-smoke\.spec\.mjs$/,
+    },
+    {
+      name: "cloud-runtime-mocked",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /workflow-cloud\.spec\.mjs$/,
+    },
+    {
+      name: "production-smoke",
+      use: { baseURL: process.env.E2E_BASE_URL, trace: "off" },
+      testMatch: /production-smoke\.spec\.mjs$/,
+    },
+  ],
+});

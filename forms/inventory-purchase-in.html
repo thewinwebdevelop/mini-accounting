@@ -165,6 +165,7 @@
       .span-4, .span-6 { grid-column: span 12; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -209,6 +210,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -237,7 +239,7 @@
         <div class="grid">
           <div class="field span-12">
             <label for="purchaseSkuSelect">Stock SKU *</label>
-            <select id="purchaseSkuSelect" name="stockSkuId" required data-searchable></select>
+            <select id="purchaseSkuSelect" name="stockSkuId" required data-searchable data-display-lines="2"></select>
           </div>
           <div class="field span-4">
             <label for="movementDate">วันที่รับเข้า *</label>

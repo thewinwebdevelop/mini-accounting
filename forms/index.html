@@ -109,6 +109,7 @@
     p { margin: 0; color: var(--muted); }
 
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -152,6 +153,7 @@
         </div>
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -167,7 +169,10 @@
     <section class="panel">
       <h2>ระบบบัญชี หจก.สวีทเฮาส์ เดซี่</h2>
       <p>ศูนย์รวมสำหรับเอกสารบัญชี สต๊อกสินค้า PDF และหลักฐาน raw files</p>
+      <p data-line-auth-status>กำลังเตรียมการเข้าสู่ระบบ LINE...</p>
     </section>
   </main>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="/line-auth.browser.js" data-line-liff-id="__LINE_LIFF_ID__" data-auth-gate="true"></script>
 </body>
 </html>

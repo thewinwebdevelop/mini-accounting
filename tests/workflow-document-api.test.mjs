@@ -8,6 +8,7 @@ import test from "node:test";
 
 import serverLogic from "../forms/local-server.logic.js";
 import workflowDocumentLogic from "../forms/workflow-document.logic.js";
+import workflowLogic from "../forms/workflow.logic.js";
 
 // Binding a fixed port let two runs of this suite collide. Bind port 0 (the OS
 // picks a free one) and read the actually-assigned port back out of the
@@ -137,6 +138,9 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
 
     const fetched = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}`);
     assert.equal(fetched.payload.title, "สั่งซื้อสินค้า Lot กันยายน");
+    assert.equal(fetched.rawFiles[0].name, "evidence_001.txt");
+    const fetchedRawFile = await fetch(`${baseUrl}${fetched.rawFiles[0].url}`);
+    assert.equal(fetchedRawFile.status, 200, "GET must expose a working URL for previously uploaded raw files");
     assert.equal("absoluteFolderPath" in fetched, false, "GET must not leak the server's absolute filesystem path");
 
     const list = await requestJsonOk(baseUrl, "/api/workflow-documents?documentKind=purchase_order");
@@ -173,6 +177,28 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
 
     const missingResponse = await fetch(`${baseUrl}/api/workflow-documents/purchase_order/PO-2026-09-9999`);
     assert.equal(missingResponse.status, 404);
+  } finally {
+    await stopServer(child);
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("workflow document reject endpoint returns the document to draft with an auditable reason", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-reject-api-"));
+  const child = spawnLocalServer(rootDir);
+  try {
+    const port = await waitForServerPort(child);
+    const baseUrl = `http://localhost:${port}`;
+    const created = await requestJsonOk(baseUrl, "/api/workflow-documents", { method: "POST", body: purchaseOrderFormData() });
+    await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/submit`, { method: "POST", body: JSON.stringify({}) });
+    const rejected = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ rejectedBy: "ผู้ตรวจ", reason: "แก้ไขผู้รับเงิน" }),
+    });
+    assert.equal(rejected.status, "draft");
+    const fetched = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${created.documentNo}`);
+    assert.equal(fetched.payload.rejectionReason, "แก้ไขผู้รับเงิน");
+    assert.equal(fetched.payload.statusHistory.at(-1).note, "rejected");
   } finally {
     await stopServer(child);
     await rm(rootDir, { recursive: true, force: true });
@@ -832,7 +858,12 @@ for (const documentKind of DRIVE_SYNC_KINDS) {
         },
       });
 
-      assert.deepEqual(uploads, [{ rootDir, folderPath: record.folderPath }], "must upload exactly this document's own folder, once");
+      assert.equal(uploads.length, 1, "must upload exactly this document once");
+      assert.equal(uploads[0].rootDir, rootDir);
+      const driveTypeName = workflowLogic.getDocumentTypeDefinition(documentKind).label.replace(/[\\/]/g, "-");
+      assert.equal(uploads[0].drivePath, `2026/09/${driveTypeName}`);
+      assert.equal(uploads[0].layoutVersion, 2);
+      assert.ok(uploads[0].files.some((file) => file.relativePath.startsWith(`${record.documentNo}__`)));
       assert.equal(result.syncStatus, "synced");
       assert.equal(result.documentKind, documentKind);
       assert.equal(result.documentNo, record.documentNo);

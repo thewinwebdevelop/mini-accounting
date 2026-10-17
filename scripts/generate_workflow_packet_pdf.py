@@ -2,11 +2,14 @@
 import argparse
 import json
 import os
+import tempfile
 
+from pypdf import PdfWriter
 from reportlab.lib.units import mm
 
 from generate_workflow_document_pdf import DOCUMENT_KIND_LABELS
 from pdf_common import (
+    append_pdf,
     document_header, detail_grid,
     build_doc,
     paragraph,
@@ -128,12 +131,47 @@ def build_packet_story(transaction, child_documents):
 
 def build_packet_pdf(transaction, child_documents, output_path):
     packet_payload = {**transaction, "documentNo": transaction.get("transactionNo")}
-    build_doc(
-        output_path,
-        "ชุดรวมเอกสาร Workflow",
-        packet_payload,
-        build_packet_story(transaction, child_documents),
+    step_order = {
+        step.get("stepId"): index
+        for index, step in enumerate(transaction.get("steps") or [])
+    }
+    ordered_children = sorted(
+        child_documents,
+        key=lambda child: (step_order.get(child.get("workflowStepId"), 999999), child.get("documentNo") or ""),
     )
+
+    # Keep the existing packet URL/name stable, but make the file a real audit
+    # packet: one cover/index followed by one audit PDF for each child.  A
+    # child's audit packet already contains its own form and raw annexes, so
+    # choosing it over the bare form avoids duplicating evidence pages.  Older
+    # or lightweight documents without an audit packet fall back to all their
+    # available PDFs.
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cover_path = os.path.join(temp_dir, "workflow-summary.pdf")
+        build_doc(
+            cover_path,
+            "ชุดรวมเอกสาร Workflow",
+            packet_payload,
+            build_packet_story(transaction, ordered_children),
+        )
+
+        writer = PdfWriter()
+        append_pdf(writer, cover_path)
+        for child in ordered_children:
+            pdf_files = child.get("pdfFiles") or []
+            audit_files = [
+                file_entry for file_entry in pdf_files
+                if os.path.basename(file_entry.get("absolutePath") or file_entry.get("name") or "")
+                in {"02_ชุดรวมส่งตรวจ_audit-packet.pdf", "02_ชุดรวมเอกสาร_audit-packet.pdf"}
+            ]
+            selected_files = audit_files or pdf_files
+            for file_entry in selected_files:
+                file_path = file_entry.get("absolutePath")
+                if file_path and os.path.isfile(file_path):
+                    append_pdf(writer, file_path)
+
+        with open(output_path, "wb") as handle:
+            writer.write(handle)
     return output_path
 
 

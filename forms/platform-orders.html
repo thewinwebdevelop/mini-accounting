@@ -251,6 +251,11 @@
       border-radius: 6px;
       background: var(--soft);
     }
+    .shopee-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .shopee-order-row.selected { background: #ecfeff; }
+    .shopee-mapping-list { display: grid; gap: 8px; }
+    .shopee-mapping-line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 240px); gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+    .shopee-batch { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
 
     @media (max-width: 900px) {
       .page { grid-template-columns: 1fr; padding: 12px; }
@@ -273,6 +278,7 @@
       .order-line header { display: grid; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -289,6 +295,10 @@
           <a class="menu-item" href="/inventory-settings">ตั้งค่าหมวดสินค้า</a>
           <a class="menu-item" href="/sale-skus">Sale SKU / Bundle SKU</a>
           <a class="menu-item" href="/platform-orders">Platform Orders</a>
+          <a class="menu-item" href="/shopee-connection">Shopee: เชื่อมต่อ / Sync</a>
+          <a class="menu-item" href="/shopee-orders">Shopee: Orders</a>
+          <a class="menu-item" href="/shopee-mapping">Shopee: Manual SKU</a>
+          <a class="menu-item" href="/shopee-shipment">Shopee: นัดรับ / ใบปะหน้า</a>
         </div>
         <div class="menu-group">
           <div class="menu-group-title">ใบเบิกจ่ายเอกสาร</div>
@@ -317,6 +327,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -377,6 +388,7 @@
           </div>
         </div>
       </section>
+
     </div>
 
     <div class="detail-column">

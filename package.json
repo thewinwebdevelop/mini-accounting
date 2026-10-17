@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "e2e": "./scripts/e2e.sh",
+    "e2e:smoke": "E2E_PROJECT=production-smoke ./scripts/e2e.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
+}

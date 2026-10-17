@@ -66,7 +66,7 @@ test('expense VAT and withholding survive prefill into voucher and back', () => 
 test('purchase order VAT mode survives goods receipt partial quantity without copying old VAT amount', () => {
   const p=logic.buildWorkflowDocumentPayload(valid([line({quantity:'10',vatMode:'exclusive',vatRate:'7',stockSkuId:'SKU-1'})]));
   const patch=prefill.applyWorkflowContextToGoodsReceipt(prefill.purchaseOrderToWorkflowContext(p),['lines']);
-  assert.equal(patch.lines[0].quantity,'');assert.equal(patch.lines[0].vatMode,'exclusive');assert.equal(patch.lines[0].stockSkuId,'SKU-1');
+  assert.equal(patch.lines[0].quantity,'10');assert.equal(patch.lines[0].vatMode,'exclusive');assert.equal(patch.lines[0].stockSkuId,'SKU-1');
   patch.lines[0].quantity='3';
   const gr=logic.buildWorkflowDocumentPayload({...valid(patch.lines),documentKind:'goods_receipt'});
   assert.equal(gr.totals.grossAmount,'321.00');assert.equal(gr.totals.vatAmount,'21.00');
@@ -87,8 +87,8 @@ test('substitute prefill refuses a gross price that cannot divide into exact sat
   const p=logic.buildWorkflowDocumentPayload(valid([line({quantity:'3',unitCost:'0.05',vatMode:'exclusive',vatRate:'7'})]));
   assert.throws(()=>prefill.applyWorkflowContextToSubstituteReceipt(prefill.purchaseOrderToWorkflowContext(p),['lines']),/กรอก.*ยอด.*จริง/);
 });
-test('manual tax amount must be re-entered when received quantity is not copied', () => {
+test('manual tax amount must be re-entered when preparing a goods receipt', () => {
   const p=logic.buildWorkflowDocumentPayload(valid([line({vatMode:'manual',vatAmount:'14',withholdingTax:'6'})]));
   const patch=prefill.applyWorkflowContextToGoodsReceipt(prefill.purchaseOrderToWorkflowContext(p),['lines']);
-  assert.equal(patch.lines[0].quantity,'');assert.equal(patch.lines[0].vatAmount,'');assert.equal(patch.lines[0].withholdingTax,'0.00');
+  assert.equal(patch.lines[0].quantity,'2');assert.equal(patch.lines[0].vatAmount,'');assert.equal(patch.lines[0].withholdingTax,'0.00');
 });

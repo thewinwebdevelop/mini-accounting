@@ -2,6 +2,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const logic = window.WorkflowDocumentLogic;
   const workflowLogic = window.WorkflowLogic;
   const lifecycleLogic = window.DocumentLifecycleLogic;
+  const stockLineLogic = window.StockLineLogic || {
+    isUsableStockSku: stockSku => String(stockSku?.status || "") !== "inactive",
+    stockSkuLabel: stockSku => [stockSku?.sku, stockSku?.productName].filter(Boolean).join(" - ") || `Stock SKU ${stockSku?.id || ""}`,
+  };
   const query = new URLSearchParams(location.search);
 
   const state = {
@@ -11,6 +15,8 @@ window.addEventListener("DOMContentLoaded", () => {
     workflowTemplateId: query.get("workflowTemplateId") || "",
     workflowStepId: query.get("workflowStepId") || "",
     status: "draft",
+    stockSkus: [],
+    existingEvidenceFiles: [],
   };
 
   const form = document.querySelector("#workflowDocumentForm");
@@ -30,6 +36,17 @@ window.addEventListener("DOMContentLoaded", () => {
   const vatAmountPreview = document.querySelector("#vatAmountPreview");
   const withholdingTaxPreview = document.querySelector("#withholdingTaxPreview");
   const netPaymentPreview = document.querySelector("#netPaymentPreview");
+  const reviewModal = window.WorkflowReviewModal?.create({
+    dialog: document.querySelector("#workflowReviewDialog"),
+    title: document.querySelector("#workflowReviewDialogTitle"),
+    content: document.querySelector("#workflowReviewContent"),
+    reasonField: document.querySelector("#workflowReviewReasonField"),
+    reasonInput: document.querySelector("#workflowReviewReason"),
+    reasonError: document.querySelector("#workflowReviewReasonError"),
+    confirm: document.querySelector("#workflowReviewConfirm"),
+    reject: document.querySelector("#workflowReviewReject"),
+    cancel: document.querySelector("#workflowReviewCancel"),
+  });
   const pageTitle = document.querySelector("#pageTitle");
   const documentListLink = document.querySelector("#workflowDocumentListLink");
   const mutationButtons = [saveButton, submitButton, approveButton, completeButton].filter(Boolean);
@@ -125,17 +142,80 @@ window.addEventListener("DOMContentLoaded", () => {
     lineItems.querySelectorAll(".line-item").forEach(updateLineSummary);
   }
 
+  function renderStockSkuOptions(select, selectedId = "") {
+    if (!select) return;
+    const makeOption = (label, value) => {
+      const option = document.createElement("option");
+      option.textContent = label;
+      option.value = String(value ?? "");
+      return option;
+    };
+    const options = [makeOption("เลือก Stock SKU", "")];
+    state.stockSkus.filter(stockLineLogic.isUsableStockSku).forEach((stockSku) => {
+      const option = makeOption(stockLineLogic.stockSkuLabel(stockSku), stockSku.id);
+      option.dataset.sku = stockSku.sku || "";
+      option.dataset.description = stockLineLogic.stockSkuLabel(stockSku);
+      option.dataset.unitCost = stockSku.defaultUnitCost || "";
+      options.push(option);
+    });
+    select.replaceChildren(...options);
+    select.value = selectedId || "";
+    window.SearchableSelect?.enhance(select);
+  }
+
+  function refreshStockSkuOptions() {
+    lineItems.querySelectorAll(".line-item").forEach((row) => {
+      const select = row.querySelector('[name="stockSkuId"]');
+      const selectedId = row.dataset.stockSkuId || select?.value || "";
+      renderStockSkuOptions(select, selectedId);
+      applyStockLineMode(row);
+    });
+  }
+
+  function applyStockLineMode(row) {
+    const checkbox = row.querySelector('[name="isStockItem"]');
+    const field = row.querySelector("[data-stock-sku-field]");
+    const select = row.querySelector('[name="stockSkuId"]');
+    const enabled = !!checkbox?.checked;
+    if (field) field.hidden = !enabled;
+    if (select) {
+      select.required = enabled;
+      if (!enabled) select.value = "";
+    }
+    row.dataset.stockSkuId = enabled ? (select?.value || "") : "";
+  }
+
   function addLine(initial = {}) {
     const fragment = lineTemplate.content.cloneNode(true);
     const row = fragment.querySelector(".line-item");
     row.querySelector('input[name="description"]').value = initial.description || "";
     row.querySelector('input[name="quantity"]').value = initial.quantity || "";
     row.querySelector('input[name="unitCost"]').value = initial.unitCost || "";
+    const stockCheckbox = row.querySelector('[name="isStockItem"]');
+    const stockSelect = row.querySelector('[name="stockSkuId"]');
+    renderStockSkuOptions(stockSelect, initial.stockSkuId || "");
+    stockCheckbox.checked = !!initial.stockSkuId;
     row.dataset.stockSkuId = initial.stockSkuId || "";
     row.querySelector('[name="vatMode"]').value = initial.vatMode || "unspecified";
     row.querySelector('[name="vatRate"]').value = initial.vatRate ?? "7";
     row.querySelector('[name="vatAmount"]').value = initial.vatAmount ?? "";
     row.querySelector('[name="withholdingTax"]').value = initial.withholdingTax ?? "";
+    stockCheckbox.addEventListener("change", () => {
+      applyStockLineMode(row);
+      updatePreview();
+    });
+    stockSelect.addEventListener("change", () => {
+      const selected = stockSelect.selectedOptions[0];
+      row.dataset.stockSkuId = stockSelect.value || "";
+      if (selected?.dataset.description) {
+        row.querySelector('input[name="description"]').value = selected.dataset.description;
+      }
+      if (selected?.dataset.unitCost && !row.querySelector('input[name="unitCost"]').value) {
+        row.querySelector('input[name="unitCost"]').value = selected.dataset.unitCost;
+      }
+      updatePreview();
+    });
+    applyStockLineMode(row);
     row.addEventListener("input", updatePreview);
     row.addEventListener("change", updatePreview);
     row.querySelector("[data-remove-line]").addEventListener("click", () => {
@@ -144,6 +224,9 @@ window.addEventListener("DOMContentLoaded", () => {
         row.querySelector('[name="vatMode"]').value = "unspecified";
         row.querySelector('[name="vatRate"]').value = "7";
         row.dataset.stockSkuId = "";
+        row.querySelector('[name="isStockItem"]').checked = false;
+        row.querySelector('[name="stockSkuId"]').value = "";
+        applyStockLineMode(row);
       } else {
         row.remove();
       }
@@ -191,6 +274,35 @@ window.addEventListener("DOMContentLoaded", () => {
     // the real-HTML VM harness faithful without attempting to assign to a
     // browser's read-only FileList.
     if (Array.isArray(input.files)) input.files = [];
+  }
+
+  function renderExistingEvidenceFiles(files = []) {
+    const container = document.querySelector("#existingEvidenceFiles");
+    const list = container?.querySelector("[data-existing-evidence-list]");
+    if (!container || !list) return;
+    list.replaceChildren();
+    const entries = Array.isArray(files) ? files : [];
+    if (!entries.length) {
+      container.hidden = true;
+      return;
+    }
+    entries.forEach((file) => {
+      const name = typeof file === "string" ? file : (file?.name || file?.path || "ไฟล์แนบ");
+      const url = typeof file === "object" ? file?.url : "";
+      const item = document.createElement("li");
+      if (url) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = name;
+        item.appendChild(link);
+      } else {
+        item.textContent = name;
+      }
+      list.appendChild(item);
+    });
+    container.hidden = false;
   }
 
   function collectPayload() {
@@ -300,6 +412,8 @@ window.addEventListener("DOMContentLoaded", () => {
     lineItems.replaceChildren();
     const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : [{}];
     for (const line of lines) addLine(line);
+    renderExistingEvidenceFiles([]);
+    state.existingEvidenceFiles = [];
     setDocumentState(payload.status || state.status);
     updatePreview();
   }
@@ -313,7 +427,27 @@ window.addEventListener("DOMContentLoaded", () => {
     state.workflowTemplateId = payload.workflowTemplateId || state.workflowTemplateId;
     state.workflowStepId = payload.workflowStepId || state.workflowStepId;
     fillForm(payload);
+    state.existingEvidenceFiles = record.rawFiles || payload.rawFiles || [];
+    renderExistingEvidenceFiles(state.existingEvidenceFiles);
     setStatus(`โหลดเอกสาร ${state.documentNo} แล้ว`, "success");
+  }
+
+  async function resumeExistingWorkflowDocument() {
+    if (state.documentNo || !state.transactionNo || !state.workflowStepId) return false;
+    try {
+      const transaction = await api(`/api/workflow-transactions/${encodeURIComponent(state.transactionNo)}`);
+      const child = (transaction.childDocuments || []).find((document) => (
+        document.documentKind === state.documentKind && document.workflowStepId === state.workflowStepId
+      )) || (transaction.childDocuments || []).find((document) => (
+        document.documentKind === state.documentKind && document.documentNo
+      ));
+      if (!child?.documentNo) return false;
+      state.documentNo = child.documentNo;
+      await loadExistingDocument();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function buildMultipartPayload(payload) {
@@ -371,10 +505,44 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(vendorPresetError || `บันทึกเอกสาร ${state.documentNo} แล้ว\nPDF ${(result.pdfFiles || []).length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
 
-  async function transitionWorkflowDocument(action) {
+  function buildReviewModel(mode) {
+    const payload = collectPayload();
+    const input = form.querySelector('[name="evidence_evidence"]');
+    const selectedFiles = [...(input?.files || [])].map((file) => ({ name: file.name }));
+    const definition = workflowLogic?.getDocumentTypeDefinition?.(state.documentKind);
+    return {
+      mode,
+      documentLabel: definition?.label || state.documentKind,
+      documentNo: state.documentNo,
+      fields: [
+        { label: "ชื่อเอกสาร", value: payload.title },
+        { label: "ผู้ขอ/ผู้จัดทำ", value: payload.requesterName },
+        { label: "ผู้รับเงิน/คู่ค้า", value: payload.payeeName },
+        { label: "วัตถุประสงค์ทางธุรกิจ", value: payload.businessPurpose },
+        { label: "ยอดสุทธิ", value: netPaymentPreview?.textContent },
+      ],
+      lines: payload.lines,
+      files: [...state.existingEvidenceFiles, ...selectedFiles],
+    };
+  }
+
+  function openReview(action) {
+    if (!state.documentNo || !reviewModal) return;
+    const mode = action === "approve" ? "approve" : "submit";
+    const model = buildReviewModel(mode);
+    model.onConfirm = () => runMutation(() => transitionWorkflowDocument(action));
+    model.onReject = (reason) => runMutation(() => transitionWorkflowDocument("reject", reason));
+    reviewModal.open(model);
+  }
+
+  async function transitionWorkflowDocument(action, reason = "") {
     if (!state.documentNo) return;
     clearStatus();
-    const body = action === "complete" ? { completedBy: "" } : {};
+    const body = action === "complete"
+      ? { completedBy: "" }
+      : action === "reject"
+        ? { rejectedBy: "", reason }
+        : {};
     const result = await api(`/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -384,6 +552,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const messages = {
       submit: `ส่งเอกสาร ${state.documentNo} ตรวจอนุมัติแล้ว`,
       approve: `อนุมัติเอกสาร ${state.documentNo} แล้ว`,
+      reject: `ส่งเอกสาร ${state.documentNo} กลับไปแก้ไขแล้ว`,
       complete: `เอกสาร ${state.documentNo} เสร็จสิ้นแล้ว`,
     };
     setStatus(messages[action], "success");
@@ -391,8 +560,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   addLineButton.addEventListener("click", () => addLine());
   saveButton.addEventListener("click", () => runMutation(saveWorkflowDocumentSubmission));
-  submitButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("submit")));
-  approveButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("approve")));
+  submitButton.addEventListener("click", () => openReview("submit"));
+  approveButton.addEventListener("click", () => openReview("approve"));
   completeButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("complete")));
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);
@@ -400,12 +569,32 @@ window.addEventListener("DOMContentLoaded", () => {
 
   applyDocumentKindLabel();
   applyDocumentListLink();
-  vendorPicker?.load();
+  // Establish the editable form synchronously. The stock-SKU request below
+  // may be slow on a shared runner; waiting for it before calling fillForm()
+  // lets that later callback erase values the user has already entered.
   fillForm();
-
-  if (state.documentNo) {
-    loadExistingDocument().catch((error) => setStatus(error.message, "error"));
-  } else {
-    prefillBanner.load();
-  }
+  vendorPicker?.load();
+  api("/api/inventory/stock-skus")
+    .then((result) => { state.stockSkus = result.stockSkus || []; })
+    .catch(() => { state.stockSkus = []; })
+    .finally(() => {
+      refreshStockSkuOptions();
+      updatePreview();
+      if (state.documentNo) {
+        loadExistingDocument().catch((error) => setStatus(error.message, "error"));
+      } else {
+        resumeExistingWorkflowDocument().then((resumed) => {
+          if (!resumed) {
+            Promise.resolve(window.SweetHouseUserProfileAutofill?.loadProfile(fetch)).then((profileResult) => {
+              window.SweetHouseUserProfileAutofill?.autofillNewDocument({
+                form,
+                isNewDocument: true,
+                nameField: form.elements.requesterName,
+                profile: profileResult?.profile,
+              });
+            }).catch(() => {}).finally(() => prefillBanner.load());
+          }
+        });
+      }
+    });
 });

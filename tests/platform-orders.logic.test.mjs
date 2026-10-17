@@ -22,9 +22,12 @@ const {
   getPlatformOrderImport,
   importPlatformOrders,
   listPlatformOrderImports,
+  listShopeeOrders,
   normalizePlatform,
   postPlatformOrderImport,
   parsePlatformOrderFile,
+  saveShopeeOrderLineMapping,
+  upsertShopeeOrder,
 } = platformOrders;
 
 test("parsePlatformOrderFile normalizes Shopee CSV aliases", () => {
@@ -81,6 +84,32 @@ test("normalizePlatform accepts only supported platforms", () => {
   assert.equal(normalizePlatform("TikTok"), "tiktok");
   assert.equal(normalizePlatform(""), "manual");
   assert.throws(() => normalizePlatform("lazada"), /platform/);
+});
+
+test("Shopee order list exposes mapping state and saves a manual Stock SKU mapping", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-shopee-mapping-"));
+  try {
+    const product = createProduct(rootDir, { productCode: "MAP-PRODUCT", name: "สินค้าสำหรับ map", category: "เสื้อ" });
+    const stockSku = createStockSku(rootDir, { productId: product.id, sku: "STOCK-MAP-001", color: "", size: "", defaultUnitCost: "10" });
+    const saved = upsertShopeeOrder(rootDir, {
+      shopId: "shop-map",
+      orderSn: "SP-MAP-001",
+      orderStatus: "READY_TO_SHIP",
+      shippingStatus: "READY_TO_SHIP",
+      items: [{ itemId: "item-1", modelId: "model-1", modelSku: "SELLER-001", itemName: "สินค้า", quantity: 1 }],
+    });
+    assert.equal(listShopeeOrders(rootDir, { shopId: "shop-map" })[0].mappingStatus, "mapping_required");
+
+    const mappedLine = saveShopeeOrderLineMapping(rootDir, saved.lines[0].id, { stockSkuId: stockSku.id });
+    assert.equal(mappedLine.mappingStatus, "mapped");
+    assert.equal(mappedLine.mappedStockSkuId, stockSku.id);
+    assert.equal(mappedLine.mappedStockSku, "STOCK-MAP-001");
+    const listed = listShopeeOrders(rootDir, { shopId: "shop-map" })[0];
+    assert.equal(listed.mappingStatus, "mapped");
+    assert.equal(listed.lines[0].mappedStockSku, "STOCK-MAP-001");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("importPlatformOrders matches Sale SKU bundle components and creates ready batch", async () => {

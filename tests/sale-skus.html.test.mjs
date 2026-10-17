@@ -9,7 +9,7 @@ test("sale SKU page makes platform and component dropdowns searchable", async ()
   const html = await readFile(htmlPath, "utf8");
 
   assert.match(html, /id="salePlatform"[^>]*data-searchable/);
-  assert.match(html, /<select name="stockSkuId" required data-searchable><\/select>/);
+  assert.match(html, /<select name="stockSkuId" required data-searchable data-display-lines="2"><\/select>/);
   assert.match(html, /src="\.\/searchable-select\.logic\.browser\.js"/);
   assert.match(html, /src="\.\/sale-skus\.logic\.browser\.js"/);
 });

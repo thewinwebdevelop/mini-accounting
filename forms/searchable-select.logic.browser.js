@@ -31,6 +31,8 @@
         position: relative;
         width: 100%;
         min-height: 38px;
+        height: 38px;
+        max-height: 38px;
         padding: 8px 34px 8px 10px;
         color: var(--ink, #1f2933);
         background: #ffffff;
@@ -39,6 +41,9 @@
         cursor: pointer;
         text-align: left;
         font: inherit;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .searchable-select-trigger::after {
         content: "";
@@ -61,6 +66,36 @@
         cursor: not-allowed;
         opacity: 0.65;
       }
+      .searchable-select[data-display-lines="2"] .searchable-select-option {
+        display: block;
+        box-sizing: border-box;
+        height: 50px;
+        min-height: 50px;
+        max-height: 50px;
+        overflow: hidden;
+        padding: 7px 9px;
+      }
+      .searchable-select[data-display-lines="2"] .searchable-select-option > span {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        max-height: 36px;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        text-overflow: ellipsis;
+        line-height: 18px;
+        white-space: normal;
+      }
+      .searchable-select[data-display-lines="2"] .searchable-select-trigger {
+        height: 38px;
+        min-height: 38px;
+        max-height: 38px;
+      }
+      .searchable-select[data-display-lines="2"] .searchable-select-option {
+        height: 50px;
+        min-height: 50px;
+        max-height: 50px;
+      }
       .searchable-select-panel {
         position: absolute;
         top: calc(100% + 4px);
@@ -79,6 +114,19 @@
       }
       .searchable-select-panel[hidden] {
         display: none;
+      }
+      .section.searchable-select-open,
+      .stock-line.searchable-select-open,
+      .line-row.searchable-select-open,
+      .line-item.searchable-select-open {
+        position: relative;
+        z-index: 90;
+        overflow: visible;
+      }
+      .section:has(.searchable-select-panel:not([hidden])) {
+        position: relative;
+        z-index: 90;
+        overflow: visible;
       }
       .searchable-select-search {
         width: 100%;
@@ -131,6 +179,25 @@
     return !term || normalize(option.textContent).includes(term);
   }
 
+  function hasClass(element, className) {
+    if (!element) return false;
+    if (typeof element.classList?.contains === "function") return element.classList.contains(className);
+    return String(element.className || "").split(/\s+/).filter(Boolean).includes(className);
+  }
+
+  function setClass(element, className, enabled) {
+    if (!element) return;
+    const method = enabled ? "add" : "remove";
+    if (typeof element.classList?.[method] === "function") {
+      element.classList[method](className);
+      return;
+    }
+    const names = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+    if (enabled) names.add(className);
+    else names.delete(className);
+    element.className = [...names].join(" ");
+  }
+
   function enhance(select) {
     if (!select) return;
     const existing = controllers.get(select);
@@ -146,6 +213,7 @@
 
     const wrapper = document.createElement("div");
     wrapper.className = "searchable-select";
+    if (select.dataset.displayLines) wrapper.dataset.displayLines = select.dataset.displayLines;
 
     const trigger = document.createElement("button");
     trigger.type = "button";
@@ -174,6 +242,7 @@
     function close() {
       panel.hidden = true;
       trigger.setAttribute("aria-expanded", "false");
+      setOverflowContextOpen(false);
       if (openController === controller) openController = null;
     }
 
@@ -183,9 +252,25 @@
       openController = controller;
       panel.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
+      setOverflowContextOpen(true);
       search.value = "";
       renderOptions();
       search.focus();
+    }
+
+    function setOverflowContextOpen(openState) {
+      let node = wrapper.parentNode;
+      while (node) {
+        if (["section", "stock-line", "line-row", "line-item"].some((className) => hasClass(node, className))) {
+          setClass(node, "searchable-select-open", openState);
+          if (node.style) {
+            node.style.overflow = openState ? "visible" : "";
+            node.style.position = openState ? "relative" : "";
+            node.style.zIndex = openState ? "90" : "";
+          }
+        }
+        node = node.parentNode;
+      }
     }
 
     function choose(option) {
@@ -212,7 +297,9 @@
         const item = document.createElement("button");
         item.type = "button";
         item.className = "searchable-select-option";
-        item.textContent = option.textContent;
+        const label = document.createElement("span");
+        label.textContent = option.textContent;
+        item.append(label);
         item.setAttribute("role", "option");
         item.setAttribute("aria-selected", String(option.value === select.value));
         item.disabled = option.disabled;

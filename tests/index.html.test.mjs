@@ -25,4 +25,7 @@ test("landing page introduces the accounting system and links to expense routes"
   assert.match(html, /href="\/company-settings"/);
   assert.doesNotMatch(html, /class="quick-actions"/);
   assert.doesNotMatch(html, /class="button"/);
+  assert.match(html, /data-line-auth-status/);
+  assert.match(html, /data-auth-gate="true"/);
+  assert.match(html, /https:\/\/static\.line-scdn\.net\/liff\/edge\/2\/sdk\.js/);
 });

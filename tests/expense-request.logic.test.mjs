@@ -70,6 +70,19 @@ test("validateExpenseRequest rejects an empty placeholder expense line", () => {
   assert.deepEqual(errors, ["กรอกรายละเอียดและยอดเงินของรายการค่าใช้จ่ายอย่างน้อย 1 รายการ"]);
 });
 
+test("validateExpenseRequest accepts a Stock SKU line without manually retyping its description", () => {
+  const errors = validateExpenseRequest({
+    requestType: "reimbursement",
+    accountingMonth: "2026-09",
+    requesterName: "คุณผู้ขอ",
+    businessPurpose: "ซื้อสินค้าเข้าสต๊อก",
+    paymentTargetName: "ร้านค้า",
+    expenseLines: [{ stockSkuId: "101", amountBeforeVat: "250.00", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.deepEqual(errors, []);
+});
+
 test("validateExpenseRequest requires VAT confirmation for an unknown-tax prefill line", () => {
   const errors = validateExpenseRequest({
     requestType: "reimbursement",
@@ -143,6 +156,22 @@ test("buildExpensePayload creates standard document IDs and folder paths for a v
   });
   assert.equal(payload.evidence.fullTaxInvoice.status, "มี");
   assert.equal(payload.evidence.reimbursementSlip.status, "รอดำเนินการ");
+});
+
+test("buildExpensePayload preserves the server-bound owner user id", () => {
+  const payload = buildExpensePayload({
+    sequence: "9",
+    accountingMonth: "2026-09",
+    requestTitle: "ค่าใช้จ่ายของผู้ใช้",
+    requestType: "reimbursement",
+    requesterName: "คุณผู้ขอ",
+    businessPurpose: "ทดสอบ owner binding",
+    paymentTargetName: "คุณผู้ขอ",
+    ownerUserId: "user-1",
+    expenseLines: [{ description: "รายการ", amountBeforeVat: "100", vatAmount: "0", withholdingTax: "0" }],
+  });
+
+  assert.equal(payload.ownerUserId, "user-1");
 });
 
 test("buildExpensePayload does not mark evidence as attached without raw files", () => {

@@ -338,15 +338,14 @@ function applyWorkflowContextToWorkflowDocumentShell(context = {}, groups = []) 
   return patch;
 }
 
-// goods_receipt line quantities must never be prefilled: a received quantity
-// must reflect what actually arrived, so prefilling it from the purchase
-// order would hide a short delivery. Description and stockSkuId still carry
-// over; only quantity is cleared, after the shared shell logic runs.
+// goods_receipt starts with the source quantity as an editable default. The
+// user can still reduce it when the delivery is short; keeping the value here
+// makes the normal full-delivery workflow complete without retyping quantities.
 function applyWorkflowContextToGoodsReceipt(context = {}, groups = []) {
   const patch = applyWorkflowContextToWorkflowDocumentShell(context, groups);
   if (Array.isArray(patch.lines)) {
     patch.lines = patch.lines.map((line) => ({
-      ...line, quantity: "",
+      ...line,
       ...(line.vatMode ? { withholdingTax: "0.00" } : {}),
       ...(line.vatMode === "manual" ? { vatAmount: "" } : {}),
     }));

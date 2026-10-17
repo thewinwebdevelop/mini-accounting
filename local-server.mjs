@@ -36,6 +36,7 @@ const {
   getSubstituteReceiptFile,
   getSubmittedSubstituteReceipt,
   getWorkflowDocument,
+  getWorkflowDocumentFiles,
   getWorkflowDocumentFile,
   getWorkflowTemplate,
   getWorkflowTransaction,
@@ -52,15 +53,19 @@ const {
   listWorkflowTransactions,
   parseMultipartForm,
   refreshWorkflowTransaction,
+  refreshWorkflowDocumentCompanySettings,
   saveExpenseDraft,
   saveExpenseSubmission,
   saveSubstituteReceiptDraft,
   saveSubstituteReceiptSubmission,
   saveWorkflowDocument,
   submitWorkflowDocument,
+  rejectWorkflowDocument,
   saveWorkflowTemplate,
   startWorkflowTransaction,
   receiveSubstituteReceiptStock,
+  rejectExpenseRequest,
+  rejectSubstituteReceipt,
   getSubmittedExpenseRequest,
   describeDriveSyncError,
   syncExpenseRequestToDrive,
@@ -70,18 +75,18 @@ const {
   syncWorkflowTransactionToSheets,
 } = require("./forms/local-server.logic.js");
 const {
+  LIGHTWEIGHT_DOCUMENT_KINDS,
   buildWorkflowDocumentPayload,
   validateWorkflowDocumentPayload,
 } = require("./forms/workflow-document.logic.js");
+const { validateExpenseRequest } = require("./forms/expense-request.logic.js");
 const {
   getDocumentTypeDefinition,
 } = require("./forms/workflow.logic.js");
 const {
   createProductCategory,
-  createProduct,
   createPurchaseInMovement,
   createSaleSku,
-  createStockSku,
   getInventoryProductDetail,
   getInventoryDashboardSummary,
   getSaleSku,
@@ -89,16 +94,12 @@ const {
   listInventoryBalances,
   listInventoryStockGroups,
   listProductCategories,
-  listProducts,
   listSaleSkus,
   listStockInReport,
-  listStockSkus,
   saveProductImage,
   saveStockSkuImage,
   updateProductCategory,
-  updateProduct,
   updateSaleSku,
-  updateStockSku,
 } = require("./forms/inventory.logic.js");
 const {
   createSubstituteReceiptVendor,
@@ -119,27 +120,253 @@ const {
 const {
   getPlatformOrderImport,
   importPlatformOrders,
+  listShopeeOrders,
   listPlatformOrderImports,
   postPlatformOrderImport,
+  saveShopeeOrderLineMapping,
+  getShopeeOrder,
 } = require("./forms/platform-orders.logic.js");
+const { openInventoryDatabase, ensureInventorySchema } = require("./forms/inventory-db.logic.js");
+const {
+  completeShopeeAuthorization,
+  consumeShopeeOAuthState,
+  createShopeeOAuthState,
+  getShopeeConnection,
+} = require("./forms/shopee-auth.logic.js");
+const { createShopeeClient } = require("./forms/shopee-client.logic.js");
+const { syncShopeeOrders } = require("./forms/shopee-orders.logic.js");
+const {
+  arrangeShipmentBatch,
+  createShippingDocumentJob,
+  pollShippingDocumentJob,
+  prepareShipmentBatch,
+  refreshBatchTracking,
+  renderBatchLabels,
+} = require("./forms/shopee-shipment.logic.js");
 const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
+const {
+  resolveLineAppUser,
+  verifyLineIdToken,
+} = require("./forms/line-auth.logic.js");
+const {
+  getAppUserProfile,
+  updateAppUserProfile,
+  listCompanyPositions,
+  profileRequesterFallback,
+} = require("./forms/user-profile.server.logic.js");
+const {
+  extractLineMediaEvent,
+  isSupportedLineMedia,
+  verifyLineWebhookSignature,
+} = require("./forms/line-webhook.logic.js");
+const { createConfiguredLineIntakeStore } = require("./forms/line-intake.logic.js");
+const {
+  buildIntakeReviewReply,
+  downloadLineContent,
+  replyToLine,
+} = require("./forms/line-bot.logic.js");
+const { scanLineDocument } = require("./forms/line-ocr.logic.js");
+const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
+const { createSupabaseDataRepository } = require("./forms/supabase-data.logic.js");
+const { createSupabaseStorageClient } = require("./forms/supabase-storage.logic.js");
+const { resolveGoogleOAuthRedirectUri } = require("./forms/google-oauth-config.logic.js");
+const {
+  SESSION_COOKIE_NAME,
+  buildSessionCookie,
+  clearSessionCookie,
+  parseCookies,
+  signSession,
+  verifySession,
+} = require("./forms/session.logic.js");
+const {
+  buildMockProfileStore,
+  buildMockSessionUser,
+  parseMockAuthConfig,
+} = require("./forms/mock-auth.logic.js");
+const { issueFileAccessToken, verifyFileAccessToken } = require("./forms/file-access.logic.js");
+const {
+  ACTIONS,
+  actorLabel,
+  assertDocumentAccess,
+  assertPermission,
+} = require("./forms/authorization.logic.js");
+const { createInventoryDataAdapter } = require("./forms/local-data.adapter.js");
+const { createDocumentDataAdapter } = require("./forms/document-data.adapter.js");
+const { createCloudDocumentReader } = require("./forms/cloud-document-read.logic.js");
+const { createFileAdapter } = require("./forms/storage-file.adapter.js");
+const { validateStockSkuReferences } = require("./forms/stock-line.logic.js");
+const {
+  assertCloudRuntimeConfig,
+  buildCloudRuntimeEnv,
+  healthPayload,
+  isCloudRunEnvironment,
+  resolveListenHost,
+  resolveRuntimeRoot,
+} = require("./forms/cloud-run.logic.js");
+const { createDocumentFileSynchronizer } = require("./forms/supabase-document-files.logic.js");
+const { mapCloudVendors } = require("./forms/cloud-vendor-read.logic.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = __dirname;
-const rootDir = process.env.SWEET_HOUSE_ROOT_DIR || appDir;
+const runtimeEnv = buildCloudRuntimeEnv(process.env);
+assertCloudRuntimeConfig(runtimeEnv);
+const cloudRun = isCloudRunEnvironment(runtimeEnv);
+const rootDir = resolveRuntimeRoot({ env: runtimeEnv, appDir });
 const formsDir = path.join(appDir, "forms");
-const port = Number(process.env.PORT || 8787);
+const port = Number(runtimeEnv.PORT || 8787);
 // Security: bind loopback-only by default. There is no authentication
 // anywhere in this app, so binding every interface (the previous behaviour)
 // let anyone on the same network -- office wifi, cafe wifi -- open the
 // accounting app and read, edit, or delete documents. Set
 // SWEET_HOUSE_ALLOW_NETWORK=1 to opt in when the owner deliberately wants to
 // reach the app from another device (phone, tablet) on their own network.
-const allowNetwork = /^(1|true|yes)$/i.test(String(process.env.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
-const listenHost = allowNetwork ? "0.0.0.0" : "127.0.0.1";
+const allowNetwork = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_ALLOW_NETWORK || "").trim());
+const listenHost = resolveListenHost(runtimeEnv);
 const maxBodyBytes = 80 * 1024 * 1024;
+const authMode = String(runtimeEnv.SWEET_HOUSE_AUTH_MODE || "disabled").trim().toLowerCase();
+const sessionAuthMode = authMode === "line" || authMode === "mock";
+const mockAuthConfig = parseMockAuthConfig(process.env);
+const mockProfileStore = mockAuthConfig.enabled ? buildMockProfileStore(mockAuthConfig) : null;
+const sessionSecret = String(runtimeEnv.SWEET_HOUSE_SESSION_SECRET || "");
+const sessionTtlSeconds = Math.max(300, Number(runtimeEnv.SWEET_HOUSE_SESSION_TTL_SECONDS || 43200));
+const cookieSecure = /^(1|true|yes)$/i.test(String(runtimeEnv.SWEET_HOUSE_COOKIE_SECURE || ""))
+  || String(runtimeEnv.NODE_ENV || "").toLowerCase() === "production";
+const appPublicOrigin = String(runtimeEnv.APP_PUBLIC_ORIGIN || "").trim().replace(/\/$/, "");
+const e2eRunId = String(runtimeEnv.E2E_RUN_ID || "").trim();
+const googleOAuthRedirectUri = String(runtimeEnv.GOOGLE_OAUTH_REDIRECT_URI || "").trim();
+const lineChannelSecret = String(runtimeEnv.LINE_CHANNEL_SECRET || "");
+const lineChannelAccessToken = String(runtimeEnv.LINE_CHANNEL_ACCESS_TOKEN || "");
+const lineIntakeMaxBytes = Math.max(1024 * 1024, Number(runtimeEnv.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024));
+const lineMiniAppUrl = String(runtimeEnv.LINE_INTAKE_MINI_APP_URL || (runtimeEnv.APP_PUBLIC_ORIGIN ? `${String(runtimeEnv.APP_PUBLIC_ORIGIN).replace(/\/$/, "")}/line-intake` : "")).trim();
+const lineOcrProvider = String(runtimeEnv.LINE_OCR_PROVIDER || "manual").trim().toLowerCase();
+const lineOcrEndpoint = String(runtimeEnv.LINE_OCR_API_URL || "").trim();
+const lineOcrApiKey = String(runtimeEnv.LINE_OCR_API_KEY || "").trim();
+const lineIntakeStore = createConfiguredLineIntakeStore({ rootDir, env: runtimeEnv, maxBytes: lineIntakeMaxBytes });
+const inventoryDataAdapter = createInventoryDataAdapter({
+  rootDir,
+  env: runtimeEnv,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+const documentFileSynchronizer = cloudRun
+  ? createDocumentFileSynchronizer({
+    rootDir,
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+    storageClient: createSupabaseStorageClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY, bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET }),
+  })
+  : null;
+const documentDataAdapter = createDocumentDataAdapter({
+  env: runtimeEnv,
+  persistFiles: documentFileSynchronizer
+    ? ({ documentKind, documentNo, folderPath }) => documentFileSynchronizer.sync({ documentKind, documentNo, folderPath })
+    : undefined,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+const cloudDocumentReader = createCloudDocumentReader({
+  cloudRun,
+  documentDataAdapter,
+  documentFileSynchronizer,
+  rebuildIndex: () => rebuildDocumentIndex(rootDir),
+});
+const cloudVendorRepository = cloudRun
+  ? createSupabaseDataRepository({
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+  })
+  : null;
+const vendorResolver = cloudVendorRepository
+  ? async vendorId => mapCloudVendors(
+    await cloudVendorRepository.listVendors(""),
+    { includeInactive: true },
+  ).find(vendor => vendor.id === String(vendorId || "").trim()) || null
+  : undefined;
+const documentFileAdapter = createFileAdapter({
+  rootDir,
+  env: runtimeEnv,
+  logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+
+async function assertKnownStockSkuReferences(lines = []) {
+  const selectedLines = (Array.isArray(lines) ? lines : []).filter((line) => String(line?.stockSkuId ?? "").trim());
+  if (!selectedLines.length) return;
+  const stockSkus = await inventoryDataAdapter.read("listStockSkus", { search: "" });
+  const errors = validateStockSkuReferences(lines, stockSkus);
+  if (errors.length) throw new Error(errors.join(", "));
+}
+
+async function resolveDocumentFileReference({ documentKind, documentNo, section, fileName, localResolve }) {
+  try {
+    return await localResolve();
+  } catch (error) {
+    if (!cloudRun) throw error;
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind,
+      documentNo,
+    });
+    const folderPath = String(cloudRecord?.folderPath || "");
+    if (!folderPath.startsWith("documents/") || !["pdf", "raw"].includes(section)
+      || !fileName || fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+      throw error;
+    }
+    const baseDir = path.resolve(rootDir, folderPath, section);
+    const absolutePath = path.resolve(baseDir, fileName);
+    if (!absolutePath.startsWith(`${baseDir}${path.sep}`)) throw error;
+    return { absolutePath, fileName, section };
+  }
+}
+
+async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad }) {
+  return cloudDocumentReader.ensure({ documentKind, documentNo, localLoad });
+}
+
+async function ensureLocalCloudWorkflowTransaction(transactionNo) {
+  const localRecord = await getWorkflowTransaction(rootDir, transactionNo);
+  if (!cloudRun || !documentFileSynchronizer) return localRecord;
+
+  if (!localRecord) {
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind: "workflow_transaction",
+      documentNo: transactionNo,
+    });
+    if (!cloudRecord) return null;
+    await documentFileSynchronizer.materialize({ record: cloudRecord });
+  }
+
+  // Cloud Run starts with an empty ephemeral filesystem. A transaction row
+  // alone is not enough for its detail page: the child documents that make
+  // up the progress checklist are separate cloud rows and must be
+  // materialized too before the existing filesystem-oriented workflow logic
+  // scans for them.
+  const cloudDocuments = await documentDataAdapter.list({
+    localResult: [],
+    filters: {
+      documentKinds: ["expense_request", "substitute_receipt", ...LIGHTWEIGHT_DOCUMENT_KINDS],
+    },
+  });
+  const childDocuments = cloudDocuments.filter((document) => String(
+    document.transactionNo || document.payload?.transactionNo || "",
+  ).trim() === String(transactionNo).trim());
+  for (const document of childDocuments) {
+    await documentFileSynchronizer.materialize({ record: document });
+  }
+
+  if (!localRecord || childDocuments.length > 0) await rebuildDocumentIndex(rootDir);
+  return getWorkflowTransaction(rootDir, transactionNo);
+}
+
+async function persistCloudDocumentMutation({ documentKind, documentNo, result, localLoad }) {
+  if (!cloudRun) return result;
+  const localRecord = await localLoad();
+  await documentDataAdapter.save({
+    documentKind,
+    documentNo,
+    payload: localRecord?.payload || localRecord,
+    localSave: async () => result,
+  });
+  return result;
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -153,11 +380,401 @@ const mimeTypes = {
   ".pdf": "application/pdf",
 };
 
+function pdfResponseHeaders({ fileName, download = false } = {}) {
+  const safeFileName = String(fileName || "document.pdf").replace(/[\r\n\"]/g, "_");
+  return {
+    "content-type": "application/pdf",
+    "content-disposition": `${download ? "attachment" : "inline"}; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+  };
+}
+
 function sendJson(response, statusCode, data) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(data, (key, value) => (
     key === "absolutePath" || key === "absoluteFolderPath" ? undefined : value
   )));
+}
+
+function sendAuthError(response, statusCode, code, error, { clearCookie = false } = {}) {
+  if (clearCookie) response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+  sendJson(response, statusCode, { code, error });
+}
+
+function isPublicApiPath(pathname) {
+  return pathname === "/api/healthz"
+    || pathname === "/api/auth/line-session"
+    || pathname === "/api/auth/mock-session"
+    || pathname === "/api/auth/me"
+    || pathname === "/api/auth/logout"
+    || pathname === "/api/google-drive/oauth2callback"
+    || pathname === "/api/shopee/callback"
+    || pathname === "/api/webhooks/line";
+}
+
+function originIsAllowed(request) {
+  if (!appPublicOrigin || request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return true;
+  return request.headers.origin === appPublicOrigin;
+}
+
+function isLoopbackHost(hostHeader) {
+  const rawHost = String(hostHeader || "").trim();
+  if (!rawHost) return false;
+  let hostname;
+  try {
+    hostname = new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]"
+    || hostname === "::1";
+}
+
+function mockAuthRequestIsAllowed(request) {
+  if (!isLoopbackHost(request.headers.host)) return false;
+  const origin = String(request.headers.origin || "").trim();
+  if (appPublicOrigin) return origin === appPublicOrigin;
+  if (!origin) return true;
+  try {
+    const parsedOrigin = new URL(origin);
+    return (parsedOrigin.protocol === "http:" || parsedOrigin.protocol === "https:")
+      && isLoopbackHost(parsedOrigin.host);
+  } catch {
+    return false;
+  }
+}
+
+function readRequestSession(request) {
+  if (!sessionSecret) throw Object.assign(new Error("Session configuration is missing"), { code: "SESSION_CONFIG_MISSING" });
+  let cookies;
+  try {
+    cookies = parseCookies(request.headers.cookie || "");
+  } catch {
+    throw Object.assign(new Error("Session is invalid"), { code: "SESSION_INVALID" });
+  }
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) throw Object.assign(new Error("Session is missing"), { code: "SESSION_MISSING" });
+  return verifySession(token, sessionSecret);
+}
+
+function requireAuthenticatedRequest(request, response, url) {
+  const isProtectedApiPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/workflow-documents/");
+  const authEnforced = sessionAuthMode;
+  const isProtectedPagePath = authEnforced && ["/user-profile", "/user-profile/"].includes(url.pathname);
+  if (!authEnforced || (!isProtectedApiPath && !isProtectedPagePath) || isPublicApiPath(url.pathname)) return true;
+  const isUnsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+  const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  if (!sessionSecret || (isProduction && isUnsafeMethod && !appPublicOrigin)) {
+    sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+    return false;
+  }
+  if (!originIsAllowed(request)) {
+    sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
+    return false;
+  }
+  const fileAccess = readFileAccessToken(request, url);
+  if (fileAccess) {
+    request.auth = fileAccess;
+    request.fileAccess = true;
+    return true;
+  }
+  try {
+    request.auth = readRequestSession(request);
+    return true;
+  } catch (error) {
+    if (isProtectedPagePath) {
+      if (error.code !== "SESSION_MISSING") response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+      const authEntryPath = authMode === "mock" ? "/mock-auth" : "/line-auth";
+      redirect(response, `${authEntryPath}?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
+      return false;
+    }
+    sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
+    return false;
+  }
+}
+
+function readFileAccessToken(request, url) {
+  if (!['GET', 'HEAD'].includes(request.method)) return null;
+  const isFileRoute = Boolean(
+    parseExpenseRequestFileRoute(url.pathname)
+      || parseSubstituteReceiptFileRoute(url.pathname)
+      || parseWorkflowDocumentFileRoute(url.pathname)
+      || parseWorkflowTransactionFileRoute(url.pathname),
+  );
+  if (!isFileRoute) return null;
+  return verifyFileAccessToken({
+    token: url.searchParams.get("fileToken"),
+    secret: sessionSecret,
+    path: url.pathname,
+  });
+}
+
+function actorForRequest(request, suppliedActor) {
+  return sessionAuthMode ? actorLabel(request.auth) : suppliedActor;
+}
+
+function denyForbidden(response) {
+  sendJson(response, 403, { code: "AUTH_FORBIDDEN", error: "ไม่มีสิทธิ์ดำเนินการ" });
+  return false;
+}
+
+function ensurePermission(request, response, action) {
+  if (!sessionAuthMode) return true;
+  try {
+    assertPermission(request.auth, action);
+    return true;
+  } catch (error) {
+    if (error.code === "AUTH_FORBIDDEN") return denyForbidden(response);
+    throw error;
+  }
+}
+
+async function ensureDocumentAccess(request, response, { action, load }) {
+  if (!sessionAuthMode) return true;
+  let record;
+  try {
+    record = await load();
+  } catch (error) {
+    if (error.message === "Expense request not found" || error.message === "Substitute receipt not found") return true;
+    sendJson(response, 404, { error: "ไม่พบเอกสาร" });
+    return false;
+  }
+  if (!record) return true;
+  try {
+    assertDocumentAccess(request.auth, record.payload || record, action);
+    return true;
+  } catch (error) {
+    if (error.code === "AUTH_FORBIDDEN") return denyForbidden(response);
+    throw error;
+  }
+}
+
+async function ensureDocumentWriteAccess(request, response, {
+  numberField,
+  payload,
+  loadExisting,
+  existingAction = ACTIONS.DOCUMENT_EDIT,
+}) {
+  if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return false;
+  if (!sessionAuthMode) return true;
+  const documentNo = String(payload?.[numberField] ?? "").trim();
+  if (!documentNo) return true;
+  return ensureDocumentAccess(request, response, {
+    action: existingAction,
+    load: () => loadExisting(documentNo),
+  });
+}
+
+async function ensureLifecycleAccess(request, response, action, load) {
+  return ensureDocumentAccess(request, response, { action, load });
+}
+
+async function loadDocumentForAuthorization({ documentKind, documentNo, localLoad }) {
+  let localRecord = null;
+  try {
+    localRecord = await localLoad();
+  } catch (error) {
+    if (error.message !== "Expense request not found" && error.message !== "Substitute receipt not found") throw error;
+  }
+  return documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
+}
+
+async function filterOwnedDocumentList(request, records, { numberField, load }) {
+  if (!sessionAuthMode || request.auth?.role !== "employee") return records;
+  const visible = [];
+  for (const record of records) {
+    const documentNo = String(record?.[numberField] || "").trim();
+    if (!documentNo) continue;
+    const directOwner = String(record?.ownerUserId || record?.payload?.ownerUserId || "").trim();
+    if (directOwner) {
+      if (directOwner === String(request.auth?.userId || "").trim()) visible.push(record);
+      continue;
+    }
+    try {
+      const full = await load(documentNo);
+      if (String(full?.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim()) visible.push(record);
+    } catch (error) {
+      if (error.message !== "Expense request not found" && error.message !== "Substitute receipt not found") throw error;
+    }
+  }
+  return visible;
+}
+
+async function bindLineOwner(request, payload, { numberField, loadExisting }) {
+  if (!sessionAuthMode) return payload;
+  const documentNo = String(payload?.[numberField] ?? "").trim();
+  if (!documentNo) return { ...payload, ownerUserId: String(request.auth?.userId || "").trim() };
+  const existing = await loadExisting(documentNo).catch((error) => {
+    if (error.message === "Expense request not found" || error.message === "Substitute receipt not found") return null;
+    throw error;
+  });
+  return { ...payload, ownerUserId: String(existing?.payload?.ownerUserId || "").trim() };
+}
+
+async function handleLineSession(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const lineProfile = await verifyLineIdToken({ idToken: body.idToken || body.id_token });
+    const client = createSupabaseAdminClient();
+    const user = await resolveLineAppUser({ client, lineProfile });
+    if (user.status !== "active" || !user.role) {
+      sendAuthError(response, 403, "APP_USER_PENDING", "บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ใช้งาน");
+      return;
+    }
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const expiresAt = issuedAt + sessionTtlSeconds;
+    const token = signSession({
+      userId: user.id,
+      lineUserId: user.lineUserId,
+      displayName: user.displayName,
+      role: user.role,
+      iat: issuedAt,
+      exp: expiresAt,
+    }, sessionSecret);
+    response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
+    sendJson(response, 200, { user, expiresAt });
+  } catch (error) {
+    if (error?.code === "APP_USER_NOT_FOUND" || error?.code === "LINE_PROFILE_INVALID") {
+      sendAuthError(response, 403, "APP_USER_PENDING", "บัญชี LINE นี้ยังไม่ได้รับสิทธิ์ใช้งาน");
+      return;
+    }
+    if (error?.code === "SUPABASE_CONFIG_MISSING" || error?.code === "SUPABASE_CONFIG_INVALID" || error?.code === "LINE_AUTH_CONFIG_MISSING" || error?.code === "LINE_AUTH_UNAVAILABLE" || error?.code === "SUPABASE_REQUEST_FAILED") {
+      sendAuthError(response, 503, "AUTH_PROVIDER_UNAVAILABLE", "ระบบยืนยันตัวตนยังไม่พร้อมใช้งาน");
+      return;
+    }
+    if (error?.code === "LINE_TOKEN_INVALID") {
+      sendAuthError(response, 401, "LINE_TOKEN_INVALID", "LINE token ไม่ถูกต้องหรือหมดอายุ");
+      return;
+    }
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    sendAuthError(response, 400, "AUTH_REQUEST_INVALID", "ไม่สามารถเข้าสู่ระบบได้");
+  }
+}
+
+function handleAuthMe(request, response) {
+  if (authMode !== "line" && authMode !== "mock") {
+    sendJson(response, 200, { authenticated: false, mode: "disabled", user: null });
+    return;
+  }
+  try {
+    const session = readRequestSession(request);
+    sendJson(response, 200, { authenticated: true, mode: authMode, user: session });
+  } catch (error) {
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    sendAuthError(response, 401, "AUTH_REQUIRED", "กรุณาเข้าสู่ระบบผ่าน LINE", { clearCookie: error.code !== "SESSION_MISSING" });
+  }
+}
+
+function handleMockSession(request, response) {
+  if (authMode !== "mock" || !mockAuthConfig.enabled) {
+    sendAuthError(response, 404, "MOCK_AUTH_DISABLED", "Mock auth is disabled");
+    return;
+  }
+  if (!mockAuthRequestIsAllowed(request)) {
+    sendAuthError(response, 403, "ORIGIN_FORBIDDEN", "คำขอมาจากแหล่งที่ไม่อนุญาต");
+    return;
+  }
+  if (sessionSecret.length < 32) {
+    sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+    return;
+  }
+  const user = buildMockSessionUser(mockAuthConfig);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + sessionTtlSeconds;
+  let token;
+  try {
+    token = signSession({
+      userId: user.id,
+      lineUserId: user.lineUserId,
+      displayName: user.displayName,
+      pictureUrl: user.pictureUrl,
+      role: user.role,
+      iat: issuedAt,
+      exp: expiresAt,
+    }, sessionSecret);
+  } catch (error) {
+    if (error?.code === "SESSION_CONFIG_MISSING") {
+      sendAuthError(response, 503, "AUTH_CONFIG_MISSING", "ระบบยืนยันตัวตนยังไม่ได้ตั้งค่า");
+      return;
+    }
+    throw error;
+  }
+  response.setHeader("set-cookie", [buildSessionCookie(token, { secure: cookieSecure, maxAge: sessionTtlSeconds })]);
+  sendJson(response, 200, { user, expiresAt });
+}
+
+function handleAuthLogout(response) {
+  response.setHeader("set-cookie", [clearSessionCookie({ secure: cookieSecure })]);
+  sendJson(response, 200, { ok: true });
+}
+
+function sendProfileOperationError(response, error, fallback) {
+  const providerCodes = new Set([
+    "SUPABASE_CONFIG_MISSING",
+    "SUPABASE_CONFIG_INVALID",
+    "SUPABASE_CLIENT_INVALID",
+    "SUPABASE_REQUEST_FAILED",
+  ]);
+  if (providerCodes.has(error?.code)) {
+    sendJson(response, 503, { code: "PROFILE_PROVIDER_UNAVAILABLE", error: "ระบบข้อมูลโปรไฟล์ยังไม่พร้อมใช้งาน" });
+    return;
+  }
+  sendOperationError(response, error, fallback);
+}
+
+async function handleAppUserProfileGet(request, response) {
+  try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { profile: mockProfileStore.getProfile(request.auth?.userId) });
+      return;
+    }
+    const profile = await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read user profile");
+  }
+}
+
+async function handleAppUserProfilePatch(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    if (authMode === "mock" && mockProfileStore) {
+      const profile = mockProfileStore.updateProfile(request.auth?.userId, payload);
+      sendJson(response, 200, { profile });
+      return;
+    }
+    const profile = await updateAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId: request.auth?.userId,
+      input: payload,
+    });
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot save user profile");
+  }
+}
+
+async function handleCompanyPositionsGet(response) {
+  try {
+    if (authMode === "mock" && mockProfileStore) {
+      sendJson(response, 200, { positions: mockProfileStore.listPositions() });
+      return;
+    }
+    const positions = await listCompanyPositions({ client: createSupabaseAdminClient() });
+    sendJson(response, 200, { positions });
+  } catch (error) {
+    sendProfileOperationError(response, error, "Cannot read company positions");
+  }
 }
 
 function sendOperationError(response, error, fallback) {
@@ -176,6 +793,14 @@ function sendWorkflowMutationError(response, error, fallback, defaultStatus = 40
 function safeStaticPath(urlPath) {
   const routeMap = {
     "/": "/index.html",
+    "/line-auth": "/line-auth.html",
+    "/line-auth/": "/line-auth.html",
+    "/mock-auth": "/mock-auth.html",
+    "/mock-auth/": "/mock-auth.html",
+    "/line-intake/auth": "/line-auth.html",
+    "/line-intake/auth/": "/line-auth.html",
+    "/line-intake": "/line-intake.html",
+    "/line-intake/": "/line-intake.html",
     "/expense-request": "/expense-request.html",
     "/expense-request/": "/expense-request.html",
     "/expense-requests": "/expense-requests.html",
@@ -200,6 +825,8 @@ function safeStaticPath(urlPath) {
     "/google-drive/": "/google-drive.html",
     "/company-settings": "/company-settings.html",
     "/company-settings/": "/company-settings.html",
+    "/user-profile": "/user-profile.html",
+    "/user-profile/": "/user-profile.html",
     "/inventory": "/inventory.html",
     "/inventory/": "/inventory.html",
     "/inventory-dashboard": "/inventory-dashboard.html",
@@ -218,12 +845,30 @@ function safeStaticPath(urlPath) {
     "/sale-skus/": "/sale-skus.html",
     "/platform-orders": "/platform-orders.html",
     "/platform-orders/": "/platform-orders.html",
+    "/shopee": "/shopee-connection.html",
+    "/shopee/": "/shopee-connection.html",
+    "/shopee-connection": "/shopee-connection.html",
+    "/shopee-connection/": "/shopee-connection.html",
+    "/shopee-orders": "/shopee-orders.html",
+    "/shopee-orders/": "/shopee-orders.html",
+    "/shopee-mapping": "/shopee-mapping.html",
+    "/shopee-mapping/": "/shopee-mapping.html",
+    "/shopee-shipment": "/shopee-shipment.html",
+    "/shopee-shipment/": "/shopee-shipment.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
   const absolutePath = path.join(formsDir, normalized);
   if (!absolutePath.startsWith(formsDir)) return null;
   return absolutePath;
+}
+
+function escapeHtmlAttribute(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function redirect(response, location) {
@@ -251,9 +896,247 @@ async function readJsonBody(request) {
   return body.length ? JSON.parse(body.toString("utf8")) : {};
 }
 
+function publicLineIntakeView(item) {
+  if (!item) return null;
+  const { storagePath, storageBucket, objectPath, ...safeItem } = item;
+  return safeItem;
+}
+
+const lineIntakeOcrInFlight = new Map();
+
+async function ensureLineIntakeScanned(item) {
+  if (item.ocrStatus === "needs_review") return item;
+  const existing = lineIntakeOcrInFlight.get(item.id);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      const original = await lineIntakeStore.readOriginal(item);
+      const result = await scanLineDocument({
+        provider: lineOcrProvider,
+        endpoint: lineOcrEndpoint,
+        apiKey: lineOcrApiKey,
+        bytes: original.bytes,
+        contentType: original.contentType,
+        fileName: original.fileName,
+        maxBytes: lineIntakeMaxBytes,
+      });
+      return lineIntakeStore.updateScan(item.id, result);
+    } catch (error) {
+      return lineIntakeStore.updateScan(item.id, {
+        provider: lineOcrProvider,
+        status: "failed",
+        confidence: 0,
+        fields: {},
+        warnings: [],
+        error: error.code || "LINE_OCR_FAILED",
+      });
+    }
+  })();
+  lineIntakeOcrInFlight.set(item.id, run);
+  try { return await run; } finally { lineIntakeOcrInFlight.delete(item.id); }
+}
+
+function firstText(...values) {
+  return values.map(value => String(value ?? "").trim()).find(Boolean) || "";
+}
+
+function buildLineExpensePayload(request, item, body = {}, profileFallback = {}) {
+  const fields = item.extractedPayload?.fields && typeof item.extractedPayload.fields === "object" ? item.extractedPayload.fields : {};
+  const lines = Array.isArray(body.expenseLines) && body.expenseLines.length
+    ? body.expenseLines.slice(0, 50).map(line => ({
+      date: firstText(line.date, body.expenseDate, fields.expenseDate),
+      category: firstText(line.category, "ทั่วไป"),
+      description: firstText(line.description, fields.description),
+      vendor: firstText(line.vendor, body.paymentTargetName, fields.vendorName),
+      amountBeforeVat: firstText(line.amountBeforeVat, fields.amountBeforeVat),
+      vatAmount: firstText(line.vatAmount, fields.vatAmount),
+      withholdingTax: firstText(line.withholdingTax, fields.withholdingTax, "0"),
+    }))
+    : [{
+      date: firstText(body.expenseDate, fields.expenseDate),
+      category: firstText(body.category, "ทั่วไป"),
+      description: firstText(body.description, fields.description),
+      vendor: firstText(body.paymentTargetName, fields.vendorName),
+      amountBeforeVat: firstText(body.amountBeforeVat, fields.amountBeforeVat),
+      vatAmount: firstText(body.vatAmount, fields.vatAmount),
+      withholdingTax: firstText(body.withholdingTax, fields.withholdingTax, "0"),
+    }];
+  const payload = {
+    accountingMonth: firstText(body.accountingMonth, fields.accountingMonth),
+    expenseDate: firstText(body.expenseDate, fields.expenseDate),
+    requesterName: firstText(body.requesterName, profileFallback.requesterName, request.auth?.displayName),
+    requesterRole: firstText(body.requesterRole, profileFallback.requesterRole),
+    requestType: ["reimbursement", "direct_payment"].includes(body.requestType) ? body.requestType : "reimbursement",
+    requestTitle: firstText(body.requestTitle, fields.documentNo, fields.description, "ค่าใช้จ่ายจาก LINE"),
+    businessPurpose: firstText(body.businessPurpose, fields.description),
+    paymentTargetName: firstText(body.paymentTargetName, fields.vendorName),
+    vendorSnapshot: { name: firstText(body.paymentTargetName, fields.vendorName), taxId: firstText(body.taxId, fields.taxId) },
+    ownerUserId: sessionAuthMode ? String(request.auth?.userId || "") : "",
+    expenseLines: lines,
+  };
+  return payload;
+}
+
+async function getLineConfirmationProfile(request) {
+  const userId = String(request.auth?.userId || "").trim();
+  if (!userId) return null;
+  try {
+    return await getAppUserProfile({
+      client: createSupabaseAdminClient(),
+      userId,
+    });
+  } catch (error) {
+    console.warn(`[line-intake] profile fallback unavailable userId=${userId} code=${error.code || "PROFILE_LOOKUP_FAILED"}`);
+    return null;
+  }
+}
+
+function lineDocumentSummary(result = {}) {
+  return {
+    requestNo: result.requestNo || "",
+    status: result.status || "draft",
+    statusLabel: result.statusLabel || "แบบร่าง",
+    folderPath: result.folderPath || "",
+    evidenceFiles: result.evidenceFiles || {},
+    rawFiles: result.rawFiles || [],
+    updatedAt: result.updatedAt || "",
+  };
+}
+
+async function handleLineWebhook(request, response) {
+  const rawBody = (await readRequestBody(request)).toString("utf8");
+  const signature = request.headers["x-line-signature"];
+  if (!lineChannelSecret) {
+    sendJson(response, 503, { code: "LINE_WEBHOOK_CONFIG_MISSING", error: "ระบบ webhook ยังไม่ได้ตั้งค่า channel secret" });
+    return;
+  }
+  if (!verifyLineWebhookSignature({ rawBody, channelSecret: lineChannelSecret, signature })) {
+    sendJson(response, 401, { code: "LINE_WEBHOOK_SIGNATURE_INVALID", error: "ลายเซ็น webhook ไม่ถูกต้อง" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    sendJson(response, 400, { code: "LINE_WEBHOOK_INVALID_JSON", error: "ข้อมูล webhook ไม่ถูกต้อง" });
+    return;
+  }
+
+  const accepted = [];
+  const skipped = [];
+  for (const event of Array.isArray(payload.events) ? payload.events : []) {
+    const media = extractLineMediaEvent(event);
+    if (!media) continue;
+    try {
+      const content = await downloadLineContent({
+        messageId: media.messageId,
+        accessToken: lineChannelAccessToken,
+        maxBytes: lineIntakeMaxBytes,
+      });
+      const normalized = { ...media, contentType: content.contentType };
+      if (!isSupportedLineMedia(normalized)) {
+        skipped.push({ eventId: media.eventId, code: "LINE_MEDIA_UNSUPPORTED" });
+        continue;
+      }
+      const stored = await lineIntakeStore.create({
+        ...normalized,
+        bytes: content.bytes,
+      });
+      accepted.push({ eventId: media.eventId, intakeId: stored.item.id, duplicate: !stored.created });
+      if (stored.created && media.replyToken && lineMiniAppUrl && lineChannelAccessToken) {
+        const reply = buildIntakeReviewReply({ replyToken: media.replyToken, intake: stored.item, miniAppUrl: lineMiniAppUrl });
+        try {
+          await replyToLine({ replyToken: reply.replyToken, messages: reply.messages, accessToken: lineChannelAccessToken });
+        } catch (error) {
+          console.warn(`[line-webhook] reply failed code=${error.code || "LINE_REPLY_FAILED"} intakeId=${stored.item.id}`);
+        }
+      }
+    } catch (error) {
+      skipped.push({ eventId: media.eventId, code: error.code || "LINE_WEBHOOK_PROCESSING_FAILED" });
+    }
+  }
+  sendJson(response, 200, { ok: true, accepted, skipped });
+}
+
+async function handleLineIntakeReview(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    const scanned = await ensureLineIntakeScanned(item);
+    sendJson(response, 200, { intake: publicLineIntakeView(scanned) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถอ่านรายการไฟล์จาก LINE ได้");
+  }
+}
+
+async function handleLineIntakeConfirm(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    if (item.status === "confirmed" && item.createdDocument) {
+      sendJson(response, 200, { intake: publicLineIntakeView(item), document: item.createdDocument, idempotent: true });
+      return;
+    }
+    if (item.status !== "needs_confirmation") {
+      sendJson(response, 409, { code: "LINE_INTAKE_NOT_CONFIRMABLE", error: "รายการนี้ไม่อยู่ในสถานะรอยืนยัน" });
+      return;
+    }
+    const body = await readJsonBody(request);
+    const scanned = await ensureLineIntakeScanned(item);
+    const profile = await getLineConfirmationProfile(request);
+    const payload = buildLineExpensePayload(request, scanned, body, profileRequesterFallback(profile));
+    await assertKnownStockSkuReferences(payload.expenseLines);
+    const errors = validateExpenseRequest(payload);
+    if (errors.length) {
+      sendJson(response, 400, { code: "LINE_INTAKE_CONFIRMATION_INVALID", error: errors.join(", "), errors });
+      return;
+    }
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
+      payload,
+      loadExisting: requestNo => getSubmittedExpenseRequest(rootDir, requestNo),
+    })) return;
+    const original = await lineIntakeStore.readOriginal(scanned);
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: "",
+      payload,
+      localSave: () => saveExpenseDraft({
+        rootDir,
+        payload,
+        uploads: [{ evidenceKey: "receipt", originalName: original.fileName, type: original.contentType, buffer: original.bytes }],
+        vendorResolver,
+      }),
+    });
+    const document = lineDocumentSummary(result);
+    const confirmed = await lineIntakeStore.transition(intakeId, "confirmed", {
+      lineUserId,
+      metadata: { createdDocument: document, createdDocumentNo: document.requestNo },
+    });
+    sendJson(response, 200, { intake: publicLineIntakeView(confirmed), document, idempotent: false });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้างแบบร่างจากไฟล์ LINE ได้");
+  }
+}
+
+async function handleLineIntakeCancel(request, response, intakeId) {
+  try {
+    const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    const item = await lineIntakeStore.transition(intakeId, "cancelled", { lineUserId });
+    sendJson(response, 200, { intake: publicLineIntakeView(item) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถยกเลิกรายการไฟล์จาก LINE ได้");
+  }
+}
+
 function getOAuthRedirectUri(request) {
-  const host = request.headers.host || `localhost:${port}`;
-  return `http://${host}/api/google-drive/oauth2callback`;
+  return resolveGoogleOAuthRedirectUri({
+    configuredRedirectUri: googleOAuthRedirectUri,
+    publicDeployment: cloudRun || String(runtimeEnv.NODE_ENV || "").toLowerCase() === "production",
+    requestHost: request.headers.host,
+    port,
+  });
 }
 
 function parseExpenseRequestFileRoute(urlPath) {
@@ -347,11 +1230,27 @@ async function handleExpenseSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
-    const result = await saveExpenseSubmission({
-      rootDir,
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "requestNo",
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    await assertKnownStockSkuReferences(payload.expenseLines);
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
       payload,
-      uploads: files,
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+      existingAction: ACTIONS.DOCUMENT_SUBMIT,
+    })) return;
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: payload.requestNo,
+      payload,
+      localSave: () => saveExpenseSubmission({
+        rootDir,
+        payload,
+        uploads: files,
+        vendorResolver,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -364,11 +1263,27 @@ async function handleSubstituteReceiptSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
-    const result = await saveSubstituteReceiptSubmission({
-      rootDir,
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "receiptNo",
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    await assertKnownStockSkuReferences(payload.lines);
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "receiptNo",
       payload,
-      uploads: files,
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+      existingAction: ACTIONS.DOCUMENT_SUBMIT,
+    })) return;
+    const result = await documentDataAdapter.save({
+      documentKind: "substitute_receipt",
+      documentNo: payload.receiptNo,
+      payload,
+      localSave: () => saveSubstituteReceiptSubmission({
+        rootDir,
+        payload,
+        uploads: files,
+        vendorResolver,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -381,11 +1296,26 @@ async function handleSubstituteReceiptDraftSave(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
-    const result = await saveSubstituteReceiptDraft({
-      rootDir,
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "receiptNo",
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    await assertKnownStockSkuReferences(payload.lines);
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "receiptNo",
       payload,
-      uploads: files,
+      loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    })) return;
+    const result = await documentDataAdapter.save({
+      documentKind: "substitute_receipt",
+      documentNo: payload.receiptNo,
+      payload,
+      localSave: () => saveSubstituteReceiptDraft({
+        rootDir,
+        payload,
+        uploads: files,
+        vendorResolver,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -397,10 +1327,21 @@ async function handleSubstituteReceiptDraftSave(request, response) {
 async function handleSubstituteReceiptApprove(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await approveSubstituteReceipt({
       rootDir,
       receiptNo,
-      approvedBy: payload.approvedBy,
+      approvedBy: actorForRequest(request, payload.approvedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -411,14 +1352,77 @@ async function handleSubstituteReceiptApprove(receiptNo, request, response) {
 async function handleExpenseRequestApprove(requestNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await approveExpenseRequest({
       rootDir,
       requestNo,
-      approvedBy: payload.approvedBy,
+      approvedBy: actorForRequest(request, payload.approvedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
     sendWorkflowMutationError(response, error, "Cannot approve expense request");
+  }
+}
+
+async function handleSubstituteReceiptReject(receiptNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    const result = await rejectSubstituteReceipt({
+      rootDir,
+      receiptNo,
+      rejectedBy: actorForRequest(request, payload.rejectedBy),
+      reason: payload.reason,
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendWorkflowMutationError(response, error, "Cannot reject substitute receipt");
+  }
+}
+
+async function handleExpenseRequestReject(requestNo, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    const result = await rejectExpenseRequest({
+      rootDir,
+      requestNo,
+      rejectedBy: actorForRequest(request, payload.rejectedBy),
+      reason: payload.reason,
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendWorkflowMutationError(response, error, "Cannot reject expense request");
   }
 }
 
@@ -432,10 +1436,21 @@ async function handleExpenseRequestApprove(requestNo, request, response) {
 async function handleExpenseRequestComplete(requestNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
     const result = await completeExpenseRequest({
       rootDir,
       requestNo,
-      completedBy: payload.completedBy,
+      completedBy: actorForRequest(request, payload.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      result,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -449,10 +1464,21 @@ async function handleExpenseRequestComplete(requestNo, request, response) {
 async function handleSubstituteReceiptComplete(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await completeSubstituteReceipt({
       rootDir,
       receiptNo,
-      completedBy: payload.completedBy,
+      completedBy: actorForRequest(request, payload.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -463,11 +1489,22 @@ async function handleSubstituteReceiptComplete(receiptNo, request, response) {
 async function handleSubstituteReceiptReceiveStock(receiptNo, request, response) {
   try {
     const payload = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
     const result = await receiveSubstituteReceiptStock({
       rootDir,
       receiptNo,
       receivedDate: payload.receivedDate,
-      receivedBy: payload.receivedBy,
+      receivedBy: actorForRequest(request, payload.receivedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      result,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -503,14 +1540,21 @@ async function handleSubstituteReceiptDriveSync(receiptNo, response) {
 
 async function handleExpenseRequestFile(fileRoute, response) {
   try {
-    const file = await getExpenseRequestFile({
-      rootDir,
-      requestNo: fileRoute.requestNo,
+    const file = await resolveDocumentFileReference({
+      documentKind: "expense_request",
+      documentNo: fileRoute.requestNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getExpenseRequestFile({
+        rootDir,
+        requestNo: fileRoute.requestNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch (error) {
@@ -522,14 +1566,21 @@ async function handleExpenseRequestFile(fileRoute, response) {
 
 async function handleSubstituteReceiptFile(fileRoute, response) {
   try {
-    const file = await getSubstituteReceiptFile({
-      rootDir,
-      receiptNo: fileRoute.receiptNo,
+    const file = await resolveDocumentFileReference({
+      documentKind: "substitute_receipt",
+      documentNo: fileRoute.receiptNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getSubstituteReceiptFile({
+        rootDir,
+        receiptNo: fileRoute.receiptNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch (error) {
@@ -541,16 +1592,32 @@ async function handleSubstituteReceiptFile(fileRoute, response) {
 
 async function handleWorkflowDocumentFile(fileRoute, response) {
   try {
-    const file = await getWorkflowDocumentFile({
-      rootDir,
+    if (fileRoute.section === "pdf") {
+      await refreshWorkflowDocumentCompanySettings({
+        rootDir,
+        documentKind: fileRoute.documentKind,
+        documentNo: fileRoute.documentNo,
+      });
+    }
+    const file = await resolveDocumentFileReference({
       documentKind: fileRoute.documentKind,
       documentNo: fileRoute.documentNo,
       section: fileRoute.section,
       fileName: fileRoute.fileName,
+      localResolve: () => getWorkflowDocumentFile({
+        rootDir,
+        documentKind: fileRoute.documentKind,
+        documentNo: fileRoute.documentNo,
+        section: fileRoute.section,
+        fileName: fileRoute.fileName,
+      }),
     });
-    const body = await readFile(file.absolutePath);
-    const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    const served = await documentFileAdapter.read({ file, localRead: () => readFile(file.absolutePath) });
+    const body = Buffer.isBuffer(served) ? served : served.body;
+    const contentType = (Buffer.isBuffer(served) ? "" : served.contentType) || mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {
@@ -564,6 +1631,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const data = JSON.parse(fields.payload || "{}");
+    await assertKnownStockSkuReferences(data.lines);
     const errors = validateWorkflowDocumentPayload(data);
     if (errors.length) throw new Error(errors.join(", "));
 
@@ -583,6 +1651,15 @@ async function handleWorkflowDocumentSubmission(request, response) {
       ? await getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo)
       : null;
 
+    if (existingDocument) {
+      if (!await ensureDocumentAccess(request, response, {
+        action: ACTIONS.DOCUMENT_EDIT,
+        load: async () => existingDocument,
+      })) return;
+    } else if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) {
+      return;
+    }
+
     if (existingDocument?.status === "completed") {
       throw new Error("ไม่สามารถแก้ไขเอกสารที่เสร็จสิ้นแล้วได้");
     }
@@ -600,6 +1677,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
         approvedBy: existingDocument.payload?.approvedBy ?? "",
         completedAt: existingDocument.payload?.completedAt ?? "",
         completedBy: existingDocument.payload?.completedBy ?? "",
+        ownerUserId: existingDocument.payload?.ownerUserId ?? "",
         createdAt: existingDocument.payload?.createdAt ?? "",
         evidenceFiles: existingDocument.payload?.evidenceFiles ?? {},
         rawFiles: existingDocument.payload?.rawFiles ?? [],
@@ -621,12 +1699,23 @@ async function handleWorkflowDocumentSubmission(request, response) {
         approvedBy: "",
         completedAt: "",
         completedBy: "",
+        ownerUserId: String(request.auth?.userId || "").trim(),
         createdAt: "",
       };
     }
 
-    const payload = buildWorkflowDocumentPayload({ ...data, ...serverOwnedFields });
-    const result = await saveWorkflowDocument({ rootDir, payload, uploads: files });
+    // Company identity is server-owned. Always take it from the current
+    // company settings so every regenerated lightweight-document PDF carries
+    // the configured legal name and tax ID, including edits to an existing
+    // draft. Never trust a client-supplied company object for this header.
+    const company = await getCompanySettings(rootDir);
+    const payload = buildWorkflowDocumentPayload({ ...data, company, ...serverOwnedFields });
+    const result = await documentDataAdapter.save({
+      documentKind: payload.documentKind,
+      documentNo: payload.documentNo,
+      payload,
+      localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver }),
+    });
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
   } catch (error) {
@@ -637,11 +1726,22 @@ async function handleWorkflowDocumentSubmission(request, response) {
 async function handleWorkflowDocumentComplete(documentKind, documentNo, request, response) {
   try {
     const body = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const result = await completeWorkflowDocument({
       rootDir,
       documentKind,
       documentNo,
-      completedBy: body.completedBy,
+      completedBy: actorForRequest(request, body.completedBy),
+    });
+    await persistCloudDocumentMutation({
+      documentKind,
+      documentNo,
+      result,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
     });
     sendJson(response, 200, result);
   } catch (error) {
@@ -652,11 +1752,24 @@ async function handleWorkflowDocumentComplete(documentKind, documentNo, request,
 async function handleWorkflowDocumentAction(action, documentKind, documentNo, request, response) {
   try {
     const body = await readJsonBody(request);
+    await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
     const actions = {
-      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: body.submittedBy }),
-      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: body.approvedBy }),
+      submit: () => submitWorkflowDocument({ rootDir, documentKind, documentNo, submittedBy: actorForRequest(request, body.submittedBy) }),
+      approve: () => approveWorkflowDocument({ rootDir, documentKind, documentNo, approvedBy: actorForRequest(request, body.approvedBy) }),
+      reject: () => rejectWorkflowDocument({ rootDir, documentKind, documentNo, rejectedBy: actorForRequest(request, body.rejectedBy), reason: body.reason }),
     };
-    sendJson(response, 200, await actions[action]());
+    const result = await actions[action]();
+    await persistCloudDocumentMutation({
+      documentKind,
+      documentNo,
+      result,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
+    sendJson(response, 200, result);
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถเปลี่ยนสถานะเอกสารได้");
   }
@@ -701,16 +1814,29 @@ function omitAbsolutePathFromFileEntry(file) {
 // file entry on the workflow-transaction GET/refresh/complete routes, without
 // touching the expense-request or substitute-receipt routes, which are out of
 // scope for this fix.
-function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
+function fileEntryWithAccessToken(file, request) {
+  const publicFile = omitAbsolutePathFromFileEntry(file);
+  if (!publicFile?.url || authMode !== "line" || !request?.auth) return publicFile;
+  const fileUrl = new URL(publicFile.url, "http://sweet-house.local");
+  const fileToken = issueFileAccessToken({
+    secret: sessionSecret,
+    path: fileUrl.pathname,
+    auth: request.auth,
+  });
+  fileUrl.searchParams.set("fileToken", fileToken);
+  return { ...publicFile, url: `${fileUrl.pathname}${fileUrl.search}` };
+}
+
+function omitAbsolutePathsFromWorkflowTransactionResponse(record, request) {
   if (!record) return record;
   return {
     ...record,
-    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map(omitAbsolutePathFromFileEntry) : record.pdfFiles,
+    pdfFiles: Array.isArray(record.pdfFiles) ? record.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : record.pdfFiles,
     childDocuments: Array.isArray(record.childDocuments)
       ? record.childDocuments.map((doc) => ({
         ...doc,
-        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map(omitAbsolutePathFromFileEntry) : doc.pdfFiles,
-        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map(omitAbsolutePathFromFileEntry) : doc.rawFiles,
+        pdfFiles: Array.isArray(doc.pdfFiles) ? doc.pdfFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.pdfFiles,
+        rawFiles: Array.isArray(doc.rawFiles) ? doc.rawFiles.map((file) => fileEntryWithAccessToken(file, request)) : doc.rawFiles,
       }))
       : record.childDocuments,
   };
@@ -722,11 +1848,23 @@ function omitAbsolutePathsFromWorkflowTransactionResponse(record) {
 // listWorkflowDocumentSummaries already strips absolutePath from every file
 // entry; omitAbsoluteFolderPath stays here as the same last line of defence
 // the other workflow-document routes use.
-async function handleWorkflowDocumentList(url, response) {
+async function handleWorkflowDocumentList(request, url, response) {
   try {
     const filters = parseWorkflowDocumentListFilters(url.searchParams);
-    const documents = await listWorkflowDocumentSummaries(rootDir, filters);
-    sendJson(response, 200, { documents: documents.map(omitAbsoluteFolderPath) });
+    const localDocuments = await listWorkflowDocumentSummaries(rootDir, filters);
+    const cloudFilters = {
+      ...filters,
+      ...(filters.documentKind ? {} : { documentKinds: LIGHTWEIGHT_DOCUMENT_KINDS }),
+    };
+    const documents = await documentDataAdapter.list({
+      localResult: localDocuments,
+      documentKind: filters.documentKind || undefined,
+      filters: cloudFilters,
+    });
+    const visible = sessionAuthMode && request.auth?.role === "employee"
+      ? documents.filter((document) => String(document.payload?.ownerUserId || "").trim() === String(request.auth?.userId || "").trim())
+      : documents;
+    sendJson(response, 200, { documents: visible.map(omitAbsoluteFolderPath) });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถแสดงรายการเอกสารได้",
@@ -736,9 +1874,23 @@ async function handleWorkflowDocumentList(url, response) {
 
 async function handleWorkflowDocumentGet(documentKind, documentNo, response) {
   try {
-    const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
+    const localRecord = await ensureLocalCloudDocument({
+      documentKind,
+      documentNo,
+      localLoad: () => getWorkflowDocument(rootDir, documentKind, documentNo),
+    });
+    const record = await documentDataAdapter.get({ localResult: localRecord, documentKind, documentNo });
     if (!record) throw new Error("ไม่พบเอกสาร");
-    sendJson(response, 200, omitAbsoluteFolderPath(record));
+    const files = localRecord
+      ? await getWorkflowDocumentFiles(rootDir, documentKind, documentNo)
+      : null;
+    sendJson(response, 200, omitAbsoluteFolderPath({
+      ...record,
+      ...(files ? {
+        pdfFiles: files.pdfFiles.map(omitAbsolutePathFromFileEntry),
+        rawFiles: files.rawFiles.map(omitAbsolutePathFromFileEntry),
+      } : {}),
+    }));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดเอกสารได้",
@@ -818,7 +1970,14 @@ async function handleNextWorkflowTransaction(url, response) {
 
 async function handleWorkflowTransactionList(response) {
   try {
-    sendJson(response, 200, { transactions: await listWorkflowTransactions(rootDir) });
+    const localResult = await listWorkflowTransactions(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "workflow_transaction" });
+    sendJson(response, 200, {
+      transactions: result.map(transaction => ({
+        ...transaction,
+        transactionNo: transaction.transactionNo || transaction.documentNo,
+      })),
+    });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถแสดงรายการธุรกรรมได้",
@@ -838,6 +1997,7 @@ async function handleWorkflowTransactionStart(request, response) {
     const templateId = typeof body.templateId === "string" ? body.templateId.trim() : "";
     const accountingMonth = typeof body.accountingMonth === "string" ? body.accountingMonth.trim() : "";
     const title = typeof body.title === "string" ? body.title.trim() : "";
+    const requestKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
 
     if (!templateId) throw new Error("ระบุรหัส template");
     if (!isValidAccountingMonth(accountingMonth)) {
@@ -845,7 +2005,50 @@ async function handleWorkflowTransactionStart(request, response) {
     }
     if (!title) throw new Error("ระบุชื่อธุรกรรม");
 
-    const result = await startWorkflowTransaction({ rootDir, templateId, accountingMonth, title });
+    let allocation = null;
+    if (cloudRun) {
+      allocation = await documentDataAdapter.allocateWorkflowTransactionNumber({
+        accountingMonth,
+        requestKey,
+      });
+      if (allocation.existing) {
+        const existingCloud = await documentDataAdapter.get({
+          localResult: null,
+          documentKind: "workflow_transaction",
+          documentNo: allocation.transactionNo,
+        });
+        if (existingCloud) {
+          const existing = await ensureLocalCloudWorkflowTransaction(allocation.transactionNo);
+          if (existing) {
+            sendJson(response, 200, existing);
+            return;
+          }
+        }
+      }
+      if (allocation.existing) {
+        // The durable request reservation exists but its document row does not.
+        // This is a retry after a cloud write failed; reuse the same number and
+        // complete the original create instead of allocating another number.
+        allocation = { ...allocation, existing: false };
+      }
+    }
+
+    const result = await startWorkflowTransaction({
+      rootDir,
+      templateId,
+      accountingMonth,
+      title,
+      ownerUserId: String(request.auth?.userId || "").trim(),
+      allocation,
+    });
+    if (cloudRun) {
+      await documentDataAdapter.save({
+        documentKind: "workflow_transaction",
+        documentNo: result.transactionNo,
+        payload: result,
+        localSave: async () => result,
+      });
+    }
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
@@ -854,11 +2057,12 @@ async function handleWorkflowTransactionStart(request, response) {
   }
 }
 
-async function handleWorkflowTransactionGet(transactionNo, response) {
+async function handleWorkflowTransactionGet(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const record = await getWorkflowTransactionDetail(rootDir, transactionNo);
     if (!record) throw new Error("ไม่พบธุรกรรม");
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(record, request));
   } catch (error) {
     sendJson(response, 404, {
       error: error.message || "ไม่สามารถโหลดธุรกรรมได้",
@@ -876,10 +2080,11 @@ async function handleWorkflowTransactionGet(transactionNo, response) {
 // packet's Python subprocess before anyone has asked to download it.
 async function handleWorkflowTransactionRefresh(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const regeneratePacket = body.regeneratePacket !== false;
     const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
   }
@@ -891,13 +2096,14 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
 // there is no workflow-level Sheets sync (decision D6).
 async function handleWorkflowTransactionComplete(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const result = await completeWorkflowTransaction({
       rootDir,
       transactionNo,
-      completedBy: body.completedBy,
+      completedBy: actorForRequest(request, body.completedBy),
     });
-    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result));
+    sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
   }
@@ -905,15 +2111,16 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
 
 async function handleWorkflowTransactionCancel(transactionNo, request, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const result = await cancelWorkflowTransaction({
       rootDir,
       transactionNo,
       confirmed: body.confirmed,
-      cancelledBy: body.cancelledBy,
+      cancelledBy: actorForRequest(request, body.cancelledBy),
     });
     const statusCode = result.httpStatus || 200;
-    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result), ...(result.code ? { code: result.code } : {}) });
+    sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result, request), ...(result.code ? { code: result.code } : {}) });
   } catch (error) {
     const stableCodes = new Set([
       "CANCELLATION_CONFIRMATION_REQUIRED", "INVALID_DOCUMENT_NUMBER", "INVALID_CANCELLATION_REQUEST",
@@ -937,6 +2144,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
 // completeWorkflowTransaction calls internally for the toggle-on path.
 async function handleWorkflowTransactionDriveSync(transactionNo, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
     sendJson(response, 200, result);
   } catch (error) {
@@ -946,6 +2154,7 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
 
 async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
     if (result.syncStatus === "blocked_child_rows") {
       sendJson(response, 409, { error: result.error, code: result.code, conflicts: result.conflicts });
@@ -964,6 +2173,7 @@ async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
 
 async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     const documentKind = url.searchParams.get("documentKind") || "";
     const stepId = url.searchParams.get("stepId") || "";
     if (!stepId) throw new Error("ระบุขั้นตอนของ Workflow");
@@ -976,9 +2186,17 @@ async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
   }
 }
 
-function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
+function buildWorkflowStepOpenUrl({ route, documentKind, documentNo, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
   const separator = route.includes("?") ? "&" : "?";
   const params = new URLSearchParams({ transactionNo, workflowTemplateId, workflowStepId, returnTo });
+  if (documentNo) {
+    const documentNumberParam = documentKind === "expense_request"
+      ? "requestNo"
+      : documentKind === "substitute_receipt"
+        ? "receiptNo"
+        : "documentNo";
+    params.set(documentNumberParam, documentNo);
+  }
   // Only present for a substitute_receipt step whose *snapshotted* template
   // step declared a receiptType (see getDocumentTypeDefinition call site
   // below) -- a template persisted before this feature shipped, or a step
@@ -990,6 +2208,7 @@ function buildWorkflowStepOpenUrl({ route, transactionNo, workflowTemplateId, wo
 
 async function handleWorkflowTransactionStartDocument(transactionNo, stepId, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(transactionNo);
     if (!transactionNo) throw new Error("ไม่มีเลขที่ธุรกรรม");
     if (!stepId) throw new Error("ไม่พบขั้นตอนนี้ใน Workflow");
 
@@ -1022,10 +2241,15 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
     const templateStep = (transaction.templateSnapshot?.documentSteps || [])
       .find((item) => item.stepId === step.stepId);
     const receiptType = step.documentKind === "substitute_receipt" ? templateStep?.receiptType : undefined;
+    const childDocument = (transaction.childDocuments || []).find((document) => document.workflowStepId === step.stepId)
+      || (transaction.childDocuments || []).find((document) => !document.workflowStepId && document.documentKind === step.documentKind);
+    const documentNo = childDocument?.documentNo || "";
 
     const returnTo = `/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`;
     const url = buildWorkflowStepOpenUrl({
       route: definition.route,
+      documentKind: step.documentKind,
+      documentNo,
       transactionNo,
       workflowTemplateId: transaction.workflowTemplateId,
       workflowStepId: step.stepId,
@@ -1039,6 +2263,7 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
       transactionNo,
       workflowTemplateId: transaction.workflowTemplateId,
       workflowStepId: step.stepId,
+      documentNo,
       returnTo,
     });
   } catch (error) {
@@ -1050,6 +2275,7 @@ async function handleWorkflowTransactionStartDocument(transactionNo, stepId, res
 
 async function handleWorkflowTransactionFile(fileRoute, response) {
   try {
+    await ensureLocalCloudWorkflowTransaction(fileRoute.transactionNo);
     const file = await getWorkflowTransactionFile({
       rootDir,
       transactionNo: fileRoute.transactionNo,
@@ -1058,7 +2284,9 @@ async function handleWorkflowTransactionFile(fileRoute, response) {
     });
     const body = await readFile(file.absolutePath);
     const contentType = mimeTypes[path.extname(file.absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, fileRoute.section === "pdf"
+      ? pdfResponseHeaders({ fileName: fileRoute.fileName, download: true })
+      : { "content-type": contentType });
     response.end(body);
   } catch (error) {
     sendJson(response, 404, {
@@ -1067,9 +2295,12 @@ async function handleWorkflowTransactionFile(fileRoute, response) {
   }
 }
 
-async function handleGoogleDriveStatus(response) {
+async function handleGoogleDriveStatus(request, response) {
   try {
-    sendJson(response, 200, await getGoogleDriveStatus(rootDir));
+    sendJson(response, 200, {
+      ...(await getGoogleDriveStatus(rootDir)),
+      redirectUri: getOAuthRedirectUri(request),
+    });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot read Google Drive status",
@@ -1155,11 +2386,26 @@ async function handleDraftSave(request, response) {
   try {
     const body = await readRequestBody(request);
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
-    const payload = JSON.parse(fields.payload || "{}");
-    const result = await saveExpenseDraft({
-      rootDir,
+    const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
+      numberField: "requestNo",
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    await assertKnownStockSkuReferences(payload.expenseLines);
+    if (!await ensureDocumentWriteAccess(request, response, {
+      numberField: "requestNo",
       payload,
-      uploads: files,
+      loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    })) return;
+    const result = await documentDataAdapter.save({
+      documentKind: "expense_request",
+      documentNo: payload.requestNo || payload.draftId,
+      payload,
+      localSave: () => saveExpenseDraft({
+        rootDir,
+        payload,
+        uploads: files,
+        vendorResolver,
+      }),
     });
 
     sendJson(response, 200, result);
@@ -1179,10 +2425,15 @@ async function handleDraftList(response) {
   }
 }
 
-async function handleExpenseRequestList(response) {
+async function handleExpenseRequestList(request, response) {
   try {
-    const result = await listExpenseRequests(rootDir);
-    sendJson(response, 200, { requests: result });
+    const localResult = await listExpenseRequests(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "expense_request" });
+    const visible = await filterOwnedDocumentList(request, result, {
+      numberField: "requestNo",
+      load: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    sendJson(response, 200, { requests: visible });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot list expense requests",
@@ -1190,10 +2441,15 @@ async function handleExpenseRequestList(response) {
   }
 }
 
-async function handleSubstituteReceiptList(response) {
+async function handleSubstituteReceiptList(request, response) {
   try {
-    const result = await listSubstituteReceipts(rootDir);
-    sendJson(response, 200, { receipts: result });
+    const localResult = await listSubstituteReceipts(rootDir);
+    const result = await documentDataAdapter.list({ localResult, documentKind: "substitute_receipt" });
+    const visible = await filterOwnedDocumentList(request, result, {
+      numberField: "receiptNo",
+      load: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    sendJson(response, 200, { receipts: visible });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot list substitute receipts",
@@ -1203,7 +2459,12 @@ async function handleSubstituteReceiptList(response) {
 
 async function handleSubmittedExpenseRequestGet(requestNo, response) {
   try {
-    const result = await getSubmittedExpenseRequest(rootDir, requestNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "expense_request",
+      documentNo: requestNo,
+      localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+    });
+    const result = await documentDataAdapter.get({ localResult, documentKind: "expense_request", documentNo: requestNo });
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load expense request" });
@@ -1212,7 +2473,12 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
 
 async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
   try {
-    const result = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
+    const localResult = await ensureLocalCloudDocument({
+      documentKind: "substitute_receipt",
+      documentNo: receiptNo,
+      localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+    });
+    const result = await documentDataAdapter.get({ localResult, documentKind: "substitute_receipt", documentNo: receiptNo });
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load substitute receipt" });
@@ -1280,7 +2546,7 @@ async function handleNextSubstituteReceipt(url, response) {
 
 async function handleInventoryProductList(url, response) {
   try {
-    sendJson(response, 200, { products: listProducts(rootDir, { search: url.searchParams.get("search") || "" }) });
+    sendJson(response, 200, { products: await inventoryDataAdapter.read("listProducts", { search: url.searchParams.get("search") || "" }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list products" });
   }
@@ -1324,7 +2590,7 @@ async function handleInventoryCategoryUpdate(categoryId, request, response) {
 async function handleInventoryProductCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { product: createProduct(rootDir, payload) });
+    sendJson(response, 200, { product: await inventoryDataAdapter.write("saveProduct", payload) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create product" });
   }
@@ -1344,7 +2610,7 @@ async function handleInventoryProductImageUpload(productId, request, response) {
 async function handleInventoryProductUpdate(productId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { product: updateProduct(rootDir, productId, payload) });
+    sendJson(response, 200, { product: await inventoryDataAdapter.write("saveProduct", { ...payload, id: productId }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update product" });
   }
@@ -1352,7 +2618,7 @@ async function handleInventoryProductUpdate(productId, request, response) {
 
 async function handleInventoryStockSkuList(url, response) {
   try {
-    sendJson(response, 200, { stockSkus: listStockSkus(rootDir, { search: url.searchParams.get("search") || "" }) });
+    sendJson(response, 200, { stockSkus: await inventoryDataAdapter.read("listStockSkus", { search: url.searchParams.get("search") || "" }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list stock SKUs" });
   }
@@ -1361,7 +2627,7 @@ async function handleInventoryStockSkuList(url, response) {
 async function handleInventoryStockSkuCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { stockSku: createStockSku(rootDir, payload) });
+    sendJson(response, 200, { stockSku: await inventoryDataAdapter.write("saveStockSku", payload) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create stock SKU" });
   }
@@ -1381,7 +2647,7 @@ async function handleInventoryStockSkuImageUpload(stockSkuId, request, response)
 async function handleInventoryStockSkuUpdate(stockSkuId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { stockSku: updateStockSku(rootDir, stockSkuId, payload) });
+    sendJson(response, 200, { stockSku: await inventoryDataAdapter.write("saveStockSku", { ...payload, id: stockSkuId }) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update stock SKU" });
   }
@@ -1463,6 +2729,291 @@ async function handlePlatformOrderImportPost(importId, response) {
   }
 }
 
+async function handleShopeeOrderList(url, response) {
+  try {
+    sendJson(response, 200, {
+      orders: listShopeeOrders(rootDir, {
+        shopId: url.searchParams.get("shopId") || url.searchParams.get("connectionId") || "",
+        status: url.searchParams.get("status") || "",
+        limit: url.searchParams.get("limit") || 100,
+      }),
+    });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถแสดงรายการ Shopee orders ได้");
+  }
+}
+
+async function handleShopeeOrderLineMapping(lineId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const line = saveShopeeOrderLineMapping(rootDir, lineId, payload);
+    sendJson(response, 200, { line });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถบันทึก mapping Stock SKU ได้");
+  }
+}
+
+function shopeeClientFromEnvironment() {
+  return createShopeeClient({
+    partnerId: process.env.SHOPEE_PARTNER_ID || "",
+    partnerKey: process.env.SHOPEE_PARTNER_KEY || "",
+    baseUrl: process.env.SHOPEE_API_BASE_URL || undefined,
+  });
+}
+
+function publicShopeeConnection(connection) {
+  if (!connection) return null;
+  const { accessToken, refreshToken, ...publicFields } = connection;
+  return publicFields;
+}
+
+async function handleShopeeConnection(url, response) {
+  const connection = getShopeeConnection(rootDir, url.searchParams.get("connectionId") || url.searchParams.get("shopId") || "");
+  sendJson(response, 200, { connection: publicShopeeConnection(connection) });
+}
+
+async function handleShopeeAuthorize(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const client = shopeeClientFromEnvironment();
+    const appOrigin = process.env.SHOPEE_APP_ORIGIN
+      || request.headers.origin
+      || payload.origin
+      || `http://127.0.0.1:${port}`;
+    const returnUrl = `${appOrigin.replace(/\/$/, "")}/shopee-connection`;
+    const stateRecord = createShopeeOAuthState(rootDir, { returnUrl });
+    const redirectUrl = process.env.SHOPEE_CALLBACK_URL
+      || `${appOrigin.replace(/\/$/, "")}/api/shopee/callback`;
+    sendJson(response, 200, {
+      authorizationUrl: client.buildAuthorizationUrl({ redirectUrl, state: stateRecord.state }),
+    });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง Shopee authorization URL ได้");
+  }
+}
+
+async function handleShopeeCallback(url, response) {
+  let stateRecord = null;
+  try {
+    stateRecord = consumeShopeeOAuthState(rootDir, url.searchParams.get("state") || "");
+    if (!stateRecord) {
+      sendJson(response, 400, { error: "Shopee callback state ไม่ถูกต้องหรือหมดอายุแล้ว" });
+      return;
+    }
+    const callbackError = url.searchParams.get("error") || url.searchParams.get("error_code");
+    if (callbackError) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", url.searchParams.get("error_description") || callbackError);
+      redirect(response, target.toString());
+      return;
+    }
+    const shopId = url.searchParams.get("shop_id") || url.searchParams.get("shopId");
+    const code = url.searchParams.get("code") || "";
+    if (!shopId || !code) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", "Shopee callback ต้องมี code และ shop_id");
+      redirect(response, target.toString());
+      return;
+    }
+    const connection = await completeShopeeAuthorization(rootDir, {
+      shopId,
+      shopName: url.searchParams.get("shop_name") || "",
+      partnerId: process.env.SHOPEE_PARTNER_ID || "",
+      code,
+      client: shopeeClientFromEnvironment(),
+    });
+    const target = new URL(stateRecord.returnUrl);
+    target.searchParams.set("connected", "1");
+    target.searchParams.set("shopId", connection.shopId);
+    redirect(response, target.toString());
+  } catch (error) {
+    if (stateRecord?.returnUrl) {
+      const target = new URL(stateRecord.returnUrl);
+      target.searchParams.set("shopee_error", error.message || "ไม่สามารถบันทึก Shopee connection ได้");
+      redirect(response, target.toString());
+      return;
+    }
+    sendOperationError(response, error, "ไม่สามารถบันทึก Shopee connection ได้");
+  }
+}
+
+async function handleShopeeSync(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const client = shopeeClientFromEnvironment();
+    const result = await syncShopeeOrders(rootDir, { connectionId: payload.connectionId || payload.shopId, client });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถ sync Shopee orders ได้");
+  }
+}
+
+function authenticatedShopeeClient(connection) {
+  const rawClient = shopeeClientFromEnvironment();
+  return {
+    ...rawClient,
+    request: (options = {}) => rawClient.request({
+      ...options,
+      accessToken: options.accessToken || connection.accessToken,
+      shopId: options.shopId || connection.shopId,
+    }),
+  };
+}
+
+async function handleShopeeShipmentBatchPrepare(request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await prepareShipmentBatch(rootDir, payload.orderIds || [], {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถเตรียม shipment batch ได้");
+  }
+}
+
+async function handleShopeeShipmentBatchArrange(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await arrangeShipmentBatch(rootDir, batchId, payload.selection || payload, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถนัดรับ shipment batch ได้");
+  }
+}
+
+function publicShippingDocumentJob(job, request) {
+  if (!job) return null;
+  const { filePath, downloadedFilePath, ...publicJob } = job;
+  return {
+    ...publicJob,
+    downloadUrl: job.status === "ready" ? `/api/shopee/shipping-document-jobs/${encodeURIComponent(job.id)}/download` : "",
+  };
+}
+
+async function handleShopeeShipmentBatchTracking(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await refreshBatchTracking(rootDir, batchId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถดึง Tracking จาก Shopee ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentCreate(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const job = await createShippingDocumentJob(rootDir, batchId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, { job: publicShippingDocumentJob(job, request) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง shipping document job ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentPoll(jobId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const db = openInventoryDatabase(rootDir);
+    ensureInventorySchema(db);
+    const job = db.prepare(`
+      SELECT shipping_document_jobs.*, shipment_batches.shop_id
+      FROM shipping_document_jobs
+      JOIN shipment_batches ON shipment_batches.id = shipping_document_jobs.batch_id
+      WHERE shipping_document_jobs.id = ?
+    `).get(Number(jobId));
+    db.close();
+    if (!job) throw new Error("ไม่พบ shipping document job");
+    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId || job.shop_id);
+    if (!connection) throw new Error("ไม่พบ Shopee connection");
+    const result = await pollShippingDocumentJob(rootDir, jobId, {
+      client: authenticatedShopeeClient(connection),
+    });
+    sendJson(response, 200, { job: publicShippingDocumentJob(result, request) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถตรวจสอบ shipping document job ได้");
+  }
+}
+
+async function handleShopeeShippingDocumentDownload(jobId, response) {
+  const db = openInventoryDatabase(rootDir);
+  ensureInventorySchema(db);
+  try {
+    const job = db.prepare("SELECT * FROM shipping_document_jobs WHERE id = ? AND status = 'ready'").get(Number(jobId));
+    if (!job?.downloaded_file_path) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    const documentsRoot = path.resolve(rootDir, "data", "shipping-documents");
+    const absolutePath = path.resolve(job.downloaded_file_path);
+    if (!absolutePath.startsWith(`${documentsRoot}${path.sep}`)) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    const body = await readFile(absolutePath);
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="shipment-batch-${job.batch_id}.pdf"`,
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  } finally {
+    db.close();
+  }
+}
+
+async function handleShopeeBatchOverlay(batchId, request, response) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await renderBatchLabels(rootDir, batchId, payload.mappings || payload.orders || {}, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+    });
+    const { filePath, ...publicResult } = result;
+    sendJson(response, 200, publicResult);
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถสร้าง custom shipping labels ได้");
+  }
+}
+
+async function handleShopeeBatchPrintPreview(batchId, response) {
+  const documentsRoot = path.resolve(rootDir, "data", "shipping-labels");
+  const absolutePath = path.resolve(documentsRoot, `shipment-batch-${Number(batchId)}.pdf`);
+  if (!absolutePath.startsWith(`${documentsRoot}${path.sep}`)) {
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+  try {
+    const body = await readFile(absolutePath);
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="shipment-batch-${Number(batchId)}.pdf"`,
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  }
+}
+
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
@@ -1523,7 +3074,10 @@ function sendVendorError(response, error, fallback) {
 async function handleVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
-    sendJson(response, 200, { vendors: await listVendors(rootDir, { includeInactive }) });
+    const vendors = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive })
+      : await listVendors(rootDir, { includeInactive });
+    sendJson(response, 200, { vendors });
   } catch (error) {
     sendVendorError(response, error, "Cannot list vendors");
   }
@@ -1532,7 +3086,9 @@ async function handleVendorList(url, response) {
 async function handleVendorGet(vendorId, response) {
   try {
     const id = decodeVendorId(vendorId);
-    const vendor = await getVendorById(rootDir, id);
+    const vendor = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true }).find(item => item.id === id) || null
+      : await getVendorById(rootDir, id);
     if (!vendor) {
       const error = new Error("ไม่พบผู้ขาย");
       error.code = "VENDOR_NOT_FOUND";
@@ -1551,7 +3107,10 @@ async function handleVendorMatches(url, response) {
       "name", "taxId", "address", "contactName", "phone", "email", "bankName", "accountNo",
       "paymentChannel", "paymentReference", "defaultBusinessPurpose", "note",
     ].map((field) => [field, url.searchParams.get(field) || ""]));
-    const matches = findVendorMatches(candidate, await listVendors(rootDir, { includeInactive: true }));
+    const vendors = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true })
+      : await listVendors(rootDir, { includeInactive: true });
+    const matches = findVendorMatches(candidate, vendors);
     sendJson(response, 200, {
       matches: matches.map((match) => ({
         id: match.id,
@@ -1626,7 +3185,7 @@ async function handleInventoryPurchaseIn(request, response) {
 
 async function handleInventoryBalanceList(response) {
   try {
-    sendJson(response, 200, { balances: listInventoryBalances(rootDir) });
+    sendJson(response, 200, { balances: await inventoryDataAdapter.read("listInventoryBalances") });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list inventory balances" });
   }
@@ -1634,10 +3193,7 @@ async function handleInventoryBalanceList(response) {
 
 async function handleInventoryDashboard(response) {
   try {
-    sendJson(response, 200, {
-      summary: getInventoryDashboardSummary(rootDir),
-      latestStockIn: listStockInReport(rootDir, { limit: 10 }),
-    });
+    sendJson(response, 200, await inventoryDataAdapter.read("getInventoryDashboard"));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load inventory dashboard" });
   }
@@ -1646,7 +3202,7 @@ async function handleInventoryDashboard(response) {
 async function handleInventoryStockInReport(url, response) {
   try {
     sendJson(response, 200, {
-      movements: listStockInReport(rootDir, { limit: url.searchParams.get("limit") || "100" }),
+      movements: await inventoryDataAdapter.read("listStockInReport", { limit: url.searchParams.get("limit") || "100" }),
     });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load stock-in report" });
@@ -1656,7 +3212,7 @@ async function handleInventoryStockInReport(url, response) {
 async function handleInventoryStockList(url, response) {
   try {
     sendJson(response, 200, {
-      groups: listInventoryStockGroups(rootDir, {
+      groups: await inventoryDataAdapter.read("listInventoryStockGroups", {
         search: url.searchParams.get("search") || "",
         category: url.searchParams.get("category") || "",
         stockStatus: url.searchParams.get("stockStatus") || "all",
@@ -1686,7 +3242,7 @@ async function handleCurrentStockPdf(response) {
 
 async function handleInventoryStockCard(url, response) {
   try {
-    sendJson(response, 200, getStockCard(rootDir, url.searchParams.get("stockSkuId")));
+    sendJson(response, 200, await inventoryDataAdapter.read("getStockCard", url.searchParams.get("stockSkuId")));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot load stock card" });
   }
@@ -1710,8 +3266,8 @@ async function handleInventoryImage(urlPath, response) {
   }
 
   try {
-    const body = await readFile(absolutePath);
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
+    const body = await readFile(absolutePath);
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch {
@@ -1730,8 +3286,11 @@ async function handleStaticFile(request, response) {
       return;
     }
 
-    const body = await readFile(absolutePath);
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
+    let body = await readFile(absolutePath);
+    if (contentType.startsWith("text/html")) {
+      body = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(runtimeEnv.LINE_LIFF_ID || ""));
+    }
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch {
@@ -1742,6 +3301,78 @@ async function handleStaticFile(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "GET" && url.pathname === "/__e2e__/health") {
+    sendJson(response, 200, { ok: true, runId: e2eRunId });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/healthz") {
+    sendJson(response, 200, healthPayload(runtimeEnv));
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/healthz") {
+    sendJson(response, 200, healthPayload(runtimeEnv));
+    return;
+  }
+
+  if (!requireAuthenticatedRequest(request, response, url)) return;
+
+  if (request.method === "POST" && url.pathname === "/api/webhooks/line") {
+    await handleLineWebhook(request, response);
+    return;
+  }
+
+  const lineIntakeMatch = url.pathname.match(/^\/api\/line-intakes\/([^/]+)(\/cancel)?$/);
+  if (lineIntakeMatch && request.method === "GET" && !lineIntakeMatch[2]) {
+    await handleLineIntakeReview(request, response, decodeURIComponent(lineIntakeMatch[1]));
+    return;
+  }
+  if (lineIntakeMatch && request.method === "POST" && lineIntakeMatch[2]) {
+    await handleLineIntakeCancel(request, response, decodeURIComponent(lineIntakeMatch[1]));
+    return;
+  }
+  const lineIntakeConfirmMatch = url.pathname.match(/^\/api\/line-intakes\/([^/]+)\/confirm$/);
+  if (lineIntakeConfirmMatch && request.method === "POST") {
+    await handleLineIntakeConfirm(request, response, decodeURIComponent(lineIntakeConfirmMatch[1]));
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/line-session") {
+    await handleLineSession(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/mock-session") {
+    handleMockSession(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/me") {
+    handleAuthMe(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+    handleAuthLogout(response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfileGet(request, response);
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname === "/api/auth/profile") {
+    await handleAppUserProfilePatch(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/company-positions") {
+    await handleCompanyPositionsGet(response);
+    return;
+  }
 
   if (request.method === "POST" && request.url === "/api/inventory/products") {
     await handleInventoryProductCreate(request, response);
@@ -1770,6 +3401,90 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/platform-orders/imports") {
     await handlePlatformOrderImportCreate(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/platform-orders/") && url.pathname.endsWith("/sku-mapping")) {
+    const lineId = decodeURIComponent(url.pathname
+      .replace("/api/platform-orders/", "")
+      .replace("/sku-mapping", ""));
+    await handleShopeeOrderLineMapping(lineId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/authorize") {
+    await handleShopeeAuthorize(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/shopee/callback") {
+    await handleShopeeCallback(url, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/sync") {
+    await handleShopeeSync(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/shopee/shipment-batches/prepare") {
+    await handleShopeeShipmentBatchPrepare(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/arrange")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/arrange", ""));
+    await handleShopeeShipmentBatchArrange(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/refresh-tracking")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/refresh-tracking", ""));
+    await handleShopeeShipmentBatchTracking(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/create-documents")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/create-documents", ""));
+    await handleShopeeShippingDocumentCreate(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/overlay-labels")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/overlay-labels", ""));
+    await handleShopeeBatchOverlay(batchId, request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/shopee/shipment-batches/") && url.pathname.endsWith("/print-preview")) {
+    const batchId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipment-batches/", "")
+      .replace("/print-preview", ""));
+    await handleShopeeBatchPrintPreview(batchId, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/shipping-document-jobs/") && url.pathname.endsWith("/poll")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipping-document-jobs/", "")
+      .replace("/poll", ""));
+    await handleShopeeShippingDocumentPoll(jobId, request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/shopee/shipping-document-jobs/") && url.pathname.endsWith("/download")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/shipping-document-jobs/", "")
+      .replace("/download", ""));
+    await handleShopeeShippingDocumentDownload(jobId, response);
     return;
   }
 
@@ -1856,10 +3571,12 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve"))) {
-    const action = url.pathname.endsWith("/submit") ? "submit" : "approve";
+  if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && (url.pathname.endsWith("/submit") || url.pathname.endsWith("/approve") || url.pathname.endsWith("/reject"))) {
+    const action = url.pathname.endsWith("/submit") ? "submit" : url.pathname.endsWith("/approve") ? "approve" : "reject";
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace(new RegExp(`/${action}$`), "");
     const [documentKind, documentNo] = remainder.split("/");
+    const permission = action === "submit" ? ACTIONS.DOCUMENT_SUBMIT : action === "approve" ? ACTIONS.DOCUMENT_APPROVE : ACTIONS.DOCUMENT_REJECT;
+    if (!await ensureLifecycleAccess(request, response, permission, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentAction(action, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
@@ -1867,6 +3584,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/complete")) {
     const remainder = url.pathname.replace("/api/workflow-documents/", "").replace("/complete", "");
     const [documentKind, documentNo] = remainder.split("/");
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentComplete(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), request, response);
     return;
   }
@@ -1874,16 +3592,20 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname.startsWith("/api/workflow-documents/") && url.pathname.endsWith("/sync-drive")) {
     const segments = url.pathname.replace("/api/workflow-documents/", "").replace(/\/sync-drive$/, "").split("/");
     const [documentKind, documentNo] = segments.length === 2 ? segments : [segments[0], ""];
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")))) return;
     await handleWorkflowDocumentDriveSync(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/workflow-templates") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleWorkflowTemplateSave(request, response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/workflow-transactions") {
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return;
     await handleWorkflowTransactionStart(request, response);
     return;
   }
@@ -1892,6 +3614,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/refresh", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
     await handleWorkflowTransactionRefresh(transactionNo, request, response);
     return;
   }
@@ -1900,6 +3623,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/complete", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_COMPLETE)) return;
     await handleWorkflowTransactionComplete(transactionNo, request, response);
     return;
   }
@@ -1908,6 +3632,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/cancel", ""));
+    if (!ensurePermission(request, response, ACTIONS.DOCUMENT_COMPLETE)) return;
     await handleWorkflowTransactionCancel(transactionNo, request, response);
     return;
   }
@@ -1916,6 +3641,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
     await handleWorkflowTransactionDriveSync(transactionNo, response);
     return;
   }
@@ -1924,6 +3650,7 @@ const server = createServer(async (request, response) => {
     const transactionNo = decodeURIComponent(url.pathname
       .replace("/api/workflow-transactions/", "")
       .replace("/sync-sheets", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
     await handleWorkflowTransactionSheetsSync(transactionNo, response);
     return;
   }
@@ -1948,7 +3675,17 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/approve", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_APPROVE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptApprove(receiptNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/substitute-receipts/") && url.pathname.endsWith("/reject")) {
+    const receiptNo = decodeURIComponent(url.pathname
+      .replace("/api/substitute-receipts/", "")
+      .replace("/reject", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_REJECT, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
+    await handleSubstituteReceiptReject(receiptNo, request, response);
     return;
   }
 
@@ -1956,7 +3693,17 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/approve", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_APPROVE, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseRequestApprove(requestNo, request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/expense-requests/") && url.pathname.endsWith("/reject")) {
+    const requestNo = decodeURIComponent(url.pathname
+      .replace("/api/expense-requests/", "")
+      .replace("/reject", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_REJECT, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
+    await handleExpenseRequestReject(requestNo, request, response);
     return;
   }
 
@@ -1964,6 +3711,7 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/complete", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseRequestComplete(requestNo, request, response);
     return;
   }
@@ -1972,6 +3720,7 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/complete", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_COMPLETE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptComplete(receiptNo, request, response);
     return;
   }
@@ -1980,6 +3729,7 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/receive-stock", ""));
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.STOCK_RECEIVE, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptReceiveStock(receiptNo, request, response);
     return;
   }
@@ -1988,6 +3738,8 @@ const server = createServer(async (request, response) => {
     const receiptNo = decodeURIComponent(url.pathname
       .replace("/api/substitute-receipts/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getSubmittedSubstituteReceipt(rootDir, receiptNo))) return;
     await handleSubstituteReceiptDriveSync(receiptNo, response);
     return;
   }
@@ -1996,6 +3748,8 @@ const server = createServer(async (request, response) => {
     const requestNo = decodeURIComponent(url.pathname
       .replace("/api/expense-requests/", "")
       .replace("/sync-drive", ""));
+    if (!ensurePermission(request, response, ACTIONS.ACCOUNTING_SYNC)) return;
+    if (!await ensureLifecycleAccess(request, response, ACTIONS.ACCOUNTING_SYNC, () => getSubmittedExpenseRequest(rootDir, requestNo))) return;
     await handleExpenseDriveSync(requestNo, response);
     return;
   }
@@ -2006,11 +3760,13 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/api/google-drive/config") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleGoogleDriveConfig(request, response);
     return;
   }
 
   if (request.method === "POST" && request.url === "/api/company-settings") {
+    if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
     await handleCompanySettingsSave(request, response);
     return;
   }
@@ -2032,11 +3788,13 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/workflow-document-types") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowDocumentTypesList(response);
       return;
     }
 
     if (url.pathname === "/api/workflow-templates") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTemplateList(response);
       return;
     }
@@ -2045,11 +3803,13 @@ const server = createServer(async (request, response) => {
     // route below, or a request for the literal "next" would be swallowed and
     // treated as a lookup for a transaction named "next".
     if (url.pathname === "/api/workflow-transactions/next") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_CREATE)) return;
       await handleNextWorkflowTransaction(url, response);
       return;
     }
 
     if (url.pathname === "/api/workflow-transactions") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionList(response);
       return;
     }
@@ -2084,6 +3844,16 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/platform-orders/imports") {
       await handlePlatformOrderImportList(response);
+      return;
+    }
+
+    if (url.pathname === "/api/platform-orders") {
+      await handleShopeeOrderList(url, response);
+      return;
+    }
+
+    if (url.pathname === "/api/shopee/connection") {
+      await handleShopeeConnection(url, response);
       return;
     }
 
@@ -2156,35 +3926,53 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/expense-requests") {
-      await handleExpenseRequestList(response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleExpenseRequestList(request, response);
       return;
     }
 
     if (url.pathname === "/api/substitute-receipts") {
-      await handleSubstituteReceiptList(response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleSubstituteReceiptList(request, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/substitute-receipts/") && !url.pathname.includes("/files/")) {
       const receiptNo = decodeURIComponent(url.pathname.replace("/api/substitute-receipts/", ""));
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "substitute_receipt",
+        documentNo: receiptNo,
+        localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
+      }))) return;
       await handleSubmittedSubstituteReceiptGet(receiptNo, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/expense-requests/") && !url.pathname.includes("/files/")) {
       const requestNo = decodeURIComponent(url.pathname.replace("/api/expense-requests/", ""));
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "expense_request",
+        documentNo: requestNo,
+        localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
+      }))) return;
       await handleSubmittedExpenseRequestGet(requestNo, response);
       return;
     }
 
     if (url.pathname === "/api/workflow-documents") {
-      await handleWorkflowDocumentList(url, response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleWorkflowDocumentList(request, url, response);
       return;
     }
 
     if (url.pathname.startsWith("/api/workflow-documents/")) {
       const remainder = url.pathname.replace("/api/workflow-documents/", "");
       const [documentKind, documentNo] = remainder.split("/");
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: decodeURIComponent(documentKind || ""),
+        documentNo: decodeURIComponent(documentNo || ""),
+        localLoad: () => getWorkflowDocument(rootDir, decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || "")),
+      }))) return;
       await handleWorkflowDocumentGet(decodeURIComponent(documentKind || ""), decodeURIComponent(documentNo || ""), response);
       return;
     }
@@ -2193,6 +3981,7 @@ const server = createServer(async (request, response) => {
       const transactionNo = decodeURIComponent(url.pathname
         .replace("/api/workflow-transactions/", "")
         .replace("/prefill", ""));
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionPrefill(transactionNo, url, response);
       return;
     }
@@ -2203,45 +3992,65 @@ const server = createServer(async (request, response) => {
       && !url.pathname.endsWith("/prefill")
     ) {
       const transactionNo = decodeURIComponent(url.pathname.replace("/api/workflow-transactions/", ""));
-      await handleWorkflowTransactionGet(transactionNo, response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleWorkflowTransactionGet(transactionNo, request, response);
       return;
     }
 
     const fileRoute = parseExpenseRequestFileRoute(url.pathname);
     if (fileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "expense_request",
+        documentNo: fileRoute.requestNo,
+        localLoad: () => getSubmittedExpenseRequest(rootDir, fileRoute.requestNo),
+      }))) return;
       await handleExpenseRequestFile(fileRoute, response);
       return;
     }
 
     const substituteReceiptFileRoute = parseSubstituteReceiptFileRoute(url.pathname);
     if (substituteReceiptFileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: "substitute_receipt",
+        documentNo: substituteReceiptFileRoute.receiptNo,
+        localLoad: () => getSubmittedSubstituteReceipt(rootDir, substituteReceiptFileRoute.receiptNo),
+      }))) return;
       await handleSubstituteReceiptFile(substituteReceiptFileRoute, response);
       return;
     }
 
     const workflowDocumentFileRoute = parseWorkflowDocumentFileRoute(url.pathname);
     if (workflowDocumentFileRoute) {
+      if (!await ensureLifecycleAccess(request, response, ACTIONS.DOCUMENT_READ, () => loadDocumentForAuthorization({
+        documentKind: workflowDocumentFileRoute.documentKind,
+        documentNo: workflowDocumentFileRoute.documentNo,
+        localLoad: () => getWorkflowDocument(rootDir, workflowDocumentFileRoute.documentKind, workflowDocumentFileRoute.documentNo),
+      }))) return;
       await handleWorkflowDocumentFile(workflowDocumentFileRoute, response);
       return;
     }
 
     const workflowTransactionFileRoute = parseWorkflowTransactionFileRoute(url.pathname);
     if (workflowTransactionFileRoute) {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleWorkflowTransactionFile(workflowTransactionFileRoute, response);
       return;
     }
 
     if (url.pathname === "/api/google-drive/status") {
-      await handleGoogleDriveStatus(response);
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
+      await handleGoogleDriveStatus(request, response);
       return;
     }
 
     if (url.pathname === "/api/company-settings") {
+      if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
       await handleCompanySettingsGet(response);
       return;
     }
 
     if (url.pathname === "/api/google-drive/login") {
+      if (!ensurePermission(request, response, ACTIONS.SETTINGS_MANAGE)) return;
       await handleGoogleDriveLogin(request, response);
       return;
     }
@@ -2330,8 +4139,10 @@ async function startServer() {
 
   server.listen(port, listenHost, () => {
     const boundPort = server.address().port;
-    console.log(`Expense request local web app: http://localhost:${boundPort}/`);
-    if (allowNetwork) {
+    console.log(`${cloudRun ? "Expense request Cloud Run app" : "Expense request local web app"}: http://localhost:${boundPort}/`);
+    if (cloudRun) {
+      console.log(`Cloud Run runtime active (${listenHost}:${boundPort}); durable data is configured for Supabase and local files use ${rootDir}`);
+    } else if (allowNetwork) {
       console.log(
         `[คำเตือน] SWEET_HOUSE_ALLOW_NETWORK เปิดใช้งานอยู่ เซิร์ฟเวอร์กำลังรับฟังทุกอินเทอร์เฟซเครือข่าย (${listenHost}:${boundPort}) สามารถเข้าถึงจากเครือข่ายได้จากอุปกรณ์อื่น เช่น วงแลนสำนักงานหรือไวไฟร้านกาแฟ และระบบนี้ไม่มีระบบยืนยันตัวตนใด ๆ ทั้งสิ้น ผู้ใดก็ตามที่อยู่ในเครือข่ายเดียวกันจะสามารถเปิดดู แก้ไข หรือลบเอกสารบัญชีได้ โปรดใช้เฉพาะในเครือข่ายที่เชื่อถือได้เท่านั้น`,
       );

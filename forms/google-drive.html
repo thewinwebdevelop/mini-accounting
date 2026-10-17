@@ -165,6 +165,7 @@
       .button { width: 100%; }
     }
   </style>
+  <link rel="stylesheet" href="/mobile-menu.css">
 </head>
 <body>
   <header class="topbar">
@@ -209,6 +210,7 @@
         <div class="menu-group">
           <div class="menu-group-title">ระบบ</div>
           <a class="menu-item" href="/">หน้าหลัก</a>
+          <a class="menu-item" href="/user-profile">ข้อมูลส่วนตัว</a>
           <a class="menu-item" href="/company-settings">ตั้งค่าบริษัท</a>
           <a class="menu-item" href="/google-drive">ตั้งค่า Google Drive</a>
         </div>
@@ -226,9 +228,9 @@
 
       <div class="stack">
         <div class="muted">Authorized JavaScript origin</div>
-        <code>http://localhost:8787</code>
+        <code id="oauthOrigin">กำลังตรวจสอบ...</code>
         <div class="muted">Authorized redirect URI</div>
-        <code>http://localhost:8787/api/google-drive/oauth2callback</code>
+        <code id="oauthRedirectUri">กำลังตรวจสอบ...</code>
         <div class="muted">Test users</div>
         <code>sweethousecute.manage@gmail.com</code>
       </div>
@@ -264,6 +266,8 @@
     const driveBasePath = document.querySelector("#driveBasePath");
     const loginGoogle = document.querySelector("#loginGoogle");
     const message = document.querySelector("#message");
+    const oauthOrigin = document.querySelector("#oauthOrigin");
+    const oauthRedirectUri = document.querySelector("#oauthRedirectUri");
 
     function setStatus(status) {
       driveStatus.className = `status ${status.authenticated ? "ready" : status.configured ? "waiting" : "error"}`;
@@ -277,6 +281,14 @@
       clientId.value = status.clientId || "";
       driveBasePath.value = status.driveBasePath || "หจก.สวีทเฮาส์ เดซี่/เอกสารบัญชี";
       loginGoogle.disabled = !status.configured;
+      if (status.redirectUri) {
+        oauthRedirectUri.textContent = status.redirectUri;
+        try {
+          oauthOrigin.textContent = new URL(status.redirectUri).origin;
+        } catch {
+          oauthOrigin.textContent = "ตรวจสอบค่า redirect URI ใน server configuration";
+        }
+      }
     }
 
     async function loadStatus() {
