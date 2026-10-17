@@ -147,6 +147,58 @@ test("repository finds a Thai punctuation mapping beyond a capped Supabase page"
   assert.ok(calls.every(call => !call.url.includes("พิเศษ")));
 });
 
+test("repository rejects malformed Shopee mapping pages on the first or a later request", async () => {
+  for (const badPage of [null, { id: 1 }, "not an array", "{malformed json"]) {
+    for (const pageNumber of [1, 2]) {
+      let requests = 0;
+      const client = createSupabaseAdminClient({
+        url: "https://project.supabase.co",
+        serviceRoleKey: "server-secret",
+        fetchImpl: async () => {
+          requests += 1;
+          const page = requests === pageNumber ? badPage : [
+            { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 1 }] },
+          ];
+          return new Response(page === "{malformed json" ? page : JSON.stringify(page), { status: 200 });
+        },
+      });
+      const repository = createSupabaseDataRepository({ client });
+      await assert.rejects(
+        () => repository.listShopeeCustomLabelMappings(["ชุดเซต::ฟ้า"]),
+        error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
+        `page ${pageNumber}: ${String(badPage)}`,
+      );
+      assert.equal(requests, pageNumber);
+    }
+  }
+});
+
+test("repository rejects Shopee mapping rows with invalid keys or bundle shape", async () => {
+  const invalidRows = [
+    { id: 1, option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 1 }] },
+    { id: 1, product_name_key: 42, option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 1 }] },
+    { id: 1, product_name_key: "ชุดเซต", option_name_key: "", bundle: [{ sku: "SKU-A", quantity: 1 }] },
+    { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: { sku: "SKU-A", quantity: 1 } },
+    { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [] },
+    { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "", quantity: 1 }] },
+    { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 0 }] },
+    { id: 1, product_name_key: "อื่น", option_name_key: "แดง", bundle: null },
+  ];
+  for (const row of invalidRows) {
+    let requests = 0;
+    const repository = createSupabaseDataRepository({ client: fakeClient([], () => {
+      requests += 1;
+      return requests === 1 ? [row] : [];
+    }) });
+    await assert.rejects(
+      () => repository.listShopeeCustomLabelMappings(["ชุดเซต::ฟ้า"]),
+      error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
+      JSON.stringify(row),
+    );
+    assert.equal(requests, 1, "invalid rows must fail before fetching another page");
+  }
+});
+
 test("repository bulk upserts Shopee mappings and returns verified multi-SKU bundles", async () => {
   const calls = [];
   const savedRows = [
@@ -183,6 +235,27 @@ test("repository rejects Shopee mapping upsert when a returned bundle differs", 
   await assert.rejects(
     () => repository.upsertShopeeCustomLabelMappings({
       "ชุดเซต::ฟ้า": { productName: "ชุดเซต", optionName: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }] },
+    }),
+    error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
+  );
+});
+
+test("repository rejects Shopee mapping upsert when separate returned keys differ despite the same joined key", async () => {
+  const repository = createSupabaseDataRepository({
+    client: fakeClient([], () => [{
+      product_name_key: "ชุด",
+      option_name_key: "พิเศษ::ฟ้า",
+      bundle: [{ sku: "SKU-A", quantity: 2 }],
+    }]),
+  });
+
+  await assert.rejects(
+    () => repository.upsertShopeeCustomLabelMappings({
+      "ชุด::พิเศษ::ฟ้า": {
+        productName: "ชุด::พิเศษ",
+        optionName: "ฟ้า",
+        bundle: [{ sku: "SKU-A", quantity: 2 }],
+      },
     }),
     error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
   );

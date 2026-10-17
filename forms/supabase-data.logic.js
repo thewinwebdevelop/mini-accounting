@@ -146,6 +146,18 @@ function shopeeMappingKey(record) {
   return `${record.product_name_key}::${record.option_name_key}`;
 }
 
+function assertShopeeMappingRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)
+    || typeof row.product_name_key !== "string" || !row.product_name_key.trim()
+    || typeof row.option_name_key !== "string" || !row.option_name_key.trim()
+    || !Array.isArray(row.bundle) || row.bundle.length === 0
+    || row.bundle.some(item => !item || typeof item !== "object" || Array.isArray(item)
+      || typeof item.sku !== "string" || !item.sku.trim()
+      || !Number.isSafeInteger(item.quantity) || item.quantity <= 0)) {
+    throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping row could not be verified");
+  }
+}
+
 function mapShopeeCustomLabelMapping(record = {}) {
   return {
     productName: record.product_name_key,
@@ -241,9 +253,14 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
         limit: "500",
       });
       if (lastId) params.set("id", `gt.${lastId}`);
-      const mappingRows = await listTable("shopee_custom_label_mappings", params.toString());
+      const mappingRows = await supabaseRequest(client,
+        `/rest/v1/shopee_custom_label_mappings?${params.toString()}`);
+      if (!Array.isArray(mappingRows)) {
+        throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping page could not be verified");
+      }
       if (mappingRows.length === 0) break;
       for (const row of mappingRows) {
+        assertShopeeMappingRow(row);
         const id = String(row.id);
         if (!/^[1-9]\d*$/.test(id) || BigInt(id) <= lastId) {
           throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping page could not be verified");
@@ -270,8 +287,11 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     const result = {};
     for (const row of rows(response)) {
       const key = shopeeMappingKey(row);
-      if (!expected.has(key) || Object.hasOwn(result, key)
-        || !isDeepStrictEqual(row.bundle, expected.get(key).bundle)) {
+      const expectedRow = expected.get(key);
+      if (!expectedRow || Object.hasOwn(result, key)
+        || row.product_name_key !== expectedRow.product_name_key
+        || row.option_name_key !== expectedRow.option_name_key
+        || !isDeepStrictEqual(row.bundle, expectedRow.bundle)) {
         throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping write could not be verified");
       }
       result[key] = mapShopeeCustomLabelMapping(row);
