@@ -100,3 +100,81 @@ test("repository allocates workflow transaction numbers through the durable Supa
     p_request_key: "create-request-1",
   });
 });
+
+test("repository lists only requested Shopee mapping bundles by exact product and option key", async () => {
+  const calls = [];
+  const repository = createSupabaseDataRepository({
+    client: fakeClient(calls, () => [
+      { product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
+      { product_name_key: "ชุดเซต", option_name_key: "แดง", bundle: [{ sku: "SKU-C", quantity: 1 }] },
+    ]),
+  });
+
+  const result = await repository.listShopeeCustomLabelMappings(["ชุดเซต::ฟ้า"]);
+
+  assert.deepEqual(result, {
+    "ชุดเซต::ฟ้า": [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }],
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/rest\/v1\/shopee_custom_label_mappings(?:\?|$)/);
+  assert.equal(calls[0].options.method, undefined);
+});
+
+test("repository bulk upserts Shopee mappings and returns verified multi-SKU bundles", async () => {
+  const calls = [];
+  const savedRows = [
+    { product_name_key: "ชุดเซต", option_name_key: "ฟ้า", product_name_display: "ชุดเซต", option_name_display: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
+    { product_name_key: "ชุดเซต", option_name_key: "แดง", product_name_display: "ชุดเซต", option_name_display: "แดง", bundle: [{ sku: "SKU-C", quantity: 3 }] },
+  ];
+  const repository = createSupabaseDataRepository({ client: fakeClient(calls, () => savedRows) });
+
+  const result = await repository.upsertShopeeCustomLabelMappings({
+    "ชุดเซต::ฟ้า": { productName: "ชุดเซต", optionName: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
+    "ชุดเซต::แดง": { productName: "ชุดเซต", optionName: "แดง", bundle: [{ sku: "SKU-C", quantity: 3 }] },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/rest\/v1\/shopee_custom_label_mappings\?on_conflict=product_name_key,option_name_key$/);
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers.Prefer, "resolution=merge-duplicates,return=representation");
+  assert.deepEqual(JSON.parse(calls[0].options.body), savedRows);
+  assert.deepEqual(result, {
+    "ชุดเซต::ฟ้า": { productName: "ชุดเซต", optionName: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
+    "ชุดเซต::แดง": { productName: "ชุดเซต", optionName: "แดง", bundle: [{ sku: "SKU-C", quantity: 3 }] },
+  });
+});
+
+test("repository rejects Shopee mapping upsert when a returned bundle differs", async () => {
+  const repository = createSupabaseDataRepository({
+    client: fakeClient([], () => [{
+      product_name_key: "ชุดเซต",
+      option_name_key: "ฟ้า",
+      bundle: [{ sku: "SKU-A", quantity: 1 }],
+    }]),
+  });
+
+  await assert.rejects(
+    () => repository.upsertShopeeCustomLabelMappings({
+      "ชุดเซต::ฟ้า": { productName: "ชุดเซต", optionName: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }] },
+    }),
+    error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
+  );
+});
+
+test("repository rejects Shopee mapping upsert when a returned key is missing", async () => {
+  const repository = createSupabaseDataRepository({
+    client: fakeClient([], () => [{
+      product_name_key: "ชุดเซต",
+      option_name_key: "ฟ้า",
+      bundle: [{ sku: "SKU-A", quantity: 2 }],
+    }]),
+  });
+
+  await assert.rejects(
+    () => repository.upsertShopeeCustomLabelMappings({
+      "ชุดเซต::ฟ้า": { productName: "ชุดเซต", optionName: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }] },
+      "ชุดเซต::แดง": { productName: "ชุดเซต", optionName: "แดง", bundle: [{ sku: "SKU-C", quantity: 1 }] },
+    }),
+    error => error.code === "SUPABASE_DATA_VERIFY_FAILED",
+  );
+});

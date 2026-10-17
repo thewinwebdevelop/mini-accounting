@@ -1,5 +1,6 @@
 const { supabaseRequest } = require("./supabase.logic.js");
 const { canonicalHash, stableSourceKey } = require("./data-backend.logic.js");
+const { isDeepStrictEqual } = require("node:util");
 
 function dataError(code, message) {
   const error = new Error(message);
@@ -141,6 +142,28 @@ function toDocumentFileCloudRecord(record = {}) {
   };
 }
 
+function shopeeMappingKey(record) {
+  return `${record.product_name_key}::${record.option_name_key}`;
+}
+
+function mapShopeeCustomLabelMapping(record = {}) {
+  return {
+    productName: record.product_name_key,
+    optionName: record.option_name_key,
+    bundle: record.bundle,
+  };
+}
+
+function toShopeeCustomLabelMappingRow(mapping) {
+  return {
+    product_name_key: mapping.productName,
+    option_name_key: mapping.optionName,
+    product_name_display: mapping.productName,
+    option_name_display: mapping.optionName,
+    bundle: mapping.bundle,
+  };
+}
+
 function assertVerifiedRow(row, expected, kind) {
   if (!row || sourceKeyOf(row) !== sourceKeyOf(expected)
     || (sourceHashOf(expected) && sourceHashOf(row) !== sourceHashOf(expected))) {
@@ -207,6 +230,43 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     return result[0] || null;
   }
 
+  async function listShopeeCustomLabelMappings(keys = []) {
+    const requested = new Set(keys.map(key => String(key ?? "").trim()).filter(Boolean));
+    const result = {};
+    const mappingRows = await listTable("shopee_custom_label_mappings");
+    for (const row of mappingRows) {
+      const key = shopeeMappingKey(row);
+      if (requested.size && !requested.has(key)) continue;
+      result[key] = row.bundle;
+    }
+    return result;
+  }
+
+  async function upsertShopeeCustomLabelMappings(mappings) {
+    const mappingRows = Object.values(mappings).map(toShopeeCustomLabelMappingRow);
+    if (mappingRows.length === 0) return {};
+    const response = await supabaseRequest(client,
+      "/rest/v1/shopee_custom_label_mappings?on_conflict=product_name_key,option_name_key", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: mappingRows,
+      });
+    const expected = new Map(mappingRows.map(row => [shopeeMappingKey(row), row]));
+    const result = {};
+    for (const row of rows(response)) {
+      const key = shopeeMappingKey(row);
+      if (!expected.has(key) || Object.hasOwn(result, key)
+        || !isDeepStrictEqual(row.bundle, expected.get(key).bundle)) {
+        throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping write could not be verified");
+      }
+      result[key] = mapShopeeCustomLabelMapping(row);
+    }
+    if (Object.keys(result).length !== expected.size) {
+      throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping write could not be verified");
+    }
+    return result;
+  }
+
   async function allocateWorkflowTransactionNumber({ accountingMonth, requestKey = "" } = {}) {
     const response = await supabaseRequest(client, "/rest/v1/rpc/allocate_workflow_transaction_number", {
       method: "POST",
@@ -235,6 +295,8 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     listInventoryStockMovements: query => listTable("inventory_stock_movements", query, value => value),
     listProducts,
     listStockSkus,
+    listShopeeCustomLabelMappings,
+    upsertShopeeCustomLabelMappings,
     saveProduct: record => upsertTable("inventory_products", {
       source_key: stableSourceKey("product", record.id),
       source_id: record.id,
