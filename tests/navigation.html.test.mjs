@@ -74,6 +74,13 @@ test("home page links to the workflow template settings page", async () => {
   assert.match(menu, /ตั้งค่า Workflow Template/);
 });
 
+test("home page links to the Shopee custom label page", async () => {
+  const html = await readFile(new URL("../forms/index.html", import.meta.url), "utf8");
+  const menu = html.match(/<nav class="menu-panel" aria-label="เมนูหลัก">([\s\S]*?)<\/nav>/)?.[1] ?? "";
+  assert.match(menu, /href="\/shopee-custom-label"/);
+  assert.match(menu, /Custom Label จาก PDF/);
+});
+
 // The transaction list/detail pages built in this pass are reachable from the
 // home page now; Task 12's site-wide navigation sweep rolls both workflow
 // links out to the other major pages in the `pages` array above (this is why
