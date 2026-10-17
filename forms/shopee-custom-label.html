@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shopee Custom Label - หจก.สวีทเฮาส์</title>
+  <link rel="stylesheet" href="/shopee-workflow.css">
+</head>
+<body>
+  <header class="topbar">
+    <details class="app-menu">
+      <summary class="menu-button" aria-label="เปิดเมนู">☰</summary>
+      <nav class="menu-panel" aria-label="เมนู Shopee">
+        <div class="menu-group">
+          <div class="menu-group-title">Shopee workflow</div>
+          <a class="menu-item" href="/shopee-connection">เชื่อมต่อ / Sync</a>
+          <a class="menu-item" href="/shopee-orders">Orders</a>
+          <a class="menu-item" href="/shopee-mapping">Manual SKU</a>
+          <a class="menu-item" href="/shopee-shipment">นัดรับ / ใบปะหน้า</a>
+          <a class="menu-item" href="/shopee-custom-label">Custom Label จาก PDF</a>
+        </div>
+        <div class="menu-group">
+          <div class="menu-group-title">ระบบอื่น</div>
+          <a class="menu-item" href="/platform-orders">CSV Platform Orders</a>
+          <a class="menu-item" href="/workflow-transactions">Workflow ธุรกรรมเอกสาร</a>
+          <a class="menu-item" href="/workflow-templates">ตั้งค่า Workflow Template</a>
+          <a class="menu-item" href="/">หน้าหลัก</a>
+        </div>
+      </nav>
+    </details>
+    <div>
+      <h1 class="brand-title">Shopee Custom Label จาก PDF</h1>
+      <p class="brand-subtitle">อัปโหลดใบปะหน้าเอง แล้วเติม Manual SKU หลายตัวต่อรายการสินค้า</p>
+    </div>
+  </header>
+
+  <main class="page custom-label-page">
+    <section class="section">
+      <div class="section-header"><h2 class="section-title">1. อัปโหลดใบปะหน้า Shopee</h2></div>
+      <div class="section-body">
+        <div id="shopeeCustomLabelStatus" class="status-box" role="status" aria-live="polite"></div>
+        <div class="custom-label-upload-row">
+          <label class="field" for="shopeeCustomLabelFile">
+            <span>ไฟล์ PDF แบบหลายออเดอร์</span>
+            <input id="shopeeCustomLabelFile" type="file" accept="application/pdf,.pdf">
+          </label>
+          <button class="button primary" id="uploadShopeeCustomLabelButton" type="button">อ่านไฟล์ PDF</button>
+        </div>
+        <div id="shopeeCustomLabelFileInfo" class="muted">ยังไม่ได้เลือกไฟล์</div>
+      </div>
+    </section>
+
+    <section class="section custom-label-editor-section">
+      <div class="section-header">
+        <h2 class="section-title">2. ตรวจสอบรายการและกรอก Manual SKU</h2>
+        <span id="shopeeCustomLabelProgress" class="muted"></span>
+      </div>
+      <div class="section-body">
+        <div class="custom-label-toolbar">
+          <label class="field custom-label-page-picker" for="shopeeCustomLabelPages">
+            <span>หน้า PDF</span>
+            <select id="shopeeCustomLabelPages" disabled><option>อัปโหลดไฟล์ก่อน</option></select>
+          </label>
+          <div class="muted">รายการที่มีชื่อ/ตัวเลือกเดิมจะดึง bundle เดิมมาให้แก้ไขต่อได้</div>
+        </div>
+        <div id="shopeeCustomLabelItems" class="custom-label-items">
+          <div class="empty-state">อัปโหลด PDF เพื่อเริ่มกรอกข้อมูล</div>
+        </div>
+        <div class="actions">
+          <button class="button primary" id="previewShopeeCustomLabelButton" type="button" disabled>Preview</button>
+          <button class="button primary" id="saveShopeeCustomLabelButton" type="button" disabled>Save และสร้าง PDF</button>
+          <a class="button secondary" id="downloadShopeeCustomLabelButton" href="#" target="_blank" rel="noopener" hidden>ดาวน์โหลด PDF ที่บันทึก</a>
+          <button class="button secondary" id="printShopeeCustomLabelButton" type="button" hidden>เปิด PDF เพื่อพิมพ์</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section custom-label-compare-section">
+      <div class="section-header"><h2 class="section-title">3. เทียบ PDF เดิมกับ PDF ใหม่ (หน้าเดียวกัน)</h2></div>
+      <div class="section-body">
+        <div class="custom-label-compare-grid">
+          <div class="custom-label-pdf-pane">
+            <h3>ต้นฉบับ Shopee</h3>
+            <iframe id="shopeeCustomLabelOriginalFrame" title="PDF เดิม" src="about:blank"></iframe>
+          </div>
+          <div class="custom-label-pdf-pane">
+            <h3>ผลลัพธ์ Manual SKU</h3>
+            <iframe id="shopeeCustomLabelPreviewFrame" title="PDF ใหม่ preview" src="about:blank"></iframe>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <template id="customLabelBundleTemplate"><div data-custom-label-bundle><input data-custom-label-sku><input data-custom-label-quantity><button data-custom-label-remove type="button">ลบ</button></div></template>
+  <datalist id="customLabelStockSkuSuggestions"></datalist>
+  <script src="/shopee-custom-label.logic.browser.js"></script>
+</body>
+</html>
