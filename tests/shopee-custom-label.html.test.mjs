@@ -41,3 +41,10 @@ test("custom label download uses the saved PDF URL and refuses an empty fallback
   assert.match(browserLogic, /window\.open\("about:blank", "_blank"/);
   assert.match(browserLogic, /\/preview/);
 });
+
+test("custom label PDF URLs include a cookie-independent file access token in LINE mode", async () => {
+  const server = await readFile(join(process.cwd(), "local-server.mjs"), "utf8");
+  assert.match(server, /function customLabelFileUrl\(jobId, kind, request\)/);
+  assert.match(server, /issueFileAccessToken\(\{[\s\S]*?path: fileUrl\.pathname/);
+  assert.match(server, /\(source\|preview-file\|output\|download\|comparison\)/);
+});

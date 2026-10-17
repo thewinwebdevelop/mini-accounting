@@ -522,7 +522,8 @@ function readFileAccessToken(request, url) {
     parseExpenseRequestFileRoute(url.pathname)
       || parseSubstituteReceiptFileRoute(url.pathname)
       || parseWorkflowDocumentFileRoute(url.pathname)
-      || parseWorkflowTransactionFileRoute(url.pathname),
+      || parseWorkflowTransactionFileRoute(url.pathname)
+      || /^\/api\/shopee\/custom-labels\/[^/]+\/(source|preview-file|output|download|comparison)$/.test(url.pathname),
   );
   if (!isFileRoute) return null;
   return verifyFileAccessToken({
@@ -2777,7 +2778,20 @@ async function handleShopeeOrderLineMapping(lineId, request, response) {
   }
 }
 
-function publicCustomLabelJob(job) {
+function customLabelFileUrl(jobId, kind, request) {
+  const filePath = `/api/shopee/custom-labels/${encodeURIComponent(jobId)}/${kind}`;
+  if (authMode !== "line" || !request?.auth) return filePath;
+  const fileUrl = new URL(filePath, "http://sweet-house.local");
+  const fileToken = issueFileAccessToken({
+    secret: sessionSecret,
+    path: fileUrl.pathname,
+    auth: request.auth,
+  });
+  fileUrl.searchParams.set("fileToken", fileToken);
+  return `${fileUrl.pathname}${fileUrl.search}`;
+}
+
+function publicCustomLabelJob(job, request) {
   if (!job) return null;
   return {
     id: job.id,
@@ -2790,15 +2804,15 @@ function publicCustomLabelJob(job) {
     errorMessage: job.errorMessage || "",
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
-    sourceUrl: `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/source`,
+    sourceUrl: customLabelFileUrl(job.id, "source", request),
     previewUrl: job.previewFilePath
-      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/preview-file` : "",
+      ? customLabelFileUrl(job.id, "preview-file", request) : "",
     outputUrl: job.outputFilePath
-      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/output` : "",
+      ? customLabelFileUrl(job.id, "output", request) : "",
     comparisonUrl: (job.outputFilePath || job.previewFilePath)
-      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/comparison` : "",
+      ? customLabelFileUrl(job.id, "comparison", request) : "",
     downloadUrl: job.outputFilePath
-      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/download` : "",
+      ? customLabelFileUrl(job.id, "download", request) : "",
   };
 }
 
@@ -2852,7 +2866,7 @@ async function handleCustomLabelUpload(request, response) {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
     });
     await persistCustomLabelArtifact(job.id, "source", job.sourceFilePath);
-    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+    sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถอ่านไฟล์ใบปะหน้า Shopee ได้");
   }
@@ -2866,7 +2880,7 @@ async function handleCustomLabelJobGet(jobId, response) {
       response.end("Not found");
       return;
     }
-    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+    sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถอ่าน custom label job ได้");
   }
@@ -2885,7 +2899,7 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
       action === "preview" ? "preview" : "output",
       action === "preview" ? job.previewFilePath : job.outputFilePath,
     );
-    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+    sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, `ไม่สามารถ${action === "preview" ? "สร้าง preview" : "บันทึก"} custom label ได้`);
   }
