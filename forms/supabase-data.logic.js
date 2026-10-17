@@ -233,11 +233,26 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
   async function listShopeeCustomLabelMappings(keys = []) {
     const requested = new Set(keys.map(key => String(key ?? "").trim()).filter(Boolean));
     const result = {};
-    const mappingRows = await listTable("shopee_custom_label_mappings");
-    for (const row of mappingRows) {
-      const key = shopeeMappingKey(row);
-      if (requested.size && !requested.has(key)) continue;
-      result[key] = row.bundle;
+    let lastId = 0n;
+    while (true) {
+      const params = new URLSearchParams({
+        select: "id,product_name_key,option_name_key,bundle",
+        order: "id.asc",
+        limit: "500",
+      });
+      if (lastId) params.set("id", `gt.${lastId}`);
+      const mappingRows = await listTable("shopee_custom_label_mappings", params.toString());
+      if (mappingRows.length === 0) break;
+      for (const row of mappingRows) {
+        const id = String(row.id);
+        if (!/^[1-9]\d*$/.test(id) || BigInt(id) <= lastId) {
+          throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase Shopee mapping page could not be verified");
+        }
+        lastId = BigInt(id);
+        const key = shopeeMappingKey(row);
+        if (requested.size && !requested.has(key)) continue;
+        result[key] = row.bundle;
+      }
     }
     return result;
   }

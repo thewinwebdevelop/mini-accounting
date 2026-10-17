@@ -104,10 +104,13 @@ test("repository allocates workflow transaction numbers through the durable Supa
 test("repository lists only requested Shopee mapping bundles by exact product and option key", async () => {
   const calls = [];
   const repository = createSupabaseDataRepository({
-    client: fakeClient(calls, () => [
-      { product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
-      { product_name_key: "ชุดเซต", option_name_key: "แดง", bundle: [{ sku: "SKU-C", quantity: 1 }] },
-    ]),
+    client: fakeClient(calls, (url) => {
+      const afterId = Number(new URL(url).searchParams.get("id")?.slice(3) || 0);
+      return [
+        { id: 1, product_name_key: "ชุดเซต", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }] },
+        { id: 2, product_name_key: "ชุดเซต", option_name_key: "แดง", bundle: [{ sku: "SKU-C", quantity: 1 }] },
+      ].filter(row => row.id > afterId);
+    }),
   });
 
   const result = await repository.listShopeeCustomLabelMappings(["ชุดเซต::ฟ้า"]);
@@ -115,9 +118,33 @@ test("repository lists only requested Shopee mapping bundles by exact product an
   assert.deepEqual(result, {
     "ชุดเซต::ฟ้า": [{ sku: "SKU-A", quantity: 2 }, { sku: "SKU-B", quantity: 1 }],
   });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.match(calls[0].url, /\/rest\/v1\/shopee_custom_label_mappings(?:\?|$)/);
   assert.equal(calls[0].options.method, undefined);
+});
+
+test("repository finds a Thai punctuation mapping beyond a capped Supabase page", async () => {
+  const calls = [];
+  const tableRows = [
+    { id: 1, product_name_key: "อื่น", option_name_key: "ฟ้า", bundle: [{ sku: "SKU-1", quantity: 1 }] },
+    { id: 2, product_name_key: "ชุด::อื่น", option_name_key: "แดง/ใหญ่", bundle: [{ sku: "SKU-2", quantity: 1 }] },
+    { id: 3, product_name_key: "ชุด::พิเศษ, (A)&B", option_name_key: "ฟ้า::ใหญ่/1", bundle: [{ sku: "SKU-3", quantity: 2 }] },
+  ];
+  const repository = createSupabaseDataRepository({
+    client: fakeClient(calls, url => {
+      const afterId = Number(new URL(url).searchParams.get("id")?.slice(3) || 0);
+      return tableRows.filter(row => row.id > afterId).slice(0, 2);
+    }),
+  });
+
+  const result = await repository.listShopeeCustomLabelMappings(["ชุด::พิเศษ, (A)&B::ฟ้า::ใหญ่/1"]);
+
+  assert.deepEqual(result, {
+    "ชุด::พิเศษ, (A)&B::ฟ้า::ใหญ่/1": [{ sku: "SKU-3", quantity: 2 }],
+  });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get("id")), [null, "gt.2", "gt.3"]);
+  assert.ok(calls.every(call => !call.url.includes("พิเศษ")));
 });
 
 test("repository bulk upserts Shopee mappings and returns verified multi-SKU bundles", async () => {
