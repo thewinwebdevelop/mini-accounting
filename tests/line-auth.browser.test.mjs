@@ -20,5 +20,7 @@ test("line-auth page loads the LIFF SDK before the bootstrap", async () => {
 test("the browser bootstrap uses an internal return path only", async () => {
   const source = await readFile(new URL("../forms/line-auth.browser.js", import.meta.url), "utf8");
   assert.match(source, /startsWith\(["']\/["']\)/);
+  assert.match(source, /params\.get\(["']liff\.state["']\)/);
+  assert.match(source, /redirectToRequestedPath/);
   assert.match(source, /window\.location\.replace/);
 });

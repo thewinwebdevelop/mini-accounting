@@ -11,7 +11,8 @@
   }
 
   function safeReturnPath() {
-    const raw = new URLSearchParams(window.location.search).get("returnTo") || "/";
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("returnTo") || params.get("liff.state") || "/";
     if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
     try {
       const target = new URL(raw, window.location.origin);
@@ -21,6 +22,11 @@
     } catch {
       return "/";
     }
+  }
+
+  function redirectToRequestedPath() {
+    const target = safeReturnPath();
+    if (target !== "/") window.location.replace(target);
   }
 
   async function readJson(response) {
@@ -38,6 +44,7 @@
       const sessionResponse = await fetch("/api/auth/me", { credentials: "same-origin" });
       if (sessionResponse.ok) {
         setStatus("เข้าสู่ระบบแล้ว");
+        redirectToRequestedPath();
         return;
       }
     }
@@ -64,7 +71,10 @@
     const meResponse = await fetch("/api/auth/me", { credentials: "same-origin" });
     if (!meResponse.ok) throw new Error("ไม่สามารถยืนยัน session ได้");
     setStatus("เข้าสู่ระบบสำเร็จ กำลังเปิดระบบ...");
-    if (authGate) return;
+    if (authGate) {
+      redirectToRequestedPath();
+      return;
+    }
     window.location.replace(safeReturnPath());
   }
 

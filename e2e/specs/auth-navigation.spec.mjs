@@ -34,6 +34,12 @@ test("actual LIFF bootstrap installs a session and navigates only to safe intern
   await externalContext.close();
 });
 
+test("LIFF state opens a nested workflow route instead of staying on the home page", async ({ authenticatedPage, localApp }) => {
+  await authenticatedPage.goto("/?liff.state=%2Fworkflow-transactions", { waitUntil: "domcontentloaded" });
+  await authenticatedPage.waitForURL(new URL("/workflow-transactions", localApp.baseUrl).toString(), { timeout: 10000 });
+  await expect(authenticatedPage.locator("#startTemplateSelect")).toBeVisible();
+});
+
 test("pending and inactive users are denied while active users can logout", async ({ browser, anonymousPage, localApp }) => {
   const pending = await fetch(`${localApp.baseUrl}api/auth/line-session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idToken: "fixture-token-pending" }) });
   expect(pending.status).toBe(403);
