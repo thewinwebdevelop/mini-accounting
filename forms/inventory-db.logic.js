@@ -2,7 +2,7 @@ const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const DEFAULT_PRODUCT_CATEGORIES = ["เสื้อ", "กระโปรง", "กางเกง", "เดรส", "เซต", "เครื่องประดับ"];
 
 function getInventoryDbPath(rootDir) {
@@ -270,6 +270,33 @@ function ensureInventorySchema(db) {
       CHECK (status IN ('created', 'processing', 'ready', 'failed'))
     );
 
+    CREATE TABLE IF NOT EXISTS shopee_custom_label_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_file_name TEXT NOT NULL DEFAULT '',
+      source_file_path TEXT NOT NULL DEFAULT '',
+      preview_file_path TEXT NOT NULL DEFAULT '',
+      output_file_path TEXT NOT NULL DEFAULT '',
+      page_count INTEGER NOT NULL DEFAULT 0,
+      parsed_payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'parsed',
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('parsed', 'previewed', 'saved', 'failed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shopee_custom_label_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_name_key TEXT NOT NULL,
+      option_name_key TEXT NOT NULL,
+      product_name_display TEXT NOT NULL DEFAULT '',
+      option_name_display TEXT NOT NULL DEFAULT '',
+      bundle_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (product_name_key, option_name_key)
+    );
+
     CREATE TABLE IF NOT EXISTS platform_order_reservations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       import_id INTEGER NOT NULL,
@@ -355,6 +382,10 @@ function ensureInventorySchema(db) {
       ON shipment_batch_orders (batch_id, status);
     CREATE INDEX IF NOT EXISTS idx_shipment_actions_batch_status
       ON shipment_actions (batch_id, status);
+    CREATE INDEX IF NOT EXISTS idx_shopee_custom_label_jobs_status
+      ON shopee_custom_label_jobs (status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_shopee_custom_label_mappings_keys
+      ON shopee_custom_label_mappings (product_name_key, option_name_key);
   `);
 
   db.prepare(`

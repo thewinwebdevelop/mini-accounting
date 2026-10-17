@@ -40,6 +40,8 @@ test("ensureInventorySchema creates inventory database tables", async () => {
       "shipment_batches",
       "shipping_document_jobs",
       "shopee_connections",
+    "shopee_custom_label_jobs",
+    "shopee_custom_label_mappings",
       "shopee_sync_runs",
       "stock_movement_reversals",
       "stock_movements",
