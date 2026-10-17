@@ -109,6 +109,23 @@ class ShopeeCustomLabelPdfTest(unittest.TestCase):
             self.assertIn("MANUAL-A", extracted)
             self.assertIn("MANUAL-B", extracted)
 
+    def test_render_preserves_shopee_qr_images(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            output = directory / "output.pdf"
+            module.render_custom_label(FIXTURE, output, [{
+                "pageNumber": 1,
+                "orderNo": "TEST123",
+                "manualRows": [
+                    {"sku": "MANUAL-A", "quantity": 1},
+                    {"sku": "MANUAL-B", "quantity": 1},
+                ],
+            }])
+            source_page = PdfReader(str(FIXTURE)).pages[0]
+            output_page = PdfReader(str(output)).pages[0]
+            self.assertEqual(len(output_page.images), len(source_page.images))
+
     def test_render_rejects_manual_rows_that_do_not_fit(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

@@ -199,7 +199,7 @@ def _draw_page_overlay(page, page_payload: dict, page_index: int) -> None:
     # Start slightly above Shopee's lower product block so its dashed border
     # cannot peek through the replacement overlay, while keeping the delivery
     # section, barcode, and QR area untouched.
-    top = page_height * 0.53
+    top = page_height * 0.515
     left = max(16.0, page_width * 0.028)
     right = page_width - left
     header_height = 30.0
@@ -234,10 +234,12 @@ def _draw_page_overlay(page, page_payload: dict, page_index: int) -> None:
         quantity = _positive_quantity(row.get("quantity"), f"quantity on page {page_number}")
         layer.drawString(left + 8, y, sku)
         layer.drawRightString(right - 8, y, str(quantity))
-        y -= row_height
         layer.setStrokeColorRGB(0.75, 0.75, 0.75)
-        layer.line(left, y + 5, right, y + 5)
+        # Put separators midway between text baselines. Drawing at the next
+        # row's baseline makes a multi-row bundle line run through its text.
+        layer.line(left, y - (row_height / 2), right, y - (row_height / 2))
         layer.setStrokeColorRGB(0.1, 0.1, 0.1)
+        y -= row_height
 
     layer.setFont(_font_name(), 11)
     layer.drawString(left, bottom + 7, f"Shopee Order No. {page_payload.get('orderNo', '')}")
