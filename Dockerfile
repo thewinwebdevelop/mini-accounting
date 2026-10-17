@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 python3-venv \
   && python3 -m venv /opt/sweet-house-python \
-  && /opt/sweet-house-python/bin/pip install --no-cache-dir reportlab pypdf uharfbuzz \
+  && /opt/sweet-house-python/bin/pip install --no-cache-dir reportlab pypdf pdfplumber uharfbuzz \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 

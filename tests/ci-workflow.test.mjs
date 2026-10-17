@@ -4,6 +4,13 @@ import path from "node:path";
 import test from "node:test";
 
 const workflowPath = path.resolve(import.meta.dirname, "../.github/workflows/e2e.yml");
+const dockerfilePath = path.resolve(import.meta.dirname, "../Dockerfile");
+
+test("production Docker image installs every Shopee custom-label PDF dependency", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8");
+
+  assert.match(dockerfile, /pip install[^\n]*pdfplumber/);
+});
 
 test("CI workflow blocks green status until the complete test and E2E matrix passes", async () => {
   const workflow = await readFile(workflowPath, "utf8");
