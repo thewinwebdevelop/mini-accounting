@@ -141,6 +141,13 @@ const {
   renderBatchLabels,
 } = require("./forms/shopee-shipment.logic.js");
 const {
+  getCustomLabelFile,
+  getCustomLabelJob,
+  parseCustomLabelUpload,
+  previewCustomLabel,
+  saveCustomLabel,
+} = require("./forms/shopee-custom-label.logic.js");
+const {
   rebuildDocumentIndex,
 } = require("./forms/document-index.logic.js");
 
@@ -246,6 +253,8 @@ function safeStaticPath(urlPath) {
     "/shopee-mapping/": "/shopee-mapping.html",
     "/shopee-shipment": "/shopee-shipment.html",
     "/shopee-shipment/": "/shopee-shipment.html",
+    "/shopee-custom-label": "/shopee-custom-label.html",
+    "/shopee-custom-label/": "/shopee-custom-label.html",
   };
   const requestedPath = routeMap[urlPath] || urlPath;
   const normalized = path.normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.[/\\])+/, "");
@@ -1515,6 +1524,86 @@ async function handleShopeeOrderLineMapping(lineId, request, response) {
   }
 }
 
+function publicCustomLabelJob(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    originalFileName: job.originalFileName,
+    pageCount: job.pageCount,
+    pages: job.parsedPayload?.pages || [],
+    autofillMappings: job.parsedPayload?.autofillMappings || {},
+    savedMappings: job.savedMappings || {},
+    status: job.status,
+    errorMessage: job.errorMessage || "",
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    sourceUrl: `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/source`,
+    previewUrl: job.previewFilePath
+      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/preview-file` : "",
+    outputUrl: job.outputFilePath
+      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/output` : "",
+  };
+}
+
+async function handleCustomLabelUpload(request, response) {
+  try {
+    const body = await readRequestBody(request);
+    const { files } = parseMultipartForm(body, request.headers["content-type"]);
+    const file = files.find((upload) => upload.evidenceKey === "file") || files[0];
+    const job = await parseCustomLabelUpload(rootDir, file, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+    });
+    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถอ่านไฟล์ใบปะหน้า Shopee ได้");
+  }
+}
+
+async function handleCustomLabelJobGet(jobId, response) {
+  try {
+    const job = getCustomLabelJob(rootDir, jobId);
+    if (!job) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+  } catch (error) {
+    sendOperationError(response, error, "ไม่สามารถอ่าน custom label job ได้");
+  }
+}
+
+async function handleCustomLabelTransform(jobId, action, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const transform = action === "preview" ? previewCustomLabel : saveCustomLabel;
+    const job = await transform(rootDir, jobId, body.mappings || {}, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+      parsedPayload: body.parsedPayload || undefined,
+    });
+    sendJson(response, 200, { job: publicCustomLabelJob(job) });
+  } catch (error) {
+    sendOperationError(response, error, `ไม่สามารถ${action === "preview" ? "สร้าง preview" : "บันทึก"} custom label ได้`);
+  }
+}
+
+async function handleCustomLabelFile(jobId, kind, response) {
+  try {
+    const file = getCustomLabelFile(rootDir, jobId, kind);
+    const body = await readFile(file.path);
+    const safeName = String(file.fileName || `${kind}.pdf`).replace(/[\r\n"]+/g, "_");
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="${safeName}"`,
+      "content-length": String(body.length),
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  }
+}
+
 function shopeeClientFromEnvironment() {
   return createShopeeClient({
     partnerId: process.env.SHOPEE_PARTNER_ID || "",
@@ -2081,6 +2170,27 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/shopee/custom-labels") {
+    await handleCustomLabelUpload(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/preview")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/custom-labels/", "")
+      .replace("/preview", ""));
+    await handleCustomLabelTransform(jobId, "preview", request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/save")) {
+    const jobId = decodeURIComponent(url.pathname
+      .replace("/api/shopee/custom-labels/", "")
+      .replace("/save", ""));
+    await handleCustomLabelTransform(jobId, "save", request, response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/shopee/shipment-batches/prepare") {
     await handleShopeeShipmentBatchPrepare(request, response);
     return;
@@ -2463,6 +2573,36 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/shopee/connection") {
       await handleShopeeConnection(url, response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/source")) {
+      const jobId = decodeURIComponent(url.pathname
+        .replace("/api/shopee/custom-labels/", "")
+        .replace("/source", ""));
+      await handleCustomLabelFile(jobId, "source", response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/preview-file")) {
+      const jobId = decodeURIComponent(url.pathname
+        .replace("/api/shopee/custom-labels/", "")
+        .replace("/preview-file", ""));
+      await handleCustomLabelFile(jobId, "preview", response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/output")) {
+      const jobId = decodeURIComponent(url.pathname
+        .replace("/api/shopee/custom-labels/", "")
+        .replace("/output", ""));
+      await handleCustomLabelFile(jobId, "output", response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/")) {
+      const jobId = decodeURIComponent(url.pathname.replace("/api/shopee/custom-labels/", ""));
+      await handleCustomLabelJobGet(jobId, response);
       return;
     }
 

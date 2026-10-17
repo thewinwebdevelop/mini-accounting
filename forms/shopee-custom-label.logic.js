@@ -1,4 +1,12 @@
+const { execFile } = require("node:child_process");
+const { existsSync } = require("node:fs");
+const { mkdir, readFile, writeFile } = require("node:fs/promises");
+const path = require("node:path");
+const { promisify } = require("node:util");
+const { randomUUID } = require("node:crypto");
 const { openInventoryDatabase, ensureInventorySchema } = require("./inventory-db.logic.js");
+
+const execFileAsync = promisify(execFile);
 
 const PRIVATE_USE_THAI_TONE_MAP = {
   "\uf70a": "่",
@@ -216,7 +224,7 @@ function saveCustomLabelMappings(rootDir, jobId, mappings, options = {}) {
         );
       }
 
-      const parsedPayload = JSON.parse(job.parsed_payload_json || "{}");
+      const parsedPayload = options.parsedPayload || JSON.parse(job.parsed_payload_json || "{}");
       parsedPayload.savedMappings = normalizedMappings;
       const updated = db.prepare(`
         UPDATE shopee_custom_label_jobs
@@ -238,13 +246,181 @@ function saveCustomLabelMappings(rootDir, jobId, mappings, options = {}) {
   });
 }
 
+function pythonExecutable(options = {}) {
+  const configured = options.pythonBin || process.env.SWEET_HOUSE_PYTHON_BIN;
+  if (configured) return configured;
+  const bundled = "/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
+  return existsSync(bundled) ? bundled : "python3";
+}
+
+function customLabelScriptPath() {
+  return path.join(__dirname, "..", "scripts", "shopee_custom_label_pdf.py");
+}
+
+function assertPdfBuffer(file) {
+  if (!file?.buffer?.length) throw new Error("เลือกไฟล์ PDF ใบปะหน้า Shopee");
+  if (!file.buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+    throw new Error("ไฟล์ที่อัปโหลดไม่ใช่ PDF ที่ถูกต้อง");
+  }
+}
+
+function jobDirectory(rootDir, job) {
+  const storageRoot = path.resolve(rootDir, "data", "shopee-custom-labels");
+  const directory = path.resolve(path.dirname(job.sourceFilePath));
+  if (!directory.startsWith(`${storageRoot}${path.sep}`)) {
+    throw new Error("custom label file path ไม่ถูกต้อง");
+  }
+  return directory;
+}
+
+async function runPdfCommand(args, options = {}) {
+  try {
+    await execFileAsync(pythonExecutable(options), [customLabelScriptPath(), ...args], {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || "").trim();
+    throw new Error(detail || "ไม่สามารถประมวลผลไฟล์ PDF ใบปะหน้า Shopee ได้");
+  }
+}
+
+function pagePayloadSource(job, options = {}) {
+  return options.parsedPayload || job.parsedPayload || {};
+}
+
+function buildPagePayloads(job, mappings, options = {}) {
+  const parsedPayload = pagePayloadSource(job, options);
+  const pages = Array.isArray(parsedPayload.pages) ? parsedPayload.pages : [];
+  if (!pages.length) throw new Error("ไม่พบข้อมูลรายการสินค้าในไฟล์ PDF");
+  if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) {
+    throw new Error("กรุณากรอก manual SKU ให้ครบทุกรายการ");
+  }
+
+  const normalizedMappings = {};
+  const pagePayloads = pages.map((page) => {
+    if (page.status === "needs_review") {
+      throw new Error(`กรุณาตรวจสอบรายการสินค้าในหน้า ${page.pageNumber} ก่อนดำเนินการต่อ`);
+    }
+    const manualLines = (page.items || []).map((item) => {
+      const mapping = mappings[item.mappingKey];
+      if (!mapping) throw new Error(`ยังไม่มี manual SKU สำหรับ ${item.productName} / ${item.optionName}`);
+      const names = normalizeMappingKey(
+        mapping.productName || item.productName,
+        mapping.optionName || item.optionName,
+      );
+      const bundle = validateBundle(mapping.bundle || mapping);
+      normalizedMappings[names.key] = {
+        productName: names.productName,
+        optionName: names.optionName,
+        bundle,
+      };
+      return { quantity: item.quantity, bundle };
+    });
+    return {
+      pageNumber: page.pageNumber,
+      orderNo: page.orderNo,
+      manualRows: aggregateManualSkus(manualLines),
+    };
+  });
+  return { normalizedMappings, pagePayloads, parsedPayload };
+}
+
+async function parseCustomLabelUpload(rootDir, file, options = {}) {
+  assertPdfBuffer(file);
+  const id = randomUUID();
+  const directory = path.resolve(rootDir, "data", "shopee-custom-labels", id);
+  await mkdir(directory, { recursive: true });
+  const sourceFilePath = path.join(directory, "source.pdf");
+  const parsedFilePath = path.join(directory, "parsed.json");
+  await writeFile(sourceFilePath, file.buffer);
+  await runPdfCommand(["parse", "--input", sourceFilePath, "--output", parsedFilePath], options);
+  const parsedPayload = JSON.parse(await readFile(parsedFilePath, "utf8"));
+  const keys = (parsedPayload.pages || []).flatMap((page) => (page.items || []).map((item) => item.mappingKey));
+  parsedPayload.autofillMappings = loadCustomLabelMappings(rootDir, keys);
+  return createCustomLabelJob(rootDir, {
+    originalFileName: file.originalName || file.filename || "shopee-labels.pdf",
+    sourceFilePath,
+    pageCount: parsedPayload.pages?.length || 0,
+    parsedPayload,
+  });
+}
+
+async function renderCustomLabelJob(rootDir, job, mappings, fileName, options = {}) {
+  const { normalizedMappings, pagePayloads, parsedPayload } = buildPagePayloads(job, mappings, options);
+  const directory = jobDirectory(rootDir, job);
+  const payloadFilePath = path.join(directory, "render-payload.json");
+  const outputFilePath = path.join(directory, fileName);
+  await writeFile(payloadFilePath, JSON.stringify({ pages: pagePayloads }, null, 2), "utf8");
+  await runPdfCommand([
+    "render",
+    "--input", job.sourceFilePath,
+    "--output", outputFilePath,
+    "--payload", payloadFilePath,
+  ], options);
+  return { normalizedMappings, parsedPayload, outputFilePath };
+}
+
+function updateCustomLabelPreview(rootDir, jobId, previewFilePath, options = {}) {
+  return withDatabase(rootDir, (db) => {
+    const timestamp = nowIso(options);
+    const updated = db.prepare(`
+      UPDATE shopee_custom_label_jobs
+      SET preview_file_path = ?, status = 'previewed', updated_at = ?, error_message = ''
+      WHERE id = ?
+      RETURNING *
+    `).get(cleanText(previewFilePath), timestamp, Number(jobId));
+    if (!updated) throw new Error("ไม่พบ custom label job");
+    return mapJob(updated);
+  });
+}
+
+async function previewCustomLabel(rootDir, jobId, mappings, options = {}) {
+  const job = getCustomLabelJob(rootDir, jobId);
+  if (!job) throw new Error("ไม่พบ custom label job");
+  const result = await renderCustomLabelJob(rootDir, job, mappings, "preview.pdf", options);
+  return updateCustomLabelPreview(rootDir, jobId, result.outputFilePath, options);
+}
+
+async function saveCustomLabel(rootDir, jobId, mappings, options = {}) {
+  const job = getCustomLabelJob(rootDir, jobId);
+  if (!job) throw new Error("ไม่พบ custom label job");
+  const result = await renderCustomLabelJob(rootDir, job, mappings, "output.pdf", options);
+  return saveCustomLabelMappings(rootDir, jobId, result.normalizedMappings, {
+    ...options,
+    outputFilePath: result.outputFilePath,
+    parsedPayload: result.parsedPayload,
+  });
+}
+
+function getCustomLabelFile(rootDir, jobId, kind) {
+  const job = getCustomLabelJob(rootDir, jobId);
+  if (!job) throw new Error("ไม่พบ custom label job");
+  const filePath = kind === "source" ? job.sourceFilePath
+    : kind === "preview" ? job.previewFilePath
+      : kind === "output" ? job.outputFilePath : "";
+  if (!filePath) throw new Error("ยังไม่มีไฟล์ที่ร้องขอ");
+  const directory = jobDirectory(rootDir, job);
+  const absolutePath = path.resolve(filePath);
+  if (!absolutePath.startsWith(`${directory}${path.sep}`) || !existsSync(absolutePath)) {
+    throw new Error("ไม่พบไฟล์ที่ร้องขอ");
+  }
+  return {
+    path: absolutePath,
+    fileName: kind === "source" ? job.originalFileName || "source.pdf" : `${kind}.pdf`,
+  };
+}
+
 module.exports = {
   aggregateManualSkus,
   createCustomLabelJob,
   getCustomLabelJob,
+  getCustomLabelFile,
   loadCustomLabelMappings,
   normalizeMappingKey,
   normalizeMappingText,
+  parseCustomLabelUpload,
+  previewCustomLabel,
+  saveCustomLabel,
   saveCustomLabelMappings,
   validateBundle,
 };
