@@ -60,6 +60,13 @@ class ShopeeCustomLabelPdfTest(unittest.TestCase):
         self.assertIn("เสื้อแขนตุ๊กตาผ้าฉลุลายดอกไม้", parsed["pages"][0]["items"][0]["productName"])
         self.assertEqual(parsed["pages"][0]["items"][0]["optionName"], "ผ้าลายดอกไม้เหลือง,เฉพาะเสื้อ")
 
+    def test_parse_keeps_same_line_option_order_when_baselines_differ(self):
+        module = load_module()
+        parsed = module.parse_pdf(FIXTURE)
+
+        option = parsed["pages"][7]["items"][0]["optionName"]
+        self.assertLess(option.index("ฟ้าดอกไม้"), option.index("1,เสื้อ+กางเกง"))
+
     def test_parse_groups_wrapped_names_and_multiple_item_rows(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

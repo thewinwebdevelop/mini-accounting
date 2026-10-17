@@ -44,7 +44,21 @@ def _word_text(word: dict) -> str:
 
 
 def _join_words(words: list[dict]) -> str:
-    return normalize_text(" ".join(_word_text(word) for word in sorted(words, key=lambda item: (item["top"], item["x0"]))))
+    # PDF text extraction may give glyphs on the same visual line slightly
+    # different `top` values. Group near-equal baselines first, then read each
+    # visual line from left to right. This matters for options such as
+    # "ฟ้าดอกไม้" followed by "1,เสื้อ+กางเกง".
+    lines: list[tuple[float, list[dict]]] = []
+    for word in sorted(words, key=lambda item: (float(item["top"]), float(item["x0"]))):
+        top = float(word["top"])
+        if not lines or abs(top - lines[-1][0]) > 4:
+            lines.append((top, [word]))
+        else:
+            lines[-1][1].append(word)
+    return normalize_text(" ".join(
+        normalize_text(" ".join(_word_text(word) for word in sorted(line_words, key=lambda item: float(item["x0"]))))
+        for _, line_words in lines
+    ))
 
 
 def _order_number(page) -> str:
