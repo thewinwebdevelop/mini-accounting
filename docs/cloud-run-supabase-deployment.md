@@ -18,7 +18,8 @@ contract ของ Cloud Run: <https://cloud.google.com/run/docs/container-contr
 รัน migration ตามลำดับใน `supabase/migrations/` ผ่าน Supabase SQL Editor หรือ
 Supabase CLI โดยเฉพาะตาราง `documents`, `document_files`,
 `line_intake_items`, `storage_migration_records` และ bucket private
-`sweet-house-files`.
+`sweet-house-files` รวมถึง `202610180001_shopee_custom_label_mappings.sql`
+สำหรับ mapping SKU ของ Shopee Custom Label ก่อนเปิดใช้ฟีเจอร์นี้บน Cloud Run.
 
 จากนั้น migrate ข้อมูลเดิมจากเครื่องบริษัทตามคู่มือ
 `docs/supabase-migration-runbook.md` ก่อนเปิดใช้ production read mode

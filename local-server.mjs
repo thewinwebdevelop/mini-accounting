@@ -278,6 +278,11 @@ const customLabelStorageClient = cloudRun
     bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET,
   })
   : null;
+const customLabelDataRepository = cloudRun
+  ? createSupabaseDataRepository({
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+  })
+  : null;
 const documentDataAdapter = createDocumentDataAdapter({
   env: runtimeEnv,
   persistFiles: documentFileSynchronizer
@@ -2864,6 +2869,9 @@ async function handleCustomLabelUpload(request, response) {
     const file = files.find((upload) => upload.evidenceKey === "file") || files[0];
     const job = await parseCustomLabelUpload(rootDir, file, {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+      ...(customLabelDataRepository
+        ? { mappingLoader: keys => customLabelDataRepository.listShopeeCustomLabelMappings(keys) }
+        : {}),
     });
     await persistCustomLabelArtifact(job.id, "source", job.sourceFilePath);
     sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
@@ -2893,6 +2901,9 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
     const job = await transform(rootDir, jobId, body.mappings || {}, {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
       parsedPayload: body.parsedPayload || undefined,
+      ...(customLabelDataRepository && action === "save"
+        ? { mappingSaver: mappings => customLabelDataRepository.upsertShopeeCustomLabelMappings(mappings) }
+        : {}),
     });
     await persistCustomLabelArtifact(
       job.id,
