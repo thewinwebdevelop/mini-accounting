@@ -10,8 +10,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const downloadButton = document.querySelector("#downloadShopeeCustomLabelButton");
   const printButton = document.querySelector("#printShopeeCustomLabelButton");
   const comparisonButton = document.querySelector("#openShopeeCustomLabelComparisonButton");
-  const suggestionsNode = document.querySelector("#customLabelStockSkuSuggestions");
-  const state = { job: null, entries: new Map(), currentPage: 1, stockSkus: [] };
+  const state = { job: null, entries: new Map(), currentPage: 1 };
 
   const escapeHtml = (value) => String(value ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -89,18 +88,9 @@ window.addEventListener("DOMContentLoaded", () => {
     progressNode.textContent = `${state.job.pageCount} หน้า / ${totalItems} รายการสินค้า`;
   }
 
-  function renderStockSuggestions() {
-    suggestionsNode.replaceChildren(...state.stockSkus.map((sku) => {
-      const option = document.createElement("option");
-      option.value = sku.sku || sku.stockSku || "";
-      option.label = `${sku.productName || ""} ${sku.sku || ""}`.trim();
-      return option;
-    }));
-  }
-
   function renderBundleRows(entry, pageNumber, itemIndex) {
     return entry.bundle.map((row, bundleIndex) => `<div class="custom-label-bundle-row" data-custom-label-bundle="${pageKey(pageNumber, itemIndex)}:${bundleIndex}">
-      <input data-custom-label-sku="${pageKey(pageNumber, itemIndex)}:${bundleIndex}" list="customLabelStockSkuSuggestions" value="${escapeHtml(row.sku)}" placeholder="เช่น TOP-BLUE" aria-label="Manual SKU">
+      <input data-custom-label-sku="${pageKey(pageNumber, itemIndex)}:${bundleIndex}" value="${escapeHtml(row.sku)}" placeholder="เช่น TOP-BLUE" aria-label="Manual SKU">
       <input data-custom-label-quantity="${pageKey(pageNumber, itemIndex)}:${bundleIndex}" type="number" min="1" step="1" value="${escapeHtml(row.quantity)}" aria-label="จำนวน Manual SKU">
       <button class="button secondary small" type="button" data-custom-label-remove="${pageKey(pageNumber, itemIndex)}:${bundleIndex}" aria-label="ลบ Manual SKU">ลบ</button>
     </div>`).join("");
@@ -301,9 +291,6 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   printButton.addEventListener("click", () => { if (state.job?.outputUrl) window.open(state.job.outputUrl, "_blank", "noopener"); });
 
-  api("/api/inventory/stock-skus")
-    .then((result) => { state.stockSkus = result.stockSkus || result.skus || []; renderStockSuggestions(); })
-    .catch(() => {});
   clearStatus();
   renderPageOptions();
   updateActions();

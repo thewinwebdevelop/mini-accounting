@@ -42,6 +42,16 @@ test("custom label download uses the saved PDF URL and refuses an empty fallback
   assert.match(browserLogic, /\/preview/);
 });
 
+test("manual SKU fields are plain text inputs and only use saved mappings for autofill", async () => {
+  const html = await readFile(join(process.cwd(), "forms", "shopee-custom-label.html"), "utf8");
+  const browserLogic = await readFile(join(process.cwd(), "forms", "shopee-custom-label.logic.browser.js"), "utf8");
+  assert.doesNotMatch(html, /customLabelStockSkuSuggestions/);
+  assert.doesNotMatch(browserLogic, /customLabelStockSkuSuggestions/);
+  assert.doesNotMatch(browserLogic, /\/api\/inventory\/stock-skus/);
+  assert.match(browserLogic, /job\.autofillMappings\?\.?\[item\.mappingKey\]/);
+  assert.match(browserLogic, /data-custom-label-sku=.*value="\$\{escapeHtml\(row\.sku\)\}"/);
+});
+
 test("custom label PDF URLs include a cookie-independent file access token in LINE mode", async () => {
   const server = await readFile(join(process.cwd(), "local-server.mjs"), "utf8");
   assert.match(server, /function customLabelFileUrl\(jobId, kind, request\)/);
