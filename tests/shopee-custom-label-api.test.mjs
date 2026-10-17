@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,6 +37,10 @@ async function spawnServer(rootDir) {
 async function jsonResponse(response) {
   const body = await response.json();
   return { response, body };
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function buildMappings(job) {
@@ -78,6 +83,8 @@ test("uploaded custom-label API parses, previews without saving mappings, and sa
     const source = await fetch(`${baseUrl}${uploaded.body.job.sourceUrl}`);
     assert.equal(source.status, 200);
     assert.equal(source.headers.get("content-type"), "application/pdf");
+    const sourceBytesBefore = Buffer.from(await source.arrayBuffer());
+    const sourceHashBefore = sha256(sourceBytesBefore);
 
     const mappings = buildMappings(uploaded.body.job);
     const preview = await jsonResponse(await fetch(`${baseUrl}/api/shopee/custom-labels/${uploaded.body.job.id}/preview`, {
@@ -105,6 +112,15 @@ test("uploaded custom-label API parses, previews without saving mappings, and sa
     assert.equal(output.status, 200);
     assert.equal(output.headers.get("content-type"), "application/pdf");
     assert.ok((await output.arrayBuffer()).byteLength > 0);
+
+    const sourceAfter = await fetch(`${baseUrl}${uploaded.body.job.sourceUrl}`);
+    assert.equal(sha256(Buffer.from(await sourceAfter.arrayBuffer())), sourceHashBefore);
+    const secondUpload = await uploadFixture(baseUrl);
+    assert.equal(secondUpload.response.status, 200);
+    const firstKey = Object.keys(mappings)[0];
+    assert.deepEqual(secondUpload.body.job.autofillMappings[firstKey], mappings[firstKey].bundle);
+    const traversal = await fetch(`${baseUrl}/api/shopee/custom-labels/${uploaded.body.job.id}/%2e%2e/source`);
+    assert.equal(traversal.status, 404);
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));

@@ -182,7 +182,10 @@ def _draw_page_overlay(page, page_payload: dict, page_index: int) -> None:
     page_width = float(page.mediabox.width)
     page_height = float(page.mediabox.height)
     bottom = max(30.0, page_height * 0.043)
-    top = page_height * 0.51
+    # Start slightly above Shopee's lower product block so its dashed border
+    # cannot peek through the replacement overlay, while keeping the delivery
+    # section, barcode, and QR area untouched.
+    top = page_height * 0.53
     left = max(16.0, page_width * 0.028)
     right = page_width - left
     header_height = 30.0
@@ -197,7 +200,9 @@ def _draw_page_overlay(page, page_payload: dict, page_index: int) -> None:
     buffer = io.BytesIO()
     layer = canvas.Canvas(buffer, pagesize=(page_width, page_height))
     layer.setFillColorRGB(1, 1, 1)
-    layer.rect(left, bottom, right - left, top - bottom, stroke=0, fill=1)
+    # Extend the whiteout to the page edges so the original table's dashed
+    # border cannot remain as a stray mark beside the new inset table.
+    layer.rect(0, max(0.0, bottom - 2), page_width, top - max(0.0, bottom - 2), stroke=0, fill=1)
     layer.setStrokeColorRGB(0.1, 0.1, 0.1)
     layer.setFillColorRGB(0, 0, 0)
     layer.setFont(_font_name(), 12)
