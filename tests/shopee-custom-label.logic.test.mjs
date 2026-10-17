@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -14,11 +14,22 @@ const {
   getCustomLabelJob,
   loadCustomLabelMappings,
   normalizeMappingKey,
+  parseCustomLabelUpload,
   pythonExecutable,
+  saveCustomLabel,
   customLabelStorageObjectPath,
   saveCustomLabelMappings,
   validateBundle,
 } = customLabel;
+
+const FIXTURE = join(process.cwd(), "tests", "fixtures", "shopee-custom-label-sample.pdf");
+
+async function sampleUpload(rootDir, options = {}) {
+  return parseCustomLabelUpload(rootDir, {
+    originalName: "shopee-labels.pdf",
+    buffer: await readFile(FIXTURE),
+  }, options);
+}
 
 test("custom label PDF commands use the Cloud Run Python virtualenv", () => {
   const previousPython = process.env.SWEET_HOUSE_PYTHON;
@@ -139,6 +150,65 @@ test("saveCustomLabelMappings persists reusable bundle templates and an immutabl
     try {
       assert.equal(db.prepare("SELECT COUNT(*) AS count FROM shopee_custom_label_jobs").get().count, 1);
       assert.equal(db.prepare("SELECT COUNT(*) AS count FROM shopee_custom_label_mappings").get().count, 1);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("parseCustomLabelUpload awaits an injected loader and stores its bundle in autofill", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-custom-label-loader-"));
+  try {
+    let requestedKeys;
+    const bundle = [{ sku: "TOP-BLUE", quantity: 1 }, { sku: "SKIRT-LACE", quantity: 2 }];
+    const job = await sampleUpload(rootDir, {
+      mappingLoader: async (keys) => {
+        requestedKeys = keys;
+        return Object.fromEntries(keys.map((key) => [key, bundle]));
+      },
+    });
+    const firstKey = job.parsedPayload.pages[0].items[0].mappingKey;
+
+    assert.ok(requestedKeys.includes(firstKey));
+    assert.deepEqual(job.parsedPayload.autofillMappings[firstKey], bundle);
+    assert.deepEqual(getCustomLabelJob(rootDir, job.id).parsedPayload.autofillMappings[firstKey], bundle);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("saveCustomLabel sends normalized multi-SKU mappings to injected saver and keeps SQLite reusable mappings empty", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-custom-label-saver-"));
+  try {
+    const job = await sampleUpload(rootDir);
+    const mappings = {};
+    for (const page of job.parsedPayload.pages) {
+      for (const item of page.items) {
+        mappings[item.mappingKey] = {
+          productName: item.productName,
+          optionName: item.optionName,
+          bundle: [{ sku: " TOP-BLUE ", quantity: "1" }, { sku: "SKIRT-LACE", quantity: "2" }],
+        };
+      }
+    }
+    let savedMappings;
+    const saved = await saveCustomLabel(rootDir, job.id, mappings, {
+      mappingSaver: async (normalizedMappings) => {
+        await Promise.resolve();
+        savedMappings = normalizedMappings;
+      },
+    });
+    const firstKey = job.parsedPayload.pages[0].items[0].mappingKey;
+    const expectedBundle = [{ sku: "TOP-BLUE", quantity: 1 }, { sku: "SKIRT-LACE", quantity: 2 }];
+
+    assert.deepEqual(savedMappings[firstKey].bundle, expectedBundle);
+    assert.equal(saved.status, "saved");
+    assert.deepEqual(getCustomLabelJob(rootDir, job.id).savedMappings[firstKey].bundle, expectedBundle);
+    const db = openInventoryDatabase(rootDir);
+    try {
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM shopee_custom_label_mappings").get().count, 0);
     } finally {
       db.close();
     }

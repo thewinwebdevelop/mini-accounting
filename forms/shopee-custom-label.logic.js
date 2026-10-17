@@ -201,6 +201,49 @@ function normalizeSavedMappings(mappings) {
   return result;
 }
 
+function upsertReusableCustomLabelMappings(db, normalizedMappings, timestamp) {
+  const upsert = db.prepare(`
+    INSERT INTO shopee_custom_label_mappings (
+      product_name_key, option_name_key, product_name_display,
+      option_name_display, bundle_json, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(product_name_key, option_name_key) DO UPDATE SET
+      product_name_display = excluded.product_name_display,
+      option_name_display = excluded.option_name_display,
+      bundle_json = excluded.bundle_json,
+      updated_at = excluded.updated_at
+  `);
+  for (const mapping of Object.values(normalizedMappings)) {
+    upsert.run(
+      mapping.productName,
+      mapping.optionName,
+      mapping.productName,
+      mapping.optionName,
+      JSON.stringify(mapping.bundle),
+      timestamp,
+      timestamp,
+    );
+  }
+}
+
+function updateCustomLabelJobSnapshot(db, job, normalizedMappings, options, timestamp) {
+  const parsedPayload = options.parsedPayload || JSON.parse(job.parsed_payload_json || "{}");
+  parsedPayload.savedMappings = normalizedMappings;
+  const updated = db.prepare(`
+    UPDATE shopee_custom_label_jobs
+    SET output_file_path = ?, parsed_payload_json = ?, status = 'saved', updated_at = ?, error_message = ''
+    WHERE id = ?
+    RETURNING *
+  `).get(
+    cleanText(options.outputFilePath),
+    JSON.stringify(parsedPayload),
+    timestamp,
+    job.id,
+  );
+  return mapJob(updated);
+}
+
 function saveCustomLabelMappings(rootDir, jobId, mappings, options = {}) {
   return withDatabase(rootDir, (db) => {
     const job = db.prepare("SELECT * FROM shopee_custom_label_jobs WHERE id = ?").get(Number(jobId));
@@ -209,45 +252,10 @@ function saveCustomLabelMappings(rootDir, jobId, mappings, options = {}) {
     const timestamp = nowIso(options);
     db.exec("BEGIN");
     try {
-      const upsert = db.prepare(`
-        INSERT INTO shopee_custom_label_mappings (
-          product_name_key, option_name_key, product_name_display,
-          option_name_display, bundle_json, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_name_key, option_name_key) DO UPDATE SET
-          product_name_display = excluded.product_name_display,
-          option_name_display = excluded.option_name_display,
-          bundle_json = excluded.bundle_json,
-          updated_at = excluded.updated_at
-      `);
-      for (const mapping of Object.values(normalizedMappings)) {
-        upsert.run(
-          mapping.productName,
-          mapping.optionName,
-          mapping.productName,
-          mapping.optionName,
-          JSON.stringify(mapping.bundle),
-          timestamp,
-          timestamp,
-        );
-      }
-
-      const parsedPayload = options.parsedPayload || JSON.parse(job.parsed_payload_json || "{}");
-      parsedPayload.savedMappings = normalizedMappings;
-      const updated = db.prepare(`
-        UPDATE shopee_custom_label_jobs
-        SET output_file_path = ?, parsed_payload_json = ?, status = 'saved', updated_at = ?, error_message = ''
-        WHERE id = ?
-        RETURNING *
-      `).get(
-        cleanText(options.outputFilePath),
-        JSON.stringify(parsedPayload),
-        timestamp,
-        Number(jobId),
-      );
+      upsertReusableCustomLabelMappings(db, normalizedMappings, timestamp);
+      const updated = updateCustomLabelJobSnapshot(db, job, normalizedMappings, options, timestamp);
       db.exec("COMMIT");
-      return mapJob(updated);
+      return updated;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -345,7 +353,9 @@ async function parseCustomLabelUpload(rootDir, file, options = {}) {
   await runPdfCommand(["parse", "--input", sourceFilePath, "--output", parsedFilePath], options);
   const parsedPayload = JSON.parse(await readFile(parsedFilePath, "utf8"));
   const keys = (parsedPayload.pages || []).flatMap((page) => (page.items || []).map((item) => item.mappingKey));
-  parsedPayload.autofillMappings = loadCustomLabelMappings(rootDir, keys);
+  parsedPayload.autofillMappings = options.mappingLoader
+    ? await options.mappingLoader(keys)
+    : loadCustomLabelMappings(rootDir, keys);
   return createCustomLabelJob(rootDir, {
     originalFileName: file.originalName || file.filename || "shopee-labels.pdf",
     sourceFilePath,
@@ -394,6 +404,20 @@ async function saveCustomLabel(rootDir, jobId, mappings, options = {}) {
   const job = getCustomLabelJob(rootDir, jobId);
   if (!job) throw new Error("ไม่พบ custom label job");
   const result = await renderCustomLabelJob(rootDir, job, mappings, "output.pdf", options);
+  if (options.mappingSaver) {
+    await options.mappingSaver(result.normalizedMappings);
+    return withDatabase(rootDir, (db) => {
+      const localJob = db.prepare("SELECT * FROM shopee_custom_label_jobs WHERE id = ?").get(Number(jobId));
+      if (!localJob) throw new Error("ไม่พบ custom label job");
+      return updateCustomLabelJobSnapshot(
+        db,
+        localJob,
+        result.normalizedMappings,
+        { ...options, outputFilePath: result.outputFilePath, parsedPayload: result.parsedPayload },
+        nowIso(options),
+      );
+    });
+  }
   return saveCustomLabelMappings(rootDir, jobId, result.normalizedMappings, {
     ...options,
     outputFilePath: result.outputFilePath,
