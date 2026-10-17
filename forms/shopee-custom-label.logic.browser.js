@@ -39,6 +39,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const currentPage = () => state.job?.pages?.find((page) => Number(page.pageNumber) === Number(state.currentPage));
   const normalizeText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
   const mappingKey = (productName, optionName) => `${normalizeText(productName)}::${normalizeText(optionName)}`;
+  const downloadUrlFor = (job) => {
+    if (!job?.outputUrl || !job.id) return "";
+    return job.downloadUrl || `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/download`;
+  };
 
   function entryFor(page, itemIndex) {
     return state.entries.get(pageKey(page.pageNumber, itemIndex));
@@ -66,8 +70,7 @@ window.addEventListener("DOMContentLoaded", () => {
     pageNode.disabled = false;
     originalFrame.src = `${job.sourceUrl}#page=${state.currentPage}`;
     previewFrame.src = job.previewUrl ? `${job.previewUrl}#page=${state.currentPage}` : "about:blank";
-    downloadButton.hidden = !job.downloadUrl;
-    downloadButton.href = job.downloadUrl || "#";
+    downloadButton.hidden = !downloadUrlFor(job);
     printButton.hidden = !job.outputUrl;
     comparisonButton.hidden = !job.comparisonUrl;
     comparisonButton.href = job.comparisonUrl || "#";
@@ -214,8 +217,7 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       state.job = result.job;
       if (action === "save") {
-        downloadButton.hidden = !state.job.downloadUrl;
-        downloadButton.href = state.job.downloadUrl || "#";
+        downloadButton.hidden = !downloadUrlFor(state.job);
         printButton.hidden = !state.job.outputUrl;
         comparisonButton.hidden = !state.job.comparisonUrl;
         comparisonButton.href = state.job.comparisonUrl || "#";
@@ -279,6 +281,14 @@ window.addEventListener("DOMContentLoaded", () => {
   uploadButton.addEventListener("click", () => upload().catch((error) => setStatus(error.message, "error")));
   previewButton.addEventListener("click", () => transform("preview").catch((error) => setStatus(error.message, "error")));
   saveButton.addEventListener("click", () => transform("save").catch((error) => setStatus(error.message, "error")));
+  downloadButton.addEventListener("click", () => {
+    const url = downloadUrlFor(state.job);
+    if (!url) {
+      setStatus("ไม่มีไฟล์ PDF สำหรับดาวน์โหลด กรุณากด Save และสร้าง PDF ก่อน", "error");
+      return;
+    }
+    window.location.assign(url);
+  });
   printButton.addEventListener("click", () => { if (state.job?.outputUrl) window.open(state.job.outputUrl, "_blank", "noopener"); });
 
   api("/api/inventory/stock-skus")

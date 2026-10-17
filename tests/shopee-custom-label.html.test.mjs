@@ -30,6 +30,14 @@ test("custom label page keeps original and generated PDF panes separate", async 
   assert.match(html, /id="shopeeCustomLabelOriginalFrame"[^>]*title="[^"]*เดิม/);
   assert.match(html, /id="shopeeCustomLabelPreviewFrame"[^>]*title="[^"]*(ใหม่|preview)/i);
   assert.match(html, /id="downloadShopeeCustomLabelButton"/);
-  assert.match(html, /id="downloadShopeeCustomLabelButton"[^>]*download/);
+  assert.match(html, /id="downloadShopeeCustomLabelButton"[^>]*type="button"/);
+  assert.doesNotMatch(html, /id="downloadShopeeCustomLabelButton"[^>]*href="#"/);
   assert.match(html, /id="openShopeeCustomLabelComparisonButton"/);
+});
+
+test("custom label download uses the saved PDF URL and refuses an empty fallback", async () => {
+  const browserLogic = await readFile(join(process.cwd(), "forms", "shopee-custom-label.logic.browser.js"), "utf8");
+  assert.match(browserLogic, /downloadUrlFor/);
+  assert.match(browserLogic, /\/api\/shopee\/custom-labels\/\$\{encodeURIComponent\(job\.id\)\}\/download/);
+  assert.match(browserLogic, /ไม่มีไฟล์ PDF สำหรับดาวน์โหลด/);
 });

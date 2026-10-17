@@ -2129,7 +2129,10 @@ async function handleStaticFile(request, response) {
 
     const body = await readFile(absolutePath);
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(200, {
+      "content-type": contentType,
+      "cache-control": "no-store",
+    });
     response.end(body);
   } catch {
     response.writeHead(404);

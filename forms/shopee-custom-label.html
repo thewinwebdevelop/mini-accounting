@@ -69,7 +69,7 @@
         <div class="actions">
           <button class="button primary" id="previewShopeeCustomLabelButton" type="button" disabled>Preview</button>
           <button class="button primary" id="saveShopeeCustomLabelButton" type="button" disabled>Save และสร้าง PDF</button>
-          <a class="button secondary" id="downloadShopeeCustomLabelButton" href="#" download hidden>ดาวน์โหลด PDF ที่บันทึก</a>
+          <button class="button secondary" id="downloadShopeeCustomLabelButton" type="button" hidden>ดาวน์โหลด PDF ที่บันทึก</button>
           <button class="button secondary" id="printShopeeCustomLabelButton" type="button" hidden>เปิด PDF เพื่อพิมพ์</button>
           <a class="button secondary" id="openShopeeCustomLabelComparisonButton" href="#" target="_blank" rel="noopener" hidden>เปิด PDF เทียบซ้าย-ขวา</a>
         </div>
@@ -95,6 +95,6 @@
 
   <template id="customLabelBundleTemplate"><div data-custom-label-bundle><input data-custom-label-sku><input data-custom-label-quantity><button data-custom-label-remove type="button">ลบ</button></div></template>
   <datalist id="customLabelStockSkuSuggestions"></datalist>
-  <script src="/shopee-custom-label.logic.browser.js"></script>
+  <script src="/shopee-custom-label.logic.browser.js?v=download-fix-1"></script>
 </body>
 </html>
