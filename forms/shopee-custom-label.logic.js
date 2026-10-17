@@ -392,6 +392,24 @@ async function saveCustomLabel(rootDir, jobId, mappings, options = {}) {
   });
 }
 
+async function createCustomLabelComparison(rootDir, jobId, options = {}) {
+  const job = getCustomLabelJob(rootDir, jobId);
+  if (!job) throw new Error("ไม่พบ custom label job");
+  const generatedPath = job.outputFilePath || job.previewFilePath;
+  if (!generatedPath) throw new Error("กรุณาสร้าง Preview หรือ Save PDF ก่อนเปิดไฟล์เทียบ");
+  const outputPath = path.join(jobDirectory(rootDir, job), "comparison.pdf");
+  await runPdfCommand([
+    "compare",
+    "--original", job.sourceFilePath,
+    "--generated", generatedPath,
+    "--output", outputPath,
+  ], options);
+  return {
+    path: outputPath,
+    fileName: "shopee-custom-label-comparison.pdf",
+  };
+}
+
 function getCustomLabelFile(rootDir, jobId, kind) {
   const job = getCustomLabelJob(rootDir, jobId);
   if (!job) throw new Error("ไม่พบ custom label job");
@@ -413,6 +431,7 @@ function getCustomLabelFile(rootDir, jobId, kind) {
 module.exports = {
   aggregateManualSkus,
   createCustomLabelJob,
+  createCustomLabelComparison,
   getCustomLabelJob,
   getCustomLabelFile,
   loadCustomLabelMappings,

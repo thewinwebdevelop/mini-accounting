@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pdfplumber
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
@@ -261,6 +261,32 @@ def render_custom_label(input_path: Path, output_path: Path, page_payloads: list
         writer.write(stream)
 
 
+def create_comparison_pdf(original_path: Path, generated_path: Path, output_path: Path) -> None:
+    """Create a page-for-page PDF with original pages on the left and new pages on the right."""
+    original_reader = PdfReader(str(original_path))
+    generated_reader = PdfReader(str(generated_path))
+    if len(original_reader.pages) != len(generated_reader.pages):
+        raise ValueError("original and generated PDFs must have the same page count")
+
+    writer = PdfWriter()
+    for original_page, generated_page in zip(original_reader.pages, generated_reader.pages):
+        original_width = float(original_page.mediabox.width)
+        generated_width = float(generated_page.mediabox.width)
+        page_height = max(float(original_page.mediabox.height), float(generated_page.mediabox.height))
+        comparison_page = PageObject.create_blank_page(
+            width=original_width + generated_width,
+            height=page_height,
+        )
+        comparison_page.merge_translated_page(original_page, 0, 0)
+        comparison_page.merge_translated_page(generated_page, original_width, 0)
+        writer.add_page(comparison_page)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as stream:
+        writer.write(stream)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -274,11 +300,20 @@ def main() -> None:
     render_command.add_argument("--output", required=True, type=Path)
     render_command.add_argument("--payload", required=True, type=Path)
 
+    compare_command = subparsers.add_parser("compare")
+    compare_command.add_argument("--original", required=True, type=Path)
+    compare_command.add_argument("--generated", required=True, type=Path)
+    compare_command.add_argument("--output", required=True, type=Path)
+
     args = parser.parse_args()
     if args.command == "parse":
         result = parse_pdf(args.input)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        return
+
+    if args.command == "compare":
+        create_comparison_pdf(args.original, args.generated, args.output)
         return
 
     payload = json.loads(args.payload.read_text(encoding="utf-8"))

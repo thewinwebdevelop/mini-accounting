@@ -126,6 +126,28 @@ class ShopeeCustomLabelPdfTest(unittest.TestCase):
             output_page = PdfReader(str(output)).pages[0]
             self.assertEqual(len(output_page.images), len(source_page.images))
 
+    def test_compare_places_original_and_generated_pages_side_by_side(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            generated = directory / "generated.pdf"
+            comparison = directory / "comparison.pdf"
+            module.render_custom_label(FIXTURE, generated, [{
+                "pageNumber": 1,
+                "orderNo": "TEST123",
+                "manualRows": [{"sku": "MANUAL-A", "quantity": 1}],
+            }])
+            module.create_comparison_pdf(FIXTURE, generated, comparison)
+            source_reader = PdfReader(str(FIXTURE))
+            comparison_reader = PdfReader(str(comparison))
+            self.assertEqual(len(comparison_reader.pages), len(source_reader.pages))
+            source_width = float(source_reader.pages[0].mediabox.width)
+            source_height = float(source_reader.pages[0].mediabox.height)
+            comparison_page = comparison_reader.pages[0]
+            self.assertAlmostEqual(float(comparison_page.mediabox.width), source_width * 2)
+            self.assertAlmostEqual(float(comparison_page.mediabox.height), source_height)
+            self.assertGreater(comparison_page.extract_text().count("Shopee Order No."), 1)
+
     def test_render_rejects_manual_rows_that_do_not_fit(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

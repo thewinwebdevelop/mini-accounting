@@ -10,6 +10,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const saveButton = document.querySelector("#saveShopeeCustomLabelButton");
   const downloadButton = document.querySelector("#downloadShopeeCustomLabelButton");
   const printButton = document.querySelector("#printShopeeCustomLabelButton");
+  const comparisonButton = document.querySelector("#openShopeeCustomLabelComparisonButton");
   const originalFrame = document.querySelector("#shopeeCustomLabelOriginalFrame");
   const previewFrame = document.querySelector("#shopeeCustomLabelPreviewFrame");
   const suggestionsNode = document.querySelector("#customLabelStockSkuSuggestions");
@@ -68,6 +69,8 @@ window.addEventListener("DOMContentLoaded", () => {
     downloadButton.hidden = !job.downloadUrl;
     downloadButton.href = job.downloadUrl || "#";
     printButton.hidden = !job.outputUrl;
+    comparisonButton.hidden = !job.comparisonUrl;
+    comparisonButton.href = job.comparisonUrl || "#";
     renderPageOptions();
     renderItems();
     updateActions();
@@ -214,9 +217,13 @@ window.addEventListener("DOMContentLoaded", () => {
         downloadButton.hidden = !state.job.downloadUrl;
         downloadButton.href = state.job.downloadUrl || "#";
         printButton.hidden = !state.job.outputUrl;
+        comparisonButton.hidden = !state.job.comparisonUrl;
+        comparisonButton.href = state.job.comparisonUrl || "#";
         setStatus("บันทึก mapping และสร้าง PDF ใหม่เรียบร้อยแล้ว", "success");
       } else {
         setStatus("สร้าง Preview แล้ว — เลื่อนดู PDF สองฝั่งและตรวจหน้าเดียวกันได้เลย", "success");
+        comparisonButton.hidden = !state.job.comparisonUrl;
+        comparisonButton.href = state.job.comparisonUrl || "#";
       }
       updateFrames();
     } finally {

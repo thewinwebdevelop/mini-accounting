@@ -15,6 +15,7 @@ test("standalone Shopee custom label page exposes upload, editors, comparison pa
     "shopeeCustomLabelOriginalFrame",
     "shopeeCustomLabelPreviewFrame",
     "shopeeCustomLabelStatus",
+    "openShopeeCustomLabelComparisonButton",
   ]) assert.match(html, new RegExp(`id="${id}"`), id);
   assert.match(html, /data-custom-label-bundle/);
   assert.match(html, /data-custom-label-sku/);
@@ -30,4 +31,5 @@ test("custom label page keeps original and generated PDF panes separate", async 
   assert.match(html, /id="shopeeCustomLabelPreviewFrame"[^>]*title="[^"]*(ใหม่|preview)/i);
   assert.match(html, /id="downloadShopeeCustomLabelButton"/);
   assert.match(html, /id="downloadShopeeCustomLabelButton"[^>]*download/);
+  assert.match(html, /id="openShopeeCustomLabelComparisonButton"/);
 });

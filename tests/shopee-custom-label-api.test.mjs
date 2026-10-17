@@ -94,10 +94,15 @@ test("uploaded custom-label API parses, previews without saving mappings, and sa
     }));
     assert.equal(preview.response.status, 200);
     assert.match(preview.body.job.previewUrl, /\/preview-file$/);
+    assert.match(preview.body.job.comparisonUrl, /\/comparison$/);
     assert.deepEqual(preview.body.job.savedMappings, {});
     const previewFile = await fetch(`${baseUrl}${preview.body.job.previewUrl}`);
     assert.equal(previewFile.status, 200);
     assert.equal(previewFile.headers.get("content-type"), "application/pdf");
+    const comparison = await fetch(`${baseUrl}${preview.body.job.comparisonUrl}`);
+    assert.equal(comparison.status, 200);
+    assert.equal(comparison.headers.get("content-type"), "application/pdf");
+    assert.match(comparison.headers.get("content-disposition") || "", /^inline;/i);
 
     const saved = await jsonResponse(await fetch(`${baseUrl}/api/shopee/custom-labels/${uploaded.body.job.id}/save`, {
       method: "POST",
@@ -106,6 +111,7 @@ test("uploaded custom-label API parses, previews without saving mappings, and sa
     }));
     assert.equal(saved.response.status, 200);
     assert.match(saved.body.job.outputUrl, /\/output$/);
+    assert.match(saved.body.job.comparisonUrl, /\/comparison$/);
     assert.match(saved.body.job.downloadUrl, /\/download$/);
     assert.equal(saved.body.job.status, "saved");
     assert.equal(saved.body.job.savedMappings[Object.keys(mappings)[0]].bundle[0].sku, "TOP-BLUE");

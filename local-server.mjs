@@ -143,6 +143,7 @@ const {
 const {
   getCustomLabelFile,
   getCustomLabelJob,
+  createCustomLabelComparison,
   parseCustomLabelUpload,
   previewCustomLabel,
   saveCustomLabel,
@@ -1542,6 +1543,8 @@ function publicCustomLabelJob(job) {
       ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/preview-file` : "",
     outputUrl: job.outputFilePath
       ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/output` : "",
+    comparisonUrl: (job.outputFilePath || job.previewFilePath)
+      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/comparison` : "",
     downloadUrl: job.outputFilePath
       ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/download` : "",
   };
@@ -1597,6 +1600,24 @@ async function handleCustomLabelFile(jobId, kind, response, disposition = "inlin
     response.writeHead(200, {
       "content-type": "application/pdf",
       "content-disposition": `${disposition}; filename="${safeName}"`,
+      "content-length": String(body.length),
+    });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end("Not found");
+  }
+}
+
+async function handleCustomLabelComparison(jobId, response) {
+  try {
+    const file = await createCustomLabelComparison(rootDir, jobId, {
+      pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+    });
+    const body = await readFile(file.path);
+    response.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="${file.fileName}"`,
       "content-length": String(body.length),
     });
     response.end(body);
@@ -2607,6 +2628,14 @@ const server = createServer(async (request, response) => {
         .replace("/api/shopee/custom-labels/", "")
         .replace("/download", ""));
       await handleCustomLabelFile(jobId, "output", response, "attachment");
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/comparison")) {
+      const jobId = decodeURIComponent(url.pathname
+        .replace("/api/shopee/custom-labels/", "")
+        .replace("/comparison", ""));
+      await handleCustomLabelComparison(jobId, response);
       return;
     }
 
