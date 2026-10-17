@@ -14,9 +14,25 @@ const {
   getCustomLabelJob,
   loadCustomLabelMappings,
   normalizeMappingKey,
+  pythonExecutable,
   saveCustomLabelMappings,
   validateBundle,
 } = customLabel;
+
+test("custom label PDF commands use the Cloud Run Python virtualenv", () => {
+  const previousPython = process.env.SWEET_HOUSE_PYTHON;
+  const previousPythonBin = process.env.SWEET_HOUSE_PYTHON_BIN;
+  try {
+    delete process.env.SWEET_HOUSE_PYTHON_BIN;
+    process.env.SWEET_HOUSE_PYTHON = "/opt/sweet-house-python/bin/python";
+    assert.equal(pythonExecutable(), "/opt/sweet-house-python/bin/python");
+  } finally {
+    if (previousPython === undefined) delete process.env.SWEET_HOUSE_PYTHON;
+    else process.env.SWEET_HOUSE_PYTHON = previousPython;
+    if (previousPythonBin === undefined) delete process.env.SWEET_HOUSE_PYTHON_BIN;
+    else process.env.SWEET_HOUSE_PYTHON_BIN = previousPythonBin;
+  }
+});
 
 test("normalizeMappingKey converts Shopee Thai private-use tone glyphs and removes PDF markers", () => {
   const result = normalizeMappingKey("เส้ือแขนต\uf70cุกตาผ\uf70bา (cid:0)", "ฟ\uf70bา   ,   เฉพาะเส้ือ");

@@ -247,7 +247,7 @@ function saveCustomLabelMappings(rootDir, jobId, mappings, options = {}) {
 }
 
 function pythonExecutable(options = {}) {
-  const configured = options.pythonBin || process.env.SWEET_HOUSE_PYTHON_BIN;
+  const configured = options.pythonBin || process.env.SWEET_HOUSE_PYTHON_BIN || process.env.SWEET_HOUSE_PYTHON;
   if (configured) return configured;
   const bundled = "/Users/tar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
   return existsSync(bundled) ? bundled : "python3";
@@ -437,6 +437,7 @@ module.exports = {
   loadCustomLabelMappings,
   normalizeMappingKey,
   normalizeMappingText,
+  pythonExecutable,
   parseCustomLabelUpload,
   previewCustomLabel,
   saveCustomLabel,
