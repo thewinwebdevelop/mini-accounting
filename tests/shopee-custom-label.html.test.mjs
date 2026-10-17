@@ -29,4 +29,5 @@ test("custom label page keeps original and generated PDF panes separate", async 
   assert.match(html, /id="shopeeCustomLabelOriginalFrame"[^>]*title="[^"]*เดิม/);
   assert.match(html, /id="shopeeCustomLabelPreviewFrame"[^>]*title="[^"]*(ใหม่|preview)/i);
   assert.match(html, /id="downloadShopeeCustomLabelButton"/);
+  assert.match(html, /id="downloadShopeeCustomLabelButton"[^>]*download/);
 });

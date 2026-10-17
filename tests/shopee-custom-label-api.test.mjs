@@ -106,12 +106,17 @@ test("uploaded custom-label API parses, previews without saving mappings, and sa
     }));
     assert.equal(saved.response.status, 200);
     assert.match(saved.body.job.outputUrl, /\/output$/);
+    assert.match(saved.body.job.downloadUrl, /\/download$/);
     assert.equal(saved.body.job.status, "saved");
     assert.equal(saved.body.job.savedMappings[Object.keys(mappings)[0]].bundle[0].sku, "TOP-BLUE");
     const output = await fetch(`${baseUrl}${saved.body.job.outputUrl}`);
     assert.equal(output.status, 200);
     assert.equal(output.headers.get("content-type"), "application/pdf");
     assert.ok((await output.arrayBuffer()).byteLength > 0);
+    const download = await fetch(`${baseUrl}${saved.body.job.downloadUrl}`);
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition") || "", /^attachment;/i);
+    assert.match(download.headers.get("content-disposition") || "", /filename="[^"]+\.pdf"/i);
 
     const sourceAfter = await fetch(`${baseUrl}${uploaded.body.job.sourceUrl}`);
     assert.equal(sha256(Buffer.from(await sourceAfter.arrayBuffer())), sourceHashBefore);

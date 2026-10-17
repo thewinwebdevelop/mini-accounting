@@ -65,8 +65,8 @@ window.addEventListener("DOMContentLoaded", () => {
     pageNode.disabled = false;
     originalFrame.src = `${job.sourceUrl}#page=${state.currentPage}`;
     previewFrame.src = job.previewUrl ? `${job.previewUrl}#page=${state.currentPage}` : "about:blank";
-    downloadButton.hidden = !job.outputUrl;
-    downloadButton.href = job.outputUrl || "#";
+    downloadButton.hidden = !job.downloadUrl;
+    downloadButton.href = job.downloadUrl || "#";
     printButton.hidden = !job.outputUrl;
     renderPageOptions();
     renderItems();
@@ -211,8 +211,8 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       state.job = result.job;
       if (action === "save") {
-        downloadButton.hidden = !state.job.outputUrl;
-        downloadButton.href = state.job.outputUrl || "#";
+        downloadButton.hidden = !state.job.downloadUrl;
+        downloadButton.href = state.job.downloadUrl || "#";
         printButton.hidden = !state.job.outputUrl;
         setStatus("บันทึก mapping และสร้าง PDF ใหม่เรียบร้อยแล้ว", "success");
       } else {

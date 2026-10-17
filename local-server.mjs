@@ -1542,6 +1542,8 @@ function publicCustomLabelJob(job) {
       ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/preview-file` : "",
     outputUrl: job.outputFilePath
       ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/output` : "",
+    downloadUrl: job.outputFilePath
+      ? `/api/shopee/custom-labels/${encodeURIComponent(job.id)}/download` : "",
   };
 }
 
@@ -1587,14 +1589,14 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
   }
 }
 
-async function handleCustomLabelFile(jobId, kind, response) {
+async function handleCustomLabelFile(jobId, kind, response, disposition = "inline") {
   try {
     const file = getCustomLabelFile(rootDir, jobId, kind);
     const body = await readFile(file.path);
     const safeName = String(file.fileName || `${kind}.pdf`).replace(/[\r\n"]+/g, "_");
     response.writeHead(200, {
       "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${safeName}"`,
+      "content-disposition": `${disposition}; filename="${safeName}"`,
       "content-length": String(body.length),
     });
     response.end(body);
@@ -2597,6 +2599,14 @@ const server = createServer(async (request, response) => {
         .replace("/api/shopee/custom-labels/", "")
         .replace("/output", ""));
       await handleCustomLabelFile(jobId, "output", response);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/shopee/custom-labels/") && url.pathname.endsWith("/download")) {
+      const jobId = decodeURIComponent(url.pathname
+        .replace("/api/shopee/custom-labels/", "")
+        .replace("/download", ""));
+      await handleCustomLabelFile(jobId, "output", response, "attachment");
       return;
     }
 
