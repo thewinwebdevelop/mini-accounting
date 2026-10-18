@@ -3505,7 +3505,18 @@ async function handleStaticFile(request, response) {
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
     let body = await readFile(absolutePath);
     if (contentType.startsWith("text/html")) {
-      body = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(runtimeEnv.LINE_LIFF_ID || ""));
+      let html = body.toString("utf8").replaceAll("__LINE_LIFF_ID__", escapeHtmlAttribute(runtimeEnv.LINE_LIFF_ID || ""));
+      if (sessionAuthMode && authMode === "line" && !html.includes('src="/line-auth.browser.js"')) {
+        const returnTo = `${url.pathname}${url.search}`;
+        const authBootstrap = [
+          '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>',
+          `<script src="/line-auth.browser.js" data-line-liff-id="${escapeHtmlAttribute(runtimeEnv.LINE_LIFF_ID || "")}" data-auth-gate="true" data-return-to="${escapeHtmlAttribute(returnTo)}"></script>`,
+        ].join("\n  ");
+        html = html.includes("</head>")
+          ? html.replace("</head>", `  ${authBootstrap}\n</head>`)
+          : html.replace("</body>", `  ${authBootstrap}\n</body>`);
+      }
+      body = Buffer.from(html, "utf8");
     }
     response.writeHead(200, {
       "content-type": contentType,

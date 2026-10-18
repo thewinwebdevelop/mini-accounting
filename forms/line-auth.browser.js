@@ -12,7 +12,7 @@
 
   function safeReturnPath() {
     const params = new URLSearchParams(window.location.search);
-    const raw = params.get("returnTo") || params.get("liff.state") || "/";
+    const raw = params.get("returnTo") || params.get("liff.state") || script?.dataset?.returnTo || "/";
     if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
     try {
       const target = new URL(raw, window.location.origin);
@@ -26,7 +26,8 @@
 
   function redirectToRequestedPath() {
     const target = safeReturnPath();
-    if (target !== "/") window.location.replace(target);
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (target !== "/" && target !== current) window.location.replace(target);
   }
 
   async function readJson(response) {

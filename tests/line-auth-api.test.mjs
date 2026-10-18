@@ -197,6 +197,35 @@ test("line auth mode rejects unauthenticated domain APIs and tampered sessions",
   }
 });
 
+test("direct navigation to a protected page bootstraps LINE authentication", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-auth-navigation-"));
+  const upstream = await startUpstream();
+  const app = await startApp({
+    SWEET_HOUSE_ROOT_DIR: rootDir,
+    SWEET_HOUSE_AUTH_MODE: "line",
+    LINE_LIFF_ID: "2011747686-test",
+    LINE_CHANNEL_ID: "channel-1",
+    LINE_VERIFY_URL: `${upstream.url}/oauth2/v2.1/verify`,
+    SUPABASE_URL: upstream.url,
+    SUPABASE_SERVICE_ROLE_KEY: "server-key",
+    SWEET_HOUSE_SESSION_SECRET: "x".repeat(32),
+  });
+  try {
+    const page = await fetch(`${app.baseUrl}/shopee-custom-label`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /https:\/\/static\.line-scdn\.net\/liff\/edge\/2\/sdk\.js/);
+    assert.match(html, /line-auth\.browser\.js/);
+    assert.match(html, /data-line-liff-id="2011747686-test"/);
+    assert.match(html, /data-auth-gate="true"/);
+    assert.match(html, /data-return-to="\/shopee-custom-label"/);
+  } finally {
+    await stopApp(app.child);
+    await new Promise(resolve => upstream.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("mock auth mode signs the configured local fixture and guards the profile page", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-mock-auth-"));
   const app = await startApp({
