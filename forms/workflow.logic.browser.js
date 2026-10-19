@@ -43,6 +43,11 @@ async function fetchJson(url, options = {}) {
   return result;
 }
 
+function waitForAuthBootstrap() {
+  const ready = window.SweetHouseAuth?.ready;
+  return ready && typeof ready.then === "function" ? ready : Promise.resolve();
+}
+
 function getQueryParam(name) {
   return new URLSearchParams(location.search).get(name);
 }
@@ -324,7 +329,9 @@ function initTemplatePage() {
       .catch((error) => setStatusBox(statusBox, error.message, "error"));
   });
 
-  loadTemplatePageData().catch((error) => setStatusBox(statusBox, error.message, "error"));
+  waitForAuthBootstrap()
+    .then(() => loadTemplatePageData())
+    .catch((error) => setStatusBox(statusBox, error.message, "error"));
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +523,9 @@ function initTransactionsPage() {
       });
   });
 
-  loadTransactionsPageData().catch((error) => setStatusBox(statusBox, error.message, "error"));
+  waitForAuthBootstrap()
+    .then(() => loadTransactionsPageData())
+    .catch((error) => setStatusBox(statusBox, error.message, "error"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1402,7 +1411,8 @@ function initTransactionPage() {
   // load must not spawn Python to regenerate a packet PDF the user may never
   // download; the packet stays fresh as of the last explicit "รีเฟรชสถานะ"
   // click or completion instead (see refreshTransaction above).
-  loadTransactionDetail()
+  waitForAuthBootstrap()
+    .then(() => loadTransactionDetail())
     .then((transaction) => {
       if (!cancellationLocked(transaction)) return refreshTransaction({ regeneratePacket: false });
       return transaction;

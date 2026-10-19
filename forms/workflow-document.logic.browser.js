@@ -1,4 +1,5 @@
 window.addEventListener("DOMContentLoaded", () => {
+  const initialize = () => {
   const logic = window.WorkflowDocumentLogic;
   const workflowLogic = window.WorkflowLogic;
   const lifecycleLogic = window.DocumentLifecycleLogic;
@@ -597,4 +598,18 @@ window.addEventListener("DOMContentLoaded", () => {
         });
       }
     });
+  };
+
+  const ready = window.SweetHouseAuth?.ready;
+  if (ready && typeof ready.then === "function") {
+    ready.then(initialize).catch((error) => {
+      const statusBox = document.querySelector("#workflowDocumentStatus");
+      if (statusBox) {
+        statusBox.className = "status-box active error";
+        statusBox.textContent = error.message || "ไม่สามารถเข้าสู่ระบบได้";
+      }
+    });
+  } else {
+    initialize();
+  }
 });

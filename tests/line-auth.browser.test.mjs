@@ -7,6 +7,7 @@ test("browser bootstrap posts the LIFF ID token and exposes the auth helper", as
   assert.match(source, /liff\.getIDToken\(\)/);
   assert.match(source, /\/api\/auth\/line-session/);
   assert.match(source, /window\.SweetHouseAuth/);
+  assert.match(source, /ready/);
   assert.match(source, /credentials:\s*["']same-origin["']/);
 });
 

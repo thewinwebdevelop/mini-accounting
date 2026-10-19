@@ -1,4 +1,17 @@
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
+  const ready = window.SweetHouseAuth?.ready;
+  if (ready && typeof ready.then === "function") {
+    try {
+      await ready;
+    } catch (error) {
+      const statusBox = document.querySelector("#substituteReceiptStatus");
+      if (statusBox) {
+        statusBox.className = "status-box active error";
+        statusBox.textContent = error.message || "ไม่สามารถเข้าสู่ระบบได้";
+      }
+      return;
+    }
+  }
   const logic = window.SubstituteReceiptLogic;
   const evidenceKeys = ["paymentSlip", "purchaseOrder", "goodsReceived", "otherEvidence"];
   const lifecycleLogic = window.DocumentLifecycleLogic;

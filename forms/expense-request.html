@@ -1195,6 +1195,19 @@
   <script src="./workflow-review-modal.browser.js"></script>
   <script>
   window.addEventListener("DOMContentLoaded", async () => {
+    const authReady = window.SweetHouseAuth?.ready;
+    if (authReady && typeof authReady.then === "function") {
+      try {
+        await authReady;
+      } catch (error) {
+        const authStatus = document.querySelector("#saveStatus");
+        if (authStatus) {
+          authStatus.className = "status-box active error";
+          authStatus.textContent = error.message || "ไม่สามารถเข้าสู่ระบบได้";
+        }
+        return;
+      }
+    }
     const {
       buildRawFileName,
       buildExpensePayload,

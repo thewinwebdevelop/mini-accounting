@@ -693,6 +693,7 @@ async function setupTransactionPageSandbox({
   transactionNo = "TXN-2026-09-0001",
   transaction,
   refreshedTransaction,
+  authReady,
   onStartDocument = () => { throw new Error("start-document should not be called in this test"); },
   onComplete = () => { throw new Error("complete should not be called in this test"); },
   onCancel = () => ({ ok: true, status: 200, json: async () => ({}) }),
@@ -714,6 +715,7 @@ async function setupTransactionPageSandbox({
   });
   const location = { search: `?transactionNo=${transactionNo}`, href: "" };
   const window = { fetch: stubFetch };
+  if (authReady) window.SweetHouseAuth = { ready: authReady };
   window.addEventListener = (type, handler) => {
     (window._handlers ??= {})[type] = handler;
   };
@@ -1144,6 +1146,33 @@ test("clicking the current step's action button calls start-document and navigat
   assert.equal(
     location.href,
     "/workflow-document?documentKind=purchase_order&transactionNo=TXN-2026-09-0001&workflowStepId=step-001&returnTo=%2Fworkflow-transaction%3FtransactionNo%3DTXN-2026-09-0001",
+  );
+});
+
+test("transaction page waits for LINE auth bootstrap before loading protected APIs", async () => {
+  const transaction = buildFourStepTransaction();
+  let resolveAuth;
+  const authReady = new Promise((resolve) => { resolveAuth = resolve; });
+
+  const setupPromise = setupTransactionPageSandbox({
+    transaction,
+    refreshedTransaction: transaction,
+    authReady,
+  });
+
+  const setup = await setupPromise;
+  assert.equal(
+    setup.fetchCalls.length,
+    0,
+    "the transaction API must not be called while LINE authentication is still bootstrapping",
+  );
+
+  resolveAuth();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.ok(
+    setup.fetchCalls.some((call) => call.url === "/api/workflow-transactions/TXN-2026-09-0001"),
+    "the transaction detail request must start after auth is ready",
   );
 });
 

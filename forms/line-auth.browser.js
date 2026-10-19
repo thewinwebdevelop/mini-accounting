@@ -79,6 +79,12 @@
     window.location.replace(safeReturnPath());
   }
 
-  window.SweetHouseAuth = Object.freeze({ boot, safeReturnPath });
-  boot().catch(error => setStatus(error.message || "ไม่สามารถเข้าสู่ระบบได้", "error"));
+  // Expose the in-flight bootstrap so protected page controllers can wait for
+  // the session cookie before their first API request.  Direct navigation to
+  // a protected page loads this script and the page controller in parallel;
+  // without a shared promise, the controller can win that race and receive
+  // AUTH_REQUIRED even though LINE login is about to succeed.
+  const ready = boot();
+  window.SweetHouseAuth = Object.freeze({ boot, ready, safeReturnPath });
+  ready.catch(error => setStatus(error.message || "ไม่สามารถเข้าสู่ระบบได้", "error"));
 }());
