@@ -1,3 +1,4 @@
+const { randomInt } = require("node:crypto");
 const { createSupabaseAdminClient } = require("./supabase.logic.js");
 const { createDataAdapter } = require("./data-adapter.logic.js");
 const { resolveDataBackendMode } = require("./data-backend.logic.js");
@@ -48,6 +49,15 @@ function createInventoryDataAdapter({ rootDir, env = process.env, client, logger
   };
   const cloudWithInventoryReads = Object.freeze({
     ...cloud,
+    saveProduct: async payload => {
+      // Cloud-only deployments cannot rely on a local SQLite sequence for IDs.
+      // Allocate a numeric source ID before building the stable cloud source key.
+      const product = payload.id ? payload : {
+        ...payload,
+        id: Date.now() * 1000 + randomInt(0, 1000),
+      };
+      return cloud.saveProduct(product);
+    },
     listInventoryBalances: async () => {
       const snapshot = await cloudInventoryRead();
       return buildCloudInventoryBalances(snapshot);
