@@ -424,7 +424,10 @@ window.addEventListener("DOMContentLoaded", () => {
   async function loadExistingDocument() {
     if (!state.documentKind || !state.documentNo) return;
     const record = await api(`/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}`);
-    const payload = record.payload || {};
+    // Local document APIs wrap editable fields in `payload`; the Supabase
+    // adapter promotes those fields to the record root. Accept both shapes so
+    // reopening a cloud-backed workflow document restores its saved values.
+    const payload = record.payload && typeof record.payload === "object" ? record.payload : record;
     state.status = record.status || payload.status || "draft";
     state.transactionNo = payload.transactionNo || state.transactionNo;
     state.workflowTemplateId = payload.workflowTemplateId || state.workflowTemplateId;

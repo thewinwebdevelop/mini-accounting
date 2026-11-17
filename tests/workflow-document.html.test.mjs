@@ -723,6 +723,37 @@ test("workflow shell renders an old inactive vendor snapshot when no active pres
   assert.equal(detailCall.options.cache, "no-store", "reopening an existing workflow document must bypass the WebView cache");
 });
 
+test("workflow document loads flattened Supabase document records without a payload wrapper", async () => {
+  const { elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0101",
+    fetchHandler(route) {
+      if (route === "/api/workflow-documents/purchase_order/PO-2026-09-0101") {
+        return jsonResponse({
+          documentKind: "purchase_order",
+          documentNo: "PO-2026-09-0101",
+          status: "draft",
+          accountingMonth: "2026-09",
+          documentDate: "2026-09-20",
+          title: "ค่าที่อ่านจาก Supabase",
+          requesterName: "ผู้ขอทดสอบ",
+          payeeName: "คู่ค้าทดสอบ",
+          businessPurpose: "ทดสอบการโหลดข้อมูล",
+          lines: [{ description: "สินค้าจาก Supabase", quantity: "2", unitCost: "125" }],
+        });
+      }
+      throw new Error(`Unexpected request ${route}`);
+    },
+  });
+
+  const form = elements.workflowDocumentForm;
+  assert.equal(form.elements.title.value, "ค่าที่อ่านจาก Supabase");
+  assert.equal(form.elements.requesterName.value, "ผู้ขอทดสอบ");
+  assert.equal(form.elements.payeeName.value, "คู่ค้าทดสอบ");
+  assert.equal(form.elements.businessPurpose.value, "ทดสอบการโหลดข้อมูล");
+  assert.equal(elements.lineItems.querySelector(".line-item").querySelector('[name="description"]').value, "สินค้าจาก Supabase");
+});
+
 test("workflow document refreshes its saved payload when restored from browser back-forward cache", async () => {
   let detailLoads = 0;
   const { context, elements } = await setupWorkflowDocumentLifecycleSandbox({
