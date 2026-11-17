@@ -21,6 +21,12 @@ Supabase CLI โดยเฉพาะตาราง `documents`, `document_file
 `sweet-house-files` รวมถึง `202610180001_shopee_custom_label_mappings.sql`
 สำหรับ mapping SKU ของ Shopee Custom Label ก่อนเปิดใช้ฟีเจอร์นี้บน Cloud Run.
 
+ชุดแก้ Supabase runtime ต้องรัน migration `202611100001` ถึง `202611100004`
+และ `202611160001_commerce_idempotency_guards.sql` ก่อน deploy โค้ดใหม่:
+เพิ่มคลังสินค้า/การจองสต็อก, commerce jobs,
+การจองเลขเอกสาร และข้อมูลเชื่อมต่อ Google Drive ตามลำดับ
+ทดสอบชุด migration ในฐานแยกก่อน และตรวจข้อมูลรหัสสินค้า/SKU ซ้ำก่อนสร้าง unique indexes.
+
 จากนั้น migrate ข้อมูลเดิมจากเครื่องบริษัทตามคู่มือ
 `docs/supabase-migration-runbook.md` ก่อนเปิดใช้ production read mode
 
@@ -56,7 +62,7 @@ gcloud run deploy sweet-house \
 
 ```bash
 SERVICE_URL="$(gcloud run services describe sweet-house --region asia-southeast1 --format='value(status.url)')"
-curl -fsS "$SERVICE_URL/healthz"
+curl -fsS "$SERVICE_URL/api/healthz"
 ```
 
 ตั้งค่า origin ให้ตรงกับ URL จริง แล้ว deploy/update service อีกครั้ง:
@@ -67,9 +73,10 @@ gcloud run services update sweet-house \
   --update-env-vars APP_PUBLIC_ORIGIN="$SERVICE_URL",LINE_INTAKE_MINI_APP_URL="$SERVICE_URL/line-intake",GOOGLE_OAUTH_REDIRECT_URI="$SERVICE_URL/api/google-drive/oauth2callback",SWEET_HOUSE_COOKIE_SECURE=1
 ```
 
-Google Drive OAuth config/token ต้องเก็บเป็น Secret Manager secrets ที่ผูกกับ
-`GOOGLE_DRIVE_CONFIG_JSON` และ `GOOGLE_DRIVE_TOKEN_JSON` เพราะ filesystem ของ
-Cloud Run ไม่ถาวร
+Google Drive OAuth config/token ที่บันทึกหรือ refresh ผ่านแอปจะเก็บในตาราง
+`integration_credentials` ของ Supabase ซึ่งให้เฉพาะ service role เข้าถึงได้
+`GOOGLE_DRIVE_CONFIG_JSON` และ `GOOGLE_DRIVE_TOKEN_JSON` จาก Secret Manager
+ยังใช้เป็นค่าเริ่มต้นได้เมื่อยังไม่มีข้อมูลในตาราง โดยไม่เขียนลง filesystem ของ Cloud Run
 
 `/api/healthz` จะตอบโดยไม่ต้อง login เพื่อใช้เป็น startup/readiness probe; Cloud
 Run รองรับ HTTP health check endpoint โดยตรง:

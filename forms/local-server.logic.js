@@ -341,7 +341,11 @@ async function getNextWorkflowTransactionInfo(rootDir, accountingMonth) {
 // silently succeed, so the allocator retries with the next number instead of
 // ever handing out a duplicate. See document-index.logic.js for why the
 // ledger is a separate table from the documents index itself.
-function allocateExpenseRequestNumber(rootDir, accountingMonth) {
+async function allocateExpenseRequestNumber(rootDir, accountingMonth, numberAllocator, requestKey = "") {
+  if (typeof numberAllocator === "function") {
+    const allocated = await numberAllocator({ documentKind: "expense_request", accountingMonth, requestKey });
+    return { sequence: allocated.sequence, requestNo: allocated.documentNo };
+  }
   return withDocumentIndexDatabase(rootDir, (db) => {
     const { sequence, documentNo } = allocateDocumentNumber(db, {
       documentKind: "expense_request",
@@ -351,7 +355,11 @@ function allocateExpenseRequestNumber(rootDir, accountingMonth) {
   });
 }
 
-function allocateSubstituteReceiptNumber(rootDir, accountingMonth) {
+async function allocateSubstituteReceiptNumber(rootDir, accountingMonth, numberAllocator, requestKey = "") {
+  if (typeof numberAllocator === "function") {
+    const allocated = await numberAllocator({ documentKind: "substitute_receipt", accountingMonth, requestKey });
+    return { sequence: allocated.sequence, receiptNo: allocated.documentNo };
+  }
   return withDocumentIndexDatabase(rootDir, (db) => {
     const { sequence, documentNo } = allocateDocumentNumber(db, {
       documentKind: "substitute_receipt",
@@ -1628,7 +1636,7 @@ function assertLegacyDraftWriteId(id, kind) {
   throw createStateError("INVALID_DRAFT_ID", "รหัสแบบร่างไม่ถูกต้อง", 400);
 }
 
-async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vendorResolver }) {
+async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vendorResolver, numberAllocator, companySettingsResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
   getMonthParts(payload.accountingMonth);
   const requestedNo = String(payload.receiptNo || "");
@@ -1643,7 +1651,7 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vend
     }) : null;
     if (requestedNo && !existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
     if (existing && existing.status !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
-    const allocation = existing ? { receiptNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateSubstituteReceiptNumber(rootDir, payload.accountingMonth);
+    const allocation = existing ? { receiptNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateSubstituteReceiptNumber(rootDir, payload.accountingMonth, numberAllocator, payload.idempotencyKey || payload.clientRequestId || "");
     const existingPayload = existing?.payload || {};
     const authoritativeRelation = existing ? { transactionNo: existingPayload.transactionNo || "", workflowTemplateId: existingPayload.workflowTemplateId || "", workflowStepId: existingPayload.workflowStepId || "" } : relation;
     const base = existing ? { ...existingPayload, ...payload, ...authoritativeRelation, receiptNo: allocation.receiptNo, folderPath: existing.folderPath } : { ...payload, ...relation, receiptNo: allocation.receiptNo, folderPath: "", createdAt: undefined, rawFiles: [] };
@@ -1653,7 +1661,7 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vend
     const existingEvidenceFiles = existing?.evidenceFiles || {};
     const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
-    const company = await getCompanySettings(rootDir);
+    const company = typeof companySettingsResolver === "function" ? await companySettingsResolver() : await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload, { vendorResolver });
     const draftPayload = buildSubstituteReceiptPayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
@@ -1674,7 +1682,7 @@ async function saveSubstituteReceiptDraft({ rootDir, payload, uploads = [], vend
   return requestedNo ? withSubstituteReceiptMutation(rootDir, requestedNo, perform) : perform();
 }
 
-async function saveExpenseDraft({ rootDir, payload, uploads = [], vendorResolver }) {
+async function saveExpenseDraft({ rootDir, payload, uploads = [], vendorResolver, numberAllocator, companySettingsResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "expense_request");
   getMonthParts(payload.accountingMonth);
   const requestedNo = String(payload.requestNo || "");
@@ -1688,14 +1696,14 @@ async function saveExpenseDraft({ rootDir, payload, uploads = [], vendorResolver
     }) : null;
     if (requestedNo && !existing) throw createStateError("DOCUMENT_NOT_FOUND", "ไม่พบเอกสาร", 404);
     if (existing && existing.status !== "draft") throw createStateError("DOCUMENT_NOT_DRAFT", "เอกสารนี้ไม่อยู่ในสถานะแบบร่าง");
-    const allocation = existing ? { requestNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateExpenseRequestNumber(rootDir, payload.accountingMonth);
+    const allocation = existing ? { requestNo: requestedNo, sequence: requestedNo.split("-").at(-1) } : await allocateExpenseRequestNumber(rootDir, payload.accountingMonth, numberAllocator, payload.idempotencyKey || payload.clientRequestId || "");
     const existingPayload = existing?.payload || {};
     const authoritativeRelation = existing ? { transactionNo: existingPayload.transactionNo || "", workflowTemplateId: existingPayload.workflowTemplateId || "", workflowStepId: existingPayload.workflowStepId || "" } : relation;
     const base = existing ? { ...existingPayload, ...payload, ...authoritativeRelation, requestNo: allocation.requestNo, folderPath: existing.folderPath } : { ...payload, ...relation, requestNo: allocation.requestNo, folderPath: "", createdAt: undefined, rawFiles: [] };
     const existingEvidenceFiles = existing?.evidenceFiles || {};
     const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
-    const company = await getCompanySettings(rootDir);
+    const company = typeof companySettingsResolver === "function" ? await companySettingsResolver() : await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const vendorPayload = await prepareDocumentVendorPayload(rootDir, base, existingPayload, { vendorResolver });
     const draftPayload = buildExpensePayload({ ...vendorPayload, company, sequence: allocation.sequence, status: "draft", evidenceFiles, statusHistory: existingPayload.statusHistory || [], createdAt: existingPayload.createdAt || now });
@@ -2055,12 +2063,12 @@ function numberedSubmissionResult(payload, pdfFiles, rawFiles) {
   };
 }
 
-async function saveExpenseSubmission({ rootDir, payload, uploads = [], vendorResolver }) {
+async function saveExpenseSubmission({ rootDir, payload, uploads = [], vendorResolver, numberAllocator, companySettingsResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "expense_request");
   if (payload.requestNo && !EXPENSE_NUMBER_PATTERN.test(String(payload.requestNo))) throw new Error("เลขที่ใบเบิกจ่ายไม่ถูกต้อง");
   if (!payload.requestNo) {
-    const draft = await saveExpenseDraft({ rootDir, payload, uploads, vendorResolver });
-    return saveExpenseSubmission({ rootDir, payload: { requestNo: draft.requestNo }, uploads: [], vendorResolver });
+    const draft = await saveExpenseDraft({ rootDir, payload, uploads, vendorResolver, numberAllocator, companySettingsResolver });
+    return saveExpenseSubmission({ rootDir, payload: { requestNo: draft.requestNo }, uploads: [], vendorResolver, numberAllocator, companySettingsResolver });
   }
   return withExpenseRequestMutation(rootDir, payload.requestNo, async () => {
     const existing = await loadNumberedExpense(rootDir, payload.requestNo);
@@ -2076,7 +2084,7 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [], vendorRes
     const existingEvidenceFiles = existing.evidenceFiles || {};
     const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles);
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
-    const company = await getCompanySettings(rootDir);
+    const company = typeof companySettingsResolver === "function" ? await companySettingsResolver() : await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromRequestNo(existing.requestNo);
     const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload }, stored, { vendorResolver });
@@ -2122,12 +2130,12 @@ async function saveExpenseSubmission({ rootDir, payload, uploads = [], vendorRes
   });
 }
 
-async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [], createStockMovements = true, vendorResolver }) {
+async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [], createStockMovements = true, vendorResolver, numberAllocator, companySettingsResolver }) {
   assertLegacyDraftWriteId(payload.draftId, "substitute_receipt");
   if (payload.receiptNo && !SUBSTITUTE_RECEIPT_NUMBER_PATTERN.test(String(payload.receiptNo))) throw new Error("เลขที่ใบรับรองแทนใบเสร็จไม่ถูกต้อง");
   if (!payload.receiptNo) {
-    const draft = await saveSubstituteReceiptDraft({ rootDir, payload, uploads, vendorResolver });
-    return saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: draft.receiptNo }, uploads: [], createStockMovements, vendorResolver });
+    const draft = await saveSubstituteReceiptDraft({ rootDir, payload, uploads, vendorResolver, numberAllocator, companySettingsResolver });
+    return saveSubstituteReceiptSubmission({ rootDir, payload: { receiptNo: draft.receiptNo }, uploads: [], createStockMovements, vendorResolver, numberAllocator, companySettingsResolver });
   }
   return withSubstituteReceiptMutation(rootDir, payload.receiptNo, async () => {
     const existing = await loadNumberedReceipt(rootDir, payload.receiptNo);
@@ -2147,7 +2155,7 @@ async function saveSubstituteReceiptSubmission({ rootDir, payload, uploads = [],
     const preparedUploads = prepareUploadRecords(uploads, existingEvidenceFiles, buildSubstituteReceiptRawFileName);
     const evidenceFiles = mergeEvidenceFiles(existingEvidenceFiles, preparedUploads.evidenceFiles);
     const accountingMonth = stored.accountingMonth || getAccountingMonthFromReceiptNo(existing.receiptNo);
-    const company = await getCompanySettings(rootDir);
+    const company = typeof companySettingsResolver === "function" ? await companySettingsResolver() : await getCompanySettings(rootDir);
     const now = new Date().toISOString();
     const vendorPayload = await prepareDocumentVendorPayload(rootDir, { ...stored, ...payload, ...authoritative }, stored, { vendorResolver });
     const nextPayload = buildSubstituteReceiptPayload({ ...vendorPayload, ...authoritative, accountingMonth, company, receiptNo: existing.receiptNo, folderPath: existing.folderPath, sequence: existing.receiptNo.split("-").at(-1), evidenceFiles, createdAt: stored.createdAt, status: "pending_approval" });
@@ -2657,6 +2665,7 @@ async function receiveSubstituteReceiptStock({
   receivedDate,
   receivedBy = "",
   now = () => new Date().toISOString(),
+  inventoryCloudRepository = null,
 }) {
   const receipt = await getSubmittedSubstituteReceipt(rootDir, receiptNo);
   await assertWorkflowMutationAllowed(rootDir, receipt.payload?.transactionNo);
@@ -2688,17 +2697,34 @@ async function receiveSubstituteReceiptStock({
       status: payload.status,
       folderPath: payload.folderPath,
       pdfFiles: await listSubstituteReceiptPdfFiles(rootDir, payload.folderPath, payload.receiptNo),
-      stockMovements: listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo),
+      stockMovements: inventoryCloudRepository
+        ? await inventoryCloudRepository.listStockMovementsByReference("substitute_receipt", receiptNo)
+        : listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo),
     };
   }
 
   // First (and only legitimate) receive for this receipt. Guard against
   // creating a duplicate movement set even here, in case movements already
   // exist for this reference out of band.
-  let stockMovements = listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo);
+  let stockMovements = inventoryCloudRepository
+    ? await inventoryCloudRepository.listStockMovementsByReference("substitute_receipt", receiptNo)
+    : listStockMovementsByReference(rootDir, "substitute_receipt", receiptNo);
   if (!stockMovements.length) {
     stockMovements = await withWorkflowMutationGate(rootDir, payload.transactionNo, async () => {
       await assertWorkflowMutationAllowed(rootDir, payload.transactionNo);
+      if (inventoryCloudRepository) {
+        return inventoryCloudRepository.applyStockMovements((payload.lines || []).map((line, index) => ({
+          stockSkuId: line.stockSkuId,
+          movementType: "purchase_in",
+          movementDate: receivedDate,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          referenceType: "substitute_receipt",
+          referenceNo: payload.receiptNo,
+          note: line.description,
+          idempotencyKey: `substitute_receipt:${payload.receiptNo}:${index}`,
+        })));
+      }
       return (payload.lines || []).map((line) => createPurchaseInMovement(rootDir, {
         stockSkuId: line.stockSkuId,
         movementDate: receivedDate,
@@ -2914,12 +2940,12 @@ function normalizeWorkflowCompanySettings(company = {}) {
 // ID text. Refresh the artifact lazily when its PDF is opened; this also makes
 // a company-settings change take effect for existing documents without asking
 // the user to edit and resave every document one by one.
-async function refreshWorkflowDocumentCompanySettings({ rootDir, documentKind, documentNo }) {
+async function refreshWorkflowDocumentCompanySettings({ rootDir, documentKind, documentNo, companySettingsResolver }) {
   return withWorkflowDocumentMutation(rootDir, documentKind, documentNo, async () => {
     const record = await getWorkflowDocument(rootDir, documentKind, documentNo);
     if (!record) throw new Error("ไม่พบเอกสาร");
 
-    const company = normalizeWorkflowCompanySettings(await getCompanySettings(rootDir));
+    const company = normalizeWorkflowCompanySettings(typeof companySettingsResolver === "function" ? await companySettingsResolver() : await getCompanySettings(rootDir));
     const currentCompany = normalizeWorkflowCompanySettings(record.payload?.company);
     if (JSON.stringify(currentCompany) === JSON.stringify(company)
       && record.payload?.pdfVersion === WORKFLOW_DOCUMENT_PDF_VERSION) return record;
@@ -3743,11 +3769,13 @@ function cancellationPlanHash(plan) {
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
 }
 
-function cancellationStockEffects(children) {
-  return children.filter((child) => child.documentKind === "substitute_receipt")
-    .map((child) => {
-      const movements = listStockMovementsByReference(child._rootDir, "substitute_receipt", child.receiptNo)
-        .filter((movement) => movement.movementType === "purchase_in");
+async function cancellationStockEffects(children, inventoryCloudRepository = null) {
+  const effects = [];
+  for (const child of children.filter((item) => item.documentKind === "substitute_receipt")) {
+      const persistedMovements = inventoryCloudRepository
+        ? await inventoryCloudRepository.listStockMovementsByReference("substitute_receipt", child.receiptNo)
+        : listStockMovementsByReference(child._rootDir, "substitute_receipt", child.receiptNo);
+      const movements = persistedMovements.filter((movement) => movement.movementType === "purchase_in");
       const persisted = child.stockReceipt?.movementIds;
       const stockStatus = cancellationNativeStatus(child.documentKind, child);
       const stockEvidenceRequired = child.receiptType === "stock_purchase" && ["received", "completed"].includes(stockStatus);
@@ -3759,25 +3787,31 @@ function cancellationStockEffects(children) {
         || persisted.some((id) => !movements.some((movement) => movement.id === id)))) {
         throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "หลักฐานการรับสินค้าในเอกสารย่อยไม่ถูกต้อง");
       }
-      if (!movements.length) return null;
-      return {
+      if (movements.length) effects.push({
         receiptNo: child.receiptNo,
         expectedOriginalMovementIds: movements.map((movement) => movement.id),
         status: "pending",
         reversals: [],
-      };
-    }).filter(Boolean);
+      });
+  }
+  return effects;
 }
 
-function assertCancellationStockPreflight(rootDir, stockEffects) {
+async function assertCancellationStockPreflight(rootDir, stockEffects, inventoryCloudRepository = null) {
   const required = new Map();
   for (const effect of stockEffects) {
-    const movements = listStockMovementsByReference(rootDir, "substitute_receipt", effect.receiptNo)
+    const persistedMovements = inventoryCloudRepository
+      ? await inventoryCloudRepository.listStockMovementsByReference("substitute_receipt", effect.receiptNo)
+      : listStockMovementsByReference(rootDir, "substitute_receipt", effect.receiptNo);
+    const movements = persistedMovements
       .filter((movement) => effect.expectedOriginalMovementIds.includes(movement.id));
     for (const movement of movements) required.set(movement.stockSkuId, (required.get(movement.stockSkuId) || 0) + movement.quantity);
   }
   if (!required.size) return;
-  const balances = new Map(listInventoryBalances(rootDir).map((item) => [item.id, item]));
+  const currentBalances = inventoryCloudRepository
+    ? await inventoryCloudRepository.listInventoryBalances()
+    : listInventoryBalances(rootDir);
+  const balances = new Map(currentBalances.map((item) => [item.id, item]));
   const insufficient = [];
   for (const [stockSkuId, requiredQuantity] of required) {
     const availableQuantity = Number(balances.get(stockSkuId)?.quantityOnHand || 0);
@@ -3821,7 +3855,7 @@ async function assertWorkflowMutationAllowed(rootDir, transactionNo) {
   if (transaction) await assertWorkflowCancellationBarrier(rootDir, transaction);
 }
 
-async function validateFrozenCancellationPlan(rootDir, transaction, sidecar) {
+async function validateFrozenCancellationPlan(rootDir, transaction, sidecar, inventoryCloudRepository = null) {
   if ((transaction.completedAt || "") !== (sidecar.baseCompletedAt || "")) {
     throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ข้อมูล Workflow เปลี่ยนแปลงหลังเริ่มการยกเลิก");
   }
@@ -3847,7 +3881,10 @@ async function validateFrozenCancellationPlan(rootDir, transaction, sidecar) {
     if (effect.target === "already_satisfied" && !hasParentAudit(child)) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "ประวัติการยกเลิกเอกสารย่อยของ Workflow ไม่ถูกต้อง");
   }
   for (const effect of sidecar.stockEffects) {
-    const movements = listStockMovementsByReference(rootDir, "substitute_receipt", effect.receiptNo)
+    const persistedMovements = inventoryCloudRepository
+      ? await inventoryCloudRepository.listStockMovementsByReference("substitute_receipt", effect.receiptNo)
+      : listStockMovementsByReference(rootDir, "substitute_receipt", effect.receiptNo);
+    const movements = persistedMovements
       .filter((movement) => movement.movementType === "purchase_in").map((movement) => movement.id).sort((a, b) => a - b);
     const expected = [...effect.expectedOriginalMovementIds].sort((a, b) => a - b);
     if (JSON.stringify(movements) !== JSON.stringify(expected)) throw workflowCancellationError("CANCELLATION_SOURCE_INVALID", "หลักฐานการรับสินค้าเปลี่ยนแปลงหลังเริ่มการยกเลิก");
@@ -3966,7 +4003,7 @@ async function executeCancellationChild(rootDir, childEffect, sidecar) {
   }
 }
 
-async function createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt) {
+async function createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt, inventoryCloudRepository = null) {
   return withWorkflowMutationGate(rootDir, transaction.transactionNo, async () => {
     const latest = await getWorkflowTransaction(rootDir, transaction.transactionNo);
     if (!latest) throw workflowCancellationError("WORKFLOW_NOT_FOUND", "ไม่พบธุรกรรม", 404);
@@ -3979,8 +4016,8 @@ async function createCancellationSidecarIfAbsent(rootDir, transaction, actor, re
     const children = await collectCancellationChildrenStrict(rootDir, latest);
     const childEffects = children.map((child) => ({ documentKind: child.documentKind, documentNo: child.documentNo, workflowStepId: child.workflowStepId, originalStatus: cancellationNativeStatus(child.documentKind, child), target: cancellationTargetForChild(child), status: "pending", errorCode: "" }));
     const stockInput = children.map((child) => ({ ...child, _rootDir: rootDir }));
-    const stockEffects = cancellationStockEffects(stockInput);
-    assertCancellationStockPreflight(rootDir, stockEffects);
+    const stockEffects = await cancellationStockEffects(stockInput, inventoryCloudRepository);
+    await assertCancellationStockPreflight(rootDir, stockEffects, inventoryCloudRepository);
     const parentSheetSync = await readWorkflowSheetSyncMetadata(rootDir, latest);
     const sheetEffects = [
       { sourceKey: `workflow_transaction:${latest.transactionNo}`, knownLocations: parentSheetSync ? cancellationKnownLocations({ sheetSync: parentSheetSync }) : [], status: "pending", errorCode: "" },
@@ -4003,7 +4040,7 @@ async function createCancellationSidecarIfAbsent(rootDir, transaction, actor, re
   });
 }
 
-async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = false, cancelledBy = "", requestedAt = () => new Date().toISOString(), sheetDeleter = deleteMonthlyExpenseRowsBySourceKey }) {
+async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = false, cancelledBy = "", requestedAt = () => new Date().toISOString(), sheetDeleter = deleteMonthlyExpenseRowsBySourceKey, inventoryCloudRepository = null }) {
   if (confirmed !== true) throw workflowCancellationError("CANCELLATION_CONFIRMATION_REQUIRED", "ต้องยืนยันการยกเลิก Workflow", 400);
   if (!WORKFLOW_TRANSACTION_NUMBER_PATTERN.test(String(transactionNo || ""))) throw workflowCancellationError("INVALID_DOCUMENT_NUMBER", "เลขที่ธุรกรรมไม่ถูกต้อง", 400);
   const actor = assertCancellationActor(cancelledBy);
@@ -4027,7 +4064,7 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
       const existingSidecar = Boolean(sidecar);
       let indexPending = false;
       if (!sidecar) {
-        ({ transaction, sidecar, indexPending } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt));
+        ({ transaction, sidecar, indexPending } = await createCancellationSidecarIfAbsent(rootDir, transaction, actor, requestedAt, inventoryCloudRepository));
       }
       // The durable sidecar now owns the barrier.  Release the in-memory
       // admission intent before any external compensation work begins.
@@ -4038,12 +4075,15 @@ async function cancelWorkflowTransaction({ rootDir, transactionNo, confirmed = f
         return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" };
       }
 
-      const planChildren = await validateFrozenCancellationPlan(rootDir, transaction, sidecar);
+      const planChildren = await validateFrozenCancellationPlan(rootDir, transaction, sidecar, inventoryCloudRepository);
     const childLookup = new Map(planChildren.map((child) => [`${child.documentKind}:${child.documentNo}`, child]));
     for (const effect of sidecar.stockEffects) {
       if (effect.status === "completed") continue;
       try {
-        const reversed = await withWorkflowMutationGate(rootDir, transactionNo, async () => reversePurchaseInMovementsByReference({ rootDir, referenceType: "substitute_receipt", referenceNo: effect.receiptNo, expectedOriginalMovementIds: effect.expectedOriginalMovementIds, reversalDate: sidecar.cancellationDate, cancellationReference: `workflow_transaction:${transactionNo}`, now: () => sidecar.requestedAt }));
+        const reversalRequest = { referenceType: "substitute_receipt", referenceNo: effect.receiptNo, expectedOriginalMovementIds: effect.expectedOriginalMovementIds, reversalDate: sidecar.cancellationDate, cancellationReference: `workflow_transaction:${transactionNo}`, now: () => sidecar.requestedAt };
+        const reversed = await withWorkflowMutationGate(rootDir, transactionNo, async () => inventoryCloudRepository
+          ? inventoryCloudRepository.reversePurchaseInMovementsByReference(reversalRequest)
+          : reversePurchaseInMovementsByReference({ rootDir, ...reversalRequest }));
         effect.reversals = reversed.reversals.map((item) => ({ originalMovementId: item.originalMovementId, reversalMovementId: item.reversalMovementId, movementNo: item.movementNo, movementDate: item.movementDate, stockSkuId: item.stockSkuId, quantity: item.quantity }));
         effect.status = "completed"; effect.errorCode = "";
       } catch (error) { effect.errorCode = error.code || "STOCK_REVERSAL_FAILED"; await writeWorkflowCancellationSidecar(rootDir, transaction, sidecar); await persistCancellationIndex(rootDir, transaction, sidecar); return { ...(await cancellationSnapshot(rootDir, transaction, sidecar)), httpStatus: 202, code: "WORKFLOW_CANCELLATION_PENDING" }; }

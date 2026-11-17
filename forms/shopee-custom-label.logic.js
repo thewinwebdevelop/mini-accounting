@@ -46,7 +46,7 @@ function normalizeMappingKey(productName, optionName) {
 
 function customLabelStorageObjectPath(jobId, kind) {
   const id = cleanText(jobId);
-  if (!/^\d+$/.test(id)) throw new Error("job id ไม่ถูกต้อง");
+  if (!/^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(id)) throw new Error("job id ไม่ถูกต้อง");
   if (!["source", "preview", "output", "comparison"].includes(kind)) {
     throw new Error("custom label artifact kind ไม่ถูกต้อง");
   }
@@ -356,7 +356,8 @@ async function parseCustomLabelUpload(rootDir, file, options = {}) {
   parsedPayload.autofillMappings = options.mappingLoader
     ? await options.mappingLoader(keys)
     : loadCustomLabelMappings(rootDir, keys);
-  return createCustomLabelJob(rootDir, {
+  const createJob = options.createJob || (payload => createCustomLabelJob(rootDir, payload));
+  return createJob({
     originalFileName: file.originalName || file.filename || "shopee-labels.pdf",
     sourceFilePath,
     pageCount: parsedPayload.pages?.length || 0,
@@ -394,18 +395,20 @@ function updateCustomLabelPreview(rootDir, jobId, previewFilePath, options = {})
 }
 
 async function previewCustomLabel(rootDir, jobId, mappings, options = {}) {
-  const job = getCustomLabelJob(rootDir, jobId);
+  const job = options.job || getCustomLabelJob(rootDir, jobId);
   if (!job) throw new Error("ไม่พบ custom label job");
   const result = await renderCustomLabelJob(rootDir, job, mappings, "preview.pdf", options);
+  if (options.job) return { ...job, previewFilePath: result.outputFilePath, status: "previewed", updatedAt: nowIso(options), errorMessage: "" };
   return updateCustomLabelPreview(rootDir, jobId, result.outputFilePath, options);
 }
 
 async function saveCustomLabel(rootDir, jobId, mappings, options = {}) {
-  const job = getCustomLabelJob(rootDir, jobId);
+  const job = options.job || getCustomLabelJob(rootDir, jobId);
   if (!job) throw new Error("ไม่พบ custom label job");
   const result = await renderCustomLabelJob(rootDir, job, mappings, "output.pdf", options);
   if (options.mappingSaver) {
     await options.mappingSaver(result.normalizedMappings);
+    if (options.job) return { ...job, outputFilePath: result.outputFilePath, parsedPayload: { ...result.parsedPayload, savedMappings: result.normalizedMappings }, savedMappings: result.normalizedMappings, status: "saved", updatedAt: nowIso(options), errorMessage: "" };
     return withDatabase(rootDir, (db) => {
       const localJob = db.prepare("SELECT * FROM shopee_custom_label_jobs WHERE id = ?").get(Number(jobId));
       if (!localJob) throw new Error("ไม่พบ custom label job");

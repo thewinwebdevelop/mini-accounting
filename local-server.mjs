@@ -1,11 +1,16 @@
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+const { randomUUID } = require("node:crypto");
+const { createInventoryCloudRepository } = require("./forms/inventory-cloud.repository.js");
+const { createSupabaseCommerceService } = require("./forms/supabase-commerce.logic.js");
+const { renderShipmentLabelOverlay } = require("./forms/shopee-label-overlay.logic.js");
 const {
   buildGoogleOAuthUrl,
   exchangeGoogleOAuthCode,
@@ -15,6 +20,7 @@ const {
 const {
   getCompanySettings,
   saveCompanySettings,
+  normalizeCompanySettings,
 } = require("./forms/company-settings.logic.js");
 const {
   approveExpenseRequest,
@@ -80,6 +86,11 @@ const {
   buildWorkflowDocumentPayload,
   validateWorkflowDocumentPayload,
 } = require("./forms/workflow-document.logic.js");
+const {
+  getDefaultWorkflowTemplates,
+  normalizeWorkflowTemplate,
+  validateWorkflowTemplate,
+} = require("./forms/workflow.logic.js");
 const { validateExpenseRequest } = require("./forms/expense-request.logic.js");
 const {
   getDocumentTypeDefinition,
@@ -103,12 +114,15 @@ const {
   updateSaleSku,
 } = require("./forms/inventory.logic.js");
 const {
+  compatibilityVendor,
   createSubstituteReceiptVendor,
   listSubstituteReceiptVendors,
   updateSubstituteReceiptVendor,
 } = require("./forms/substitute-receipt-vendors.logic.js");
 const {
   createVendor,
+  buildVendorRecord,
+  buildUpdatedVendorRecord,
   findVendorMatches,
   getVendorById,
   listVendors,
@@ -123,6 +137,8 @@ const {
   importPlatformOrders,
   listShopeeOrders,
   listPlatformOrderImports,
+  normalizePlatform,
+  parsePlatformOrderFile,
   postPlatformOrderImport,
   saveShopeeOrderLineMapping,
   getShopeeOrder,
@@ -185,6 +201,7 @@ const {
   createSupabaseStorageClient,
   downloadStorageObject,
   uploadStorageObject,
+  deleteStorageObject,
 } = require("./forms/supabase-storage.logic.js");
 const { resolveGoogleOAuthRedirectUri } = require("./forms/google-oauth-config.logic.js");
 const {
@@ -278,15 +295,26 @@ const customLabelStorageClient = cloudRun
     bucket: runtimeEnv.SUPABASE_STORAGE_BUCKET,
   })
   : null;
-const customLabelDataRepository = cloudRun
+const cloudDataRepository = cloudRun
   ? createSupabaseDataRepository({
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+  })
+  : null;
+const inventoryCloudRepository = cloudRun
+  ? createInventoryCloudRepository({
+    client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
+    storageClient: customLabelStorageClient,
+  })
+  : null;
+const cloudCommerceService = cloudRun
+  ? createSupabaseCommerceService({
     client: createSupabaseAdminClient({ url: runtimeEnv.SUPABASE_URL, serviceRoleKey: runtimeEnv.SUPABASE_SERVICE_ROLE_KEY }),
   })
   : null;
 const documentDataAdapter = createDocumentDataAdapter({
   env: runtimeEnv,
   persistFiles: documentFileSynchronizer
-    ? ({ documentKind, documentNo, folderPath }) => documentFileSynchronizer.sync({ documentKind, documentNo, folderPath })
+    ? ({ documentKind, documentNo, folderPath, sourceHash }) => documentFileSynchronizer.sync({ documentKind, documentNo, folderPath, sourceHash })
     : undefined,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
 });
@@ -307,6 +335,9 @@ const vendorResolver = cloudVendorRepository
     { includeInactive: true },
   ).find(vendor => vendor.id === String(vendorId || "").trim()) || null
   : undefined;
+const cloudDocumentNumberAllocator = cloudRun
+  ? input => documentDataAdapter.allocateAccountingDocumentNumber(input)
+  : undefined;
 const documentFileAdapter = createFileAdapter({
   rootDir,
   env: runtimeEnv,
@@ -319,6 +350,42 @@ async function assertKnownStockSkuReferences(lines = []) {
   const stockSkus = await inventoryDataAdapter.read("listStockSkus", { search: "" });
   const errors = validateStockSkuReferences(lines, stockSkus);
   if (errors.length) throw new Error(errors.join(", "));
+}
+
+async function resolveCompanySettings() {
+  return cloudDataRepository ? cloudDataRepository.getCompanySettings() : getCompanySettings(rootDir);
+}
+
+function workflowTemplateFromCloudRecord(record) {
+  if (!record) return null;
+  const template = { ...record };
+  delete template.documentKind;
+  delete template.documentNo;
+  delete template.status;
+  delete template.folderPath;
+  delete template.ownerUserId;
+  delete template.sourceKey;
+  delete template.sourceHash;
+  return template.templateId ? template : null;
+}
+
+async function listRuntimeWorkflowTemplates() {
+  if (!cloudRun) return listWorkflowTemplates(rootDir);
+  const templates = new Map(getDefaultWorkflowTemplates().map(template => [template.templateId, template]));
+  const cloudTemplates = await documentDataAdapter.list({ localResult: [], documentKind: "workflow_template" });
+  for (const record of cloudTemplates) {
+    const template = workflowTemplateFromCloudRecord(record);
+    if (template) templates.set(template.templateId, template);
+  }
+  return [...templates.values()];
+}
+
+async function getRuntimeWorkflowTemplate(templateId) {
+  if (!cloudRun) return getWorkflowTemplate(rootDir, templateId);
+  const cloudRecord = await documentDataAdapter.get({ localResult: null, documentKind: "workflow_template", documentNo: templateId });
+  return workflowTemplateFromCloudRecord(cloudRecord)
+    || getDefaultWorkflowTemplates().find(template => template.templateId === templateId)
+    || null;
 }
 
 async function resolveDocumentFileReference({ documentKind, documentNo, section, fileName, localResolve }) {
@@ -343,8 +410,24 @@ async function resolveDocumentFileReference({ documentKind, documentNo, section,
   }
 }
 
+const cloudDocumentMutationContext = new AsyncLocalStorage();
+
 async function ensureLocalCloudDocument({ documentKind, documentNo, localLoad }) {
-  return cloudDocumentReader.ensure({ documentKind, documentNo, localLoad });
+  const record = await cloudDocumentReader.ensure({ documentKind, documentNo, localLoad });
+  if (cloudRun && record && documentNo) {
+    const sourceHash = await documentDataAdapter.getSourceHash({ documentKind, documentNo });
+    if (sourceHash) cloudDocumentMutationContext.getStore()?.set(`${documentKind}:${documentNo}`, sourceHash);
+  }
+  return record;
+}
+
+function takeCloudDocumentSourceHash(documentKind, documentNo) {
+  if (!documentNo) return "";
+  const sourceVersions = cloudDocumentMutationContext.getStore();
+  const identity = `${documentKind}:${documentNo}`;
+  const value = sourceVersions?.get(identity) || "";
+  sourceVersions?.delete(identity);
+  return value;
 }
 
 async function ensureLocalCloudWorkflowTransaction(transactionNo) {
@@ -386,14 +469,20 @@ async function ensureLocalCloudWorkflowTransaction(transactionNo) {
 async function persistCloudDocumentMutation({ documentKind, documentNo, result, localLoad }) {
   if (!cloudRun) return result;
   const localRecord = await localLoad();
+  const identity = `${documentKind}:${documentNo}`;
+  const sourceVersions = cloudDocumentMutationContext.getStore();
+  const expectedSourceHash = sourceVersions?.get(identity);
+  sourceVersions?.delete(identity);
   await documentDataAdapter.save({
     documentKind,
     documentNo,
     payload: localRecord?.payload || localRecord,
     localSave: async () => result,
+    expectedSourceHash,
   });
   return result;
 }
+
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -581,6 +670,7 @@ async function ensureDocumentAccess(request, response, { action, load }) {
 async function ensureDocumentWriteAccess(request, response, {
   numberField,
   payload,
+  documentKind,
   loadExisting,
   existingAction = ACTIONS.DOCUMENT_EDIT,
 }) {
@@ -590,7 +680,9 @@ async function ensureDocumentWriteAccess(request, response, {
   if (!documentNo) return true;
   return ensureDocumentAccess(request, response, {
     action: existingAction,
-    load: () => loadExisting(documentNo),
+    load: () => cloudRun && documentKind
+      ? loadDocumentForAuthorization({ documentKind, documentNo, localLoad: () => loadExisting(documentNo) })
+      : loadExisting(documentNo),
   });
 }
 
@@ -629,15 +721,17 @@ async function filterOwnedDocumentList(request, records, { numberField, load }) 
   return visible;
 }
 
-async function bindLineOwner(request, payload, { numberField, loadExisting }) {
+async function bindLineOwner(request, payload, { numberField, documentKind, loadExisting }) {
   if (!sessionAuthMode) return payload;
   const documentNo = String(payload?.[numberField] ?? "").trim();
   if (!documentNo) return { ...payload, ownerUserId: String(request.auth?.userId || "").trim() };
-  const existing = await loadExisting(documentNo).catch((error) => {
+  const existing = await (cloudRun && documentKind
+    ? loadDocumentForAuthorization({ documentKind, documentNo, localLoad: () => loadExisting(documentNo) })
+    : loadExisting(documentNo)).catch((error) => {
     if (error.message === "Expense request not found" || error.message === "Substitute receipt not found") return null;
     throw error;
   });
-  return { ...payload, ownerUserId: String(existing?.payload?.ownerUserId || "").trim() };
+  return { ...payload, ownerUserId: String(existing?.payload?.ownerUserId || existing?.ownerUserId || "").trim() };
 }
 
 async function handleLineSession(request, response) {
@@ -1125,6 +1219,7 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "requestNo",
       payload,
+      documentKind: "expense_request",
       loadExisting: requestNo => getSubmittedExpenseRequest(rootDir, requestNo),
     })) return;
     const original = await lineIntakeStore.readOriginal(scanned);
@@ -1132,11 +1227,16 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
       documentKind: "expense_request",
       documentNo: "",
       payload,
+      createOnly: true,
       localSave: () => saveExpenseDraft({
         rootDir,
         payload,
         uploads: [{ evidenceKey: "receipt", originalName: original.fileName, type: original.contentType, buffer: original.bytes }],
         vendorResolver,
+        numberAllocator: cloudDocumentNumberAllocator
+          ? input => cloudDocumentNumberAllocator({ ...input, requestKey: `line-intake:${intakeId}` })
+          : undefined,
+        companySettingsResolver: resolveCompanySettings,
       }),
     });
     const document = lineDocumentSummary(result);
@@ -1262,24 +1362,31 @@ async function handleExpenseSubmission(request, response) {
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
       numberField: "requestNo",
+      documentKind: "expense_request",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     await assertKnownStockSkuReferences(payload.expenseLines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "requestNo",
       payload,
+      documentKind: "expense_request",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
+    if (cloudRun && payload.requestNo) await ensureLocalCloudDocument({ documentKind: "expense_request", documentNo: payload.requestNo, localLoad: () => getSubmittedExpenseRequest(rootDir, payload.requestNo) });
     const result = await documentDataAdapter.save({
       documentKind: "expense_request",
       documentNo: payload.requestNo,
       payload,
+      expectedSourceHash: takeCloudDocumentSourceHash("expense_request", payload.requestNo),
+      createOnly: !payload.requestNo,
       localSave: () => saveExpenseSubmission({
         rootDir,
         payload,
         uploads: files,
         vendorResolver,
+        numberAllocator: cloudDocumentNumberAllocator,
+        companySettingsResolver: resolveCompanySettings,
       }),
     });
 
@@ -1295,24 +1402,31 @@ async function handleSubstituteReceiptSubmission(request, response) {
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
       numberField: "receiptNo",
+      documentKind: "substitute_receipt",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     await assertKnownStockSkuReferences(payload.lines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "receiptNo",
       payload,
+      documentKind: "substitute_receipt",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
+    if (cloudRun && payload.receiptNo) await ensureLocalCloudDocument({ documentKind: "substitute_receipt", documentNo: payload.receiptNo, localLoad: () => getSubmittedSubstituteReceipt(rootDir, payload.receiptNo) });
     const result = await documentDataAdapter.save({
       documentKind: "substitute_receipt",
       documentNo: payload.receiptNo,
       payload,
+      expectedSourceHash: takeCloudDocumentSourceHash("substitute_receipt", payload.receiptNo),
+      createOnly: !payload.receiptNo,
       localSave: () => saveSubstituteReceiptSubmission({
         rootDir,
         payload,
         uploads: files,
         vendorResolver,
+        numberAllocator: cloudDocumentNumberAllocator,
+        companySettingsResolver: resolveCompanySettings,
       }),
     });
 
@@ -1328,23 +1442,30 @@ async function handleSubstituteReceiptDraftSave(request, response) {
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
       numberField: "receiptNo",
+      documentKind: "substitute_receipt",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     await assertKnownStockSkuReferences(payload.lines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "receiptNo",
       payload,
+      documentKind: "substitute_receipt",
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     })) return;
+    if (cloudRun && payload.receiptNo) await ensureLocalCloudDocument({ documentKind: "substitute_receipt", documentNo: payload.receiptNo, localLoad: () => getSubmittedSubstituteReceipt(rootDir, payload.receiptNo) });
     const result = await documentDataAdapter.save({
       documentKind: "substitute_receipt",
       documentNo: payload.receiptNo,
       payload,
+      expectedSourceHash: takeCloudDocumentSourceHash("substitute_receipt", payload.receiptNo),
+      createOnly: !payload.receiptNo,
       localSave: () => saveSubstituteReceiptDraft({
         rootDir,
         payload,
         uploads: files,
         vendorResolver,
+        numberAllocator: cloudDocumentNumberAllocator,
+        companySettingsResolver: resolveCompanySettings,
       }),
     });
 
@@ -1526,6 +1647,7 @@ async function handleSubstituteReceiptReceiveStock(receiptNo, request, response)
     });
     const result = await receiveSubstituteReceiptStock({
       rootDir,
+      inventoryCloudRepository,
       receiptNo,
       receivedDate: payload.receivedDate,
       receivedBy: actorForRequest(request, payload.receivedBy),
@@ -1623,10 +1745,16 @@ async function handleSubstituteReceiptFile(fileRoute, response) {
 async function handleWorkflowDocumentFile(fileRoute, response) {
   try {
     if (fileRoute.section === "pdf") {
+      await ensureLocalCloudDocument({
+        documentKind: fileRoute.documentKind,
+        documentNo: fileRoute.documentNo,
+        localLoad: () => getWorkflowDocument(rootDir, fileRoute.documentKind, fileRoute.documentNo),
+      });
       await refreshWorkflowDocumentCompanySettings({
         rootDir,
         documentKind: fileRoute.documentKind,
         documentNo: fileRoute.documentNo,
+        companySettingsResolver: resolveCompanySettings,
       });
     }
     const file = await resolveDocumentFileReference({
@@ -1677,6 +1805,16 @@ async function handleWorkflowDocumentSubmission(request, response) {
     // that carries no new uploads must leave existing evidence exactly as it
     // was — see saveWorkflowDocument's merge of these against any new uploads).
     const requestedDocumentNo = String(data.documentNo ?? "").trim();
+    const expectedSourceHash = cloudRun && requestedDocumentNo
+      ? await documentDataAdapter.getSourceHash({ documentKind: data.documentKind, documentNo: requestedDocumentNo })
+      : undefined;
+    if (cloudRun && requestedDocumentNo) {
+      await ensureLocalCloudDocument({
+        documentKind: data.documentKind,
+        documentNo: requestedDocumentNo,
+        localLoad: () => getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo),
+      });
+    }
     const existingDocument = requestedDocumentNo
       ? await getWorkflowDocument(rootDir, data.documentKind, requestedDocumentNo)
       : null;
@@ -1716,9 +1854,11 @@ async function handleWorkflowDocumentSubmission(request, response) {
         workflowStepId: existingDocument.payload?.workflowStepId ?? "",
       };
     } else {
-      const nextInfo = await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
+      const nextInfo = cloudRun
+        ? await documentDataAdapter.allocateAccountingDocumentNumber({ documentKind: data.documentKind, accountingMonth: data.accountingMonth })
+        : await getNextWorkflowDocumentInfo(rootDir, data.documentKind, data.accountingMonth);
       serverOwnedFields = {
-        documentNo: "",
+        documentNo: nextInfo.documentNo || "",
         folderPath: "",
         sequence: nextInfo.sequence,
         status: "draft",
@@ -1738,12 +1878,14 @@ async function handleWorkflowDocumentSubmission(request, response) {
     // company settings so every regenerated lightweight-document PDF carries
     // the configured legal name and tax ID, including edits to an existing
     // draft. Never trust a client-supplied company object for this header.
-    const company = await getCompanySettings(rootDir);
+    const company = await resolveCompanySettings();
     const payload = buildWorkflowDocumentPayload({ ...data, company, ...serverOwnedFields });
     const result = await documentDataAdapter.save({
       documentKind: payload.documentKind,
       documentNo: payload.documentNo,
       payload,
+      expectedSourceHash,
+      createOnly: !requestedDocumentNo,
       localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver }),
     });
 
@@ -1940,7 +2082,7 @@ async function handleWorkflowDocumentTypesList(response) {
 
 async function handleWorkflowTemplateList(response) {
   try {
-    sendJson(response, 200, { templates: await listWorkflowTemplates(rootDir) });
+    sendJson(response, 200, { templates: await listRuntimeWorkflowTemplates() });
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถแสดงรายการ template ได้",
@@ -1954,7 +2096,10 @@ async function handleWorkflowTemplateSave(request, response) {
     const templateId = typeof body.templateId === "string" ? body.templateId.trim() : "";
     if (!templateId) throw new Error("ระบุรหัส template");
 
-    const existing = await getWorkflowTemplate(rootDir, templateId);
+    const existing = await getRuntimeWorkflowTemplate(templateId);
+    const expectedSourceHash = cloudRun && existing
+      ? await documentDataAdapter.getSourceHash({ documentKind: "workflow_template", documentNo: templateId })
+      : undefined;
 
     // The client may only set name, description, the ordered document kinds,
     // and the syncGoogleDrive toggle. Everything else (active/createdAt) is
@@ -1974,7 +2119,22 @@ async function handleWorkflowTemplateSave(request, response) {
       createdAt: existing?.createdAt,
     };
 
-    const saved = await saveWorkflowTemplate({ rootDir, template });
+    const validationErrors = validateWorkflowTemplate(template);
+    if (validationErrors.length) throw new Error(validationErrors.join(", "));
+    let saved;
+    if (cloudRun) {
+      saved = normalizeWorkflowTemplate({ ...template, createdAt: template.createdAt || existing?.createdAt });
+      await documentDataAdapter.save({
+        documentKind: "workflow_template",
+        documentNo: templateId,
+        payload: saved,
+        expectedSourceHash,
+        createOnly: !existing,
+        localSave: async () => saved,
+      });
+    } else {
+      saved = await saveWorkflowTemplate({ rootDir, template });
+    }
     sendJson(response, 200, saved);
   } catch (error) {
     sendJson(response, 400, {
@@ -1989,7 +2149,9 @@ async function handleNextWorkflowTransaction(url, response) {
     if (!isValidAccountingMonth(accountingMonth)) {
       throw new Error("รูปแบบเดือนบัญชีไม่ถูกต้อง กรุณาระบุเป็น YYYY-MM");
     }
-    const result = await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
+    const result = cloudRun
+      ? await documentDataAdapter.peekWorkflowTransactionNumber(accountingMonth)
+      : await getNextWorkflowTransactionInfo(rootDir, accountingMonth);
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
@@ -2083,6 +2245,7 @@ async function handleWorkflowTransactionStart(request, response) {
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "ไม่สามารถเริ่มธุรกรรมได้",
+      ...(error?.causeCode ? { causeCode: error.causeCode } : {}),
     });
   }
 }
@@ -2145,6 +2308,7 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
     const body = await readJsonBody(request);
     const result = await cancelWorkflowTransaction({
       rootDir,
+      inventoryCloudRepository,
       transactionNo,
       confirmed: body.confirmed,
       cancelledBy: actorForRequest(request, body.cancelledBy),
@@ -2217,8 +2381,15 @@ async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
 }
 
 function buildWorkflowStepOpenUrl({ route, documentKind, documentNo, transactionNo, workflowTemplateId, workflowStepId, returnTo, receiptType }) {
-  const separator = route.includes("?") ? "&" : "?";
-  const params = new URLSearchParams({ transactionNo, workflowTemplateId, workflowStepId, returnTo });
+  const [pathname, search = ""] = String(route || "").split("?", 2);
+  const params = new URLSearchParams(search);
+  for (const [key, value] of Object.entries({ transactionNo, workflowTemplateId, workflowStepId, returnTo })) {
+    if (value) params.set(key, value);
+  }
+  // Child pages use this discriminator to select and initialize the correct
+  // form. Without it, workflow links open the default shell and the saved
+  // transaction/step identity is lost from the child page context.
+  if (documentKind) params.set("documentKind", documentKind);
   if (documentNo) {
     const documentNumberParam = documentKind === "expense_request"
       ? "requestNo"
@@ -2233,7 +2404,7 @@ function buildWorkflowStepOpenUrl({ route, documentKind, documentNo, transaction
   // that simply never declared one, must open exactly as before: no extra
   // param, no lock on the form.
   if (receiptType) params.set("receiptType", receiptType);
-  return `${route}${separator}${params.toString()}`;
+  return `${pathname}?${params.toString()}`;
 }
 
 async function handleWorkflowTransactionStartDocument(transactionNo, stepId, response) {
@@ -2340,7 +2511,10 @@ async function handleGoogleDriveStatus(request, response) {
 
 async function handleCompanySettingsGet(response) {
   try {
-    sendJson(response, 200, await getCompanySettings(rootDir));
+    const settings = cloudDataRepository
+      ? await cloudDataRepository.getCompanySettings()
+      : await getCompanySettings(rootDir);
+    sendJson(response, 200, settings);
   } catch (error) {
     sendJson(response, 400, {
       error: error.message || "Cannot read company settings",
@@ -2351,13 +2525,21 @@ async function handleCompanySettingsGet(response) {
 async function handleCompanySettingsSave(request, response) {
   try {
     const payload = await readJsonBody(request);
-    const result = await saveCompanySettings({
+    const settings = {
       rootDir,
       legalName: payload.legalName,
       taxId: payload.taxId,
       branch: payload.branch,
       address: payload.address,
-    });
+    };
+    let result;
+    if (cloudDataRepository) {
+      const normalized = normalizeCompanySettings(payload);
+      if (!normalized.legalName) throw new Error("Missing company legal name");
+      result = await cloudDataRepository.saveCompanySettings(normalized);
+    } else {
+      result = await saveCompanySettings(settings);
+    }
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
@@ -2418,23 +2600,32 @@ async function handleDraftSave(request, response) {
     const { fields, files } = parseMultipartForm(body, request.headers["content-type"]);
     const payload = await bindLineOwner(request, JSON.parse(fields.payload || "{}"), {
       numberField: "requestNo",
+      documentKind: "expense_request",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     await assertKnownStockSkuReferences(payload.expenseLines);
     if (!await ensureDocumentWriteAccess(request, response, {
       numberField: "requestNo",
       payload,
+      documentKind: "expense_request",
       loadExisting: (requestNo) => getSubmittedExpenseRequest(rootDir, requestNo),
     })) return;
+    if (cloudRun && payload.requestNo) {
+      await ensureLocalCloudDocument({ documentKind: "expense_request", documentNo: payload.requestNo, localLoad: () => getSubmittedExpenseRequest(rootDir, payload.requestNo) });
+    }
     const result = await documentDataAdapter.save({
       documentKind: "expense_request",
       documentNo: payload.requestNo || payload.draftId,
       payload,
+      expectedSourceHash: takeCloudDocumentSourceHash("expense_request", payload.requestNo),
+      createOnly: !payload.requestNo,
       localSave: () => saveExpenseDraft({
         rootDir,
         payload,
         uploads: files,
         vendorResolver,
+        numberAllocator: cloudDocumentNumberAllocator,
+        companySettingsResolver: resolveCompanySettings,
       }),
     });
 
@@ -2446,7 +2637,19 @@ async function handleDraftSave(request, response) {
 
 async function handleDraftList(response) {
   try {
-    const result = await listExpenseDrafts(rootDir);
+    const result = cloudRun
+      ? (await documentDataAdapter.list({ localResult: [], documentKind: "expense_request", filters: { status: "draft" } }))
+        .filter(document => document.status === "draft")
+        .map(document => ({
+          draftId: document.requestNo || document.documentNo,
+          status: document.status,
+          requestTitle: document.requestTitle || "ยังไม่ได้ตั้งชื่อ",
+          requesterName: document.requesterName || "",
+          accountingMonth: document.accountingMonth || "",
+          updatedAt: document.updatedAt || "",
+          rawFileCount: Array.isArray(document.rawFiles) ? document.rawFiles.length : 0,
+        }))
+      : await listExpenseDrafts(rootDir);
     sendJson(response, 200, { drafts: result });
   } catch (error) {
     sendJson(response, 400, {
@@ -2517,6 +2720,10 @@ async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
 
 async function handleDraftGet(draftId, response) {
   try {
+    if (/^REQ-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(draftId)) {
+      return handleSubmittedExpenseRequestGet(draftId, response);
+    }
+    if (cloudRun) throw new Error("ไม่พบแบบร่างเก่าใน Supabase");
     const result = await getExpenseDraft(rootDir, draftId);
     sendJson(response, 200, result);
   } catch (error) {
@@ -2528,6 +2735,10 @@ async function handleDraftGet(draftId, response) {
 
 async function handleSubstituteReceiptDraftGet(draftId, response) {
   try {
+    if (/^SR-\d{4}-(0[1-9]|1[0-2])-\d{4}$/.test(draftId)) {
+      return handleSubmittedSubstituteReceiptGet(draftId, response);
+    }
+    if (cloudRun) throw new Error("ไม่พบแบบร่างเก่าใน Supabase");
     const result = await getSubstituteReceiptDraft(rootDir, draftId);
     sendJson(response, 200, result);
   } catch (error) {
@@ -2553,7 +2764,9 @@ async function handleLegacyDraftFile(file, response, kind) {
 async function handleNextExpenseRequest(url, response) {
   try {
     const accountingMonth = url.searchParams.get("accountingMonth");
-    const result = await getNextExpenseRequestInfo(rootDir, accountingMonth);
+    const result = cloudRun
+      ? await documentDataAdapter.allocateAccountingDocumentNumber({ documentKind: "expense_request", accountingMonth, allocate: false })
+      : await getNextExpenseRequestInfo(rootDir, accountingMonth);
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
@@ -2565,7 +2778,9 @@ async function handleNextExpenseRequest(url, response) {
 async function handleNextSubstituteReceipt(url, response) {
   try {
     const accountingMonth = url.searchParams.get("accountingMonth");
-    const result = await getNextSubstituteReceiptInfo(rootDir, accountingMonth);
+    const result = cloudRun
+      ? await documentDataAdapter.allocateAccountingDocumentNumber({ documentKind: "substitute_receipt", accountingMonth, allocate: false })
+      : await getNextSubstituteReceiptInfo(rootDir, accountingMonth);
     sendJson(response, 200, result);
   } catch (error) {
     sendJson(response, 400, {
@@ -2584,7 +2799,7 @@ async function handleInventoryProductList(url, response) {
 
 async function handleInventoryProductDetail(productId, response) {
   try {
-    sendJson(response, 200, getInventoryProductDetail(rootDir, productId));
+    sendJson(response, 200, (inventoryCloudRepository ? await inventoryCloudRepository.getProductDetail(productId) : getInventoryProductDetail(rootDir, productId)));
   } catch (error) {
     sendJson(response, 404, { error: error.message || "Cannot load product detail" });
   }
@@ -2593,7 +2808,7 @@ async function handleInventoryProductDetail(productId, response) {
 async function handleInventoryCategoryList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
-    sendJson(response, 200, { categories: listProductCategories(rootDir, { includeInactive }) });
+    sendJson(response, 200, { categories: (inventoryCloudRepository ? await inventoryCloudRepository.listProductCategories({ includeInactive }) : listProductCategories(rootDir, { includeInactive })) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list product categories" });
   }
@@ -2602,7 +2817,7 @@ async function handleInventoryCategoryList(url, response) {
 async function handleInventoryCategoryCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { category: createProductCategory(rootDir, payload) });
+    sendJson(response, 200, { category: (inventoryCloudRepository ? await inventoryCloudRepository.saveProductCategory(payload) : createProductCategory(rootDir, payload)) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create product category" });
   }
@@ -2611,7 +2826,7 @@ async function handleInventoryCategoryCreate(request, response) {
 async function handleInventoryCategoryUpdate(categoryId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { category: updateProductCategory(rootDir, categoryId, payload) });
+    sendJson(response, 200, { category: (inventoryCloudRepository ? await inventoryCloudRepository.saveProductCategory({ ...payload, id: categoryId }) : updateProductCategory(rootDir, categoryId, payload)) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update product category" });
   }
@@ -2631,7 +2846,7 @@ async function handleInventoryProductImageUpload(productId, request, response) {
     const body = await readRequestBody(request);
     const { files } = parseMultipartForm(body, request.headers["content-type"]);
     const file = files.find((upload) => upload.evidenceKey === "image") || files[0];
-    sendJson(response, 200, await saveProductImage(rootDir, productId, file));
+    sendJson(response, 200, (inventoryCloudRepository ? await inventoryCloudRepository.uploadInventoryImage("product", productId, file) : await saveProductImage(rootDir, productId, file)));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot upload product image" });
   }
@@ -2668,7 +2883,7 @@ async function handleInventoryStockSkuImageUpload(stockSkuId, request, response)
     const body = await readRequestBody(request);
     const { files } = parseMultipartForm(body, request.headers["content-type"]);
     const file = files.find((upload) => upload.evidenceKey === "image") || files[0];
-    sendJson(response, 200, await saveStockSkuImage(rootDir, stockSkuId, file));
+    sendJson(response, 200, (inventoryCloudRepository ? await inventoryCloudRepository.uploadInventoryImage("stock_sku", stockSkuId, file) : await saveStockSkuImage(rootDir, stockSkuId, file)));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot upload stock SKU image" });
   }
@@ -2685,7 +2900,7 @@ async function handleInventoryStockSkuUpdate(stockSkuId, request, response) {
 
 async function handleInventorySaleSkuList(url, response) {
   try {
-    sendJson(response, 200, { saleSkus: listSaleSkus(rootDir, { search: url.searchParams.get("search") || "" }) });
+    sendJson(response, 200, { saleSkus: (inventoryCloudRepository ? await inventoryCloudRepository.listSaleSkus({ search: url.searchParams.get("search") || "" }) : listSaleSkus(rootDir, { search: url.searchParams.get("search") || "" })) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list sale SKUs" });
   }
@@ -2693,7 +2908,7 @@ async function handleInventorySaleSkuList(url, response) {
 
 async function handleInventorySaleSkuGet(saleSkuId, response) {
   try {
-    sendJson(response, 200, { saleSku: getSaleSku(rootDir, saleSkuId) });
+    sendJson(response, 200, { saleSku: (inventoryCloudRepository ? await inventoryCloudRepository.getSaleSku(saleSkuId) : getSaleSku(rootDir, saleSkuId)) });
   } catch (error) {
     sendJson(response, 404, { error: error.message || "Cannot load sale SKU" });
   }
@@ -2702,7 +2917,7 @@ async function handleInventorySaleSkuGet(saleSkuId, response) {
 async function handleInventorySaleSkuCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { saleSku: createSaleSku(rootDir, payload) });
+    sendJson(response, 200, { saleSku: (inventoryCloudRepository ? await inventoryCloudRepository.saveSaleSku(payload) : createSaleSku(rootDir, payload)) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot create sale SKU" });
   }
@@ -2711,7 +2926,7 @@ async function handleInventorySaleSkuCreate(request, response) {
 async function handleInventorySaleSkuUpdate(saleSkuId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { saleSku: updateSaleSku(rootDir, saleSkuId, payload) });
+    sendJson(response, 200, { saleSku: (inventoryCloudRepository ? await inventoryCloudRepository.saveSaleSku({ ...payload, id: saleSkuId }) : updateSaleSku(rootDir, saleSkuId, payload)) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot update sale SKU" });
   }
@@ -2719,15 +2934,169 @@ async function handleInventorySaleSkuUpdate(saleSkuId, request, response) {
 
 async function handlePlatformOrderImportList(response) {
   try {
-    sendJson(response, 200, { imports: listPlatformOrderImports(rootDir) });
+    const imports = cloudCommerceService
+      ? await cloudCommerceService.listPlatformOrderImports()
+      : listPlatformOrderImports(rootDir);
+    sendJson(response, 200, { imports: imports.map(item => cloudCommerceService ? platformOrderImportSummary(item) : item) });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot list platform order imports" });
   }
 }
 
+function platformOrderImportSummary(item = {}) {
+  const value = item.import || item;
+  return {
+    id: value.id || value.importNo,
+    importNo: value.importNo || value.id,
+    platform: value.platform || "manual",
+    fileName: value.fileName || "",
+    status: value.status || "imported",
+    rowCount: Number(value.rowCount || 0),
+    matchedLineCount: Number(value.matchedLineCount || 0),
+    issueCount: Number(value.issueCount || 0),
+    postedAt: value.postedAt || "",
+    createdAt: value.createdAt || "",
+    updatedAt: value.updatedAt || "",
+  };
+}
+
+function platformOrderImportDetail(payload = {}) {
+  const value = payload.import ? payload : {
+    import: payload,
+    orders: payload.orders || [],
+    lines: payload.lines || [],
+    postedMovements: payload.postedMovements || [],
+  };
+  const importRow = platformOrderImportSummary(value.import);
+  return {
+    import: importRow,
+    orders: value.orders || [],
+    lines: value.lines || [],
+    ...(value.postedMovements ? { postedMovements: value.postedMovements } : {}),
+  };
+}
+
+async function createCloudPlatformOrderImport(parsed, { platform, fileName }) {
+  const timestamp = new Date().toISOString();
+  const importNo = `IMP-${timestamp.slice(0, 10).replace(/-/g, "")}-${randomUUID()}`;
+  const [saleSkus, balances] = await Promise.all([
+    inventoryCloudRepository.listSaleSkus({ includeInactive: false }),
+    inventoryCloudRepository.listInventoryBalances(),
+  ]);
+  const bySku = new Map(balances.map(item => [String(item.id), item]));
+  const remaining = new Map(balances.map(item => [String(item.id), Number(item.availableQuantity || 0)]));
+  const orders = new Map();
+  const lines = [];
+  let matchedLineCount = 0;
+  let issueCount = 0;
+
+  for (const row of parsed.rows) {
+    const orderKey = `${platform}:${row.orderNo}`;
+    if (!orders.has(orderKey)) orders.set(orderKey, {
+      id: orderKey,
+      importId: importNo,
+      platform,
+      orderNo: row.orderNo,
+      orderDate: row.orderDate || "",
+      orderStatus: row.orderStatus || "",
+      buyerName: row.buyerName || "",
+      createdAt: timestamp,
+    });
+    const lineId = `${importNo}:${orderKey}:${row.lineNo}:${row.saleSku}`;
+    const referenceNo = `${platform}:${row.orderNo}:${row.lineNo}:${row.saleSku}`;
+    const candidates = saleSkus.filter(item => String(item.saleSku || "").trim().toUpperCase() === String(row.saleSku || "").trim().toUpperCase());
+    const ranked = candidates.sort((a, b) => (a.platform === platform ? 0 : a.platform === "manual" ? 1 : 2) - (b.platform === platform ? 0 : b.platform === "manual" ? 1 : 2));
+    const bestRank = ranked[0] ? (ranked[0].platform === platform ? 0 : ranked[0].platform === "manual" ? 1 : 2) : -1;
+    const best = ranked.filter(item => (item.platform === platform ? 0 : item.platform === "manual" ? 1 : 2) === bestRank);
+    const saleSku = best.length === 1 ? best[0] : null;
+    let matchStatus = row.skipped ? "skipped_status" : "matched";
+    let issueMessage = "";
+    let components = [];
+    if (!row.skipped && row.quantity <= 0) {
+      matchStatus = "invalid_quantity";
+      issueMessage = "จำนวนสินค้าไม่ถูกต้อง";
+    } else if (!row.skipped && !saleSku) {
+      matchStatus = "missing_sale_sku";
+      issueMessage = candidates.length ? "พบ Sale SKU มากกว่าหนึ่งรายการ" : "ไม่พบ Sale SKU";
+    } else if (!row.skipped) {
+      components = (saleSku.components || []).map(component => {
+        const balance = bySku.get(String(component.stockSkuId));
+        const componentQuantity = Number(component.quantity || 0);
+        const requiredQuantity = componentQuantity * row.quantity;
+        return {
+          stockSkuId: component.stockSkuId,
+          sku: component.sku || "",
+          color: component.color || "",
+          size: component.size || "",
+          productCode: component.productCode || "",
+          productName: component.productName || "",
+          componentQuantity,
+          requiredQuantity,
+          quantityOnHand: Number(balance?.quantityOnHand || 0),
+          reservedQuantity: Number(balance?.reservedQuantity || 0),
+          availableQuantity: Number(remaining.get(String(component.stockSkuId)) || 0),
+          unitCost: Number(component.defaultUnitCost || 0),
+        };
+      });
+      if (!components.length || components.some(component => !bySku.has(String(component.stockSkuId)))) {
+        matchStatus = "missing_sale_sku";
+        issueMessage = "Sale SKU อ้างอิง Stock SKU ที่ไม่พบ";
+      } else if (components.some(component => component.availableQuantity < component.requiredQuantity)) {
+        matchStatus = "insufficient_stock";
+        issueMessage = "สต๊อกไม่พอสำหรับรายการที่เลือก";
+      } else {
+        for (const component of components) remaining.set(String(component.stockSkuId), component.availableQuantity - component.requiredQuantity);
+      }
+    }
+    if (matchStatus === "matched") matchedLineCount += 1;
+    else if (matchStatus !== "skipped_status") issueCount += 1;
+    lines.push({
+      id: lineId,
+      orderLineKey: `platform_order_import:${lineId}`,
+      importId: importNo,
+      orderId: orderKey,
+      platform,
+      orderNo: row.orderNo,
+      lineNo: row.lineNo,
+      saleSku: row.saleSku,
+      displayName: row.displayName || "",
+      quantity: row.quantity,
+      saleSkuId: saleSku?.id || null,
+      matchStatus,
+      issueMessage,
+      postedAt: "",
+      createdAt: timestamp,
+      postable: matchStatus !== "skipped_status",
+      referenceNo,
+      components,
+    });
+  }
+  const status = lines.filter(line => line.postable).every(line => line.matchStatus === "matched") ? "ready" : "has_issues";
+  const payload = {
+    id: importNo,
+    importNo,
+    platform,
+    fileName,
+    status,
+    rowCount: lines.length,
+    matchedLineCount,
+    issueCount,
+    postedAt: "",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    orders: [...orders.values()],
+    lines,
+  };
+  return platformOrderImportDetail(await cloudCommerceService.savePlatformOrderImport(payload));
+}
+
 async function handlePlatformOrderImportDetail(importId, response) {
   try {
-    sendJson(response, 200, getPlatformOrderImport(rootDir, importId));
+    const detail = cloudCommerceService
+      ? await cloudCommerceService.getPlatformOrderImport(importId)
+      : getPlatformOrderImport(rootDir, importId);
+    if (!detail) throw new Error("ไม่พบ import");
+    sendJson(response, 200, cloudCommerceService ? platformOrderImportDetail(detail) : detail);
   } catch (error) {
     sendJson(response, 404, { error: error.message || "Cannot load platform order import" });
   }
@@ -2740,6 +3109,13 @@ async function handlePlatformOrderImportCreate(request, response) {
     const file = files.find((upload) => upload.evidenceKey === "file") || files[0];
     if (!file?.buffer?.length) throw new Error("เลือกไฟล์ order");
     const platform = fields.platform || request.headers["x-platform"] || "manual";
+    if (cloudCommerceService) {
+      const normalizedPlatform = normalizePlatform(platform);
+      const parsed = parsePlatformOrderFile(file.buffer, { platform: normalizedPlatform });
+      if (parsed.duplicateKeys.length) throw new Error(`ไฟล์มีรายการซ้ำ: ${parsed.duplicateKeys.join(", ")}`);
+      sendJson(response, 200, await createCloudPlatformOrderImport(parsed, { platform: normalizedPlatform, fileName: file.originalName || "orders.csv" }));
+      return;
+    }
     const result = importPlatformOrders(rootDir, {
       platform,
       fileName: file.originalName || "orders.csv",
@@ -2753,7 +3129,55 @@ async function handlePlatformOrderImportCreate(request, response) {
 
 async function handlePlatformOrderImportPost(importId, response) {
   try {
-    sendJson(response, 200, postPlatformOrderImport(rootDir, importId));
+    if (!cloudCommerceService) {
+      sendJson(response, 200, postPlatformOrderImport(rootDir, importId));
+      return;
+    }
+    const detail = await cloudCommerceService.getPlatformOrderImport(importId);
+    if (!detail) throw new Error("ไม่พบ import");
+    if (detail.status === "posted") {
+      sendJson(response, 200, platformOrderImportDetail(detail));
+      return;
+    }
+    if (detail.status !== "ready") throw new Error("ยังมีรายการที่ต้องแก้ไขก่อนตัดสต๊อก");
+    const requestedTestDate = process.env.NODE_ENV === "test" ? String(process.env.SWEET_HOUSE_E2E_MOVEMENT_DATE || "").trim() : "";
+    const postedAt = /^\d{4}-\d{2}-\d{2}$/.test(requestedTestDate)
+      ? `${requestedTestDate}T00:00:00.000Z`
+      : new Date().toISOString();
+    const movementRecords = [];
+    const orderLineKeys = [];
+    for (const line of detail.lines.filter(item => item.postable && item.matchStatus === "matched" && !item.postedAt)) {
+      orderLineKeys.push(line.orderLineKey);
+      for (const component of line.components || []) {
+        const id = await inventoryCloudRepository.allocateSourceId();
+        movementRecords.push({
+          source_key: `stock_movement:${id}`,
+          source_id: id,
+          stock_sku_source_id: component.stockSkuId,
+          movement_type: "sale_out",
+          movement_date: postedAt.slice(0, 10),
+          quantity: component.requiredQuantity,
+          unit_cost: Number(component.unitCost || 0).toFixed(2),
+          total_cost: (Math.round(Number(component.unitCost || 0) * component.requiredQuantity * 100) / 100).toFixed(2),
+          reference_type: "platform_order",
+          reference_no: line.referenceNo,
+          note: `Platform order import ${detail.importNo}`,
+          created_at: postedAt,
+          source_hash: "",
+          source_payload: { id, importNo: detail.importNo, orderLineKey: line.orderLineKey },
+          idempotency_key: `platform-order:${line.referenceNo}:${component.stockSkuId}`,
+        });
+      }
+    }
+    const lines = detail.lines.map(line => line.postable && line.matchStatus === "matched" ? { ...line, postedAt } : line);
+    const result = await cloudCommerceService.postPlatformOrderImport(importId, {
+      postedAt,
+      movementRecords,
+      orderLineKeys,
+      importPatch: { lines },
+      idempotencyKey: `import-post:${importId}`,
+    });
+    sendJson(response, 200, platformOrderImportDetail(result));
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot post platform order import" });
   }
@@ -2762,7 +3186,13 @@ async function handlePlatformOrderImportPost(importId, response) {
 async function handleShopeeOrderList(url, response) {
   try {
     sendJson(response, 200, {
-      orders: listShopeeOrders(rootDir, {
+      orders: cloudCommerceService
+        ? await cloudCommerceService.listShopeeOrders({
+          shopId: url.searchParams.get("shopId") || url.searchParams.get("connectionId") || "",
+          status: url.searchParams.get("status") || "",
+          limit: url.searchParams.get("limit") || 100,
+        })
+        : listShopeeOrders(rootDir, {
         shopId: url.searchParams.get("shopId") || url.searchParams.get("connectionId") || "",
         status: url.searchParams.get("status") || "",
         limit: url.searchParams.get("limit") || 100,
@@ -2776,7 +3206,9 @@ async function handleShopeeOrderList(url, response) {
 async function handleShopeeOrderLineMapping(lineId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    const line = saveShopeeOrderLineMapping(rootDir, lineId, payload);
+    const line = cloudCommerceService
+      ? await cloudCommerceService.saveShopeeOrderLineMapping({ lineId, ...payload })
+      : saveShopeeOrderLineMapping(rootDir, lineId, payload);
     sendJson(response, 200, { line });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถบันทึก mapping Stock SKU ได้");
@@ -2862,27 +3294,57 @@ async function createPersistedCustomLabelComparison(jobId) {
   }
 }
 
+async function saveCloudCustomLabelJob(job) {
+  return cloudCommerceService.saveCustomLabelJob({ ...job,
+    sourceFilePath: "source.pdf", previewFilePath: job.previewFilePath ? "preview.pdf" : "",
+    outputFilePath: job.outputFilePath ? "output.pdf" : "",
+  });
+}
+
+async function materializeCloudCustomLabelJob(jobId) {
+  const job = await cloudCommerceService.getCustomLabelJob(jobId);
+  if (!job) throw new Error("ไม่พบ custom label job");
+  customLabelStorageObjectPath(jobId, "source");
+  const directory = path.join(rootDir, "data", "shopee-custom-labels", String(jobId));
+  await mkdir(directory, { recursive: true });
+  const sourceFilePath = path.join(directory, "source.pdf");
+  await writeFile(sourceFilePath, await readPersistedCustomLabelArtifact(jobId, "source"));
+  return { ...job, sourceFilePath };
+}
+
 async function handleCustomLabelUpload(request, response) {
   try {
     const body = await readRequestBody(request);
     const { files } = parseMultipartForm(body, request.headers["content-type"]);
     const file = files.find((upload) => upload.evidenceKey === "file") || files[0];
-    const job = await parseCustomLabelUpload(rootDir, file, {
+    let job = await parseCustomLabelUpload(rootDir, file, {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
-      ...(customLabelDataRepository
-        ? { mappingLoader: keys => customLabelDataRepository.listShopeeCustomLabelMappings(keys) }
+      ...(cloudCommerceService ? { createJob: payload => ({ ...payload, id: randomUUID(), status: "parsed", savedMappings: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }) } : {}),
+      ...(cloudDataRepository
+        ? { mappingLoader: keys => cloudDataRepository.listShopeeCustomLabelMappings(keys) }
         : {}),
     });
     await persistCustomLabelArtifact(job.id, "source", job.sourceFilePath);
+    if (cloudCommerceService) {
+      try { job = await saveCloudCustomLabelJob(job); }
+      catch (error) {
+        const committed = await cloudCommerceService.getCustomLabelJob(job.id);
+        if (committed) job = committed;
+        else {
+          await deleteStorageObject(customLabelStorageClient, customLabelStorageObjectPath(job.id, "source"));
+          throw error;
+        }
+      }
+    }
     sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถอ่านไฟล์ใบปะหน้า Shopee ได้");
   }
 }
 
-async function handleCustomLabelJobGet(jobId, response) {
+async function handleCustomLabelJobGet(jobId, request, response) {
   try {
-    const job = getCustomLabelJob(rootDir, jobId);
+    const job = cloudCommerceService ? await cloudCommerceService.getCustomLabelJob(jobId) : getCustomLabelJob(rootDir, jobId);
     if (!job) {
       response.writeHead(404);
       response.end("Not found");
@@ -2898,11 +3360,12 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
   try {
     const body = await readJsonBody(request);
     const transform = action === "preview" ? previewCustomLabel : saveCustomLabel;
-    const job = await transform(rootDir, jobId, body.mappings || {}, {
+    let job = await transform(rootDir, jobId, body.mappings || {}, {
+      ...(cloudCommerceService ? { job: await materializeCloudCustomLabelJob(jobId) } : {}),
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
       parsedPayload: body.parsedPayload || undefined,
-      ...(customLabelDataRepository && action === "save"
-        ? { mappingSaver: mappings => customLabelDataRepository.upsertShopeeCustomLabelMappings(mappings) }
+      ...(cloudDataRepository && action === "save"
+        ? { mappingSaver: mappings => cloudDataRepository.upsertShopeeCustomLabelMappings(mappings) }
         : {}),
     });
     await persistCustomLabelArtifact(
@@ -2910,6 +3373,7 @@ async function handleCustomLabelTransform(jobId, action, request, response) {
       action === "preview" ? "preview" : "output",
       action === "preview" ? job.previewFilePath : job.outputFilePath,
     );
+    if (cloudCommerceService) job = await saveCloudCustomLabelJob(job);
     sendJson(response, 200, { job: publicCustomLabelJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, `ไม่สามารถ${action === "preview" ? "สร้าง preview" : "บันทึก"} custom label ได้`);
@@ -2921,6 +3385,7 @@ async function handleCustomLabelFile(jobId, kind, response, disposition = "inlin
     let body;
     let fileName;
     try {
+      if (cloudCommerceService) throw new Error("Read durable artifact");
       const file = getCustomLabelFile(rootDir, jobId, kind);
       body = await readFile(file.path);
       fileName = file.fileName;
@@ -2946,6 +3411,7 @@ async function handleCustomLabelComparison(jobId, response) {
     let body;
     let fileName;
     try {
+      if (cloudCommerceService) throw new Error("Read durable artifacts");
       const file = await createCustomLabelComparison(rootDir, jobId, {
         pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
       });
@@ -2984,7 +3450,9 @@ function publicShopeeConnection(connection) {
 }
 
 async function handleShopeeConnection(url, response) {
-  const connection = getShopeeConnection(rootDir, url.searchParams.get("connectionId") || url.searchParams.get("shopId") || "");
+  const connection = cloudCommerceService
+    ? await cloudCommerceService.getShopeeConnection(url.searchParams.get("connectionId") || url.searchParams.get("shopId") || "")
+    : getShopeeConnection(rootDir, url.searchParams.get("connectionId") || url.searchParams.get("shopId") || "");
   sendJson(response, 200, { connection: publicShopeeConnection(connection) });
 }
 
@@ -2997,7 +3465,9 @@ async function handleShopeeAuthorize(request, response) {
       || payload.origin
       || `http://127.0.0.1:${port}`;
     const returnUrl = `${appOrigin.replace(/\/$/, "")}/shopee-connection`;
-    const stateRecord = createShopeeOAuthState(rootDir, { returnUrl });
+    const stateRecord = cloudCommerceService
+      ? await cloudCommerceService.createOAuthState({ returnUrl })
+      : createShopeeOAuthState(rootDir, { returnUrl });
     const redirectUrl = process.env.SHOPEE_CALLBACK_URL
       || `${appOrigin.replace(/\/$/, "")}/api/shopee/callback`;
     sendJson(response, 200, {
@@ -3011,7 +3481,9 @@ async function handleShopeeAuthorize(request, response) {
 async function handleShopeeCallback(url, response) {
   let stateRecord = null;
   try {
-    stateRecord = consumeShopeeOAuthState(rootDir, url.searchParams.get("state") || "");
+    stateRecord = cloudCommerceService
+      ? await cloudCommerceService.consumeShopeeOAuthState(url.searchParams.get("state") || "")
+      : consumeShopeeOAuthState(rootDir, url.searchParams.get("state") || "");
     if (!stateRecord) {
       sendJson(response, 400, { error: "Shopee callback state ไม่ถูกต้องหรือหมดอายุแล้ว" });
       return;
@@ -3031,13 +3503,23 @@ async function handleShopeeCallback(url, response) {
       redirect(response, target.toString());
       return;
     }
-    const connection = await completeShopeeAuthorization(rootDir, {
-      shopId,
-      shopName: url.searchParams.get("shop_name") || "",
-      partnerId: process.env.SHOPEE_PARTNER_ID || "",
-      code,
-      client: shopeeClientFromEnvironment(),
-    });
+    let connection;
+    if (cloudCommerceService) {
+      const tokens = await shopeeClientFromEnvironment().exchangeAuthorizationCode({ code, shopId });
+      if (!tokens.accessToken || !tokens.refreshToken) throw new Error("Shopee ไม่ส่ง access token กลับมา");
+      const expireIn = Number(tokens.expireIn || 0);
+      connection = await cloudCommerceService.saveShopeeConnection({
+        shopId, shopName: url.searchParams.get("shop_name") || "",
+        partnerId: process.env.SHOPEE_PARTNER_ID || "", ...tokens,
+        tokenExpiresAt: expireIn ? new Date(Date.now() + expireIn * 1000).toISOString() : "", status: "connected",
+      });
+    } else {
+      connection = await completeShopeeAuthorization(rootDir, {
+        shopId, shopName: url.searchParams.get("shop_name") || "",
+        partnerId: process.env.SHOPEE_PARTNER_ID || "", code,
+        client: shopeeClientFromEnvironment(),
+      });
+    }
     const target = new URL(stateRecord.returnUrl);
     target.searchParams.set("connected", "1");
     target.searchParams.set("shopId", connection.shopId);
@@ -3057,7 +3539,9 @@ async function handleShopeeSync(request, response) {
   try {
     const payload = await readJsonBody(request);
     const client = shopeeClientFromEnvironment();
-    const result = await syncShopeeOrders(rootDir, { connectionId: payload.connectionId || payload.shopId, client });
+    const result = cloudCommerceService
+      ? await cloudCommerceService.syncShopeeOrders({ connectionId: payload.connectionId || payload.shopId, client })
+      : await syncShopeeOrders(rootDir, { connectionId: payload.connectionId || payload.shopId, client });
     sendJson(response, 200, result);
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถ sync Shopee orders ได้");
@@ -3079,11 +3563,13 @@ function authenticatedShopeeClient(connection) {
 async function handleShopeeShipmentBatchPrepare(request, response) {
   try {
     const payload = await readJsonBody(request);
-    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    const connection = cloudCommerceService
+      ? await cloudCommerceService.getShopeeConnection(payload.connectionId || payload.shopId)
+      : getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
     if (!connection) throw new Error("ไม่พบ Shopee connection");
-    const result = await prepareShipmentBatch(rootDir, payload.orderIds || [], {
-      client: authenticatedShopeeClient(connection),
-    });
+    const result = cloudCommerceService
+      ? await cloudCommerceService.prepareShipmentBatch({ orderIds: payload.orderIds || [], client: authenticatedShopeeClient(connection) })
+      : await prepareShipmentBatch(rootDir, payload.orderIds || [], { client: authenticatedShopeeClient(connection) });
     sendJson(response, 200, result);
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถเตรียม shipment batch ได้");
@@ -3093,11 +3579,13 @@ async function handleShopeeShipmentBatchPrepare(request, response) {
 async function handleShopeeShipmentBatchArrange(batchId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    const connection = cloudCommerceService
+      ? await cloudCommerceService.getShopeeConnection(payload.connectionId || payload.shopId)
+      : getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
     if (!connection) throw new Error("ไม่พบ Shopee connection");
-    const result = await arrangeShipmentBatch(rootDir, batchId, payload.selection || payload, {
-      client: authenticatedShopeeClient(connection),
-    });
+    const result = cloudCommerceService
+      ? await cloudCommerceService.arrangeShipmentBatch(batchId, payload.selection || payload, { client: authenticatedShopeeClient(connection) })
+      : await arrangeShipmentBatch(rootDir, batchId, payload.selection || payload, { client: authenticatedShopeeClient(connection) });
     sendJson(response, 200, result);
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถนัดรับ shipment batch ได้");
@@ -3116,11 +3604,14 @@ function publicShippingDocumentJob(job, request) {
 async function handleShopeeShipmentBatchTracking(batchId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    const batch = cloudCommerceService ? await cloudCommerceService.getShipmentBatch(batchId) : null;
+    const connection = cloudCommerceService
+      ? await cloudCommerceService.getShopeeConnection(payload.connectionId || payload.shopId || batch?.shopId)
+      : getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
     if (!connection) throw new Error("ไม่พบ Shopee connection");
-    const result = await refreshBatchTracking(rootDir, batchId, {
-      client: authenticatedShopeeClient(connection),
-    });
+    const result = cloudCommerceService
+      ? await cloudCommerceService.refreshBatchTracking(batchId, { client: authenticatedShopeeClient(connection) })
+      : await refreshBatchTracking(rootDir, batchId, { client: authenticatedShopeeClient(connection) });
     sendJson(response, 200, result);
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถดึง Tracking จาก Shopee ได้");
@@ -3130,11 +3621,14 @@ async function handleShopeeShipmentBatchTracking(batchId, request, response) {
 async function handleShopeeShippingDocumentCreate(batchId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    const connection = getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
+    const batch = cloudCommerceService ? await cloudCommerceService.getShipmentBatch(batchId) : null;
+    const connection = cloudCommerceService
+      ? await cloudCommerceService.getShopeeConnection(payload.connectionId || payload.shopId || batch?.shopId)
+      : getShopeeConnection(rootDir, payload.connectionId || payload.shopId);
     if (!connection) throw new Error("ไม่พบ Shopee connection");
-    const job = await createShippingDocumentJob(rootDir, batchId, {
-      client: authenticatedShopeeClient(connection),
-    });
+    const job = cloudCommerceService
+      ? await cloudCommerceService.createShippingDocumentJob(batchId, { client: authenticatedShopeeClient(connection) })
+      : await createShippingDocumentJob(rootDir, batchId, { client: authenticatedShopeeClient(connection) });
     sendJson(response, 200, { job: publicShippingDocumentJob(job, request) });
   } catch (error) {
     sendOperationError(response, error, "ไม่สามารถสร้าง shipping document job ได้");
@@ -3144,6 +3638,25 @@ async function handleShopeeShippingDocumentCreate(batchId, request, response) {
 async function handleShopeeShippingDocumentPoll(jobId, request, response) {
   try {
     const payload = await readJsonBody(request);
+    if (cloudCommerceService) {
+      const job = await cloudCommerceService.getShippingDocumentJob(jobId);
+      if (!job) throw new Error("ไม่พบ shipping document job");
+      const batch = await cloudCommerceService.getShipmentBatch(job.batchId);
+      if (!batch) throw new Error("ไม่พบ shipment batch");
+      const connection = await cloudCommerceService.getShopeeConnection(payload.connectionId || payload.shopId || job.shopId || batch.shopId);
+      if (!connection) throw new Error("ไม่พบ Shopee connection");
+      const result = await cloudCommerceService.pollShippingDocumentJob(jobId, {
+        client: authenticatedShopeeClient(connection),
+        saveArtifact: async ({ jobId: artifactId, content, contentType }) => {
+          const safeArtifactId = String(artifactId).replace(/[^A-Za-z0-9._-]+/g, "-");
+          const objectPath = `shipping-documents/${safeArtifactId}.pdf`;
+          await uploadStorageObject(customLabelStorageClient, { objectPath, body: content, contentType });
+          return objectPath;
+        },
+      });
+      sendJson(response, 200, { job: publicShippingDocumentJob(result, request) });
+      return;
+    }
     const db = openInventoryDatabase(rootDir);
     ensureInventorySchema(db);
     const job = db.prepare(`
@@ -3166,6 +3679,22 @@ async function handleShopeeShippingDocumentPoll(jobId, request, response) {
 }
 
 async function handleShopeeShippingDocumentDownload(jobId, response) {
+  if (cloudCommerceService) {
+    try {
+      const job = await cloudCommerceService.getShippingDocumentJob(jobId);
+      if (!job || job.status !== "ready" || !job.objectPath) throw new Error("Not found");
+      const body = await downloadStorageObject(customLabelStorageClient, job.objectPath);
+      response.writeHead(200, {
+        "content-type": "application/pdf",
+        "content-disposition": `inline; filename="shipping-document-${String(job.batchId).replace(/[\r\n"]+/g, "_")}.pdf"`,
+      });
+      response.end(body);
+    } catch {
+      response.writeHead(404);
+      response.end("Not found");
+    }
+    return;
+  }
   const db = openInventoryDatabase(rootDir);
   ensureInventorySchema(db);
   try {
@@ -3199,6 +3728,33 @@ async function handleShopeeShippingDocumentDownload(jobId, response) {
 async function handleShopeeBatchOverlay(batchId, request, response) {
   try {
     const payload = await readJsonBody(request);
+    if (cloudCommerceService) {
+      const batch = await cloudCommerceService.getShipmentBatch(batchId);
+      if (!batch) throw new Error("ไม่พบ shipment batch");
+      const documentJob = await cloudCommerceService.getReadyShippingDocumentJob(batchId);
+      if (!documentJob) throw new Error("ยังไม่มี Shopee shipping document ที่พร้อมพิมพ์");
+      const sourcePdf = await downloadStorageObject(customLabelStorageClient, documentJob.objectPath);
+      const rendered = await renderShipmentLabelOverlay({
+        batch,
+        sourcePdf,
+        mappings: payload.mappings || payload.orders || {},
+        pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
+      });
+      const objectPath = `shipping-labels/${encodeURIComponent(batch.id)}.pdf`;
+      await uploadStorageObject(customLabelStorageClient, { objectPath, body: rendered.body, contentType: "application/pdf" });
+      const updatedBatch = await cloudCommerceService.saveShipmentBatch({
+        ...batch,
+        status: "ready_to_print",
+        labelOverlay: { objectPath, pages: rendered.pages, updatedAt: new Date().toISOString() },
+        updatedAt: new Date().toISOString(),
+      });
+      sendJson(response, 200, {
+        batchId: updatedBatch.id,
+        downloadUrl: `/api/shopee/shipment-batches/${encodeURIComponent(updatedBatch.id)}/print-preview`,
+        pages: rendered.pages,
+      });
+      return;
+    }
     const result = await renderBatchLabels(rootDir, batchId, payload.mappings || payload.orders || {}, {
       pythonBin: process.env.SWEET_HOUSE_PYTHON_BIN || undefined,
     });
@@ -3210,6 +3766,23 @@ async function handleShopeeBatchOverlay(batchId, request, response) {
 }
 
 async function handleShopeeBatchPrintPreview(batchId, response) {
+  if (cloudCommerceService) {
+    try {
+      const batch = await cloudCommerceService.getShipmentBatch(batchId);
+      const objectPath = batch?.labelOverlay?.objectPath;
+      if (!objectPath) throw new Error("Not found");
+      const body = await downloadStorageObject(customLabelStorageClient, objectPath);
+      response.writeHead(200, {
+        "content-type": "application/pdf",
+        "content-disposition": `inline; filename="shipment-batch-${String(batch.id).replace(/[\r\n"]+/g, "_")}.pdf"`,
+      });
+      response.end(body);
+    } catch {
+      response.writeHead(404);
+      response.end("Not found");
+    }
+    return;
+  }
   const documentsRoot = path.resolve(rootDir, "data", "shipping-labels");
   const absolutePath = path.resolve(documentsRoot, `shipment-batch-${Number(batchId)}.pdf`);
   if (!absolutePath.startsWith(`${documentsRoot}${path.sep}`)) {
@@ -3233,7 +3806,10 @@ async function handleShopeeBatchPrintPreview(batchId, response) {
 async function handleSubstituteReceiptVendorList(url, response) {
   try {
     const includeInactive = url.searchParams.get("includeInactive") === "1";
-    sendJson(response, 200, { vendors: await listSubstituteReceiptVendors(rootDir, { includeInactive }) });
+    const vendors = cloudVendorRepository
+      ? mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive }).map(compatibilityVendor)
+      : await listSubstituteReceiptVendors(rootDir, { includeInactive });
+    sendJson(response, 200, { vendors });
   } catch (error) {
     sendVendorError(response, error, "Cannot list substitute receipt vendors");
   }
@@ -3354,7 +3930,14 @@ function vendorMutationOptions(payload = {}) {
 async function handleVendorCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    const vendor = await createVendor(rootDir, payload, vendorMutationOptions(payload));
+    let vendor;
+    if (cloudVendorRepository) {
+      const vendors = mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true });
+      const record = buildVendorRecord(payload, vendors, vendorMutationOptions(payload));
+      vendor = await cloudVendorRepository.saveVendor(record);
+    } else {
+      vendor = await createVendor(rootDir, payload, vendorMutationOptions(payload));
+    }
     sendJson(response, 200, { vendor });
   } catch (error) {
     sendVendorError(response, error, "Cannot create vendor");
@@ -3365,7 +3948,21 @@ async function handleVendorUpdate(vendorId, request, response) {
   try {
     const id = decodeVendorId(vendorId);
     const payload = await readJsonBody(request);
-    const vendor = await updateVendor(rootDir, id, { ...payload, options: vendorMutationOptions(payload) });
+    let vendor;
+    if (cloudVendorRepository) {
+      const vendors = mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true });
+      const current = vendors.find(item => item.id === id);
+      if (!current) {
+        const error = new Error("ไม่พบผู้ขาย");
+        error.code = "VENDOR_NOT_FOUND";
+        error.statusCode = 404;
+        throw error;
+      }
+      const updated = buildUpdatedVendorRecord(current, payload, vendors, vendorMutationOptions(payload));
+      vendor = await cloudVendorRepository.saveVendor(updated);
+    } else {
+      vendor = await updateVendor(rootDir, id, { ...payload, options: vendorMutationOptions(payload) });
+    }
     sendJson(response, 200, { vendor });
   } catch (error) {
     sendVendorError(response, error, "Cannot update vendor");
@@ -3375,7 +3972,25 @@ async function handleVendorUpdate(vendorId, request, response) {
 async function handleSubstituteReceiptVendorCreate(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { vendor: await createSubstituteReceiptVendor(rootDir, payload) });
+    let vendor;
+    if (cloudVendorRepository) {
+      const status = String(payload?.status ?? "active").trim() || "active";
+      if (!["active", "inactive"].includes(status)) {
+        const error = new Error("สถานะผู้ขายไม่ถูกต้อง");
+        error.code = "INVALID_VENDOR_STATUS";
+        error.statusCode = 400;
+        throw error;
+      }
+      const vendors = mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true });
+      const record = buildVendorRecord({
+        ...payload,
+        paymentChannel: payload.paymentChannel || "โอนผ่านบัญชีบริษัท",
+      }, vendors, { ...vendorMutationOptions(payload), status });
+      vendor = compatibilityVendor(await cloudVendorRepository.saveVendor(record));
+    } else {
+      vendor = await createSubstituteReceiptVendor(rootDir, payload);
+    }
+    sendJson(response, 200, { vendor });
   } catch (error) {
     sendVendorError(response, error, "Cannot create substitute receipt vendor");
   }
@@ -3384,7 +3999,29 @@ async function handleSubstituteReceiptVendorCreate(request, response) {
 async function handleSubstituteReceiptVendorUpdate(vendorId, request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { vendor: await updateSubstituteReceiptVendor(rootDir, vendorId, payload) });
+    let vendor;
+    if (cloudVendorRepository) {
+      const id = decodeVendorId(vendorId);
+      const vendors = mapCloudVendors(await cloudVendorRepository.listVendors(""), { includeInactive: true });
+      const current = vendors.find(item => item.id === id);
+      if (!current) {
+        const error = new Error("ไม่พบผู้ขาย");
+        error.code = "VENDOR_NOT_FOUND";
+        error.statusCode = 404;
+        throw error;
+      }
+      const updated = buildUpdatedVendorRecord({
+        ...current,
+        paymentChannel: current.paymentChannel || "โอนผ่านบัญชีบริษัท",
+      }, {
+        ...payload,
+        paymentChannel: payload.paymentChannel || current.paymentChannel || "โอนผ่านบัญชีบริษัท",
+      }, vendors, vendorMutationOptions(payload));
+      vendor = compatibilityVendor(await cloudVendorRepository.saveVendor(updated));
+    } else {
+      vendor = await updateSubstituteReceiptVendor(rootDir, vendorId, payload);
+    }
+    sendJson(response, 200, { vendor });
   } catch (error) {
     sendVendorError(response, error, "Cannot update substitute receipt vendor");
   }
@@ -3393,7 +4030,7 @@ async function handleSubstituteReceiptVendorUpdate(vendorId, request, response) 
 async function handleInventoryPurchaseIn(request, response) {
   try {
     const payload = await readJsonBody(request);
-    sendJson(response, 200, { movement: createPurchaseInMovement(rootDir, payload), balances: listInventoryBalances(rootDir) });
+    sendJson(response, 200, { movement: (inventoryCloudRepository ? await inventoryCloudRepository.createPurchaseInMovement(payload) : createPurchaseInMovement(rootDir, payload)), balances: await inventoryDataAdapter.read("listInventoryBalances") });
   } catch (error) {
     sendJson(response, 400, { error: error.message || "Cannot receive inventory" });
   }
@@ -3441,9 +4078,9 @@ async function handleInventoryStockList(url, response) {
 
 async function handleCurrentStockPdf(response) {
   try {
-    const company = await getCompanySettings(rootDir);
-    const summary = getInventoryDashboardSummary(rootDir);
-    const balances = listInventoryBalances(rootDir);
+    const company = cloudDataRepository ? await cloudDataRepository.getCompanySettings() : await getCompanySettings(rootDir);
+    const { summary } = await inventoryDataAdapter.read("getInventoryDashboard");
+    const balances = await inventoryDataAdapter.read("listInventoryBalances");
     const pdf = await generateCurrentStockPdf({ company, summary, balances });
     response.writeHead(200, {
       "content-type": "application/pdf",
@@ -3483,7 +4120,7 @@ async function handleInventoryImage(urlPath, response) {
 
   try {
     const contentType = mimeTypes[path.extname(absolutePath).toLowerCase()] || "application/octet-stream";
-    const body = await readFile(absolutePath);
+    const body = inventoryCloudRepository ? await inventoryCloudRepository.downloadInventoryImage(imagePath) : await readFile(absolutePath);
     response.writeHead(200, { "content-type": contentType });
     response.end(body);
   } catch {
@@ -3530,6 +4167,7 @@ async function handleStaticFile(request, response) {
 }
 
 const server = createServer(async (request, response) => {
+  return cloudDocumentMutationContext.run(new Map(), async () => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (request.method === "GET" && url.pathname === "/__e2e__/health") {
@@ -4150,7 +4788,7 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname.startsWith("/api/shopee/custom-labels/")) {
       const jobId = decodeURIComponent(url.pathname.replace("/api/shopee/custom-labels/", ""));
-      await handleCustomLabelJobGet(jobId, response);
+      await handleCustomLabelJobGet(jobId, request, response);
       return;
     }
 
@@ -4391,6 +5029,7 @@ const server = createServer(async (request, response) => {
 
   response.writeHead(405);
   response.end("Method not allowed");
+  });
 });
 
 // Read paths now query the documents index (forms/document-index.logic.js)

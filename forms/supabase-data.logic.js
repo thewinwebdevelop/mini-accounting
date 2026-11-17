@@ -1,5 +1,6 @@
 const { supabaseRequest } = require("./supabase.logic.js");
 const { canonicalHash, stableSourceKey } = require("./data-backend.logic.js");
+const { mapCloudVendor } = require("./cloud-vendor-read.logic.js");
 const { isDeepStrictEqual } = require("node:util");
 
 function dataError(code, message) {
@@ -82,6 +83,15 @@ function mapCloudStockSku(record = {}) {
   });
 }
 
+function mapCloudCompanySettings(record = {}) {
+  return {
+    legalName: String(record.legal_name ?? "หจก.สวีทเฮาส์ เดซี่"),
+    taxId: String(record.tax_id || ""),
+    branch: String(record.branch || "สำนักงานใหญ่"),
+    address: String(record.address || ""),
+  };
+}
+
 function mapDocumentRecord(record = {}) {
   return compact({
     sourceKey: record.source_key,
@@ -102,6 +112,7 @@ function mapDocumentFile(record = {}) {
   return compact({
     sourceKey: record.source_key,
     documentSourceKey: record.document_source_key,
+    documentSourceHash: record.document_source_hash,
     bucketName: record.bucket_name,
     objectPath: record.object_path,
     sourceSha256: record.source_sha256,
@@ -198,8 +209,16 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
   }
 
   async function listTable(table, query = "", mapResult = value => value) {
-    const response = await supabaseRequest(client, `/rest/v1/${table}${query ? `?${query}` : ""}`);
-    return rows(response).map(mapResult);
+    const result = [];
+    const pageSize = 1000;
+    for (let offset = 0; ; offset += pageSize) {
+      const response = await supabaseRequest(client, `/rest/v1/${table}${query ? `?${query}` : ""}`, {
+        headers: { Range: `${offset}-${offset + pageSize - 1}` },
+      });
+      const page = rows(response);
+      result.push(...page.map(mapResult));
+      if (page.length < pageSize) return result;
+    }
   }
 
   async function listDocuments(filters = {}) {
@@ -222,7 +241,7 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
 
   async function listProducts(filters = {}) {
     const search = String(filters.search || "").trim().toLowerCase();
-    const products = await listTable("inventory_products", "", mapCloudProduct);
+    const products = await listTable("inventory_products", "order=source_id.asc", mapCloudProduct);
     if (!search) return products;
     return products.filter(product => [product.productCode, product.name, product.category]
       .some(value => String(value || "").toLowerCase().includes(search)));
@@ -230,16 +249,85 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
 
   async function listStockSkus(filters = {}) {
     const search = String(filters.search || "").trim().toLowerCase();
-    const skus = await listTable("inventory_stock_skus", "", mapCloudStockSku);
+    const skus = await listTable("inventory_stock_skus", "order=source_id.asc", mapCloudStockSku);
     if (!search) return skus;
     return skus.filter(item => [item.sku, item.color, item.size, item.productCode, item.productName]
       .some(value => String(value || "").toLowerCase().includes(search)));
+  }
+
+  function inventoryMovementQuery(query = "") {
+    const params = new URLSearchParams(String(query || "").replace(/^\?/, ""));
+    if (!params.has("order")) params.set("order", "source_id.asc");
+    return params.toString();
   }
 
   async function getDocument(sourceKey) {
     const params = new URLSearchParams({ source_key: `eq.${sourceKey}`, limit: "1" });
     const result = await listTable("documents", params.toString(), mapDocumentRecord);
     return result[0] || null;
+  }
+
+  async function compareAndSwapDocument(record, expectedSourceHash) {
+    const response = await supabaseRequest(client, "/rest/v1/rpc/compare_and_swap_document", {
+      method: "POST",
+      body: {
+        p_source_key: sourceKeyOf(record),
+        p_expected_source_hash: expectedSourceHash == null ? null : String(expectedSourceHash),
+        p_record: toDocumentCloudRecord(record),
+      },
+    });
+    const row = firstRow(response);
+    return response === true || (Array.isArray(response) && response[0] === true) || row?.compare_and_swap_document === true;
+  }
+
+  async function getCompanySettings() {
+    const result = await listTable("company_settings", "setting_key=eq.default&limit=1");
+    return result[0] ? mapCloudCompanySettings(result[0]) : {
+      legalName: "หจก.สวีทเฮาส์ เดซี่",
+      taxId: "",
+      branch: "สำนักงานใหญ่",
+      address: "",
+    };
+  }
+
+  async function saveCompanySettings(settings = {}) {
+    const record = {
+      source_key: "company_settings:default",
+      setting_key: "default",
+      legal_name: String(settings.legalName || "").trim(),
+      tax_id: String(settings.taxId || "").trim(),
+      branch: String(settings.branch || "").trim(),
+      address: String(settings.address || "").trim(),
+      source_hash: canonicalHash(settings),
+      source_payload: settings,
+    };
+    return upsertTable("company_settings", record, mapCloudCompanySettings, "company settings");
+  }
+
+  async function saveVendor(vendor = {}) {
+    const id = String(vendor.id ?? "").trim();
+    const record = {
+      source_key: stableSourceKey("vendor", id),
+      source_id: id,
+      name: vendor.name ?? "",
+      tax_id: vendor.taxId ?? "",
+      address: vendor.address ?? "",
+      contact_name: vendor.contactName ?? "",
+      phone: vendor.phone ?? "",
+      email: vendor.email ?? "",
+      bank_name: vendor.bankName ?? "",
+      account_no: vendor.accountNo ?? "",
+      payment_channel: vendor.paymentChannel ?? "",
+      payment_reference: vendor.paymentReference ?? "",
+      default_business_purpose: vendor.defaultBusinessPurpose ?? "",
+      note: vendor.note ?? "",
+      status: vendor.status ?? "active",
+      created_at: vendor.createdAt ?? now(),
+      updated_at: vendor.updatedAt ?? now(),
+      source_hash: canonicalHash(vendor),
+      source_payload: vendor,
+    };
+    return upsertTable("vendors", record, mapCloudVendor, "vendor");
   }
 
   async function listShopeeCustomLabelMappings(keys = []) {
@@ -321,13 +409,49 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     };
   }
 
+  async function allocateAccountingDocumentNumber({ documentKind, accountingMonth, requestKey = "", allocate = true } = {}) {
+    const response = await supabaseRequest(client, "/rest/v1/rpc/allocate_accounting_document_number", {
+      method: "POST",
+      body: {
+        p_document_kind: String(documentKind || ""),
+        p_accounting_month: String(accountingMonth || ""),
+        p_request_key: String(requestKey || ""),
+        p_allocate: allocate !== false,
+      },
+    });
+    const row = firstRow(response);
+    if (!row || !Number.isFinite(Number(row.sequence)) || !row.document_no) {
+      throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase document number allocation was invalid");
+    }
+    return {
+      sequence: String(row.sequence),
+      documentNo: String(row.document_no),
+      existing: row.existing === true,
+    };
+  }
+
+  async function peekWorkflowTransactionNumber(accountingMonth) {
+    const response = await supabaseRequest(client, "/rest/v1/rpc/peek_workflow_transaction_number", {
+      method: "POST",
+      body: { p_accounting_month: String(accountingMonth || "") },
+    });
+    const row = firstRow(response);
+    if (!row || !Number.isFinite(Number(row.sequence)) || !row.transaction_no) {
+      throw dataError("SUPABASE_DATA_VERIFY_FAILED", "Supabase workflow transaction number preview was invalid");
+    }
+    return { sequence: String(row.sequence), transactionNo: String(row.transaction_no) };
+  }
+
   return Object.freeze({
     now,
     listCompanySettings: query => listTable("company_settings", query, value => value),
+    getCompanySettings,
+    saveCompanySettings,
+    saveVendor,
     listVendors: query => listTable("vendors", query, value => value),
     listInventoryProducts: query => listTable("inventory_products", query, mapInventoryRecord),
     listInventoryStockSkus: query => listTable("inventory_stock_skus", query, value => value),
-    listInventoryStockMovements: query => listTable("inventory_stock_movements", query, value => value),
+    listInventoryStockMovements: query => listTable("inventory_stock_movements", inventoryMovementQuery(query), value => value),
     listProducts,
     listStockSkus,
     listShopeeCustomLabelMappings,
@@ -378,7 +502,10 @@ function createSupabaseDataRepository({ client, now = () => new Date().toISOStri
     }, mapInventoryRecord, "inventory product"),
     upsertDocument: record => upsertTable("documents", toDocumentCloudRecord(record), mapDocumentRecord, "document"),
     allocateWorkflowTransactionNumber,
+    allocateAccountingDocumentNumber,
+    peekWorkflowTransactionNumber,
     getDocument,
+    compareAndSwapDocument,
     listDocuments,
     upsertDocumentFile: record => upsertTable("document_files", toDocumentFileCloudRecord(record), mapDocumentFile, "document file"),
     getDocumentFile: async sourceKey => {

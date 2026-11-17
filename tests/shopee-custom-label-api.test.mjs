@@ -75,11 +75,34 @@ async function uploadFixture(baseUrl, fileBytes = null, headers = {}) {
 async function startSupabaseMappingFake() {
   const requests = [];
   const rows = new Map();
+  const jobs = new Map();
+  const artifacts = new Map();
   const state = { failRead: false, failWrite: false };
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     const body = Buffer.concat(await Array.fromAsync(request));
     requests.push({ method: request.method, path: url.pathname, body });
+    if (url.pathname === "/rest/v1/commerce_records") {
+      const row = jobs.get((url.searchParams.get("identity_key") || "").slice(3));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(row ? [row] : []));
+      return;
+    }
+    if (url.pathname === "/rest/v1/rpc/upsert_commerce_record") {
+      const input = JSON.parse(body);
+      const previous = jobs.get(input.p_identity_key);
+      const row = { record_type: input.p_record_type, identity_key: input.p_identity_key, source_key: `${input.p_record_type}:${input.p_identity_key}`, payload: input.p_payload, revision: (previous?.revision || 0) + 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      jobs.set(input.p_identity_key, row);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(row));
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/storage/v1/object/")) {
+      const artifact = artifacts.get(url.pathname);
+      response.writeHead(artifact ? 200 : 404);
+      response.end(artifact);
+      return;
+    }
     if (url.pathname === "/rest/v1/shopee_custom_label_mappings") {
       if ((request.method === "GET" && state.failRead) || (request.method === "POST" && state.failWrite)) {
         response.writeHead(503);
@@ -101,6 +124,7 @@ async function startSupabaseMappingFake() {
       return;
     }
     if (request.method === "POST" && url.pathname.startsWith("/storage/v1/object/")) {
+      artifacts.set(url.pathname, body);
       response.writeHead(200, { "content-type": "application/json" });
       response.end("{}");
       return;

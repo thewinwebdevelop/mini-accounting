@@ -12,6 +12,8 @@ const {
   vendorSnapshotFromRecord,
   findVendorMatches,
   assertVendorSelection,
+  buildVendorRecord,
+  buildUpdatedVendorRecord,
   createVendor,
   updateVendor,
   getVendorById,
@@ -71,6 +73,25 @@ test("selection rejects inactive vendors unless explicitly allowed", () => {
   const inactive = { id: "V1", name: "เก่า", status: "inactive" };
   assert.throws(() => assertVendorSelection(inactive), (error) => error.code === "VENDOR_INACTIVE");
   assert.equal(assertVendorSelection(inactive, { allowInactive: true }), inactive);
+});
+
+test("vendor record builders preserve duplicate confirmation and update behavior for cloud persistence", () => {
+  const first = buildVendorRecord({ name: "Cloud vendor", taxId: "010-1234" }, [], {
+    idSuffix: "cloud-audit",
+    now: () => "2026-11-10T00:00:00.000Z",
+  });
+  assert.equal(first.id, "VENDOR-cloud-audit");
+  assert.throws(
+    () => buildVendorRecord({ name: "Cloud vendor", taxId: "010-1234" }, [first]),
+    error => error.code === "VENDOR_DUPLICATE_CONFIRMATION_REQUIRED",
+  );
+
+  const updated = buildUpdatedVendorRecord(first, { phone: "0999999999" }, [first], {
+    now: () => "2026-11-11T00:00:00.000Z",
+  });
+  assert.equal(updated.id, first.id);
+  assert.equal(updated.phone, "0999999999");
+  assert.equal(updated.updatedAt, "2026-11-11T00:00:00.000Z");
 });
 
 test("shared persistence supports no-tax vendors and requires bound duplicate confirmation", async () => {

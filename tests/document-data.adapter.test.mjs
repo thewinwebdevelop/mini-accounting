@@ -65,7 +65,7 @@ test("document dual-write uses the generated receipt number when a new substitut
   assert.equal(calls[0].document_no, "SR-2026-09-0001");
 });
 
-test("cloud document save persists generated files before the document row", async () => {
+test("cloud document save persists the document row before publishing its file manifest", async () => {
   const order = [];
   const client = createSupabaseAdminClient({
     url: "https://project.supabase.co",
@@ -89,7 +89,7 @@ test("cloud document save persists generated files before the document row", asy
     documentNo: "EXP-1",
     payload: { folderPath: "documents/EXP-1" },
   });
-  assert.deepEqual(order, ["files:documents/EXP-1:EXP-1", "document:expense_request:EXP-1"]);
+  assert.deepEqual(order, ["document:expense_request:EXP-1", "files:documents/EXP-1:EXP-1"]);
 });
 
 test("document dual-write returns a safe retryable error on cloud failure", async () => {

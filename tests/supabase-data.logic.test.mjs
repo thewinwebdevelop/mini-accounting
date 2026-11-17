@@ -44,6 +44,92 @@ test("inventory repository rejects a provider response for a different source ha
   );
 });
 
+test("inventory list reads continue across Supabase 1000-row pages", async () => {
+  const calls = [];
+  const records = Array.from({ length: 1001 }, (_, index) => ({
+    source_key: `product:${index + 1}`,
+    source_id: index + 1,
+    product_code: `P-${index + 1}`,
+    name: `Product ${index + 1}`,
+    category: "เสื้อ",
+    description: "",
+    image_path: "",
+    status: "active",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  }));
+  const client = fakeClient(calls, (url, options) => {
+    const [start, end] = options.headers.Range.split("-").map(Number);
+    return records.slice(start, end + 1);
+  });
+  const repository = createSupabaseDataRepository({ client });
+  const products = await repository.listProducts();
+  assert.equal(products.length, 1001);
+  assert.equal(products[1000].id, 1001);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.headers.Range, "0-999");
+  assert.equal(calls[1].options.headers.Range, "1000-1999");
+  assert.match(calls[0].url, /order=source_id\.asc$/);
+  const movements = await repository.listInventoryStockMovements();
+  assert.equal(movements.length, 1001);
+  assert.equal(calls.length, 4);
+  assert.match(calls[2].url, /order=source_id\.asc$/);
+  assert.equal(calls[3].options.headers.Range, "1000-1999");
+});
+
+test("company settings repository upserts and reads the default Supabase record", async () => {
+  const calls = [];
+  const settingsRow = {
+    source_key: "company_settings:default",
+    setting_key: "default",
+    legal_name: "Sweet House",
+    tax_id: "0100000000000",
+    branch: "สำนักงานใหญ่",
+    address: "Bangkok",
+    source_hash: "settings-hash",
+    source_payload: { legalName: "Sweet House" },
+  };
+  const repository = createSupabaseDataRepository({
+    client: fakeClient(calls, (_url, options) => options.method === "POST"
+      ? [JSON.parse(options.body)]
+      : [settingsRow]),
+  });
+
+  const saved = await repository.saveCompanySettings({
+    legalName: "Sweet House",
+    taxId: "0100000000000",
+    branch: "สำนักงานใหญ่",
+    address: "Bangkok",
+  });
+  const loaded = await repository.getCompanySettings();
+
+  assert.equal(saved.legalName, "Sweet House");
+  assert.equal(loaded.taxId, "0100000000000");
+  assert.equal(calls[0].options.method, "POST");
+  assert.match(calls[0].url, /\/rest\/v1\/company_settings\?on_conflict=source_key$/);
+  assert.equal(JSON.parse(calls[0].options.body).source_key, "company_settings:default");
+  assert.match(calls[1].url, /setting_key=eq\.default/);
+});
+
+test("vendor repository persists records with stable source identity", async () => {
+  const calls = [];
+  const repository = createSupabaseDataRepository({
+    client: fakeClient(calls, (_url, options) => [JSON.parse(options.body)]),
+  });
+  const vendor = await repository.saveVendor({
+    id: "VENDOR-AUDIT-1",
+    name: "Audit Vendor",
+    status: "active",
+    createdAt: "2026-11-10T00:00:00.000Z",
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+
+  assert.equal(vendor.id, "VENDOR-AUDIT-1");
+  assert.equal(vendor.name, "Audit Vendor");
+  assert.match(calls[0].url, /\/rest\/v1\/vendors\?on_conflict=source_key$/);
+  assert.equal(JSON.parse(calls[0].options.body).source_key, "vendor:VENDOR-AUDIT-1");
+});
+
 test("repository maps document records and keeps payload opaque", async () => {
   const calls = [];
   const repository = createSupabaseDataRepository({

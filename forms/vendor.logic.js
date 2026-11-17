@@ -268,34 +268,55 @@ function duplicateError(matches, candidateFingerprint, stale = false) {
   return error;
 }
 
-async function createVendor(first, second, third) {
-  const { rootDir, input, options } = resolveRootAndOptions(first, second, third);
+function buildVendorRecord(input, vendors = [], options = {}) {
   const normalized = normalizeVendorInput(input || {});
   const candidateFingerprint = vendorCandidateFingerprint(normalized);
+  const matches = findVendorMatches(normalized, vendors);
+  const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
+  const actualIds = matches.map((match) => match.id).sort();
+  const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
+  const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((id, index) => id !== actualIds[index]);
+  const confirmationCandidate = expectedFingerprint !== candidateFingerprint;
+  if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
+    throw duplicateError(matches, candidateFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
+  }
+
+  const timestamp = options.now ? options.now() : new Date().toISOString();
+  return {
+    id: createVendorId(options),
+    ...normalized,
+    status: normalizeStatus(options.status),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function buildUpdatedVendorRecord(current, patch = {}, vendors = [], options = {}) {
+  const nextInput = normalizeVendorInput({ ...current, ...(patch || {}) });
+  const nextFingerprint = vendorCandidateFingerprint(nextInput);
+  const matches = findVendorMatches(nextInput, vendors.filter((vendor) => vendor.id !== current.id));
+  const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
+  const actualIds = matches.map((match) => match.id).sort();
+  const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
+  const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((matchId, matchIndex) => matchId !== actualIds[matchIndex]);
+  const confirmationCandidate = expectedFingerprint !== nextFingerprint;
+  if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
+    throw duplicateError(matches, nextFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
+  }
+  const timestamp = options.now ? options.now() : new Date().toISOString();
+  return {
+    ...current,
+    ...nextInput,
+    status: normalizeStatus(patch?.status || current.status),
+    updatedAt: timestamp,
+  };
+}
+
+async function createVendor(first, second, third) {
+  const { rootDir, input, options } = resolveRootAndOptions(first, second, third);
   return withVendorMutation(rootDir, async () => {
     const vendors = await readAllVendors(rootDir);
-    const matches = findVendorMatches(normalized, vendors);
-    const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
-    const actualIds = matches.map((match) => match.id).sort();
-    const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
-    const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((id, index) => id !== actualIds[index]);
-    const confirmationCandidate = expectedFingerprint !== candidateFingerprint;
-    if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
-      throw duplicateError(matches, candidateFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
-    }
-
-    const timestamp = options.now ? options.now() : new Date().toISOString();
-    const vendor = {
-      id: createVendorId(options),
-      ...normalized,
-      // New shared vendors are active by default. Compatibility adapters may
-      // pass a validated status when importing an existing inactive preset;
-      // keeping it in this single write avoids an observable active interval
-      // and avoids a second mutation that could leave a partial record.
-      status: normalizeStatus(options.status),
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const vendor = buildVendorRecord(input, vendors, options);
     await writeAllVendors(rootDir, [...vendors, vendor]);
     return cloneVendor(vendor);
   });
@@ -314,24 +335,7 @@ async function updateVendor(first, second, third) {
     }
     const current = vendors[index];
     const options = patch?.options || {};
-    const nextInput = normalizeVendorInput({ ...current, ...(patch || {}) });
-    const nextFingerprint = vendorCandidateFingerprint(nextInput);
-    const matches = findVendorMatches(nextInput, vendors.filter((vendor) => vendor.id !== current.id));
-    const expectedIds = Array.isArray(options.expectedMatchIds) ? [...new Set(options.expectedMatchIds.map(cleanText))].sort() : [];
-    const actualIds = matches.map((match) => match.id).sort();
-    const expectedFingerprint = cleanText(options.expectedCandidateFingerprint || options.candidateFingerprint || options.duplicateFingerprint);
-    const confirmationMatches = expectedIds.length !== actualIds.length || expectedIds.some((matchId, matchIndex) => matchId !== actualIds[matchIndex]);
-    const confirmationCandidate = expectedFingerprint !== nextFingerprint;
-    if ((matches.length || expectedIds.length) && (!options.confirmDuplicate || confirmationMatches || confirmationCandidate)) {
-      throw duplicateError(matches, nextFingerprint, Boolean(options.confirmDuplicate || expectedIds.length));
-    }
-    const timestamp = options.now ? options.now() : new Date().toISOString();
-    const updated = {
-      ...current,
-      ...nextInput,
-      status: normalizeStatus(patch?.status || current.status),
-      updatedAt: timestamp,
-    };
+    const updated = buildUpdatedVendorRecord(current, patch, vendors, options);
     await writeAllVendors(rootDir, vendors.map((vendor, itemIndex) => itemIndex === index ? updated : vendor));
     return cloneVendor(updated);
   });
@@ -342,6 +346,9 @@ module.exports = {
   SNAPSHOT_FIELDS,
   vendorCandidateFingerprint,
   normalizeVendorInput,
+  createVendorId,
+  buildVendorRecord,
+  buildUpdatedVendorRecord,
   vendorSnapshotFromRecord,
   buildVendorSnapshot,
   findVendorMatches,

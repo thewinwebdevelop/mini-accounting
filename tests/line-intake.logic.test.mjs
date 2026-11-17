@@ -8,6 +8,34 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { createLocalLineIntakeStore, createSupabaseLineIntakeStore } = require("../forms/line-intake.logic.js");
 
+test("cloud intake compensates a failed insert but preserves an insert committed before a lost response", async () => {
+  for (const committed of [false, true]) {
+    let uploaded;
+    let inserted;
+    const removed = [];
+    const store = createSupabaseLineIntakeStore({
+      client: {}, storageClient: {},
+      uploadObject: async (_client, value) => { uploaded = value.objectPath; },
+      deleteObject: async (_client, objectPath) => removed.push(objectPath),
+      request: async (_client, route, options = {}) => {
+        if (options.method === "POST") {
+          inserted = options.body;
+          throw new Error("insert connection lost");
+        }
+        return committed && inserted && route.includes(`id=eq.${inserted.id}`) ? [inserted] : [];
+      },
+    });
+    const create = () => store.create({ eventId: "audit-event", messageId: "audit-message", lineUserId: "audit-user", mediaKind: "image", originalName: "audit.png", contentType: "image/png", bytes: Buffer.from("audit") });
+    if (committed) {
+      assert.equal((await create()).item.id, inserted.id);
+      assert.deepEqual(removed, []);
+    } else {
+      await assert.rejects(create, /insert connection lost/);
+      assert.deepEqual(removed, [uploaded]);
+    }
+  }
+});
+
 test("local LINE intake store saves original bytes and is idempotent", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-line-intake-"));
   try {
@@ -108,4 +136,14 @@ test("Supabase LINE intake store writes metadata and private object identity", a
   assert.equal(scanned.ocrProvider, "http");
   const original = await store.readOriginal(scanned);
   assert.equal(original.bytes.toString(), "%PDF");
+});
+
+test('cloud intake transition refuses to overwrite a concurrent cancellation', async () => {
+  let patchedRoute;
+  const store = createSupabaseLineIntakeStore({ client: {}, storageClient: {}, request: async (_client, route, options = {}) => {
+    if (options.method === 'PATCH') { patchedRoute = route; return []; }
+    return [{ id: 'intake-1', line_user_id: 'user-1', status: 'needs_confirmation' }];
+  } });
+  await assert.rejects(() => store.transition('intake-1', 'confirmed', { lineUserId: 'user-1' }), error => error.code === 'LINE_INTAKE_CONFLICT' && error.statusCode === 409);
+  assert.match(patchedRoute, /status=eq.needs_confirmation/);
 });

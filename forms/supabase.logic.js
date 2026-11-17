@@ -73,10 +73,14 @@ async function supabaseRequest(client, path, options = {}) {
     }
   }
   if (!response.ok) {
-    throw createCodeError(
+    const error = createCodeError(
       "SUPABASE_REQUEST_FAILED",
       `Supabase request failed with status ${response.status}`,
     );
+    error.status = response.status;
+    error.details = data;
+    error.sqlCode = data?.code || "";
+    throw error;
   }
   return data;
 }

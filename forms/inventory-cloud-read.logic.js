@@ -90,9 +90,9 @@ function matchesSearch(product, children, search = "") {
     .join(" ").toLowerCase().includes(term);
 }
 
-function buildCloudInventoryStockGroups({ products = [], stockSkus = [], movements = [], filters = {} } = {}) {
+function buildCloudInventoryStockGroups({ products = [], stockSkus = [], movements = [], reservedQuantities = {}, filters = {} } = {}) {
   const productMap = productById(products);
-  const balances = buildCloudInventoryBalances({ stockSkus, movements });
+  const balances = buildCloudInventoryBalances({ stockSkus, movements, reservedQuantities });
   const balanceMap = new Map(balances.map(sku => [Number(sku.id), sku]));
   const grouped = new Map();
   for (const product of products) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -15,8 +16,8 @@ test("document file synchronizer uploads files and writes the storage ledger", a
   const calls = [];
   const client = { fetchImpl: async (url, options) => {
     calls.push({ url, options });
-    if (url.includes("storage_migration_records")) {
-      return new Response(JSON.stringify([{ source_key: "file:documents/2026/REQ-2026-09-0001_demo/raw/receipt.jpg" }]), { status: 200 });
+    if (url.includes("commit_document_file_manifest")) {
+      return new Response("true", { status: 200 });
     }
     return new Response(JSON.stringify({}), { status: 200 });
   }, url: "https://project.supabase.co", serviceRoleKey: "server-secret" };
@@ -24,13 +25,48 @@ test("document file synchronizer uploads files and writes the storage ledger", a
 
   try {
     const result = await createDocumentFileSynchronizer({ rootDir, client, storageClient });
-    const synced = await result.sync({ documentKind: "expense_request", documentNo: "REQ-2026-09-0001", folderPath });
+    const sourceHash = "doc-version-a";
+    const synced = await result.sync({ documentKind: "expense_request", documentNo: "REQ-2026-09-0001", folderPath, sourceHash });
     assert.equal(synced.length, 1);
-    assert.equal(synced[0].objectPath, `${folderPath}/raw/receipt.jpg`);
+    const fileHash = crypto.createHash("sha256").update("receipt-bytes").digest("hex");
+    assert.equal(synced[0].objectPath, `${folderPath}/raw/receipt.jpg.${fileHash}`);
     assert.ok(calls.some(call => call.url.includes("/storage/v1/object/sweet-house-files/")));
     const ledgerCall = calls.find(call => call.url.includes("storage_migration_records"));
     assert.ok(ledgerCall);
     assert.match(String(ledgerCall.options.body), /receipt\.jpg/);
+    const manifestCall = calls.find(call => call.url.includes("commit_document_file_manifest"));
+    assert.ok(manifestCall);
+    assert.equal(JSON.parse(manifestCall.options.body).p_expected_source_hash, sourceHash);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("stale document file publication keeps its immutable upload out of the visible manifest", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-cloud-files-stale-"));
+  const folderPath = "documents/2026/REQ-2026-09-0099_demo";
+  await mkdir(join(rootDir, folderPath, "pdf"), { recursive: true });
+  await writeFile(join(rootDir, folderPath, "pdf", "request.pdf"), Buffer.from("version-a"));
+  const calls = [];
+  const uploaded = [];
+  const client = { url: "https://project.supabase.co", serviceRoleKey: "server-secret", fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes("commit_document_file_manifest")) return new Response("false", { status: 200 });
+    return new Response("{}", { status: 200 });
+  } };
+  const storageClient = { ...client, bucket: "sweet-house-files" };
+  const sync = createDocumentFileSynchronizer({
+    rootDir,
+    client,
+    storageClient,
+    uploadObject: async (_storage, value) => uploaded.push(value),
+  });
+  try {
+    await assert.rejects(sync.sync({ documentKind: "expense_request", documentNo: "REQ-2026-09-0099", folderPath, sourceHash: "stale-hash" }), { code: "DOCUMENT_FILE_MANIFEST_CONFLICT" });
+    assert.equal(uploaded.length, 1);
+    assert.match(uploaded[0].objectPath, /request\.pdf\.[a-f0-9]{64}$/);
+    assert.equal(calls.filter(call => call.url.includes("document_files")).length, 0);
+    assert.equal(calls.filter(call => call.url.includes("commit_document_file_manifest")).length, 1);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

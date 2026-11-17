@@ -17,10 +17,11 @@ function assertNoProductionSecrets(env = process.env) {
   if (inherited.length) throw new Error(`production credentials are forbidden in E2E fixture: ${inherited.join(", ")}`);
 }
 
-async function createAppServer({ env, rootDir, mockBaseUrl }) {
+async function createAppServer({ env, rootDir, mockBaseUrl, supabase = null }) {
+  if (supabase && !["127.0.0.1", "localhost", "::1"].includes(new URL(supabase.url).hostname)) throw new Error("real Supabase E2E requires a loopback endpoint");
   const child = spawn(process.execPath, [path.join(repoDir, "local-server.mjs")], {
     cwd: repoDir,
-    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files", NODE_OPTIONS: `${env.NODE_OPTIONS || ""} --import=${path.join(repoDir, "e2e/fixtures/outbound-guard.mjs")}`, E2E_ALLOWED_HOSTS: [mockBaseUrl, ...Object.values(env).filter(value => typeof value === "string" && value.startsWith("http://127.0.0.1:"))].map(value => new URL(value).host).join(","), E2E_OUTBOUND_GUARD_LOG: path.join(rootDir, "e2e-outbound-blocked.log") },
+    env: { ...env, SWEET_HOUSE_ROOT_DIR: rootDir, PORT: "0", SWEET_HOUSE_ALLOW_NETWORK: "", SUPABASE_URL: supabase?.url || mockBaseUrl, SUPABASE_SERVICE_ROLE_KEY: supabase?.serviceRoleKey || "e2e-service-key", SUPABASE_STORAGE_BUCKET: "sweet-house-files", NODE_OPTIONS: `${env.NODE_OPTIONS || ""} --import=${path.join(repoDir, "e2e/fixtures/outbound-guard.mjs")}`, E2E_ALLOWED_HOSTS: [mockBaseUrl, ...(supabase ? [supabase.url] : []), ...Object.values(env).filter(value => typeof value === "string" && value.startsWith("http://127.0.0.1:"))].map(value => new URL(value).host).join(","), E2E_OUTBOUND_GUARD_LOG: path.join(rootDir, "e2e-outbound-blocked.log") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -36,13 +37,19 @@ async function createAppServer({ env, rootDir, mockBaseUrl }) {
     child.stderr.on("data", check);
     child.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture server exited early (${code})\n${output}`)); });
   });
-  const baseUrl = await started;
+  let baseUrl;
+  try { baseUrl = await started; } catch (error) {
+    if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+    throw error;
+  }
   let stopped = false;
   return { baseUrl, child, output: () => output, stop: async () => {
     if (stopped) return;
     stopped = true;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit").catch(() => {});
     if (!child.killed) child.kill("SIGTERM");
-    await once(child, "exit").catch(() => {});
+    await exited;
   } };
 }
 

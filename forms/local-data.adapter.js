@@ -1,17 +1,9 @@
-const { randomInt } = require("node:crypto");
 const { createSupabaseAdminClient } = require("./supabase.logic.js");
 const { createDataAdapter } = require("./data-adapter.logic.js");
 const { resolveDataBackendMode } = require("./data-backend.logic.js");
 const inventory = require("./inventory.logic.js");
 const { createSupabaseDataRepository } = require("./supabase-data.logic.js");
-const {
-  buildCloudInventoryBalances,
-  buildCloudInventoryDashboard,
-  buildCloudInventoryStockGroups,
-  buildCloudStockCard,
-  buildCloudStockInReport,
-} = require("./inventory-cloud-read.logic.js");
-
+const { createInventoryCloudRepository } = require("./inventory-cloud.repository.js");
 function createLocalDataAdapter(rootDir) {
   return Object.freeze({
     listProducts: filters => inventory.listProducts(rootDir, filters),
@@ -39,49 +31,16 @@ function createInventoryDataAdapter({ rootDir, env = process.env, client, logger
     serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
   });
   const cloud = createSupabaseDataRepository({ client: supabaseClient });
-  const cloudInventoryRead = async () => {
-    const [products, stockSkus, movements] = await Promise.all([
-      cloud.listProducts({ search: "" }),
-      cloud.listStockSkus({ search: "" }),
-      cloud.listInventoryStockMovements(),
-    ]);
-    return { products, stockSkus, movements };
-  };
+  const inventoryCloud = createInventoryCloudRepository({ client: supabaseClient });
   const cloudWithInventoryReads = Object.freeze({
     ...cloud,
-    saveProduct: async payload => {
-      // Cloud-only deployments cannot rely on a local SQLite sequence for IDs.
-      // Allocate a numeric source ID before building the stable cloud source key.
-      const product = payload.id ? payload : {
-        ...payload,
-        id: Date.now() * 1000 + randomInt(0, 1000),
-      };
-      return cloud.saveProduct(product);
-    },
-    listInventoryBalances: async () => {
-      const snapshot = await cloudInventoryRead();
-      return buildCloudInventoryBalances(snapshot);
-    },
-    listInventoryStockGroups: async filters => {
-      const snapshot = await cloudInventoryRead();
-      return buildCloudInventoryStockGroups({ ...snapshot, filters });
-    },
-    getInventoryDashboard: async () => {
-      const snapshot = await cloudInventoryRead();
-      const balances = buildCloudInventoryBalances(snapshot);
-      return {
-        summary: buildCloudInventoryDashboard({ balances }),
-        latestStockIn: buildCloudStockInReport({ ...snapshot, limit: 10 }),
-      };
-    },
-    listStockInReport: async filters => {
-      const snapshot = await cloudInventoryRead();
-      return buildCloudStockInReport({ ...snapshot, limit: filters?.limit });
-    },
-    getStockCard: async stockSkuId => {
-      const snapshot = await cloudInventoryRead();
-      return buildCloudStockCard({ ...snapshot, stockSkuId });
-    },
+    saveProduct: (payload, options = {}) => inventoryCloud.saveProduct(payload, { creating: options.creating ?? !payload.id }),
+    saveStockSku: (payload, options = {}) => inventoryCloud.saveStockSku(payload, { creating: options.creating ?? !payload.id }),
+    listInventoryBalances: inventoryCloud.listInventoryBalances,
+    listInventoryStockGroups: inventoryCloud.listInventoryStockGroups,
+    getInventoryDashboard: inventoryCloud.getInventoryDashboard,
+    listStockInReport: inventoryCloud.listStockInReport,
+    getStockCard: inventoryCloud.getStockCard,
   });
   return createDataAdapter({
     local,
@@ -91,8 +50,8 @@ function createInventoryDataAdapter({ rootDir, env = process.env, client, logger
     logger,
     fallbackOnCloudError: String(env.DATA_BACKEND_FALLBACK || "").toLowerCase() === "local",
     prepareCloudWrite: {
-      saveProduct: result => [result],
-      saveStockSku: result => [result],
+      saveProduct: (result, args) => [result, { creating: !args[0]?.id }],
+      saveStockSku: (result, args) => [result, { creating: !args[0]?.id }],
     },
   });
 }

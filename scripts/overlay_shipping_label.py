@@ -134,10 +134,10 @@ def overlay_pdf(input_path, output_path, overlays):
     writer = PdfWriter()
     normalized = _normalize_overlays(overlays)
     for page_index, source_page in enumerate(reader.pages):
-        page = source_page
+        writer.add_page(source_page)
+        page = writer.pages[-1]
         for overlay in normalized:
             _draw_overlay(page, overlay, page_index)
-        writer.add_page(page)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as stream:

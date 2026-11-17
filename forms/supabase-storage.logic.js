@@ -115,12 +115,26 @@ async function downloadStorageObject(client, objectPath) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+async function deleteStorageObject(client, objectPath) {
+  if (!client || typeof client.fetchImpl !== "function") {
+    throw createStorageError("SUPABASE_STORAGE_CLIENT_INVALID", "Supabase Storage client is invalid");
+  }
+  const name = assertObjectPath(objectPath);
+  const response = await client.fetchImpl(`${client.url}/storage/v1/object/${encodeURIComponent(client.bucket)}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json", apikey: client.serviceRoleKey, Authorization: `Bearer ${client.serviceRoleKey}` },
+    body: JSON.stringify({ prefixes: [name] }),
+  });
+  if (!response.ok) throw createStorageError("SUPABASE_STORAGE_REQUEST_FAILED", `Supabase Storage request failed with status ${response.status}`);
+}
+
 module.exports = {
   DEFAULT_BUCKET,
   assertBucketName,
   assertObjectPath,
   createSupabaseStorageClient,
   downloadStorageObject,
+  deleteStorageObject,
   storageObjectPath,
   storageRequest,
   uploadStorageObject,

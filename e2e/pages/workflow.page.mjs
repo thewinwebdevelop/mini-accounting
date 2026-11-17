@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 
 async function jsonResponse(response) {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok()) throw new Error(`${response.url()} -> ${response.status()}: ${body.error || "request failed"}`);
+  if (!response.ok()) throw new Error(`${response.url()} -> ${response.status()}: ${body.error || "request failed"}${body.causeCode ? ` (${body.causeCode})` : ""}`);
   return body;
 }
 
@@ -124,7 +124,9 @@ export class WorkflowTransactionPage {
     const responsePromise = this.page.waitForResponse((response) => response.url().includes("/start-document/") && response.request().method() === "POST");
     await this.page.locator("[data-step-action]:not([disabled])").click();
     const response = await responsePromise.then(jsonResponse);
-    await this.page.waitForURL((url) => url.pathname !== "/workflow-transaction");
+    await this.page.waitForURL((url) => url.pathname !== "/workflow-transaction"
+      && Boolean(url.searchParams.get("documentKind"))
+      && url.searchParams.get("transactionNo") === this.transactionNo);
     expect(this.page.url()).toContain(`transactionNo=${this.transactionNo}`);
     return { ...response, url: this.page.url() };
   }

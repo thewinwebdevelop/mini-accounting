@@ -45,6 +45,7 @@ async function saveCompanySettings({ rootDir, legalName, taxId, branch, address 
 
 module.exports = {
   defaultCompanySettings,
+  normalizeCompanySettings,
   getCompanySettings,
   saveCompanySettings,
 };

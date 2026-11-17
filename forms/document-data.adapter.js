@@ -80,17 +80,23 @@ function createDocumentDataAdapter({ env = process.env, client, logger = () => {
     cloud = createDocumentCloudRepository({ client: supabaseClient });
   }
 
-  async function save({ localSave, documentKind, documentNo, payload }) {
+  async function save({ localSave, documentKind, documentNo, payload, expectedSourceHash, createOnly = false }) {
     if (typeof localSave !== "function") throw adapterError("DOCUMENT_LOCAL_SAVE_MISSING", "Local document save is required");
     const result = await localSave();
     if (mode === "local" || mode === "shadow") return result;
     const record = buildDocumentCloudRecord({ documentKind, documentNo, payload, result });
     try {
-      if (typeof persistFiles === "function") {
-        await persistFiles({ documentKind, documentNo: record.documentNo, folderPath: record.folderPath, payload, result });
+      if (expectedSourceHash || createOnly) {
+        const written = typeof cloud.compareAndSwapDocument === "function" && await cloud.compareAndSwapDocument(record, expectedSourceHash || null);
+        if (!written) throw adapterError("DOCUMENT_WRITE_CONFLICT", `Document ${record.sourceKey} changed in another runtime; reload it before saving`, { statusCode: 409 });
+      } else {
+        await cloud.upsertDocument(record);
       }
-      await cloud.upsertDocument(record);
+      if (typeof persistFiles === "function") {
+        await persistFiles({ documentKind, documentNo: record.documentNo, folderPath: record.folderPath, sourceHash: record.sourceHash, payload, result });
+      }
     } catch (error) {
+      if (error?.code === "DOCUMENT_WRITE_CONFLICT") throw error;
       throw adapterError("DATA_CLOUD_WRITE_FAILED", "Cloud document write failed; retry is required", { retryable: true, causeCode: error?.code || "CLOUD_ERROR" });
     }
     return result;
@@ -165,6 +171,12 @@ function createDocumentDataAdapter({ env = process.env, client, logger = () => {
     }
   }
 
+  async function getSourceHash({ documentKind, documentNo }) {
+    if (!cloud || typeof cloud.getDocument !== "function") return "";
+    const record = await cloud.getDocument(stableSourceKey("document", `${documentKind}:${documentNo}`));
+    return String(record?.sourceHash || "");
+  }
+
   async function allocateWorkflowTransactionNumber(input) {
     if (!cloud || typeof cloud.allocateWorkflowTransactionNumber !== "function") {
       throw adapterError("DOCUMENT_CLOUD_ALLOCATOR_MISSING", "Cloud workflow transaction allocator is unavailable");
@@ -179,7 +191,34 @@ function createDocumentDataAdapter({ env = process.env, client, logger = () => {
     }
   }
 
-  return Object.freeze({ mode, save, shadowRead, list, get, allocateWorkflowTransactionNumber, buildDocumentCloudRecord });
+  async function allocateAccountingDocumentNumber(input) {
+    if (!cloud || typeof cloud.allocateAccountingDocumentNumber !== "function") {
+      throw adapterError("DOCUMENT_CLOUD_ALLOCATOR_MISSING", "Cloud document number allocator is unavailable");
+    }
+    try {
+      return await cloud.allocateAccountingDocumentNumber(input);
+    } catch (error) {
+      throw adapterError("DATA_CLOUD_ALLOCATION_FAILED", "Cloud document number allocation failed; retry is required", {
+        retryable: true,
+        causeCode: error?.code || "CLOUD_ERROR",
+      });
+    }
+  }
+
+  async function peekWorkflowTransactionNumber(accountingMonth) {
+    if (!cloud || typeof cloud.peekWorkflowTransactionNumber !== "function") {
+      throw adapterError("DOCUMENT_CLOUD_ALLOCATOR_MISSING", "Cloud workflow transaction number preview is unavailable");
+    }
+    try {
+      return await cloud.peekWorkflowTransactionNumber(accountingMonth);
+    } catch (error) {
+      throw adapterError("DATA_CLOUD_ALLOCATION_FAILED", "Cloud workflow transaction number preview failed", {
+        causeCode: error?.code || "CLOUD_ERROR",
+      });
+    }
+  }
+
+  return Object.freeze({ mode, save, shadowRead, list, get, getSourceHash, allocateWorkflowTransactionNumber, allocateAccountingDocumentNumber, peekWorkflowTransactionNumber, buildDocumentCloudRecord });
 }
 
 module.exports = { buildDocumentCloudRecord, createDocumentDataAdapter, stripPrivatePaths };

@@ -45,7 +45,12 @@
       const sessionResponse = await fetch("/api/auth/me", { credentials: "same-origin" });
       if (sessionResponse.ok) {
         setStatus("เข้าสู่ระบบแล้ว");
-        redirectToRequestedPath();
+        // returnTo on a protected child document is its link back to the
+        // parent workflow. It is not an instruction to leave that document.
+        // Only the auth entry page consumes returnTo after finding a session.
+        if (window.location.pathname === "/line-auth" || window.location.pathname === "/") {
+          redirectToRequestedPath();
+        }
         return;
       }
     }

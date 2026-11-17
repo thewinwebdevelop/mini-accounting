@@ -78,44 +78,42 @@ function createDocumentFileSynchronizer({
 } = {}) {
   if (!rootDir || !client || !storageClient) throw fileError("DOCUMENT_STORAGE_CONFIG_MISSING", "Document Storage configuration is missing");
 
-  async function sync({ documentKind, documentNo, folderPath }) {
+  async function sync({ documentKind, documentNo, folderPath, sourceHash }) {
     if (!folderPath) return [];
+    if (!sourceHash) throw fileError("DOCUMENT_SOURCE_HASH_REQUIRED", "Document source hash is required to publish its files");
     const absoluteRoot = path.resolve(rootDir);
     const files = await collectFiles(absoluteRoot, folderPath);
     const documentSourceKey = `document:${documentKind}:${documentNo}`;
-    const records = [];
-    for (const absolutePath of files) {
-      const relativePath = path.relative(absoluteRoot, absolutePath).split(path.sep).join("/");
-      const body = await readFile(absolutePath);
-      const info = await stat(absolutePath);
-      const sourceSha256 = crypto.createHash("sha256").update(body).digest("hex");
-      const objectPath = storageObjectPath(relativePath);
-      const record = {
-        migration_name: STORAGE_MIGRATION_NAME,
-        source_key: `file:${relativePath}`,
-        bucket_name: bucket,
-        object_path: objectPath,
-        source_sha256: sourceSha256,
-        byte_size: info.size,
-        content_type: contentTypeFor(absolutePath),
-        migrated_at: now(),
-      };
-      await uploadObject(storageClient, {
-        objectPath,
-        body,
-        contentType: record.content_type,
-      });
-      await request(client, "/rest/v1/storage_migration_records?on_conflict=migration_name,source_key", {
-        method: "POST",
-        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: record,
-      });
-      await request(client, "/rest/v1/document_files?on_conflict=source_key", {
-        method: "POST",
-        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: {
+    const fileManifest = [];
+    const uploaded = [];
+    try {
+      for (const absolutePath of files) {
+        const relativePath = path.relative(absoluteRoot, absolutePath).split(path.sep).join("/");
+        const body = await readFile(absolutePath);
+        const info = await stat(absolutePath);
+        const sourceSha256 = crypto.createHash("sha256").update(body).digest("hex");
+        const objectPath = storageObjectPath(`${relativePath}.${sourceSha256}`);
+        const record = {
+          migration_name: STORAGE_MIGRATION_NAME,
+          source_key: `file:${relativePath}:${sourceSha256}`,
+          bucket_name: bucket,
+          object_path: objectPath,
+          source_sha256: sourceSha256,
+          byte_size: info.size,
+          content_type: contentTypeFor(absolutePath),
+          migrated_at: now(),
+        };
+        await uploadObject(storageClient, { objectPath, body, contentType: record.content_type });
+        uploaded.push({ ...record, objectPath });
+        await request(client, "/rest/v1/storage_migration_records?on_conflict=migration_name,source_key", {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: record,
+        });
+        fileManifest.push({
           source_key: `document_file:${relativePath}`,
           document_source_key: documentSourceKey,
+          document_source_hash: sourceHash,
           bucket_name: bucket,
           object_path: objectPath,
           source_sha256: sourceSha256,
@@ -123,11 +121,23 @@ function createDocumentFileSynchronizer({
           content_type: record.content_type,
           original_name: path.basename(relativePath),
           migrated_at: record.migrated_at,
-        },
+        });
+      }
+      const committed = await request(client, "/rest/v1/rpc/commit_document_file_manifest", {
+        method: "POST",
+        body: { p_document_source_key: documentSourceKey, p_expected_source_hash: sourceHash, p_files: fileManifest },
       });
-      records.push({ ...record, objectPath });
+      if (committed !== true && committed?.[0]?.commit_document_file_manifest !== true) {
+        throw fileError("DOCUMENT_FILE_MANIFEST_CONFLICT", "Document changed while its files were being published");
+      }
+      return uploaded;
+    } catch (error) {
+      // Upload paths are content-addressed and are also recorded in the
+      // migration ledger. Keep unreferenced versions for the background GC;
+      // deleting after a failed CAS could remove identical bytes concurrently
+      // committed by the winning writer.
+      throw error;
     }
-    return records;
   }
 
   async function materialize({ rootDir: targetRootDir = rootDir, record = {} }) {

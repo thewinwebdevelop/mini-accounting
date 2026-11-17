@@ -2,7 +2,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { createSupabaseAdminClient, supabaseRequest } = require("./supabase.logic.js");
-const { createSupabaseStorageClient, downloadStorageObject, uploadStorageObject } = require("./supabase-storage.logic.js");
+const { createSupabaseStorageClient, downloadStorageObject, uploadStorageObject, deleteStorageObject } = require("./supabase-storage.logic.js");
 
 function intakeError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -135,6 +135,7 @@ function createSupabaseLineIntakeStore({
   maxBytes = 20 * 1024 * 1024,
   request = supabaseRequest,
   uploadObject = uploadStorageObject,
+  deleteObject = deleteStorageObject,
   downloadObject,
   now = () => new Date().toISOString(),
 } = {}) {
@@ -156,7 +157,9 @@ function createSupabaseLineIntakeStore({
     const objectPath = `line-intakes/${id}/${sha256}-${safeFileName(originalName)}`;
     await uploadObject(storageClient, { objectPath, body: buffer, contentType });
     const timestamp = now();
-    const response = await request(client, "/rest/v1/line_intake_items", {
+    let response;
+    try {
+      response = await request(client, "/rest/v1/line_intake_items", {
       method: "POST",
       headers: { Prefer: "return=representation" },
       body: {
@@ -166,7 +169,18 @@ function createSupabaseLineIntakeStore({
         status: "needs_confirmation", extracted_payload: {}, duplicate_source_keys: [], created_at: timestamp, updated_at: timestamp,
         ocr_status: "pending", ocr_provider: "", ocr_confidence: 0, ocr_warnings: [], ocr_error: "",
       },
-    });
+      });
+    } catch (error) {
+      // A lost response can follow a committed insert. Read back before deleting
+      // the object, so recovery never removes a successfully persisted intake.
+      const committed = await findBy(`/rest/v1/line_intake_items?id=eq.${encodeURIComponent(id)}&limit=1`);
+      if (committed) return { created: true, item: cloudItemFromRow(committed) };
+      const duplicate = (eventId && await findBy(`/rest/v1/line_intake_items?event_id=eq.${encodeURIComponent(eventId)}&limit=1`))
+        || (messageId && await findBy(`/rest/v1/line_intake_items?message_id=eq.${encodeURIComponent(messageId)}&limit=1`));
+      await deleteObject(storageClient, objectPath);
+      if (duplicate) return { created: false, item: cloudItemFromRow(duplicate) };
+      throw error;
+    }
     const row = Array.isArray(response) ? response[0] : response;
     return { created: true, item: cloudItemFromRow(row) };
   }
@@ -208,12 +222,17 @@ function createSupabaseLineIntakeStore({
     const allowed = { needs_confirmation: ["confirmed", "cancelled"], confirmed: [] };
     if (!allowed[current.status]?.includes(status)) throw intakeError("LINE_INTAKE_INVALID_TRANSITION", "สถานะรายการไม่รองรับการเปลี่ยนแปลงนี้");
     const timestamp = now();
-    const response = await request(client, `/rest/v1/line_intake_items?id=eq.${encodeURIComponent(id)}`, {
+    const response = await request(client, `/rest/v1/line_intake_items?id=eq.${encodeURIComponent(id)}&status=eq.${encodeURIComponent(current.status)}`, {
       method: "PATCH", headers: { Prefer: "return=representation" },
       body: { status, updated_at: timestamp, ...(metadata.createdDocument ? { created_document: metadata.createdDocument } : {}), ...(metadata.createdDocumentNo ? { created_document_no: metadata.createdDocumentNo } : {}), ...(status === "cancelled" ? { cancelled_at: timestamp } : {}), ...(status === "confirmed" ? { confirmed_at: timestamp } : {}) },
     });
     const row = Array.isArray(response) ? response[0] : response;
-    return cloudItemFromRow(row || { ...current, status, updated_at: timestamp });
+    if (!row) {
+      const error = intakeError("LINE_INTAKE_CONFLICT", "รายการนี้ถูกเปลี่ยนแปลงแล้ว กรุณาโหลดใหม่");
+      error.statusCode = 409;
+      throw error;
+    }
+    return cloudItemFromRow(row);
   }
 
   return { create, get, getForUser, readOriginal, updateScan, transition };

@@ -13,9 +13,9 @@ export const PERSONAS = Object.freeze({
   inactive: { userId: "inactive-1", role: "employee", ownerUserId: "inactive-1", displayName: "Inactive" },
 });
 
-export function createTestSession({ userId, role, ownerUserId = userId, secret, now = () => Math.floor(Date.now() / 1000), displayName = "E2E User" }) {
+export function createTestSession({ userId, lineUserId, role, ownerUserId = userId, secret, now = () => Math.floor(Date.now() / 1000), displayName = "E2E User" }) {
   const timestamp = typeof now === "function" ? now() : Number(now);
-  return signSession({ userId, role, ownerUserId, displayName, exp: timestamp + 3600 }, secret);
+  return signSession({ userId, ...(lineUserId ? { lineUserId } : {}), role, ownerUserId, displayName, exp: timestamp + 3600 }, secret);
 }
 
 export function sessionCookie(token) {

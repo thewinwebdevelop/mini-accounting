@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const {
   createSupabaseStorageClient,
   downloadStorageObject,
+  deleteStorageObject,
   storageRequest,
   uploadStorageObject,
 } = require("../forms/supabase-storage.logic.js");
@@ -80,4 +81,16 @@ test("storage migration SQL defines a private bucket and protected ledger", asyn
   assert.match(sql, /storage_migration_records/);
   assert.match(sql, /enable row level security/);
   assert.match(sql, /revoke all on table public\.storage_migration_records from anon, authenticated/);
+});
+
+
+test("deleteStorageObject uses the bucket batch endpoint with one exact path", async () => {
+  let call;
+  const client = createSupabaseStorageClient({ url: "https://project.supabase.co", serviceRoleKey: "server-secret", fetchImpl: async (url, options) => {
+    call = { url, options }; return new Response("[]", { status: 200 });
+  } });
+  await deleteStorageObject(client, "line-intake/unique-id/original.jpg");
+  assert.equal(call.url, "https://project.supabase.co/storage/v1/object/sweet-house-files");
+  assert.equal(call.options.method, "DELETE");
+  assert.deepEqual(JSON.parse(call.options.body), { prefixes: ["line-intake/unique-id/original.jpg"] });
 });

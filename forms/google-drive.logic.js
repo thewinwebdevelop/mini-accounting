@@ -1,5 +1,22 @@
 const { mkdir, readdir, readFile, stat, writeFile } = require("node:fs/promises");
 const path = require("node:path");
+const { isCloudRunEnvironment } = require("./cloud-run.logic.js");
+const { createSupabaseAdminClient, supabaseRequest } = require("./supabase.logic.js");
+
+async function readCloudCredential(key) {
+  const rows = await supabaseRequest(createSupabaseAdminClient(), `/rest/v1/integration_credentials?credential_key=eq.${encodeURIComponent(key)}&select=payload&limit=1`);
+  return rows?.[0]?.payload || null;
+}
+async function saveCredential(rootDir, kind, data) {
+  if (isCloudRunEnvironment()) {
+    await supabaseRequest(createSupabaseAdminClient(), "/rest/v1/integration_credentials?on_conflict=credential_key", {
+      method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: { credential_key: `google-drive-${kind}`, payload: data, updated_at: new Date().toISOString() },
+    });
+    return;
+  }
+  await writeJson(kind === "config" ? getConfigPath(rootDir) : getTokenPath(rootDir), data);
+}
 
 const driveFolderMimeType = "application/vnd.google-apps.folder";
 const driveScopes = [
@@ -86,8 +103,8 @@ async function saveGoogleDriveConfig({ rootDir, clientId, clientSecret, driveBas
     driveBasePath: normalizeDrivePath(driveBasePath) || defaultDriveBasePath,
     updatedAt: new Date().toISOString(),
   };
-  await writeJson(getConfigPath(rootDir), config);
-  const token = await readJsonIfExists(getTokenPath(rootDir));
+  await saveCredential(rootDir, "config", config);
+  const token = await getGoogleDriveToken(rootDir);
 
   return {
     configured: true,
@@ -99,11 +116,11 @@ async function saveGoogleDriveConfig({ rootDir, clientId, clientSecret, driveBas
 }
 
 async function getGoogleDriveConfig(rootDir) {
-  return (await readJsonIfExists(getConfigPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_CONFIG_JSON");
+  return (isCloudRunEnvironment() ? await readCloudCredential("google-drive-config") : await readJsonIfExists(getConfigPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_CONFIG_JSON");
 }
 
 async function getGoogleDriveToken(rootDir) {
-  return (await readJsonIfExists(getTokenPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_TOKEN_JSON");
+  return (isCloudRunEnvironment() ? await readCloudCredential("google-drive-token") : await readJsonIfExists(getTokenPath(rootDir))) || readJsonFromEnvironment("GOOGLE_DRIVE_TOKEN_JSON");
 }
 
 async function getGoogleDriveStatus(rootDir) {
@@ -178,7 +195,7 @@ async function exchangeGoogleOAuthCode({
     expiresAt: nowMs() + Number(token.expires_in || 0) * 1000,
     updatedAt: new Date().toISOString(),
   };
-  await writeJson(getTokenPath(rootDir), savedToken);
+  await saveCredential(rootDir, "token", savedToken);
 
   return {
     authenticated: true,
@@ -217,7 +234,7 @@ async function getValidAccessToken({ rootDir, fetchImpl = fetch, nowMs = () => D
     expiresAt: nowMs() + Number(refreshed.expires_in || 0) * 1000,
     updatedAt: new Date().toISOString(),
   };
-  await writeJson(getTokenPath(rootDir), savedToken);
+  await saveCredential(rootDir, "token", savedToken);
   return savedToken.access_token;
 }
 

@@ -7,7 +7,7 @@ const ENDPOINTS = {
     ["GET", "/rest/v1/fixture_probe", "none"], ["GET", "/rest/v1/e2e_documents", "none"], ["POST", "/rest/v1/e2e_documents", "none"],
     ["GET", "/rest/v1/e2e_reservations", "none"], ["POST", "/rest/v1/e2e_reservations", "none"],
     ["GET", "/rest/v1/app_users", "app-users"], ["POST", "/rest/v1/app_users", "app-users"],
-    ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
+    ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/rpc/commit_document_file_manifest", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
     ["POST", "/rest/v1/document_files", "on_conflict=source_key"], ["GET", "/rest/v1/document_files", "query"], ["POST", "/rest/v1/storage_migration_records", "migration-conflict"],
     ["GET", "/rest/v1/company_settings", "query"], ["GET", "/rest/v1/vendors", "query"], ["GET", "/rest/v1/inventory_products", "query"],
     ["GET", "/rest/v1/inventory_stock_skus", "query"], ["GET", "/rest/v1/inventory_stock_movements", "query"],
@@ -71,6 +71,7 @@ function validBody(provider, method, pathname, body, endpoint, headers = {}) {
   if (provider === "line" && pathname.endsWith("/reply")) return exactKeys(value, ["replyToken", "messages"], ["replyToken", "messages"]);
   if (provider === "ocr") return exactKeys(value, ["fileName", "contentType", "base64"], ["fileName", "contentType", "base64"]);
   if (provider === "supabase" && pathname.endsWith("allocate_workflow_transaction_number")) return exactKeys(value, ["p_accounting_month", "p_request_key"], ["p_accounting_month", "p_request_key"]);
+  if (provider === "supabase" && pathname.endsWith("commit_document_file_manifest")) return exactKeys(value, ["p_document_source_key", "p_expected_source_hash", "p_files"], ["p_document_source_key", "p_expected_source_hash", "p_files"]) && Array.isArray(value.p_files);
   if (provider === "supabase" && pathname.endsWith("e2e_documents")) return exactKeys(value, ["documentNo", "title"], ["documentNo"]);
   if (provider === "supabase" && pathname.endsWith("e2e_reservations")) return exactKeys(value, ["requestKey", "transactionNo"], ["requestKey", "transactionNo"]);
   if (provider === "supabase" && pathname === "/rest/v1/app_users") return Object.keys(value).every(key => ["line_user_id", "display_name", "picture_url", "last_login_at", "updated_at"].includes(key));
@@ -102,6 +103,7 @@ export async function createMockProviders({ profile = "local", runId = "run", st
   if (!state.sequences) state.sequences = new Map();
   if (!state.uploadSessions) state.uploadSessions = new Map();
   if (!state.appUsers) state.appUsers = new Map();
+  if (!state.documentFiles) state.documentFiles = new Map();
   if (!state.appUsers.size) {
     const personas = [
       ["employee-a", "employee-a", "Employee A", "active", "employee"],
@@ -169,6 +171,16 @@ export async function createMockProviders({ profile = "local", runId = "run", st
           const result = { sequence: reservation.sequence, transaction_no: reservation.transactionNo, existing: Boolean(state.documents.get(`document:workflow_transaction:${reservation.transactionNo}`)) };
           if (scripted?.type === "drop-after-persist") return response.destroy();
           return json(response, 200, [result]);
+        }
+        if (provider === "supabase" && parsed.pathname === "/rest/v1/rpc/commit_document_file_manifest") {
+          const value = parseJson(body);
+          const document = state.documents.get(value.p_document_source_key);
+          if (!document || document.source_hash !== value.p_expected_source_hash) return json(response, 200, false);
+          for (const [key, file] of state.documentFiles) {
+            if (file.document_source_key === value.p_document_source_key) state.documentFiles.delete(key);
+          }
+          for (const file of value.p_files) state.documentFiles.set(file.source_key, file);
+          return json(response, 200, true);
         }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/documents") {
           if (method === "POST") { const value = parseJson(body); state.documents.set(value.source_key, value); if (scripted?.type === "drop-after-persist") return response.destroy(); return json(response, 201, [value]); }
