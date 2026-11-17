@@ -948,6 +948,10 @@ test("describeDriveSyncError turns the uploader's missing-credential errors into
   const notAuthenticated = serverLogic.describeDriveSyncError("Google Drive is not authenticated. Open /google-drive and login first.");
   assert.match(notAuthenticated, /ยังไม่ได้เข้าสู่ระบบ Google Drive/);
 
+  const revokedAuthorization = serverLogic.describeDriveSyncError("invalid_grant: Bad Request");
+  assert.match(revokedAuthorization, /หมดอายุหรือถูกเพิกถอน/);
+  assert.match(revokedAuthorization, /invalid_grant/);
+
   assert.match(serverLogic.describeDriveSyncError("quota exceeded"), /Google Drive.*quota exceeded/);
   assert.equal(serverLogic.describeDriveSyncError("ไม่พบเอกสาร"), "ไม่พบเอกสาร", "an error that is already Thai is passed through unchanged");
 });

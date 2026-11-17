@@ -177,6 +177,34 @@ test("exchangeGoogleOAuthCode stores access and refresh tokens from Google", asy
   }
 });
 
+test("uploadFilesToGoogleDrive preserves Google's invalid_grant code when a saved refresh token is revoked", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-drive-refresh-"));
+
+  try {
+    await saveGoogleDriveConfig({ rootDir, clientId: "client-id", clientSecret: "client-secret" });
+    await writeFile(join(rootDir, "config", "google-drive-token.json"), JSON.stringify({
+      refresh_token: "revoked-refresh-token",
+      access_token: "expired-access-token",
+      expiresAt: 0,
+    }));
+
+    await assert.rejects(
+      () => uploadFilesToGoogleDrive({
+        rootDir,
+        drivePath: "2026/11/test",
+        files: [],
+        fetchImpl: async () => ({
+          ok: false,
+          json: async () => ({ error: "invalid_grant", error_description: "Bad Request" }),
+        }),
+      }),
+      /invalid_grant/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("uploadFolderToGoogleDrive creates Drive folders and uploads local files", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-drive-"));
   const folderPath = "documents/2026/09/เบิกจ่าย/REQ-2026-09-0001_ค่าส่ง";

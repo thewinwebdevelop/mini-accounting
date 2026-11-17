@@ -5171,6 +5171,9 @@ const THAI_CHARACTER_PATTERN = /[\u0E00-\u0E7F]/;
 function describeDriveSyncError(rawMessage) {
   const raw = String(rawMessage || "").trim();
   if (!raw) return "ซิงก์ Google Drive ไม่สำเร็จ";
+  if (/invalid_grant/i.test(raw)) {
+    return `การเข้าสู่ระบบ Google Drive หมดอายุหรือถูกเพิกถอน — ไปที่เมนู "ตั้งค่า Google Drive" แล้วกดเข้าสู่ระบบใหม่ (${raw})`;
+  }
   if (/not configured/i.test(raw)) {
     return `ยังไม่ได้ตั้งค่า Google Drive — ไปที่เมนู "ตั้งค่า Google Drive" ใส่ Client ID/Secret แล้วเข้าสู่ระบบ (${raw})`;
   }

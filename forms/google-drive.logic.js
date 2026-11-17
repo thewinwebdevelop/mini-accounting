@@ -160,7 +160,10 @@ async function fetchJson(fetchImpl, url, options) {
   const response = await fetchImpl(url, options);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error_description || data.error || `Google API request failed: ${response.status}`);
+    const errorCode = typeof data.error === "string" ? data.error : data.error?.message;
+    const errorDescription = data.error_description || data.error?.error_description;
+    const detail = [errorCode, errorDescription].filter(Boolean).join(": ");
+    throw new Error(detail || `Google API request failed: ${response.status}`);
   }
   return data;
 }
