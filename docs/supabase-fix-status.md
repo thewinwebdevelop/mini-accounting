@@ -6,6 +6,7 @@
 - Added persistent commerce records and idempotent operations for Shopee sync/import, shipment preparation, custom-label jobs, and related actions.
 - Added atomic document-number allocation and compare-and-swap document/file persistence to prevent duplicate numbers and stale writes.
 - Fixed saved workflow documents appearing blank: Supabase returns the document fields at the response root while the editor previously read only a nested `payload`. The editor now accepts both response shapes. API/page reads also use `no-store` and refresh clean forms restored from the browser back-forward cache.
+- Fixed document file downloads from Supabase Storage: the reader now resolves both legacy `file:<path>` and versioned `file:<path>:<sha256>` manifest keys. Fresh Cloud Run instances now materialize cloud documents when their local lookup returns `null`, as well as when it throws.
 - Persisted Google Drive credentials in Supabase, repaired LINE intake retry/deduplication, and fixed cross-instance reads for vendors and company settings.
 - Fixed workflow links and LINE return handling so protected child documents stay in their workflow, and corrected a replay-hash mismatch for posted Shopee movements.
 - Added Supabase integration and browser E2E suites with exact cleanup. Removed 58 stale E2E records from the isolated local Supabase project and verified absence afterward. No test records were created in production.
@@ -15,6 +16,7 @@
 - Node unit suite: 1,053 / 1,053 passed with the project Python environment.
 - Chromium browser E2E: 39 / 39 passed.
 - Workflow-document regression suite: 42 / 42 passed; lightweight document E2E: 5 / 5 passed, including reload-and-verify of saved fields.
+- Cloud document/storage regression tests: 19 / 19 passed; production read-only check opened all 7 PDF/evidence files for `PO-2026-11-0001` successfully.
 - Isolated real Supabase integration: 12 / 12 passed; Supabase browser E2E: 2 / 2 passed.
 - `git diff --check` passed before the final documentation update.
 - Production read-only preflight found no duplicate normalized product codes or stock SKU codes.
@@ -25,6 +27,6 @@ See `docs/supabase-e2e.md` for commands and cleanup behavior.
 
 Applied migrations `202611100001` through `202611100004` and `202611160001` to the linked production project, then verified the required tables, columns, RPC, and migration history through the Supabase Management API SQL runner. The normal `supabase db push` route could not authenticate because the database password was unavailable, so the migration statements and history entries were applied separately.
 
-Deployed revision `sweet-house-00044-24h` to Cloud Run and routed 100% traffic to it. Production `/api/healthz` returned `{"ok":true,"runtime":"cloud-run","version":"sweet-house-00044-24h"}`. A read-only production browser check opened `PO-2026-11-0001` and verified its title and first line matched the API's saved record. Workflow-document API responses include `Cache-Control: no-store`. The service retained its Supabase backend settings and Secret Manager references.
+Deployed revision `sweet-house-00046-mnl` to Cloud Run and routed 100% traffic to it. Production `/api/healthz` returned `{"ok":true,"runtime":"cloud-run","version":"sweet-house-00046-mnl"}`. Read-only production checks verified the document loads its saved fields and all 7 PDF/evidence file links return HTTP 200 with non-empty bytes. Workflow-document API responses include `Cache-Control: no-store`. The service retained its Supabase backend settings and Secret Manager references.
 
 The linked Supabase project reported no physical backups, and a remote logical dump was unavailable through the database login. The migrations were tested against isolated local Supabase first; they add the missing cloud schema and backfill the new commerce idempotency hash column. The local application files were backed up to `/Users/tar/sweet-house-backups/sweet-house-backup-20261117-112945-af548d`.
