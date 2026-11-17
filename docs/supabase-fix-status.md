@@ -21,6 +21,8 @@ See `docs/supabase-e2e.md` for commands and cleanup behavior.
 
 ## Production rollout status
 
-Production currently lacks migrations `202611100001` through `202611100004` and `202611160001`, all required by the new runtime. The migrations were verified against the isolated local Supabase instance, but have not been applied to production and the application has not been deployed.
+Applied migrations `202611100001` through `202611100004` and `202611160001` to the linked production project, then verified the required tables, columns, RPC, and migration history through the Supabase Management API SQL runner. The normal `supabase db push` route could not authenticate because the database password was unavailable, so the migration statements and history entries were applied separately.
 
-The linked Supabase project has no physical backups available. The local application files were backed up to `/Users/tar/sweet-house-backups/sweet-house-backup-20261117-112945-af548d`. A remote schema dump could not be produced because the Supabase CLI database connection rejected the available login role; the database password is not configured in the deployment secrets. Do not deploy this runtime until the production migration path is available and the migrations are applied successfully.
+Deployed revision `sweet-house-00042-2qk` to Cloud Run and routed 100% traffic to it. Production `/api/healthz` returned `{"ok":true,"runtime":"cloud-run","version":"sweet-house-00042-2qk"}` and `/` returned HTTP 200. The service retained its Supabase backend settings and Secret Manager references.
+
+The linked Supabase project reported no physical backups, and a remote logical dump was unavailable through the database login. The migrations were tested against isolated local Supabase first; they add the missing cloud schema and backfill the new commerce idempotency hash column. The local application files were backed up to `/Users/tar/sweet-house-backups/sweet-house-backup-20261117-112945-af548d`.
