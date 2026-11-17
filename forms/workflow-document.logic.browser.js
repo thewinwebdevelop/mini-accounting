@@ -61,6 +61,7 @@ window.addEventListener("DOMContentLoaded", () => {
     onError: (error) => setStatus(error.message || "โหลดรายชื่อผู้ขายไม่สำเร็จ", "error"),
   });
   let mutationInFlight = false;
+  let formDirty = false;
   const implementedActions = new Set(["submit", "approve", "complete"]);
 
   function todayInputValue() {
@@ -98,7 +99,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   async function api(route, options = {}) {
-    const response = await fetch(route, options);
+    const response = await fetch(route, { ...options, cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "บันทึกข้อมูลไม่สำเร็จ");
     return result;
@@ -402,6 +403,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   function fillForm(payload = {}) {
+    formDirty = false;
     form.elements.accountingMonth.value = payload.accountingMonth || currentMonthValue();
     form.elements.documentDate.value = payload.documentDate || todayInputValue();
     form.elements.title.value = payload.title || "";
@@ -500,6 +502,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     adoptAuthoritativeResult(result);
+    formDirty = false;
     let vendorPresetError = "";
     try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
     clearSubmittedUploads();
@@ -564,9 +567,14 @@ window.addEventListener("DOMContentLoaded", () => {
   submitButton.addEventListener("click", () => openReview("submit"));
   approveButton.addEventListener("click", () => openReview("approve"));
   completeButton.addEventListener("click", () => runMutation(() => transitionWorkflowDocument("complete")));
-  form.addEventListener("input", updatePreview);
-  form.addEventListener("change", updatePreview);
+  form.addEventListener("input", () => { formDirty = true; updatePreview(); });
+  form.addEventListener("change", () => { formDirty = true; updatePreview(); });
   form.addEventListener("submit", (event) => event.preventDefault());
+
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted || !state.documentNo || formDirty) return;
+    return loadExistingDocument().catch((error) => setStatus(error.message, "error"));
+  });
 
   applyDocumentKindLabel();
   applyDocumentListLink();

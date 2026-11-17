@@ -505,7 +505,10 @@ function pdfResponseHeaders({ fileName, download = false } = {}) {
 }
 
 function sendJson(response, statusCode, data) {
-  response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
   response.end(JSON.stringify(data, (key, value) => (
     key === "absolutePath" || key === "absoluteFolderPath" ? undefined : value
   )));

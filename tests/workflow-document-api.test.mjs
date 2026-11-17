@@ -136,7 +136,9 @@ test("workflow document APIs save, list, complete, and serve files over HTTP", a
     });
     assert.equal(secondSubmitted.documentNo, "PO-2026-09-0002", "sequence must auto-increment within the same kind/month");
 
-    const fetched = await requestJsonOk(baseUrl, `/api/workflow-documents/purchase_order/${submitted.documentNo}`);
+    const detailResponse = await fetch(`${baseUrl}/api/workflow-documents/purchase_order/${submitted.documentNo}`);
+    assert.match(detailResponse.headers.get("cache-control") || "", /no-store/, "document API responses must never be cached by the LINE WebView");
+    const fetched = await detailResponse.json();
     assert.equal(fetched.payload.title, "สั่งซื้อสินค้า Lot กันยายน");
     assert.equal(fetched.rawFiles[0].name, "evidence_001.txt");
     const fetchedRawFile = await fetch(`${baseUrl}${fetched.rawFiles[0].url}`);

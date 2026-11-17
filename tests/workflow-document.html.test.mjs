@@ -719,6 +719,32 @@ test("workflow shell renders an old inactive vendor snapshot when no active pres
   assert.equal(form.dataset.vendorId, "VENDOR-INACTIVE-WORKFLOW");
   assert.equal(vendorPresetSelect.value, "", "inactive vendor is not offered as a new selection");
   assert.ok(calls.some((call) => call.route.includes("/api/workflow-documents/purchase_order/PO-2026-09-0099")), "old document detail is loaded through the controller");
+  const detailCall = calls.find((call) => call.route === "/api/workflow-documents/purchase_order/PO-2026-09-0099");
+  assert.equal(detailCall.options.cache, "no-store", "reopening an existing workflow document must bypass the WebView cache");
+});
+
+test("workflow document refreshes its saved payload when restored from browser back-forward cache", async () => {
+  let detailLoads = 0;
+  const { context, elements } = await setupWorkflowDocumentLifecycleSandbox({
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-09-0100",
+    fetchHandler(route) {
+      if (route === "/api/workflow-documents/purchase_order/PO-2026-09-0100") {
+        detailLoads += 1;
+        return jsonResponse({
+          documentNo: "PO-2026-09-0100",
+          status: "draft",
+          payload: { documentDate: "2026-09-20", title: detailLoads === 1 ? "ค่าเดิม" : "ค่าที่บันทึกล่าสุด", lines: [{ description: "สินค้า", quantity: "1", unitCost: "10" }] },
+        });
+      }
+      throw new Error(`Unexpected request ${route}`);
+    },
+  });
+
+  assert.equal(elements.workflowDocumentForm.elements.title.value, "ค่าเดิม");
+  await context.window._handlers.pageshow({ persisted: true });
+  assert.equal(detailLoads, 2, "restoring the editor must fetch the saved document again");
+  assert.equal(elements.workflowDocumentForm.elements.title.value, "ค่าที่บันทึกล่าสุด");
 });
 
 test("workflow document mutations validate authoritative status, prevent overlap, and preserve upload retry semantics", async () => {

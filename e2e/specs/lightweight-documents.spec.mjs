@@ -14,6 +14,8 @@ for (const documentKind of documentKinds) {
     const saved = await document.detail();
     expect(saved).toMatchObject({ documentKind, documentNo: expect.any(String), status: "draft", ownerUserId: "employee-a" });
     await document.reload();
+    await expect(authenticatedPage.locator("#title")).toHaveValue(`E2E ${documentKind}`);
+    await expect(authenticatedPage.locator("#lineItems .line-item [name=description]").first()).toHaveValue("Fixture lightweight line");
     const accounting = await WorkflowDocumentPage.accountingPage(browser, localApp);
     try {
       const review = new WorkflowDocumentPage(accounting, documentKind, saved.documentNo);
