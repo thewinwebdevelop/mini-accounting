@@ -55,3 +55,34 @@ test("cloud document reader keeps the original error when cloud runtime is disab
     { message: "Expense request not found" },
   );
 });
+
+test("cloud document reader materializes a cloud record when a fresh runtime returns null locally", async () => {
+  const calls = [];
+  let availableLocally = false;
+  const reader = createCloudDocumentReader({
+    cloudRun: true,
+    documentDataAdapter: {
+      get: async ({ documentKind, documentNo }) => {
+        calls.push(["get", documentKind, documentNo]);
+        return { documentKind, documentNo, folderPath: "documents/2026/11/purchase_order/PO-2026-11-0001" };
+      },
+    },
+    documentFileSynchronizer: {
+      materialize: async ({ record }) => { calls.push(["materialize", record.documentNo]); availableLocally = true; },
+    },
+    rebuildIndex: async () => calls.push(["rebuild-index"]),
+  });
+
+  const result = await reader.ensure({
+    documentKind: "purchase_order",
+    documentNo: "PO-2026-11-0001",
+    localLoad: async () => availableLocally ? { documentNo: "PO-2026-11-0001", status: "draft" } : null,
+  });
+
+  assert.deepEqual(result, { documentNo: "PO-2026-11-0001", status: "draft" });
+  assert.deepEqual(calls, [
+    ["get", "purchase_order", "PO-2026-11-0001"],
+    ["materialize", "PO-2026-11-0001"],
+    ["rebuild-index"],
+  ]);
+});

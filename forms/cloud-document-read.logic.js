@@ -5,22 +5,34 @@ function createCloudDocumentReader({
   rebuildIndex = async () => {},
 } = {}) {
   async function ensure({ documentKind, documentNo, localLoad }) {
+    let localRecord = null;
+    let localError = null;
     try {
-      return await localLoad();
+      localRecord = await localLoad();
     } catch (error) {
-      if (!cloudRun || !documentFileSynchronizer) throw error;
-
-      const cloudRecord = await documentDataAdapter.get({
-        localResult: null,
-        documentKind,
-        documentNo,
-      });
-      if (!cloudRecord) throw error;
-
-      await documentFileSynchronizer.materialize({ record: cloudRecord });
-      await rebuildIndex();
-      return localLoad();
+      localError = error;
     }
+    if (localRecord) return localRecord;
+    if (!cloudRun || !documentFileSynchronizer) {
+      if (localError) throw localError;
+      return localRecord;
+    }
+
+    const cloudRecord = await documentDataAdapter.get({
+      localResult: null,
+      documentKind,
+      documentNo,
+    });
+    if (!cloudRecord) {
+      if (localError) throw localError;
+      return null;
+    }
+
+    await documentFileSynchronizer.materialize({ record: cloudRecord });
+    await rebuildIndex();
+    const materializedRecord = await localLoad();
+    if (!materializedRecord && localError) throw localError;
+    return materializedRecord;
   }
 
   return Object.freeze({ ensure });
