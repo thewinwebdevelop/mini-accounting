@@ -18,7 +18,26 @@ for (const receiptType of ["general_expense", "stock_purchase"]) {
     await receipt.saveDraft();
     const draft = await receipt.detail();
     expect(draft).toMatchObject({ receiptNo: expect.any(String), status: "draft", ownerUserId: "employee-a", receiptType });
-    if (receiptType === "stock_purchase") expect(draft.payload?.lines?.[0]?.stockSkuId || draft.lines?.[0]?.stockSkuId).toBeTruthy();
+    const savedLine = (draft.payload?.lines || draft.lines || [])[0] || {};
+    if (receiptType === "stock_purchase") expect(savedLine.stockSkuId).toBeTruthy();
+    const cloudRecord = {
+      ...(draft.payload || {}),
+      documentKind: "substitute_receipt",
+      documentNo: draft.receiptNo,
+      status: draft.status,
+      folderPath: draft.folderPath || draft.payload?.folderPath,
+      ownerUserId: draft.ownerUserId,
+      createdAt: draft.createdAt,
+      updatedAt: draft.updatedAt,
+    };
+    const receiptApiPath = `**/api/substitute-receipts/${encodeURIComponent(draft.receiptNo)}`;
+    await authenticatedPage.route(receiptApiPath, (route) => route.fulfill({ json: cloudRecord }));
+    await receipt.reload();
+    await expect(authenticatedPage.locator('[name="receiptTitle"]')).toHaveValue(`E2E ${receiptType}`);
+    await expect(authenticatedPage.locator('[name="payeeName"]')).toHaveValue("Fixture Supplies");
+    await expect(authenticatedPage.locator('[name="accountingMonth"]')).toHaveValue("2026-10");
+    await expect(authenticatedPage.locator('#stockLineItems .stock-line [name="description"]').first()).toHaveValue(savedLine.description);
+    await authenticatedPage.unroute(receiptApiPath);
     const submitted = await receipt.submit();
     expect(submitted.status).toBe("pending_approval");
     const accounting = await SubstituteReceiptPage.accountingPage(browser, localApp);

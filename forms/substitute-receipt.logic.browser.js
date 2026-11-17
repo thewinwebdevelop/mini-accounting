@@ -710,7 +710,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   async function loadReceipt(receiptNo) {
     const receipt = await api(`/api/substitute-receipts/${encodeURIComponent(receiptNo)}`);
-    const payload = receipt.payload || {};
+    // Supabase document reads promote payload fields onto the record root,
+    // while local reads retain the nested payload shape. Both represent the
+    // same saved receipt and must populate the editable form on reload.
+    const payload = receipt.payload || receipt;
     state.draftId = "";
     state.legacyReadOnly = false;
     state.receiptNo = receipt.receiptNo || payload.receiptNo || receiptNo;
