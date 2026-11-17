@@ -48,9 +48,18 @@ function createFileAdapter({ rootDir, env = process.env, client, storageClient, 
     if (!file || !file.absolutePath || typeof localRead !== "function") throw storageError("STORAGE_FILE_INVALID", "Local file reference is invalid");
     if (mode === "local") return localRead();
     const identity = objectIdentity(rootDir, file.absolutePath);
-    const route = `/rest/v1/storage_migration_records?migration_name=eq.${encodeURIComponent(STORAGE_MIGRATION_NAME)}&source_key=eq.${encodeURIComponent(identity.sourceKey)}&limit=1`;
     try {
-      const rows = await supabaseRequest(adminClient, route);
+      // The original local-file migration stores `file:<relative-path>`,
+      // while runtime document uploads store `file:<relative-path>:<sha256>`
+      // so multiple content versions can coexist. Try the legacy exact key,
+      // then the versioned key prefix used by createDocumentFileSynchronizer.
+      const exactRoute = `/rest/v1/storage_migration_records?migration_name=eq.${encodeURIComponent(STORAGE_MIGRATION_NAME)}&source_key=eq.${encodeURIComponent(identity.sourceKey)}&limit=1`;
+      let rows = await supabaseRequest(adminClient, exactRoute);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        const versionedSourceKey = `${identity.sourceKey}:*`;
+        const versionedRoute = `/rest/v1/storage_migration_records?migration_name=eq.${encodeURIComponent(STORAGE_MIGRATION_NAME)}&source_key=like.${encodeURIComponent(versionedSourceKey)}&order=migrated_at.desc&limit=1`;
+        rows = await supabaseRequest(adminClient, versionedRoute);
+      }
       const record = Array.isArray(rows) ? rows[0] : null;
       if (!record) {
         if (fallbackOnCloudError) return localRead();

@@ -32,15 +32,22 @@ test("Storage-read verifies the manifest hash before returning bytes", async () 
     const absolutePath = path.join(rootDir, "documents", "a.pdf");
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, "local");
+    const sourceKeyFilters = [];
     const client = createSupabaseAdminClient({
       url: "https://project.supabase.co",
       serviceRoleKey: "secret",
-      fetchImpl: async () => new Response(JSON.stringify([{
-        source_sha256: "56681010b753e1abe52c449d0aab291b28f1808a3a91b6baeaa726883baad4b0",
-        byte_size: 5,
-        content_type: "application/pdf",
-        object_path: "documents/a.pdf",
-      }]), { status: 200 }),
+      fetchImpl: async input => {
+        const sourceKeyFilter = new URL(input).searchParams.get("source_key");
+        sourceKeyFilters.push(sourceKeyFilter);
+        const rows = sourceKeyFilter.startsWith("like.") ? [{
+          source_key: "file:documents/a.pdf:56681010b753e1abe52c449d0aab291b28f1808a3a91b6baeaa726883baad4b0",
+          source_sha256: "56681010b753e1abe52c449d0aab291b28f1808a3a91b6baeaa726883baad4b0",
+          byte_size: 5,
+          content_type: "application/pdf",
+          object_path: "documents/a.pdf.56681010b753e1abe52c449d0aab291b28f1808a3a91b6baeaa726883baad4b0",
+        }] : [];
+        return new Response(JSON.stringify(rows), { status: 200 });
+      },
     });
     const adapter = createFileAdapter({
       rootDir,
@@ -52,6 +59,7 @@ test("Storage-read verifies the manifest hash before returning bytes", async () 
     const result = await adapter.read({ file: { absolutePath, fileName: "a.pdf" }, localRead: () => Buffer.from("local") });
     assert.equal(result.body.toString(), "cloud");
     assert.equal(result.contentType, "application/pdf");
+    assert.deepEqual(sourceKeyFilters, ["eq.file:documents/a.pdf", "like.file:documents/a.pdf:*"]);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
