@@ -81,13 +81,19 @@ export class WorkflowTransactionPage {
 
   async open(transactionNo = this.transactionNo) {
     this.transactionNo = transactionNo || new URL(this.page.url()).searchParams.get("transactionNo");
+    const transactionPath = `/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}`;
+    const detailResponse = this.page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === transactionPath);
+    const refreshResponse = this.page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === `${transactionPath}/refresh`).catch(() => null);
     await this.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(this.transactionNo)}`);
     await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
-    // The detail page performs a refresh after its first GET so that a page
-    // opened immediately after completing a child shows the current step.
-    // Wait for that browser-side refresh to settle before a test starts a
-    // second mutation (especially cancellation on a slow mobile runner).
-    await this.page.waitForLoadState("networkidle");
+    const initial = await (await detailResponse).json();
+    // Open transactions refresh progress after their initial GET. Cancelled
+    // transactions deliberately skip that mutation, so wait on the relevant
+    // request instead of network-idle, which can stay busy indefinitely.
+    if (!["cancellation_pending", "cancelled"].includes(initial.status)) {
+      const refreshed = await refreshResponse;
+      if (!refreshed) throw new Error("workflow detail refresh did not complete");
+    }
     return this;
   }
 

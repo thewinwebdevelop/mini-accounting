@@ -1416,7 +1416,7 @@ async function seedSheetsSyncTransaction(rootDir, { completedAt = "2026-09-10T00
 test("POST workflow Sheets sync uses real loopback fetch, ignores hostile body, and resyncs one parent row", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "sweet-house-workflow-sheets-http-"));
   const logPath = join(rootDir, "fetch.log");
-  const { transactionNo } = await seedSheetsSyncTransaction(rootDir);
+  const { transactionNo, transactionFolder } = await seedSheetsSyncTransaction(rootDir);
   const child = spawnLocalServer(rootDir, { fetchMode: "success", fetchLog: logPath });
   try {
     const port = await waitForServerPort(child); const baseUrl = `http://127.0.0.1:${port}`;
@@ -1427,6 +1427,11 @@ test("POST workflow Sheets sync uses real loopback fetch, ignores hostile body, 
     const second = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/sync-sheets`, { method: "POST", body: JSON.stringify({}) });
     assert.equal(second.sourceKey, first.sourceKey);
     assert.equal(second.rowNumber, 2);
+    const refreshed = await requestJsonOk(baseUrl, `/api/workflow-transactions/${transactionNo}/refresh`, { method: "POST", body: JSON.stringify({ regeneratePacket: false }) });
+    assert.equal(refreshed.sheetSync?.syncStatus, "synced", "the automatic page refresh must keep the persisted Sheets result in its response");
+    assert.equal(refreshed.sheetSync?.spreadsheetUrl, first.spreadsheetUrl);
+    const transactionPayload = JSON.parse(await readFile(join(rootDir, transactionFolder, "data", "workflow-transaction.json"), "utf8"));
+    assert.equal(transactionPayload.sheetSync?.syncStatus, "synced", "the Sheets result must live in the durable transaction payload");
     const calls = (await readFile(logPath, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(calls.some((call) => call.method === "POST" && call.url.includes(":append")));
     assert.equal(calls.filter((call) => call.method === "POST" && decodeURIComponent(call.url).includes(":append")).length, 1, "only the first sync appends the parent row");

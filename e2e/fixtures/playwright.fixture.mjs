@@ -10,10 +10,10 @@ export const test = base.extend({
   }, { scope: "worker" }],
   seed: async ({ localApp }, use) => use({ ...localApp.manifest, rootDir: localApp.rootDir }),
   mock: async ({ localApp }, use) => use(localApp.mock),
-  cloudRuntime: [async ({}, use, testInfo) => {
+  cloudRuntime: async ({}, use, testInfo) => {
     const environment = await createCloudRuntimeMock({ workerIndex: testInfo.workerIndex });
     try { await use(environment); } finally { await environment.stop(); }
-  }, { scope: "worker" }],
+  },
   authenticatedPage: async ({ browser, localApp }, use, testInfo) => {
     const persona = localApp.users.employeeA;
     const context = await browser.newContext({ baseURL: localApp.baseUrl });

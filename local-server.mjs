@@ -431,18 +431,26 @@ function takeCloudDocumentSourceHash(documentKind, documentNo) {
 }
 
 async function ensureLocalCloudWorkflowTransaction(transactionNo) {
-  const localRecord = await getWorkflowTransaction(rootDir, transactionNo);
+  let localRecord = await getWorkflowTransaction(rootDir, transactionNo);
   if (!cloudRun || !documentFileSynchronizer) return localRecord;
 
-  if (!localRecord) {
-    const cloudRecord = await documentDataAdapter.get({
-      localResult: null,
-      documentKind: "workflow_transaction",
-      documentNo: transactionNo,
-    });
-    if (!cloudRecord) return null;
+  const cloudRecord = await documentDataAdapter.get({
+    localResult: localRecord,
+    documentKind: "workflow_transaction",
+    documentNo: transactionNo,
+  });
+  if (!cloudRecord) return localRecord;
+  const cloudSourceHash = await documentDataAdapter.getSourceHash({ documentKind: "workflow_transaction", documentNo: transactionNo });
+  const localSourceHash = localRecord
+    ? documentDataAdapter.buildDocumentCloudRecord({ documentKind: "workflow_transaction", documentNo: transactionNo, payload: localRecord }).sourceHash
+    : "";
+  if (!localRecord || (cloudSourceHash && cloudSourceHash !== localSourceHash)) {
     await documentFileSynchronizer.materialize({ record: cloudRecord });
+    await rebuildDocumentIndex(rootDir);
+    localRecord = await getWorkflowTransaction(rootDir, transactionNo);
   }
+  if (cloudSourceHash) cloudDocumentMutationContext.getStore()?.set(`workflow_transaction:${transactionNo}`, cloudSourceHash);
+  if (!localRecord) return null;
 
   // Cloud Run starts with an empty ephemeral filesystem. A transaction row
   // alone is not enough for its detail page: the child documents that make
@@ -462,8 +470,70 @@ async function ensureLocalCloudWorkflowTransaction(transactionNo) {
     await documentFileSynchronizer.materialize({ record: document });
   }
 
-  if (!localRecord || childDocuments.length > 0) await rebuildDocumentIndex(rootDir);
+  if (childDocuments.length > 0) await rebuildDocumentIndex(rootDir);
   return getWorkflowTransaction(rootDir, transactionNo);
+}
+
+const cloudWorkflowTransactionPersistenceQueues = new Map();
+
+function persistCloudWorkflowTransactionMutation(transactionNo, options = {}) {
+  if (!cloudRun) return Promise.resolve(null);
+  const key = String(transactionNo || "");
+  const previous = cloudWorkflowTransactionPersistenceQueues.get(key) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(() => persistCloudWorkflowTransactionMutationNow(key, options));
+  cloudWorkflowTransactionPersistenceQueues.set(key, operation);
+  return operation.finally(() => {
+    if (cloudWorkflowTransactionPersistenceQueues.get(key) === operation) cloudWorkflowTransactionPersistenceQueues.delete(key);
+  });
+}
+
+function withWorkflowCancellationSnapshot(transaction, snapshot) {
+  if (!snapshot || !["cancellation_pending", "cancelled"].includes(snapshot.status) || !snapshot.cancellation) return transaction;
+  return {
+    ...transaction,
+    status: snapshot.status,
+    baseStatus: snapshot.baseStatus || "",
+    completedAt: snapshot.completedAt || transaction.completedAt || "",
+    cancellation: snapshot.cancellation,
+  };
+}
+
+async function persistCloudWorkflowTransactionMutationNow(transactionNo, { retryMutation, snapshot = null } = {}) {
+  if (!cloudRun) return null;
+  let transaction = await getWorkflowTransaction(rootDir, transactionNo);
+  let expectedSourceHash = takeCloudDocumentSourceHash("workflow_transaction", transactionNo);
+  if (!transaction) throw new Error("ไม่พบธุรกรรม");
+  transaction = withWorkflowCancellationSnapshot(transaction, snapshot);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await documentDataAdapter.save({
+        documentKind: "workflow_transaction",
+        documentNo: transactionNo,
+        payload: transaction,
+        localSave: async () => transaction,
+        expectedSourceHash,
+      });
+      return transaction;
+    } catch (error) {
+      if (error?.code !== "DOCUMENT_WRITE_CONFLICT" || attempt >= 4) throw error;
+      const latestCloudRecord = await documentDataAdapter.get({
+        localResult: null,
+        documentKind: "workflow_transaction",
+        documentNo: transactionNo,
+      });
+      if (!latestCloudRecord) throw error;
+      await documentFileSynchronizer.materialize({ record: latestCloudRecord });
+      await rebuildDocumentIndex(rootDir);
+      if (typeof retryMutation === "function") {
+        const retried = await retryMutation();
+        if (retried?.cancellation) snapshot = retried;
+      }
+      expectedSourceHash = await documentDataAdapter.getSourceHash({ documentKind: "workflow_transaction", documentNo: transactionNo });
+      transaction = await getWorkflowTransaction(rootDir, transactionNo);
+      if (!transaction) throw error;
+      transaction = withWorkflowCancellationSnapshot(transaction, snapshot);
+    }
+  }
 }
 
 async function persistCloudDocumentMutation({ documentKind, documentNo, result, localLoad }) {
@@ -2279,7 +2349,11 @@ async function handleWorkflowTransactionRefresh(transactionNo, request, response
     await ensureLocalCloudWorkflowTransaction(transactionNo);
     const body = await readJsonBody(request);
     const regeneratePacket = body.regeneratePacket !== false;
-    const result = await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
+    await refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket });
+    await persistCloudWorkflowTransactionMutation(transactionNo, {
+      retryMutation: () => refreshWorkflowTransaction({ rootDir, transactionNo, regeneratePacket }),
+    });
+    const result = await getWorkflowTransactionDetail(rootDir, transactionNo);
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถรีเฟรชธุรกรรมได้", 404);
@@ -2299,6 +2373,13 @@ async function handleWorkflowTransactionComplete(transactionNo, request, respons
       transactionNo,
       completedBy: actorForRequest(request, body.completedBy),
     });
+    await persistCloudWorkflowTransactionMutation(transactionNo, {
+      retryMutation: () => completeWorkflowTransaction({
+        rootDir,
+        transactionNo,
+        completedBy: actorForRequest(request, body.completedBy),
+      }),
+    });
     sendJson(response, 200, omitAbsolutePathsFromWorkflowTransactionResponse(result, request));
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถปิดงานธุรกรรมได้");
@@ -2315,6 +2396,16 @@ async function handleWorkflowTransactionCancel(transactionNo, request, response)
       transactionNo,
       confirmed: body.confirmed,
       cancelledBy: actorForRequest(request, body.cancelledBy),
+    });
+    await persistCloudWorkflowTransactionMutation(transactionNo, {
+      snapshot: result,
+      retryMutation: () => cancelWorkflowTransaction({
+        rootDir,
+        inventoryCloudRepository,
+        transactionNo,
+        confirmed: body.confirmed,
+        cancelledBy: actorForRequest(request, body.cancelledBy),
+      }),
     });
     const statusCode = result.httpStatus || 200;
     sendJson(response, statusCode, { ...omitAbsolutePathsFromWorkflowTransactionResponse(result, request), ...(result.code ? { code: result.code } : {}) });
@@ -2352,7 +2443,19 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
 async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
   try {
     await ensureLocalCloudWorkflowTransaction(transactionNo);
-    const result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
+    let result;
+    try {
+      result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
+    } catch (error) {
+      await persistCloudWorkflowTransactionMutation(transactionNo);
+      throw error;
+    }
+    const persistedTransaction = await persistCloudWorkflowTransactionMutation(transactionNo, {
+      retryMutation: async () => {
+        result = await syncWorkflowTransactionToSheets({ rootDir, transactionNo });
+      },
+    });
+    if (persistedTransaction?.sheetSync) result = persistedTransaction.sheetSync;
     if (result.syncStatus === "blocked_child_rows") {
       sendJson(response, 409, { error: result.error, code: result.code, conflicts: result.conflicts });
       return;

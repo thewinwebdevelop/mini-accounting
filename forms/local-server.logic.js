@@ -4519,8 +4519,13 @@ async function getWorkflowTransactionDetail(rootDir, transactionNo) {
   const pdfFiles = await listWorkflowTransactionPdfFiles(rootDir, transaction.folderPath, transaction.transactionNo);
 
   const sheetSync = await readWorkflowSheetSyncMetadata(rootDir, transaction);
+  const responseTransaction = { ...transactionView };
+  // sheetSync is exposed only through the validated sidecar/payload reader
+  // above. Do not leak an unvalidated copy that happened to be embedded in
+  // the raw transaction when the sidecar is malformed.
+  delete responseTransaction.sheetSync;
   return {
-    ...transactionView,
+    ...responseTransaction,
     ...(sheetSync ? { sheetSync } : {}),
     childDocuments: childDocuments.map(formatWorkflowChildDocumentForResponse),
     pdfFiles,
@@ -4660,8 +4665,20 @@ function normalizeWorkflowSheetSyncMetadata(value) {
 }
 
 async function readWorkflowSheetSyncMetadata(rootDir, transaction) {
-  try { return normalizeWorkflowSheetSyncMetadata(JSON.parse(await readFile(await workflowSheetSyncPath(rootDir, transaction), "utf8"))); }
-  // A detail read must never echo malformed attacker-controlled JSON.  The
+  let sidecar;
+  try { sidecar = await readFile(await workflowSheetSyncPath(rootDir, transaction), "utf8"); }
+  catch (error) {
+    // Keep the result on the transaction payload too. The sidecar is retained
+    // for compatibility with existing local records, while the payload is
+    // what the document repository persists to Supabase. A malformed sidecar
+    // remains a hard ignore, matching the existing safe-read contract.
+    if (error?.code === "ENOENT") {
+      try { return normalizeWorkflowSheetSyncMetadata(transaction?.sheetSync); } catch { return null; }
+    }
+    return null;
+  }
+  try { return normalizeWorkflowSheetSyncMetadata(JSON.parse(sidecar)); }
+  // A detail read must never echo malformed attacker-controlled JSON. The
   // sync path separately proves containment before it makes external calls.
   catch { return null; }
 }
@@ -4671,7 +4688,19 @@ async function writeWorkflowSheetSyncMetadata(rootDir, transaction, metadata) {
   const dataDir = path.dirname(target);
   const safeMetadata = normalizeWorkflowSheetSyncMetadata(metadata);
   const temporary = path.join(dataDir, `.sheet-sync-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-  try { await writeFile(temporary, `${JSON.stringify(safeMetadata, null, 2)}\n`, "utf8"); await rename(temporary, target); }
+  try {
+    await writeFile(temporary, `${JSON.stringify(safeMetadata, null, 2)}\n`, "utf8");
+    await rename(temporary, target);
+    const current = await getWorkflowTransaction(rootDir, transaction.transactionNo);
+    if (current) {
+      const transactionFile = assertPathWithinDirectory(rootDir, path.join(rootDir, current.folderPath, "data", "workflow-transaction.json"), "ที่อยู่โฟลเดอร์ธุรกรรมไม่ถูกต้อง");
+      const transactionTemporary = `${transactionFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      try {
+        await writeFile(transactionTemporary, `${JSON.stringify({ ...current, sheetSync: safeMetadata }, null, 2)}\n`, "utf8");
+        await rename(transactionTemporary, transactionFile);
+      } finally { await rm(transactionTemporary, { force: true }).catch(() => {}); }
+    }
+  }
   finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
 
@@ -4817,6 +4846,12 @@ async function refreshWorkflowTransaction({
   const transaction = await getWorkflowTransaction(rootDir, transactionNo);
   if (!transaction) {
     throw new Error("ไม่พบธุรกรรม");
+  }
+  // Cancellation state is stored in the transaction snapshot when running on
+  // Cloud Run. Its local sidecar may not exist on a fresh instance, so a
+  // normal progress refresh must not derive and overwrite that durable state.
+  if (["cancellation_pending", "cancelled"].includes(transaction.status) && transaction.cancellation) {
+    return getWorkflowTransactionDetail(rootDir, transactionNo);
   }
   await assertWorkflowCancellationBarrier(rootDir, transaction);
 

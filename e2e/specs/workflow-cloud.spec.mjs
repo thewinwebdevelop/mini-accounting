@@ -1,8 +1,163 @@
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
 import { WorkflowTransactionsPage, WorkflowTransactionPage } from "../pages/workflow.page.mjs";
+import { createTestSession } from "../fixtures/auth.fixture.mjs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { canonicalHash, stableSourceKey } = require("../../forms/data-backend.logic.js");
+const workflowLogic = require("../../forms/workflow.logic.js");
+
+async function openCloudWorkflow(page, transactionNo) {
+  const openingRefresh = page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${encodeURIComponent(transactionNo)}/refresh`) && response.request().method() === "POST");
+  await page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(transactionNo)}`);
+  await expect(page.locator("#transactionNumber")).toHaveText(transactionNo);
+  await openingRefresh;
+}
 
 test.describe("workflow cloud runtime mocked", () => {
+  test("cancelled workflow status survives a fresh app instance and appears in the transaction list", async ({ browser, cloudRuntime }) => {
+    const secret = "e2e-test-session-secret-012345678901234567890123";
+    const ownerToken = createTestSession({ ...cloudRuntime.users.owner, secret });
+    const openAsOwner = async (runtime) => {
+      const context = await browser.newContext({ baseURL: runtime.baseUrl });
+      await context.addCookies([{ name: "sweet_house_session", value: ownerToken, url: runtime.baseUrl }]);
+      return { context, page: await context.newPage() };
+    };
+    const first = await openAsOwner(cloudRuntime);
+    const templateId = "cloud-cancel-persistence-test";
+    const template = {
+      templateId,
+      name: "Cloud cancel persistence test",
+      description: "E2E fixture",
+      active: true,
+      syncGoogleDrive: false,
+      documentSteps: [{ stepId: "step-001", documentKind: "payment_voucher" }],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    };
+    const transaction = workflowLogic.buildWorkflowTransactionPayload({
+      accountingMonth: "2026-11",
+      title: "Cloud cancellation persistence",
+      ownerUserId: "owner-1",
+      sequence: "9998",
+      template,
+    }, { now: () => "2026-11-18T00:00:00.000Z" });
+    const sourceKey = stableSourceKey("document", `workflow_transaction:${transaction.transactionNo}`);
+    cloudRuntime.cloudState.documents.set(sourceKey, {
+      source_key: sourceKey,
+      document_kind: "workflow_transaction",
+      document_no: transaction.transactionNo,
+      owner_user_id: "owner-1",
+      status: transaction.status,
+      accounting_month: transaction.accountingMonth,
+      folder_path: transaction.folderPath,
+      payload: transaction,
+      source_hash: canonicalHash(transaction),
+      created_at: transaction.createdAt,
+      updated_at: transaction.updatedAt,
+    });
+
+    const detail = new WorkflowTransactionPage(first.page, transaction.transactionNo);
+    const openingRefresh = first.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${transaction.transactionNo}/refresh`) && response.request().method() === "POST");
+    await first.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`);
+    await expect(first.page.locator("#transactionNumber")).toHaveText(transaction.transactionNo);
+    await openingRefresh;
+    const cancelResponse = await detail.cancelWithConfirmationResponse();
+    expect([200, 202]).toContain(cancelResponse.statusCode);
+    expect(["cancelled", "cancellation_pending"]).toContain(cancelResponse.body.status);
+    expect(cloudRuntime.cloudState.documents.get(sourceKey)?.payload?.status).toBe(cancelResponse.body.status);
+    await first.context.close();
+
+    const restarted = await cloudRuntime.restartApp();
+    const reopened = await openAsOwner(restarted);
+    const list = new WorkflowTransactionsPage(reopened.page);
+    await list.open();
+    const row = reopened.page.locator("#transactionRows tr").filter({ hasText: transaction.transactionNo });
+    const displayedStatus = cancelResponse.body.status === "cancelled" ? "ยกเลิกแล้ว" : "รอดำเนินการยกเลิก";
+    await expect(row).toContainText(displayedStatus);
+    await expect(row).not.toContainText("กำลังดำเนินการ");
+    await row.getByRole("link", { name: "เปิดธุรกรรม" }).click();
+    await expect(reopened.page.locator("#workflowProgress")).toContainText(displayedStatus);
+    await expect(reopened.page.locator("#cancellationSummary")).toBeVisible();
+    expect(await new WorkflowTransactionPage(reopened.page, transaction.transactionNo).detail()).toMatchObject({ status: cancelResponse.body.status });
+    await reopened.context.close();
+    await restarted.stop();
+  });
+
+  test("closed workflow status survives a fresh app instance and page reload", async ({ browser, cloudRuntime }) => {
+    const secret = "e2e-test-session-secret-012345678901234567890123";
+    const ownerToken = createTestSession({ ...cloudRuntime.users.owner, secret });
+    const openAsOwner = async (runtime) => {
+      const context = await browser.newContext({ baseURL: runtime.baseUrl });
+      await context.addCookies([{ name: "sweet_house_session", value: ownerToken, url: runtime.baseUrl }]);
+      return { context, page: await context.newPage() };
+    };
+    const first = await openAsOwner(cloudRuntime);
+    const templateId = "cloud-close-persistence-test";
+    const template = {
+      templateId,
+      name: "Cloud close persistence test",
+      description: "E2E fixture",
+      active: true,
+      syncGoogleDrive: false,
+      documentSteps: [{ stepId: "step-001", documentKind: "payment_voucher" }],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    };
+    const transaction = workflowLogic.buildWorkflowTransactionPayload({
+      accountingMonth: "2026-11",
+      title: "Cloud close persistence",
+      ownerUserId: "owner-1",
+      sequence: "9999",
+      template,
+    }, { now: () => "2026-11-18T00:00:00.000Z" });
+    const sourceKey = stableSourceKey("document", `workflow_transaction:${transaction.transactionNo}`);
+    cloudRuntime.cloudState.documents.set(sourceKey, {
+      source_key: sourceKey,
+      document_kind: "workflow_transaction",
+      document_no: transaction.transactionNo,
+      owner_user_id: "owner-1",
+      status: transaction.status,
+      accounting_month: transaction.accountingMonth,
+      folder_path: transaction.folderPath,
+      payload: transaction,
+      source_hash: canonicalHash(transaction),
+      created_at: transaction.createdAt,
+      updated_at: transaction.updatedAt,
+    });
+    const workflow = new WorkflowTransactionPage(first.page, transaction.transactionNo);
+    const openingRefresh = first.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${transaction.transactionNo}/refresh`) && response.request().method() === "POST");
+    await first.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`);
+    await expect(first.page.locator("#transactionNumber")).toHaveText(transaction.transactionNo);
+    await openingRefresh;
+    await workflow.startCurrentStep();
+    await workflow.completeCurrentChild({ title: "Cloud closed voucher" });
+    const returnRefresh = first.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${transaction.transactionNo}/refresh`) && response.request().method() === "POST");
+    await workflow.returnToTransaction();
+    await returnRefresh;
+    await workflow.refresh();
+    const closeResponse = first.page.waitForResponse((response) => response.url().endsWith(`/api/workflow-transactions/${transaction.transactionNo}/complete`) && response.request().method() === "POST");
+    await first.page.locator("#completeTransactionButton").click();
+    const response = await closeResponse;
+    expect(response.ok()).toBeTruthy();
+    const closed = await response.json();
+    await expect(first.page.locator("#transactionStatus")).toContainText("ปิดงานธุรกรรมเรียบร้อยแล้ว");
+    expect(closed.status).toBe("completed");
+    expect(closed.completedAt).toBeTruthy();
+    expect(cloudRuntime.cloudState.documents.get(sourceKey)?.payload?.completedAt).toBeTruthy();
+    await first.context.close();
+
+    const restarted = await cloudRuntime.restartApp();
+    const reopened = await openAsOwner(restarted);
+    const reloaded = new WorkflowTransactionPage(reopened.page, transaction.transactionNo);
+    await reopened.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`);
+    await expect(reopened.page.locator("#completeTransactionButton")).toHaveText("ปิดงานธุรกรรมแล้ว");
+    expect(await reloaded.detail()).toMatchObject({ status: "completed", completedAt: closed.completedAt });
+    await reopened.context.close();
+    await restarted.stop();
+  });
+
   test("reuses a durable allocation after save failure, allocates a new key, and materializes after restart", async ({ browser, cloudRuntime }) => {
     const pageContext = async (baseUrl, user) => {
       const context = await browser.newContext({ baseURL: baseUrl });
@@ -24,7 +179,7 @@ test.describe("workflow cloud runtime mocked", () => {
     expect(retried.transactionNo).toBe(reservation.transactionNo);
     expect(retried.url).toBe(`${cloudRuntime.baseUrl}workflow-transaction?transactionNo=${reservation.transactionNo}`);
     const retryPage = new WorkflowTransactionPage(first.page, retried.transactionNo);
-    await retryPage.open();
+    await openCloudWorkflow(first.page, retried.transactionNo);
     await retryPage.assertIdentity({ transactionNo: retried.transactionNo, title: "Cloud durable retry" });
     await list.open();
     const newKey = await list.createTransaction({ template: templateId, month: "2026-10", title: "Cloud second transaction", idempotencyKey: "cloud-workflow-new-key" });
@@ -36,7 +191,7 @@ test.describe("workflow cloud runtime mocked", () => {
     const restarted = await cloudRuntime.restartApp();
     const second = await pageContext(restarted.baseUrl, restarted.sessionToken);
     const detail = new WorkflowTransactionPage(second.page, retried.transactionNo);
-    await detail.open();
+    await openCloudWorkflow(second.page, retried.transactionNo);
     await detail.assertIdentity({ transactionNo: retried.transactionNo, title: "Cloud durable retry" });
     expect((await detail.detail()).folderPath).toContain(`/${retried.transactionNo}_`);
 

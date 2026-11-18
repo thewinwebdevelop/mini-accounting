@@ -7,8 +7,9 @@ const ENDPOINTS = {
     ["GET", "/rest/v1/fixture_probe", "none"], ["GET", "/rest/v1/e2e_documents", "none"], ["POST", "/rest/v1/e2e_documents", "none"],
     ["GET", "/rest/v1/e2e_reservations", "none"], ["POST", "/rest/v1/e2e_reservations", "none"],
     ["GET", "/rest/v1/app_users", "app-users"], ["POST", "/rest/v1/app_users", "app-users"],
-    ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/rpc/commit_document_file_manifest", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
+    ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/rpc/allocate_accounting_document_number", "none"], ["POST", "/rest/v1/rpc/compare_and_swap_document", "none"], ["POST", "/rest/v1/rpc/commit_document_file_manifest", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
     ["POST", "/rest/v1/document_files", "on_conflict=source_key"], ["GET", "/rest/v1/document_files", "query"], ["POST", "/rest/v1/storage_migration_records", "migration-conflict"],
+    ["GET", "/rest/v1/app_user_profiles", "query"], ["GET", "/rest/v1/company_positions", "query"],
     ["GET", "/rest/v1/company_settings", "query"], ["GET", "/rest/v1/vendors", "query"], ["GET", "/rest/v1/inventory_products", "query"],
     ["GET", "/rest/v1/inventory_stock_skus", "query"], ["GET", "/rest/v1/inventory_stock_movements", "query"],
     ["GET", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"], ["POST", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"],
@@ -30,7 +31,7 @@ function matchEndpoint(provider, method, pathname, search) {
       if (queryRule === "migration-conflict" && search !== "?on_conflict=migration_name%2Csource_key" && search !== "?on_conflict=migration_name,source_key") continue;
       if (queryRule !== "migration-conflict") {
         const keys = [...new URLSearchParams(search).keys()];
-        const allowed = queryRule === "drive" ? ["fields", "pageSize", "q"] : queryRule === "drive-create" ? ["fields"] : ["upload", "upload-init"].includes(queryRule) ? ["fields", "uploadType"] : queryRule === "sheets" ? ["fields"] : queryRule === "sheets-values" ? ["valueInputOption", "insertDataOption"] : ["source_key", "document_source_key", "limit", "owner_user_id", "status", "document_kind", "accounting_month", "order", "or"];
+        const allowed = queryRule === "drive" ? ["fields", "pageSize", "q"] : queryRule === "drive-create" ? ["fields"] : ["upload", "upload-init"].includes(queryRule) ? ["fields", "uploadType"] : queryRule === "sheets" ? ["fields"] : queryRule === "sheets-values" ? ["valueInputOption", "insertDataOption"] : ["source_key", "document_source_key", "limit", "owner_user_id", "status", "document_kind", "accounting_month", "order", "or", "select", "user_id", "id", "setting_key"];
         if (keys.some(key => !allowed.includes(key))) continue;
       }
     }
@@ -71,6 +72,8 @@ function validBody(provider, method, pathname, body, endpoint, headers = {}) {
   if (provider === "line" && pathname.endsWith("/reply")) return exactKeys(value, ["replyToken", "messages"], ["replyToken", "messages"]);
   if (provider === "ocr") return exactKeys(value, ["fileName", "contentType", "base64"], ["fileName", "contentType", "base64"]);
   if (provider === "supabase" && pathname.endsWith("allocate_workflow_transaction_number")) return exactKeys(value, ["p_accounting_month", "p_request_key"], ["p_accounting_month", "p_request_key"]);
+  if (provider === "supabase" && pathname.endsWith("allocate_accounting_document_number")) return exactKeys(value, ["p_document_kind", "p_accounting_month", "p_request_key", "p_allocate"], ["p_document_kind", "p_accounting_month", "p_request_key", "p_allocate"]);
+  if (provider === "supabase" && pathname.endsWith("compare_and_swap_document")) return exactKeys(value, ["p_source_key", "p_expected_source_hash", "p_record"], ["p_source_key", "p_expected_source_hash", "p_record"]);
   if (provider === "supabase" && pathname.endsWith("commit_document_file_manifest")) return exactKeys(value, ["p_document_source_key", "p_expected_source_hash", "p_files"], ["p_document_source_key", "p_expected_source_hash", "p_files"]) && Array.isArray(value.p_files);
   if (provider === "supabase" && pathname.endsWith("e2e_documents")) return exactKeys(value, ["documentNo", "title"], ["documentNo"]);
   if (provider === "supabase" && pathname.endsWith("e2e_reservations")) return exactKeys(value, ["requestKey", "transactionNo"], ["requestKey", "transactionNo"]);
@@ -153,6 +156,7 @@ export async function createMockProviders({ profile = "local", runId = "run", st
           const row = lineUserId && (state.appUsers.get(lineUserId) || [...state.appUsers.values()].find(candidate => candidate.line_user_id === lineUserId));
           return json(response, 200, row ? [row] : []);
         }
+        if (provider === "supabase" && ["/rest/v1/app_user_profiles", "/rest/v1/company_positions", "/rest/v1/company_settings"].includes(parsed.pathname)) return json(response, 200, []);
         if (provider === "google" && endpoint.queryRule === "upload-init") {
           const uploadId = `upload-${state.uploadSessions.size + 1}`;
           state.uploadSessions.set(uploadId, { body: parseJson(body), fileId: parsed.pathname.split("/").at(-1) });
@@ -171,6 +175,33 @@ export async function createMockProviders({ profile = "local", runId = "run", st
           const result = { sequence: reservation.sequence, transaction_no: reservation.transactionNo, existing: Boolean(state.documents.get(`document:workflow_transaction:${reservation.transactionNo}`)) };
           if (scripted?.type === "drop-after-persist") return response.destroy();
           return json(response, 200, [result]);
+        }
+        if (provider === "supabase" && parsed.pathname === "/rest/v1/rpc/allocate_accounting_document_number") {
+          const value = parseJson(body);
+          const prefixes = { expense_request: "REQ", substitute_receipt: "SR", purchase_order: "PO", payment_voucher: "PV", cash_spend_declaration: "CSD", payee_acknowledgement: "PAR", goods_receipt: "GR" };
+          const prefix = prefixes[value.p_document_kind];
+          if (!prefix) return json(response, 400, { error: "unsupported accounting document kind" });
+          const sequenceKey = `document:${value.p_document_kind}:${value.p_accounting_month}`;
+          const requestKey = String(value.p_request_key || "");
+          const reservationKey = requestKey ? `${sequenceKey}:${requestKey}` : "";
+          let reservation = reservationKey ? state.reservations.get(reservationKey) : null;
+          if (!reservation) {
+            const current = state.sequences.get(sequenceKey) || 0;
+            const sequence = value.p_allocate === false ? current + 1 : current + 1;
+            if (value.p_allocate !== false) state.sequences.set(sequenceKey, sequence);
+            reservation = { sequence, documentNo: `${prefix}-${value.p_accounting_month}-${String(sequence).padStart(4, "0")}` };
+            if (reservationKey && value.p_allocate !== false) state.reservations.set(reservationKey, reservation);
+          }
+          return json(response, 200, [{ sequence: reservation.sequence, document_no: reservation.documentNo }]);
+        }
+        if (provider === "supabase" && parsed.pathname === "/rest/v1/rpc/compare_and_swap_document") {
+          const value = parseJson(body);
+          const current = state.documents.get(String(value.p_source_key || ""));
+          const matches = value.p_expected_source_hash == null
+            ? !current
+            : current?.source_hash === value.p_expected_source_hash;
+          if (matches) state.documents.set(String(value.p_source_key), value.p_record);
+          return json(response, 200, matches);
         }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/rpc/commit_document_file_manifest") {
           const value = parseJson(body);
