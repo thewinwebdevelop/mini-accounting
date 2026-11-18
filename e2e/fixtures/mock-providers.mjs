@@ -215,7 +215,22 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/documents") {
           if (method === "POST") { const value = parseJson(body); state.documents.set(value.source_key, value); if (scripted?.type === "drop-after-persist") return response.destroy(); return json(response, 201, [value]); }
-          const wanted = new URLSearchParams(parsed.search).get("source_key")?.replace(/^eq\./, ""); return json(response, 200, [...state.documents.values()].filter(item => !wanted || item.source_key === wanted));
+          const query = new URLSearchParams(parsed.search);
+          const exact = (key) => query.get(key)?.replace(/^eq\./, "");
+          const wanted = exact("source_key");
+          const documentKind = exact("document_kind");
+          const wantedKinds = [...(query.get("or") || "").matchAll(/document_kind\.eq\.([a-z0-9_]+)/g)].map((match) => match[1]);
+          const ownerUserId = exact("owner_user_id");
+          const status = exact("status");
+          const accountingMonth = exact("accounting_month");
+          return json(response, 200, [...state.documents.values()].filter((item) => (
+            (!wanted || item.source_key === wanted)
+            && (!documentKind || item.document_kind === documentKind)
+            && (!wantedKinds.length || wantedKinds.includes(item.document_kind))
+            && (!ownerUserId || item.owner_user_id === ownerUserId)
+            && (!status || item.status === status)
+            && (!accountingMonth || item.accounting_month === accountingMonth)
+          )));
         }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/e2e_documents") { if (method === "POST") { const value = parseJson(body); state.documents.set(String(value.documentNo), value); return json(response, 201, value); } return json(response, 200, [...state.documents.values()]); }
         if (provider === "supabase" && parsed.pathname === "/rest/v1/e2e_reservations") { if (method === "POST") { const value = parseJson(body); state.reservations.set(String(value.requestKey), value); return json(response, 201, value); } return json(response, 200, [...state.reservations.values()]); }

@@ -16,6 +16,73 @@ async function openCloudWorkflow(page, transactionNo) {
 }
 
 test.describe("workflow cloud runtime mocked", () => {
+  test("transaction list derives completed steps when the Supabase parent status is stale", async ({ browser, cloudRuntime }) => {
+    const secret = "e2e-test-session-secret-012345678901234567890123";
+    const ownerToken = createTestSession({ ...cloudRuntime.users.owner, secret });
+    const context = await browser.newContext({ baseURL: cloudRuntime.baseUrl });
+    await context.addCookies([{ name: "sweet_house_session", value: ownerToken, url: cloudRuntime.baseUrl }]);
+    const page = await context.newPage();
+    const template = {
+      templateId: "stale-completed-list-test",
+      name: "Stale completed list test",
+      description: "E2E fixture",
+      active: true,
+      syncGoogleDrive: false,
+      documentSteps: [{ stepId: "step-001", documentKind: "payment_voucher" }],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    };
+    const transaction = workflowLogic.buildWorkflowTransactionPayload({
+      accountingMonth: "2026-11",
+      title: "Stale completed transaction",
+      ownerUserId: "owner-1",
+      sequence: "9997",
+      template,
+    }, { now: () => "2026-11-18T00:00:00.000Z" });
+    const parentKey = stableSourceKey("document", `workflow_transaction:${transaction.transactionNo}`);
+    cloudRuntime.cloudState.documents.set(parentKey, {
+      source_key: parentKey,
+      document_kind: "workflow_transaction",
+      document_no: transaction.transactionNo,
+      owner_user_id: "owner-1",
+      status: "in_progress",
+      accounting_month: transaction.accountingMonth,
+      folder_path: transaction.folderPath,
+      payload: transaction,
+      source_hash: canonicalHash(transaction),
+      created_at: transaction.createdAt,
+      updated_at: transaction.updatedAt,
+    });
+    const child = {
+      documentKind: "payment_voucher",
+      documentNo: "PV-2026-11-9997",
+      transactionNo: transaction.transactionNo,
+      workflowStepId: "step-001",
+      status: "completed",
+    };
+    const childKey = stableSourceKey("document", `${child.documentKind}:${child.documentNo}`);
+    cloudRuntime.cloudState.documents.set(childKey, {
+      source_key: childKey,
+      document_kind: child.documentKind,
+      document_no: child.documentNo,
+      owner_user_id: "owner-1",
+      status: child.status,
+      accounting_month: transaction.accountingMonth,
+      folder_path: `${transaction.folderPath}/payment-vouchers/${child.documentNo}`,
+      payload: child,
+      source_hash: canonicalHash(child),
+      created_at: transaction.createdAt,
+      updated_at: transaction.updatedAt,
+    });
+
+    const list = new WorkflowTransactionsPage(page);
+    await list.open();
+    const row = page.locator("#transactionRows tr").filter({ hasText: transaction.transactionNo });
+    await expect(row).toContainText("เสร็จสมบูรณ์");
+    await expect(row).not.toContainText("กำลังดำเนินการ");
+    await context.close();
+  });
+
   test("cancelled workflow status survives a fresh app instance and appears in the transaction list", async ({ browser, cloudRuntime }) => {
     const secret = "e2e-test-session-secret-012345678901234567890123";
     const ownerToken = createTestSession({ ...cloudRuntime.users.owner, secret });
@@ -146,12 +213,18 @@ test.describe("workflow cloud runtime mocked", () => {
     expect(closed.status).toBe("completed");
     expect(closed.completedAt).toBeTruthy();
     expect(cloudRuntime.cloudState.documents.get(sourceKey)?.payload?.completedAt).toBeTruthy();
+    expect(cloudRuntime.cloudState.documents.get(sourceKey)?.status).toBe("completed");
     await first.context.close();
 
     const restarted = await cloudRuntime.restartApp();
     const reopened = await openAsOwner(restarted);
     const reloaded = new WorkflowTransactionPage(reopened.page, transaction.transactionNo);
-    await reopened.page.goto(`/workflow-transaction?transactionNo=${encodeURIComponent(transaction.transactionNo)}`);
+    const list = new WorkflowTransactionsPage(reopened.page);
+    await list.open();
+    const row = reopened.page.locator("#transactionRows tr").filter({ hasText: "Cloud close persistence" });
+    await expect(row).toContainText("เสร็จสมบูรณ์");
+    await expect(row).not.toContainText("กำลังดำเนินการ");
+    await row.getByRole("link", { name: "เปิดธุรกรรม" }).click();
     await expect(reopened.page.locator("#completeTransactionButton")).toHaveText("ปิดงานธุรกรรมแล้ว");
     expect(await reloaded.detail()).toMatchObject({ status: "completed", completedAt: closed.completedAt });
     await reopened.context.close();

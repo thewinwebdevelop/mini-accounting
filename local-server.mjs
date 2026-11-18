@@ -90,6 +90,7 @@ const {
   getDefaultWorkflowTemplates,
   normalizeWorkflowTemplate,
   validateWorkflowTemplate,
+  deriveWorkflowProgress,
 } = require("./forms/workflow.logic.js");
 const { validateExpenseRequest } = require("./forms/expense-request.logic.js");
 const {
@@ -2236,7 +2237,30 @@ async function handleNextWorkflowTransaction(url, response) {
 async function handleWorkflowTransactionList(response) {
   try {
     const localResult = await listWorkflowTransactions(rootDir);
-    const result = await documentDataAdapter.list({ localResult, documentKind: "workflow_transaction" });
+    let result = await documentDataAdapter.list({ localResult, documentKind: "workflow_transaction" });
+    if (cloudRun && result.length > 0) {
+      // Older Cloud Run versions could complete every child without writing
+      // the derived parent status back to Supabase. Re-derive list status from
+      // the durable child records so those already-completed transactions do
+      // not remain labelled as in progress until someone reopens them.
+      const childRecords = await documentDataAdapter.list({
+        localResult: [],
+        filters: { documentKinds: ["expense_request", "substitute_receipt", ...LIGHTWEIGHT_DOCUMENT_KINDS] },
+      });
+      const childrenByTransaction = new Map();
+      for (const child of childRecords) {
+        const transactionNo = String(child.transactionNo || "").trim();
+        if (!transactionNo) continue;
+        const children = childrenByTransaction.get(transactionNo) || [];
+        children.push(child);
+        childrenByTransaction.set(transactionNo, children);
+      }
+      result = result.map((transaction) => {
+        if (transaction.status !== "in_progress" || transaction.completedAt) return transaction;
+        const derived = deriveWorkflowProgress(transaction, childrenByTransaction.get(transaction.transactionNo) || []);
+        return { ...transaction, status: derived.status, steps: derived.steps, currentStepId: derived.currentStepId };
+      });
+    }
     sendJson(response, 200, {
       transactions: result.map(transaction => ({
         ...transaction,
