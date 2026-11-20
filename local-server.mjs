@@ -355,7 +355,7 @@ const lineWorkflow = createLineWorkflowController({
   resolveActor: async batch => {
     const rows = await supabaseRequest(createSupabaseAdminClient(), `/rest/v1/app_users?select=id,line_user_id,display_name,status,app_user_roles(role_code)&id=eq.${encodeURIComponent(batch.ownerUserId)}&limit=1`);
     const user = require("./forms/line-auth.logic.js").rowToAppUser(rows[0]);
-    if(user.status !== "active" || user.lineUserId !== batch.lineUserId || !user.role) throw new Error("บัญชีผู้ใช้ไม่มีสิทธิ์ดำเนินการแล้ว");
+    if(user.status !== "active" || (batch.source !== "assistant" && user.lineUserId !== batch.lineUserId) || !user.role) throw new Error("บัญชีผู้ใช้ไม่มีสิทธิ์ดำเนินการแล้ว");
     return {userId:user.id,lineUserId:user.lineUserId,role:user.role,displayName:user.displayName};
   },
   scan: f => scanLineDocument({ provider: lineOcrProvider, endpoint: lineOcrEndpoint, apiKey: lineOcrApiKey, bytes: f.bytes, contentType: f.contentType, fileName: f.fileName }),
@@ -1023,6 +1023,7 @@ function safeStaticPath(urlPath) {
     "/line-intake/auth": "/line-auth.html",
     "/line-intake/auth/": "/line-auth.html",
     "/line-intake": "/line-intake.html",
+    "/assistant-invoice-import": "/assistant-invoice-import.html",
     "/line-workflow-review": "/line-workflow-review.html",
     "/line-intake/": "/line-intake.html",
     "/expense-request": "/expense-request.html",
@@ -1293,10 +1294,18 @@ async function handleLineWebhook(request, response) {
   sendJson(response, workflowRetryRequired ? 503 : 200, { ok: !workflowRetryRequired, accepted, skipped, ...(lineWorkflow.enabled ? {workflowEvents} : {}) });
 }
 
+async function getLegacyLineIntake(intakeId, lineUserId) {
+  const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+  if (item.lineUserId.startsWith("assistant:")) {
+    throw Object.assign(new Error("กรุณาเปิดหลักฐานผ่านหน้าตรวจสอบ workflow"), {statusCode:403, code:"LINE_INTAKE_FORBIDDEN"});
+  }
+  return item;
+}
+
 async function handleLineIntakeReview(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
-    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    const item = await getLegacyLineIntake(intakeId, lineUserId);
     const scanned = await ensureLineIntakeScanned(item);
     sendJson(response, 200, { intake: publicLineIntakeView(scanned) });
   } catch (error) {
@@ -1307,7 +1316,7 @@ async function handleLineIntakeReview(request, response, intakeId) {
 async function handleLineIntakeConfirm(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
-    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    const item = await getLegacyLineIntake(intakeId, lineUserId);
     if (item.status === "confirmed" && item.createdDocument) {
       sendJson(response, 200, { intake: publicLineIntakeView(item), document: item.createdDocument, idempotent: true });
       return;
@@ -1363,6 +1372,7 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
 async function handleLineIntakeCancel(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    await getLegacyLineIntake(intakeId, lineUserId);
     const item = await lineIntakeStore.transition(intakeId, "cancelled", { lineUserId });
     sendJson(response, 200, { intake: publicLineIntakeView(item) });
   } catch (error) {
@@ -4401,10 +4411,16 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/assistant-invoice-imports") {
+    try {
+      sendJson(response, 200, await lineWorkflow.importAssistant({body: await readJsonBody(request), actor: request.auth}));
+    } catch (error) {sendJson(response, error.statusCode || 400, {error: error.message});}
+    return;
+  }
+
   const batchRoute = url.pathname.match(/^\/api\/line-workflow-batches\/([^/]+)(?:\/(review|primary|confirm|run|resume|evidence)(?:\/([^/]+))?)?$/);
   if (batchRoute) {
     try {
-      if (!request.auth?.lineUserId) throw Object.assign(new Error("กรุณาเข้าสู่ระบบด้วยบัญชี LINE ที่ส่งไฟล์"), {statusCode:403});
       const result = await lineWorkflow.api({ id: decodeURIComponent(batchRoute[1]), action: batchRoute[2], evidenceId: batchRoute[3], method: request.method, actor: request.auth, body: request.method === "GET" ? {} : await readJsonBody(request) });
       if (result.original) { response.writeHead(200, {"content-type":result.original.contentType,"cache-control":"private, no-store","x-content-type-options":"nosniff"}); response.end(result.original.bytes); }
       else sendJson(response, 200, result);

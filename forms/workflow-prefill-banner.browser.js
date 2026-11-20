@@ -163,7 +163,7 @@
       // has already been reviewed, so populate it without another apply click.
       if (nextPrefill.autoApplyConfirmed) {
         onInvoiceEvidence(nextPrefill.invoiceEvidenceCount || 0);
-        if(nextPrefill.invoiceEvidenceCount){let note=form.querySelector('[data-invoice-evidence-note]');if(!note){note=document.createElement('p');note.dataset.invoiceEvidenceNote='true';banner.after(note);}note.textContent=`ระบบจะแนบหลักฐานจาก LINE ${nextPrefill.invoiceEvidenceCount} ไฟล์ให้อัตโนมัติเมื่อบันทึก`;}
+        if(nextPrefill.invoiceEvidenceCount){let note=form.querySelector('[data-invoice-evidence-note]');if(!note){note=document.createElement('p');note.dataset.invoiceEvidenceNote='true';banner.after(note);}note.textContent=`ระบบจะแนบหลักฐานต้นฉบับ ${nextPrefill.invoiceEvidenceCount} ไฟล์ให้อัตโนมัติเมื่อบันทึก`;}
 
         try {
           const groups = nextPrefill.availableGroups || [];

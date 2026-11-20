@@ -26,6 +26,9 @@ const {
   homedir
 } = require('node:os');
 const path = require('node:path');
+const {
+  createHash
+} = require('node:crypto');
 const fail = (statusCode, message) => {
   throw Object.assign(new Error(message), {
     statusCode
@@ -265,6 +268,97 @@ function createLineWorkflowController(o) {
       throw e;
     }
   }
+  // Authenticated imports use app ownership; their synthetic storage scope is never a LINE recipient.
+  async function importAssistant({
+    body,
+    actor
+  }) {
+    if (!enabled) fail(404, 'Feature disabled');
+    assertPermission(actor, ACTIONS.DOCUMENT_CREATE);
+    if (!actor?.userId) fail(403, 'กรุณาเข้าสู่ระบบ');
+    if (!/^[a-f0-9-]{36}$/i.test(body.requestId || '')) fail(400, 'ต้องระบุ requestId แบบ UUID');
+    if (!body.extraction || typeof body.extraction !== 'object' || Array.isArray(body.extraction)) fail(400, 'กรุณาแนบข้อมูลที่ผู้ช่วยอ่านจากใบกำกับภาษี');
+    if (!Array.isArray(body.files) || !body.files.length || body.files.length > maxFiles) fail(400, 'กรุณาแนบไฟล์ต้นฉบับตามจำนวนที่ระบบรองรับ');
+    if (Buffer.byteLength(JSON.stringify(body.extraction)) > 2 * 1024 * 1024) fail(400, 'ข้อมูล JSON ต้องไม่เกิน 2 MiB');
+    if (body.extraction.lines && (!Array.isArray(body.extraction.lines) || body.extraction.lines.length > 1000)) fail(400, 'รองรับไม่เกิน 1000 รายการ');
+    const extracted = normalizeInvoiceExtraction(body.extraction);
+    const files = [];
+    let total = 0;
+    for (const file of body.files) {
+      if (typeof file.dataBase64 !== 'string') fail(400, 'ข้อมูลไฟล์ไม่ถูกต้อง');
+      if (file.dataBase64.length > Math.ceil(20 * 1024 * 1024 / 3) * 4) fail(400, 'ไฟล์เกินขนาดที่รองรับ (รวมไม่เกิน 20 MiB)');
+      if (file.dataBase64.length % 4 || /[^A-Za-z0-9+/=]/.test(file.dataBase64)) fail(400, 'ข้อมูลไฟล์ไม่ถูกต้อง');
+      const bytes = Buffer.from(file.dataBase64, 'base64');
+      if (bytes.toString('base64') !== file.dataBase64) fail(400, 'ข้อมูลไฟล์ไม่ถูกต้อง');
+      total += bytes.length;
+      if (!bytes.length || bytes.length > Number(env.LINE_INTAKE_MAX_BYTES || 20 * 1024 * 1024) || total > 20 * 1024 * 1024) fail(400, 'ไฟล์เกินขนาดที่รองรับ (รวมไม่เกิน 20 MiB)');
+      const contentType = await inspectMedia(bytes, '', maxPages);
+      files.push({
+        bytes,
+        contentType,
+        name: path.basename(String(file.name || 'invoice')),
+        hash: createHash('sha256').update(bytes).digest('hex')
+      });
+    }
+    const digest = createHash('sha256').update(JSON.stringify({
+      templateId: body.templateId,
+      extracted,
+      files: files.map(f => [f.name, f.hash])
+    })).digest('hex');
+    const existing = await store.findAssistantImport({
+      actor,
+      requestId: body.requestId
+    });
+    const template = existing?.templateSnapshot || (await templates()).find(t => t.templateId === body.templateId && t.active !== false);
+    if (!template) fail(400, 'กรุณาเลือก workflow ที่เปิดใช้งานในระบบ');
+    let b = await store.beginAssistantImport({
+      actor,
+      requestId: body.requestId,
+      digest,
+      template
+    });
+    if (b.state !== 'collecting') return view(b.id, actor);
+    // Share the intake file lock with LINE so local metadata writes cannot replace each other.
+    const previous = mediaGate;
+    let release;
+    mediaGate = new Promise(resolve => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      b = await store.get(b.id);
+      if (b.state !== 'collecting') return view(b.id, actor);
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const stored = await intakeStore.create({
+          eventId: `assistant:${b.id}:${i}`,
+          messageId: `assistant:${b.id}:${i}`,
+          lineUserId: b.lineUserId,
+          mediaKind: f.contentType === 'application/pdf' ? 'file' : 'image',
+          originalName: f.name,
+          contentType: f.contentType,
+          bytes: f.bytes
+        });
+        b = await store.appendEvidence({
+          id: b.id,
+          evidenceId: stored.item.id,
+          hash: f.hash,
+          maxFiles
+        });
+      }
+      await store.update({
+        id: b.id,
+        expectedRevision: b.revision,
+        patch: {
+          state: 'needs_review',
+          extractedContext: extracted
+        }
+      });
+    } finally {
+      release();
+    }
+    return view(b.id, actor);
+  }
   async function view(id, actor) {
     let b = await store.getForActor(id, actor);
     const files = [];
@@ -277,7 +371,7 @@ function createLineWorkflowController(o) {
         url: `/api/line-workflow-batches/${id}/evidence/${i.id}`
       });
     }
-    if (b.confirmedRevision === undefined && b.primaryEvidenceId && !b.extractedContext) {
+    if (b.source !== 'assistant' && b.confirmedRevision === undefined && b.primaryEvidenceId && !b.extractedContext) {
       const item = await intakeStore.getForUser(b.primaryEvidenceId, b.lineUserId);
       const f = await intakeStore.readOriginal(item);
       let result;
@@ -331,12 +425,15 @@ function createLineWorkflowController(o) {
     if (method === 'GET') return view(id, actor);
     if (action === 'primary') {
       if (!b.evidenceIds.includes(body.primaryEvidenceId)) fail(400, 'เลือกใบกำกับภาษีหลัก');
+      if (body.primaryEvidenceId === b.primaryEvidenceId) return view(id, actor);
       await store.update({
         id,
         expectedRevision: body.expectedRevision,
         patch: {
           primaryEvidenceId: body.primaryEvidenceId,
-          extractedContext: null,
+          extractedContext: b.source === 'assistant' ? normalizeInvoiceExtraction({
+            warnings: ['เปลี่ยนใบกำกับภาษีหลักแล้ว กรุณากรอกข้อมูลใหม่ หรือให้ผู้ช่วยอ่านและนำเข้าเป็นรายการใหม่']
+          }) : null,
           reviewedContext: null,
           state: 'needs_review'
         }
@@ -562,6 +659,7 @@ function createLineWorkflowController(o) {
   }
   return {
     chat,
+    importAssistant,
     api,
     work,
     store,

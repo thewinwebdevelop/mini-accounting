@@ -9,6 +9,10 @@ The review form shows the primary source and editable extraction. Multiple pages
 
 Failure retains transaction/document identities and checkpoints. Open the review link to inspect progress/resume. Completion sends a LINE push containing the review link; notification retries use a stable LINE retry key and do not rerun document operations. Completing every child does not close/lock the parent transaction automatically.
 
+## Chat-assisted import
+
+For invoices attached in a Codex chat, use the authenticated `/assistant-invoice-import` page. It accepts extracted JSON and original evidence, then reuses the review form and both confirmation modes without calling OCR or sending LINE push. See [the project cowork guide](invoice-cowork.md). The same feature flag and durable state migration apply; LINE/OCR credentials are only needed for the LINE intake channel.
+
 ## Configuration
 
 Default: `LINE_WORKFLOW_ENABLED=0`.

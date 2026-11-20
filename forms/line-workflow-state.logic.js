@@ -18,13 +18,14 @@ function transition(state, method, a) {
   const get = id => state.batches[id] || fail(404, 'ไม่พบรายการ');
   const owned = (id, actor) => {
     const b = get(id);
-    if (!actor?.lineUserId || b.lineUserId !== actor.lineUserId || b.ownerUserId && b.ownerUserId !== actor.userId) fail(403, 'ไม่มีสิทธิ์เข้าถึงรายการ');
+    if (b.source === 'assistant' ? !actor?.userId || b.ownerUserId !== actor.userId : !actor?.lineUserId || b.lineUserId !== actor.lineUserId || b.ownerUserId && b.ownerUserId !== actor.userId) fail(403, 'ไม่มีสิทธิ์เข้าถึงรายการ');
     return b;
   };
   const update = (b, p) => Object.assign(b, p, {
     revision: b.revision + 1
   });
   const queueNotice = b => {
+    if (b.source === 'assistant') return;
     const id = b.id + ':notice:' + b.state;
     if (!state.jobs[id]) state.jobs[id] = {
       id,
@@ -51,6 +52,34 @@ function transition(state, method, a) {
       return Object.values(state.batches).find(b => key(b) === key(a.scope) && !['cancelled', 'completed', 'manual'].includes(b.state)) || null;
     case 'findByTransaction':
       return Object.values(state.batches).find(b => b.transactionNo === a.transactionNo) || null;
+    case 'findAssistantImport':
+      return Object.values(state.batches).find(b => b.source === 'assistant' && b.ownerUserId === a.actor.userId && b.importRequestId === a.requestId) || null;
+    case 'beginAssistantImport':
+      {
+        const old = transition(state, 'findAssistantImport', a);
+        if (old) {
+          if (old.importDigest !== a.digest) fail(409, 'รหัสนำเข้านี้ใช้กับข้อมูลอื่นแล้ว กรุณาเริ่มรายการใหม่');
+          return old;
+        }
+        const b = {
+          id: randomUUID(),
+          source: 'assistant',
+          channelId: 'assistant',
+          conversationId: a.requestId,
+          lineUserId: 'assistant:' + a.actor.userId,
+          ownerUserId: a.actor.userId,
+          importRequestId: a.requestId,
+          importDigest: a.digest,
+          templateSnapshot: a.template,
+          state: 'collecting',
+          revision: 1,
+          evidenceIds: [],
+          steps: [],
+          createdAt: new Date().toISOString()
+        };
+        state.batches[b.id] = b;
+        return b;
+      }
     case 'begin':
       {
         if (!a.scope?.channelId || !a.scope.lineUserId || !a.scope.conversationId) fail(400, 'Missing scope');
@@ -258,7 +287,7 @@ function transition(state, method, a) {
 }
 function bindStore(invoke) {
   const store = {};
-  for (const method of ['get', 'queueScan', 'nextJob', 'appendEvidence', 'findActive', 'findByTransaction', 'begin', 'update', 'confirm', 'acceptEvent', 'finishEvent', 'claimJob', 'checkpoint', 'renew', 'progress', 'finishJob', 'failJob', 'resume']) store[method] = a => invoke(method, a);
+  for (const method of ['get', 'queueScan', 'nextJob', 'appendEvidence', 'findActive', 'findByTransaction', 'findAssistantImport', 'beginAssistantImport', 'begin', 'update', 'confirm', 'acceptEvent', 'finishEvent', 'claimJob', 'checkpoint', 'renew', 'progress', 'finishJob', 'failJob', 'resume']) store[method] = a => invoke(method, a);
   store.get = id => invoke('get', typeof id === 'string' ? {
     id
   } : id);

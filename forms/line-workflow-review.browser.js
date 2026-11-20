@@ -193,7 +193,7 @@
       primaryEvidenceId: $('#primary').value
     });
     show(m);
-    status('อ่านใบกำกับภาษีหลักใหม่แล้ว กรุณาตรวจสอบข้อมูลอีกครั้ง');
+    status(m.batch.source === 'assistant' ? 'เปลี่ยนใบกำกับภาษีหลักแล้ว กรุณากรอกข้อมูลใหม่ หรือให้ผู้ช่วยอ่านและนำเข้าใหม่' : 'อ่านใบกำกับภาษีหลักใหม่แล้ว กรุณาตรวจสอบข้อมูลอีกครั้ง');
   });
   $('#review').onsubmit = e => e.preventDefault();
   $('#resume').onclick = () => guard(async () => {
@@ -201,7 +201,7 @@
     await run();
   });
   guard(async () => {
-    if (!id) throw new Error('กรุณาเปิดลิงก์ตรวจสอบจาก LINE');
+    if (!id) throw new Error('กรุณาเปิดลิงก์ตรวจสอบรายการที่นำเข้า');
     const inventory = await fetch('/api/inventory/stock-skus', {
       credentials: 'same-origin'
     });
