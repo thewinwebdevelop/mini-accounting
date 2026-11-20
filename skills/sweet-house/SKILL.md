@@ -1,6 +1,6 @@
 ---
 name: sweet-house
-description: Use when the user asks for Sweet House accounting shortcuts, เมนูสวีทเฮาส์, or invoice import, continuation, and status actions for the Sweet House document system. Not for unrelated accounting apps or software development.
+description: Use when the user asks for เมนู Sweet House, เมนูสวีทเฮาส์, เมนูสวีทเฮ้าท์, or Sweet House accounting shortcuts, or invoice import, continuation, and status actions for the Sweet House document system. Not for unrelated accounting apps or software development.
 ---
 
 # Sweet House quick actions
@@ -9,16 +9,26 @@ This is a persistent chat entrypoint for the user's Sweet House system. Respond 
 
 ## Entry and selection
 
-When invoked without a specific action, or with `เมนูสวีทเฮาส์` / `เมนูลัดสวีทเฮาส์`, show exactly this compact menu:
+When invoked without a specific action, or with `เมนู Sweet House`, `เมนูสวีทเฮาส์`, `เมนูสวีทเฮ้าท์`, or `เมนูลัดสวีทเฮาส์` (case/spacing variants included), present the following four actions using the rendering contract below:
 
 1. **สร้างเอกสารจากใบกำกับภาษี** — แนบรูป/PDF ให้ช่วยอ่านและเตรียมตรวจข้อมูล
 2. **ทำ workflow ที่ค้างต่อ** — เปิดรายการเดิมและทำต่อจากจุดที่ค้าง
 3. **ตรวจสถานะเอกสาร / workflow** — ดูความคืบหน้าและขั้นตอนถัดไป
 4. **เปิดระบบสวีทเฮาส์** — เปิดเว็บเพื่อล็อกอินหรือทำงานเอง
 
-Then say: `ตอบหมายเลขหรือบอกชื่องาน พร้อมแนบไฟล์หรือเลขรายการได้เลย`.
+### Rendering contract
 
-When `request_user_input_async` is available, it can present a choice prompt for the user's next action using those four action names. Use it only to choose the task; attachments must be sent in the chat, and sign-in happens on the website. When a choice-prompt tool is unavailable, the numbered menu remains usable. Do not claim a text menu is a native permanent button row.
+If the current tools include `request_user_input_async`, **call that tool once to render the menu**. A numbered text response alone is not completion in that case. This is the user's choice of next task, not a request for permission.
+
+Use exactly this argument object:
+
+```json
+{"questions":[{"title":"เมนูสวีทเฮาส์ — ต้องการทำงานอะไรต่อ?","options":["สร้างเอกสารจากใบกำกับภาษี","ทำ workflow ที่ค้างต่อ","ตรวจสถานะเอกสาร / workflow","เปิดระบบสวีทเฮาส์"]}]}
+```
+
+After the tool accepts, briefly say the selection menu is open. Avoid repeating a second full numbered menu. Do not immediately call the choice tool again or require an answer to finish opening the menu. Treat the eventual selected answer as the requested action. Files must be attached in chat and sign-in must happen on the website; the choice prompt only chooses the task.
+
+If this tool is absent or explicitly fails, show the numbered text menu above and say that this chat cannot display the popup; the user may answer by number or task name. Do not claim a popup opened without an accepted tool result. Do not use Plan-only input tools outside Plan mode. Do not claim a skill installs permanent buttons into the app.
 
 A number selects only the latest Sweet House action menu visible in this chat. A new chat has no remembered numeric selection: if given only `2` without a menu, display the menu first. If the user already supplies an action, invoice, URL, or document ID, act on that request without repeating the menu or discarding attachments. Do not treat workflow choice numbers from the app as action-menu numbers.
 
@@ -35,4 +45,4 @@ Use a browser/session that the user has actually logged into via LINE. An instal
 
 For repository work, read applicable `AGENTS.md` and `agent.md`; read current source and production records rather than treating this skill as proof of a deployment. Do not run deployments, change templates, or perform other unrelated work merely because the menu was opened.
 
-This skill supplies a selectable capability and a text menu. Do not claim it adds permanent LINE-style buttons or automatically sends a greeting into an empty new chat.
+This skill supplies a selectable capability and an on-demand choice menu, with text fallback only when the popup tool is unavailable or fails. Do not claim it adds permanent LINE-style buttons or automatically sends a greeting into an empty new chat.
