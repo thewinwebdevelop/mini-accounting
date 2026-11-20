@@ -1,6 +1,6 @@
 ---
 name: sweet-house
-description: Use when the user asks for เมนู Sweet House, เมนูสวีทเฮาส์, เมนูสวีทเฮ้าท์, or Sweet House accounting shortcuts, or invoice import, continuation, and status actions for the Sweet House document system. Not for unrelated accounting apps or software development.
+description: Use when the user says เปิดเมนู in the Sweet House project, asks for เมนู Sweet House, เมนูสวีทเฮาส์, เมนูสวีทเฮ้าท์, or Sweet House accounting shortcuts, or invoice import, continuation, and status actions for the Sweet House document system. Not for unrelated accounting apps or software development.
 ---
 
 # Sweet House quick actions
@@ -9,12 +9,14 @@ This is a persistent chat entrypoint for the user's Sweet House system. Respond 
 
 ## Entry and selection
 
-When invoked without a specific action, or with `เมนู Sweet House`, `เมนูสวีทเฮาส์`, `เมนูสวีทเฮ้าท์`, or `เมนูลัดสวีทเฮาส์` (case/spacing variants included), present the following four actions using the rendering contract below:
+When invoked without a specific action, with `เปิดเมนู` in a Sweet House project/chat, or with `เมนู Sweet House`, `เมนูสวีทเฮาส์`, `เมนูสวีทเฮ้าท์`, or `เมนูลัดสวีทเฮาส์` (case/spacing variants included), present the following four actions using the rendering contract below:
 
 1. **สร้างเอกสารจากใบกำกับภาษี** — แนบรูป/PDF ให้ช่วยอ่านและเตรียมตรวจข้อมูล
 2. **ทำ workflow ที่ค้างต่อ** — เปิดรายการเดิมและทำต่อจากจุดที่ค้าง
 3. **ตรวจสถานะเอกสาร / workflow** — ดูความคืบหน้าและขั้นตอนถัดไป
 4. **เปิดระบบสวีทเฮาส์** — เปิดเว็บเพื่อล็อกอินหรือทำงานเอง
+
+The short command `เปิดเมนู` means this action menu when Sweet House is the current project or established chat context. Accept normal whitespace and polite endings (e.g. `เปิดเมนูหน่อย`). It does not require `$sweet-house`. If the user names another app/menu, follow that request instead; do not hijack unrelated projects' menus.
 
 ### Rendering contract
 

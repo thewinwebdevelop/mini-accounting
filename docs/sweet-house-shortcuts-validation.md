@@ -30,3 +30,7 @@ Changed the rendering contract to require exactly one `request_user_input_async`
 Fresh independent simulated forward tests:4 passed — English trigger with tool, Thai spelling with tool, missing-tool fallback, and a direct status request without sign-in. Tests reported intended calls without actually prompting the user. Separately, this primary chat invoked the actual choice tool and received `accepted:true`. This confirms acceptance here, not that the other chat has been rerun or its UI inspected.
 
 Both package validators passed; all source/installed files were identical; `git diff --check` passed. Only skill/instruction files changed, so no website redeploy or application E2E rerun was needed. Reinvoke the updated skill in an existing chat to load the new contract; an old chat's already-rendered text is not retroactively converted to a popup.
+
+## Short alias — 2026-11-20
+
+Added `เปิดเมนู` as the short command in a Sweet House project/chat, including polite suffix `เปิดเมนูหน่อย`. Updated trigger metadata, project routing and usage instructions, and synced the installed user package. Independent simulated forward checks passed3/3: both short forms require one popup-tool call when available, while `เปิดเมนู Canva` in another project does not invoke Sweet House. Both package validators, installed/source byte comparison and `git diff --check` passed. Instruction-only change; existing application E2E and deployment are unaffected. Popup-tool availability remains host-dependent.
