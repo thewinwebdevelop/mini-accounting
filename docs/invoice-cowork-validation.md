@@ -1,6 +1,6 @@
 # Invoice cowork validation — 2026-11-20
 
-Implementation is in this project checkout. It has not been deployed or enabled in production. No production records, stock, LINE messages, or real invoice samples were used.
+This records development validation before rollout. Production deployment was subsequently completed; see [the production record](invoice-cowork-production.md). No production records, stock, LINE messages, or real invoice samples were used.
 
 ## Verified behavior
 
