@@ -109,7 +109,12 @@ export class WorkflowTransactionPage {
     return jsonResponse(response);
   }
   async refresh() {
+    // The identity is already visible before refresh starts. Wait for the
+    // explicit refresh response, excluding the page-load background refresh.
+    const refreshed = this.page.waitForResponse(response => response.url().endsWith(`/api/workflow-transactions/${encodeURIComponent(this.transactionNo)}/refresh`)
+      && response.request().method() === "POST" && response.request().postDataJSON()?.regeneratePacket !== false);
     await this.page.locator("#refreshTransactionButton").click();
+    await jsonResponse(await refreshed);
     await expect(this.page.locator("#transactionNumber")).toHaveText(this.transactionNo);
     return this.detail();
   }

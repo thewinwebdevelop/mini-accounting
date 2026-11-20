@@ -78,4 +78,4 @@ Feature flag the new flow; keep legacy intake working. Live Rich Menu publicatio
 
 ## Status
 
-Conversation behavior agreed on 2026-11-19. Independent builder check completed: nothing important left unanswered. Written design awaits user review; no implementation or runtime verification claimed.
+Conversation behavior agreed on 2026-11-19. Independent builder check completed: nothing important left unanswered. User approved the written design on 2026-11-19. Implemented in the current worktree. Verification, manual screenshots and external rollout limits are recorded in `docs/line-invoice-workflow-validation.md`.

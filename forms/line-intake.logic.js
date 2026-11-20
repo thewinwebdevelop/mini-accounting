@@ -85,7 +85,7 @@ function createLocalLineIntakeStore({ rootDir, maxBytes = 20 * 1024 * 1024 } = {
       ...items[index], ocrStatus: String(scan.status || "failed"), ocrProvider: String(scan.provider || ""),
       ocrConfidence: Number.isFinite(Number(scan.confidence)) ? Number(scan.confidence) : 0,
       ocrWarnings: Array.isArray(scan.warnings) ? scan.warnings : [], ocrError: String(scan.error || ""),
-      extractedPayload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
+      extractedPayload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, ...(scan.lines ? { lines: scan.lines } : {}), warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
       updatedAt: new Date().toISOString(),
     };
     items[index] = updated;
@@ -210,7 +210,7 @@ function createSupabaseLineIntakeStore({
         ocr_provider: String(scan.provider || ""), ocr_status: String(scan.status || "failed"),
         ocr_confidence: Number.isFinite(Number(scan.confidence)) ? Number(scan.confidence) : 0,
         ocr_warnings: Array.isArray(scan.warnings) ? scan.warnings : [], ocr_error: String(scan.error || ""),
-        extracted_payload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
+        extracted_payload: { fields: scan.fields && typeof scan.fields === "object" ? scan.fields : {}, ...(scan.lines ? { lines: scan.lines } : {}), warnings: Array.isArray(scan.warnings) ? scan.warnings : [] },
         updated_at: timestamp,
       },
     });

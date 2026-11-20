@@ -44,3 +44,11 @@ async function replyToLine({ replyToken, messages, accessToken, fetchImpl = fetc
 }
 
 module.exports = { buildIntakeReviewReply, downloadLineContent, replyToLine };
+
+async function pushToLine({to,messages,retryKey,accessToken,fetchImpl=fetch,pushUrl=process.env.LINE_PUSH_URL||'https://api.line.me/v2/bot/message/push'}){
+  if(!to||!accessToken||!retryKey)throw Object.assign(new Error('LINE push configuration is missing'),{code:'LINE_PUSH_CONFIG_MISSING'});
+  const response=await fetchImpl(pushUrl,{method:'POST',headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json','x-line-retry-key':retryKey},body:JSON.stringify({to,messages}),signal:AbortSignal.timeout(10000)});
+  if(!response.ok&&response.status!==409)throw Object.assign(new Error('ส่งผลการสร้างเอกสารไป LINE ไม่สำเร็จ'),{code:'LINE_PUSH_FAILED'});
+  return {sent:true};
+}
+module.exports.pushToLine=pushToLine;

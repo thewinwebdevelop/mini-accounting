@@ -40,3 +40,7 @@ test("content downloader sends the channel token and rejects provider errors", a
     fetchImpl: async () => new Response("provider secret", { status: 500 }),
   }), error => error.code === "LINE_CONTENT_DOWNLOAD_FAILED" && !error.message.includes("provider secret"));
 });
+
+test('workflow result push uses stable retry key and accepts duplicate delivery acknowledgement',async()=>{
+ const {pushToLine}=require('../forms/line-bot.logic.js');let seen;const result=await pushToLine({to:'U-test',messages:[{type:'text',text:'Complete'}],retryKey:'00000000-0000-4000-8000-000000000001',accessToken:'test',fetchImpl:async(url,options)=>{seen=options;return new Response('',{status:409});}});assert.equal(seen.headers['x-line-retry-key'],'00000000-0000-4000-8000-000000000001');assert.equal(result.sent,true);
+});

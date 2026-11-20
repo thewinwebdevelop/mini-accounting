@@ -4,6 +4,7 @@ import { redactE2ELog } from "../support/redaction.mjs";
 
 const ENDPOINTS = {
   supabase: [
+    ["GET", "/rest/v1/line_workflow_state", "query"], ["POST", "/rest/v1/rpc/line_workflow_state_cas", "none"],
     ["GET", "/rest/v1/fixture_probe", "none"], ["GET", "/rest/v1/e2e_documents", "none"], ["POST", "/rest/v1/e2e_documents", "none"],
     ["GET", "/rest/v1/e2e_reservations", "none"], ["POST", "/rest/v1/e2e_reservations", "none"],
     ["GET", "/rest/v1/app_users", "app-users"], ["POST", "/rest/v1/app_users", "app-users"],
@@ -14,7 +15,7 @@ const ENDPOINTS = {
     ["GET", "/rest/v1/inventory_stock_skus", "query"], ["GET", "/rest/v1/inventory_stock_movements", "query"],
     ["GET", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"], ["POST", /^\/storage\/v1\/object\/[a-z0-9._-]+\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/, "none"],
   ],
-  line: [["GET", /^\/v2\/bot\/message\/[^/]+\/content$/, "none"], ["POST", "/v2/bot/message/reply", "none"], ["POST", "/oauth2/v2.1/verify", "none"]],
+  line: [["GET", /^\/v2\/bot\/message\/[^/]+\/content$/, "none"], ["POST", "/v2/bot/message/reply", "none"], ["POST", "/v2/bot/message/push", "none"], ["POST", "/oauth2/v2.1/verify", "none"]],
   google: [["GET", "/drive/v3/files", "drive"], ["POST", "/drive/v3/files", "drive-create"], ["POST", "/upload/drive/v3/files", "upload-init"], ["PATCH", /^\/upload\/drive\/v3\/files\/[^/]+$/, "upload-init"], ["PUT", /^\/upload-session\/[^/]+$/, "upload-body"], ["POST", "/token", "none"], ["GET", /^\/v4\/spreadsheets\/[^/]+$/, "sheets"], ["POST", /^\/v4\/spreadsheets\/[^/]+:batchUpdate$/, "sheets"], ["GET", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["PUT", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+$/, "sheets-values"], ["POST", /^\/v4\/spreadsheets\/[^/]+\/values\/[^/]+:append$/, "sheets-values"]],
   shopee: [["GET", "/api/v2/shop/auth_partner", "shopee-auth"], ["GET", "/api/v2/order/get_order_list", "shopee-order-list"], ["GET", "/api/v2/order/get_order_detail", "shopee-order-detail"], ["POST", "/api/v2/auth/token/get", "shopee-token"], ["POST", "/api/v2/auth/access_token/get", "shopee-refresh"], ["POST", "/api/v2/logistics/get_mass_tracking_number", "shopee-tracking"], ["POST", "/api/v2/logistics/create_shipping_document_job", "shopee-create-job"], ["POST", "/api/v2/logistics/get_shipping_document_job_status", "shopee-job-status"], ["POST", "/api/v2/logistics/download_shipping_document_job", "shopee-job-download"], ["POST", "/api/v2/logistics/get_mass_shipping_parameter", "shopee-shipping-params"], ["POST", "/api/v2/logistics/mass_ship_order", "shopee-mass-ship"]],
   ocr: [["POST", "/", "none"]],
@@ -70,6 +71,8 @@ function validBody(provider, method, pathname, body, endpoint, headers = {}) {
   const value = parseJson(body);
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (provider === "line" && pathname.endsWith("/reply")) return exactKeys(value, ["replyToken", "messages"], ["replyToken", "messages"]);
+  if (provider === "line" && pathname.endsWith("/push")) return exactKeys(value, ["to", "messages"], ["to", "messages"]);
+  if (provider === "supabase" && pathname.endsWith("line_workflow_state_cas")) return exactKeys(value,["expected_version","next_data"],["expected_version","next_data"]);
   if (provider === "ocr") return exactKeys(value, ["fileName", "contentType", "base64"], ["fileName", "contentType", "base64"]);
   if (provider === "supabase" && pathname.endsWith("allocate_workflow_transaction_number")) return exactKeys(value, ["p_accounting_month", "p_request_key"], ["p_accounting_month", "p_request_key"]);
   if (provider === "supabase" && pathname.endsWith("allocate_accounting_document_number")) return exactKeys(value, ["p_document_kind", "p_accounting_month", "p_request_key", "p_allocate"], ["p_document_kind", "p_accounting_month", "p_request_key", "p_allocate"]);
@@ -137,6 +140,8 @@ export async function createMockProviders({ profile = "local", runId = "run", st
         if (!validBody(provider, method, parsed.pathname, body, endpoint, request.headers)) return json(response, 400, { error: "unexpected mock request body" });
         const scriptIndex = state.responseScript.findIndex((candidate) => (!candidate.provider || candidate.provider === provider) && (!candidate.endpoint || parsed.pathname.includes(candidate.endpoint)));
         const scripted = scriptIndex >= 0 ? state.responseScript.splice(scriptIndex, 1)[0] : null;
+        if(provider==="supabase" && parsed.pathname==="/rest/v1/line_workflow_state"){state.lineWorkflowState ||= {version:0,data:{}};return json(response,200,[state.lineWorkflowState]);}
+        if(provider==="supabase" && parsed.pathname==="/rest/v1/rpc/line_workflow_state_cas"){state.lineWorkflowState ||= {version:0,data:{}};const input=parseJson(body);if(state.lineWorkflowState.version!==input.expected_version)return json(response,200,false);state.lineWorkflowState={version:input.expected_version+1,data:input.next_data};return json(response,200,true);}
         if (provider === "line" && parsed.pathname.endsWith("/verify")) {
           const token = new URLSearchParams(body.toString("utf8")).get("id_token") || "";
           const lineUserId = token.replace(/^fixture-token-/, "") || "employee-a";

@@ -13,6 +13,7 @@ function safeFieldValue(value) {
 }
 
 function normalizeOcrResult(result = {}) {
+  if (Array.isArray(result.lines) && result.lines.length > 1000) throw ocrError("LINE_OCR_RESULT_TOO_LARGE", "รายการจาก OCR เกิน 1,000 รายการ กรุณาแยกเอกสาร");
   const fields = Object.fromEntries(OCR_FIELDS.map(field => [field, safeFieldValue(result.fields?.[field])]));
   const rawConfidence = Number(result.confidence);
   const confidence = Number.isFinite(rawConfidence) ? Math.min(1, Math.max(0, rawConfidence)) : 0;
@@ -25,6 +26,7 @@ function normalizeOcrResult(result = {}) {
     status: "needs_review",
     confidence,
     fields,
+    ...(Array.isArray(result.lines) ? { lines: result.lines.slice(0, 1000).map(line => Object.fromEntries(["description", "quantity", "unitCost", "amountBeforeVat", "vatAmount", "withholdingTax", "stockSkuId"].map(key => [key, safeFieldValue(line[key])]))) } : {}),
     warnings,
   };
 }
