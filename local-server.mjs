@@ -194,9 +194,13 @@ const {
   buildIntakeReviewReply,
   downloadLineContent,
   replyToLine,
+  pushToLine,
 } = require("./forms/line-bot.logic.js");
 const { scanLineDocument } = require("./forms/line-ocr.logic.js");
-const { createSupabaseAdminClient } = require("./forms/supabase.logic.js");
+const { verifyWorkerToken } = require("./forms/line-workflow-worker.logic.js");
+const { createLineWorkflowController } = require("./forms/line-workflow-controller.logic.js");
+const { createLineWorkflowNativeServices } = require("./forms/line-workflow-native.logic.js");
+const { createSupabaseAdminClient, supabaseRequest } = require("./forms/supabase.logic.js");
 const { createSupabaseDataRepository } = require("./forms/supabase-data.logic.js");
 const {
   createSupabaseStorageClient,
@@ -343,6 +347,29 @@ const documentFileAdapter = createFileAdapter({
   rootDir,
   env: runtimeEnv,
   logger: event => console.warn(`[data-adapter] ${JSON.stringify(event)}`),
+});
+
+const lineWorkflow = createLineWorkflowController({
+  rootDir, env: runtimeEnv, intakeStore: lineIntakeStore,
+  templates: listRuntimeWorkflowTemplates,
+  resolveActor: async batch => {
+    const rows = await supabaseRequest(createSupabaseAdminClient(), `/rest/v1/app_users?select=id,line_user_id,display_name,status,app_user_roles(role_code)&id=eq.${encodeURIComponent(batch.ownerUserId)}&limit=1`);
+    const user = require("./forms/line-auth.logic.js").rowToAppUser(rows[0]);
+    if(user.status !== "active" || (batch.source !== "assistant" && user.lineUserId !== batch.lineUserId) || !user.role) throw new Error("บัญชีผู้ใช้ไม่มีสิทธิ์ดำเนินการแล้ว");
+    return {userId:user.id,lineUserId:user.lineUserId,role:user.role,displayName:user.displayName};
+  },
+  scan: f => scanLineDocument({ provider: lineOcrProvider, endpoint: lineOcrEndpoint, apiKey: lineOcrApiKey, bytes: f.bytes, contentType: f.contentType, fileName: f.fileName }),
+  download: messageId => downloadLineContent({ messageId, accessToken: lineChannelAccessToken, maxBytes: lineIntakeMaxBytes }),
+  push: input => pushToLine({...input,accessToken:lineChannelAccessToken}),
+  reply: (replyToken, messages) => replyToLine({ replyToken, messages, accessToken: lineChannelAccessToken }),
+  mediaEvent: extractLineMediaEvent, validateStock: assertKnownStockSkuReferences,
+  nativeFactory: ({actor, store}) => createLineWorkflowNativeServices({ rootDir, store, actor, intakeStore: lineIntakeStore, documentDataAdapter, cloudRun,
+    hydrate: async options => {
+      if (cloudRun) { const record = await documentDataAdapter.get({localResult:null,documentKind:options.documentKind,documentNo:options.documentNo}); if(record) { await documentFileSynchronizer.materialize({record}); await rebuildDocumentIndex(rootDir); } }
+      return ensureLocalCloudDocument(options);
+    }, hydrateTransaction: ensureLocalCloudWorkflowTransaction,
+    persistTransaction: persistCloudWorkflowTransactionMutation, persistDocument: persistCloudDocumentMutation,
+    companySettingsResolver: resolveCompanySettings, vendorResolver, inventoryCloudRepository, validateStock: assertKnownStockSkuReferences }),
 });
 
 async function assertKnownStockSkuReferences(lines = []) {
@@ -1000,6 +1027,8 @@ function safeStaticPath(urlPath) {
     "/line-intake/auth": "/line-auth.html",
     "/line-intake/auth/": "/line-auth.html",
     "/line-intake": "/line-intake.html",
+    "/assistant-invoice-import": "/assistant-invoice-import.html",
+    "/line-workflow-review": "/line-workflow-review.html",
     "/line-intake/": "/line-intake.html",
     "/expense-request": "/expense-request.html",
     "/expense-request/": "/expense-request.html",
@@ -1226,8 +1255,16 @@ async function handleLineWebhook(request, response) {
   }
 
   const accepted = [];
+  const workflowEvents = [];
+  let workflowRetryRequired = false;
   const skipped = [];
   for (const event of Array.isArray(payload.events) ? payload.events : []) {
+    if (lineWorkflow.enabled) {
+      try {
+        const result = await lineWorkflow.chat(event);
+        if (result) { workflowEvents.push(result); continue; }
+      } catch (error) { workflowRetryRequired = true; skipped.push({ eventId: event.webhookEventId, code: error.code || "LINE_WORKFLOW_FAILED" }); continue; }
+    }
     const media = extractLineMediaEvent(event);
     if (!media) continue;
     try {
@@ -1258,13 +1295,21 @@ async function handleLineWebhook(request, response) {
       skipped.push({ eventId: media.eventId, code: error.code || "LINE_WEBHOOK_PROCESSING_FAILED" });
     }
   }
-  sendJson(response, 200, { ok: true, accepted, skipped });
+  sendJson(response, workflowRetryRequired ? 503 : 200, { ok: !workflowRetryRequired, accepted, skipped, ...(lineWorkflow.enabled ? {workflowEvents} : {}) });
+}
+
+async function getLegacyLineIntake(intakeId, lineUserId) {
+  const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+  if (item.lineUserId.startsWith("assistant:")) {
+    throw Object.assign(new Error("กรุณาเปิดหลักฐานผ่านหน้าตรวจสอบ workflow"), {statusCode:403, code:"LINE_INTAKE_FORBIDDEN"});
+  }
+  return item;
 }
 
 async function handleLineIntakeReview(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
-    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    const item = await getLegacyLineIntake(intakeId, lineUserId);
     const scanned = await ensureLineIntakeScanned(item);
     sendJson(response, 200, { intake: publicLineIntakeView(scanned) });
   } catch (error) {
@@ -1275,7 +1320,7 @@ async function handleLineIntakeReview(request, response, intakeId) {
 async function handleLineIntakeConfirm(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
-    const item = await lineIntakeStore.getForUser(intakeId, lineUserId);
+    const item = await getLegacyLineIntake(intakeId, lineUserId);
     if (item.status === "confirmed" && item.createdDocument) {
       sendJson(response, 200, { intake: publicLineIntakeView(item), document: item.createdDocument, idempotent: true });
       return;
@@ -1331,6 +1376,7 @@ async function handleLineIntakeConfirm(request, response, intakeId) {
 async function handleLineIntakeCancel(request, response, intakeId) {
   try {
     const lineUserId = authMode === "line" ? String(request.auth?.lineUserId || "") : "";
+    await getLegacyLineIntake(intakeId, lineUserId);
     const item = await lineIntakeStore.transition(intakeId, "cancelled", { lineUserId });
     sendJson(response, 200, { intake: publicLineIntakeView(item) });
   } catch (error) {
@@ -1434,6 +1480,19 @@ function parseSubstituteReceiptFileRoute(urlPath) {
   };
 }
 
+async function lineWorkflowEvidenceUploads(request,payload,documentKind,files,isNew=!(payload.requestNo||payload.receiptNo||payload.documentNo)) {
+  if(!lineWorkflow.enabled||!isNew||!payload.transactionNo)return [];
+  const batch=await lineWorkflow.store.findByTransaction({transactionNo:payload.transactionNo});
+  if(!batch?.confirmedContext||batch.mode!=="manual")return [];
+  await ensureLocalCloudWorkflowTransaction(payload.transactionNo);
+  if(sessionAuthMode)assertDocumentAccess(request.auth,await getWorkflowTransaction(rootDir,payload.transactionNo),ACTIONS.DOCUMENT_EDIT);
+  const step=batch.templateSnapshot.documentSteps.find(step=>step.stepId===payload.workflowStepId&&step.documentKind===documentKind);
+  if(!step)throw new Error("ขั้นตอนเอกสารไม่ตรงกับ Workflow");
+  const uploads=[];
+  for(const id of batch.evidenceIds){const item=await lineIntakeStore.getForUser(id,batch.lineUserId);const original=await lineIntakeStore.readOriginal(item);if(files.some(file=>file.buffer?.equals(original.bytes)))continue;uploads.push({evidenceKey:documentKind==="substitute_receipt"?"otherEvidence":"receipt",originalName:original.fileName,type:original.contentType,buffer:original.bytes});}
+  return uploads;
+}
+
 async function handleExpenseSubmission(request, response) {
   try {
     const body = await readRequestBody(request);
@@ -1452,6 +1511,7 @@ async function handleExpenseSubmission(request, response) {
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
     if (cloudRun && payload.requestNo) await ensureLocalCloudDocument({ documentKind: "expense_request", documentNo: payload.requestNo, localLoad: () => getSubmittedExpenseRequest(rootDir, payload.requestNo) });
+    files.push(...await lineWorkflowEvidenceUploads(request,payload,"expense_request",files));
     const result = await documentDataAdapter.save({
       documentKind: "expense_request",
       documentNo: payload.requestNo,
@@ -1492,6 +1552,7 @@ async function handleSubstituteReceiptSubmission(request, response) {
       existingAction: ACTIONS.DOCUMENT_SUBMIT,
     })) return;
     if (cloudRun && payload.receiptNo) await ensureLocalCloudDocument({ documentKind: "substitute_receipt", documentNo: payload.receiptNo, localLoad: () => getSubmittedSubstituteReceipt(rootDir, payload.receiptNo) });
+    files.push(...await lineWorkflowEvidenceUploads(request,payload,"substitute_receipt",files));
     const result = await documentDataAdapter.save({
       documentKind: "substitute_receipt",
       documentNo: payload.receiptNo,
@@ -1531,6 +1592,7 @@ async function handleSubstituteReceiptDraftSave(request, response) {
       loadExisting: (receiptNo) => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     })) return;
     if (cloudRun && payload.receiptNo) await ensureLocalCloudDocument({ documentKind: "substitute_receipt", documentNo: payload.receiptNo, localLoad: () => getSubmittedSubstituteReceipt(rootDir, payload.receiptNo) });
+    files.push(...await lineWorkflowEvidenceUploads(request,payload,"substitute_receipt",files));
     const result = await documentDataAdapter.save({
       documentKind: "substitute_receipt",
       documentNo: payload.receiptNo,
@@ -1958,6 +2020,7 @@ async function handleWorkflowDocumentSubmission(request, response) {
     // draft. Never trust a client-supplied company object for this header.
     const company = await resolveCompanySettings();
     const payload = buildWorkflowDocumentPayload({ ...data, company, ...serverOwnedFields });
+    files.push(...await lineWorkflowEvidenceUploads(request,payload,payload.documentKind,files,!existingDocument));
     const { payload: savedPayload, ...saved } = await saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver });
     const result = await documentDataAdapter.save({
       documentKind: payload.documentKind,
@@ -2501,16 +2564,32 @@ async function handleWorkflowTransactionSheetsSync(transactionNo, response) {
   }
 }
 
-async function handleWorkflowTransactionPrefill(transactionNo, url, response) {
+async function handleWorkflowTransactionPrefill(transactionNo, url, response, request) {
   try {
     await ensureLocalCloudWorkflowTransaction(transactionNo);
     const documentKind = url.searchParams.get("documentKind") || "";
     const stepId = url.searchParams.get("stepId") || "";
     if (!stepId) throw new Error("ระบุขั้นตอนของ Workflow");
+    if (sessionAuthMode) assertDocumentAccess(request.auth, await getWorkflowTransaction(rootDir, transactionNo), ACTIONS.DOCUMENT_READ);
     const result = await getWorkflowTransactionPrefill({ rootDir, transactionNo, documentKind, stepId });
+    if (lineWorkflow.enabled) {
+      const batch = await lineWorkflow.store.findByTransaction({transactionNo});
+      if (batch?.confirmedContext) {
+        result.autoApplyConfirmed = true;
+        result.invoiceEvidenceCount=batch.evidenceIds.length;
+        const invoice=batch.confirmedContext.invoice;
+        result.invoiceDefaults={accountingMonth:invoice.accountingMonth,expenseDate:invoice.expenseDate,receiptDate:invoice.expenseDate,documentDate:invoice.expenseDate,paymentChannel:invoice.paymentChannel,paymentReference:invoice.paymentReference};
+        for (const group of ["payee", "purpose", "lines", "parties"]) {
+          const baseline = batch.confirmedContext[group];
+          const current = result.context[group];
+          const present = Array.isArray(current) ? current.length : current && Object.keys(current).length;
+          if (!present && baseline) { result.context[group] = baseline; result.sources[group] = "ข้อมูลที่ยืนยันจากใบกำกับภาษี"; if (!result.availableGroups.includes(group) && group !== "parties") result.availableGroups.push(group); }
+        }
+      }
+    }
     sendJson(response, 200, result);
   } catch (error) {
-    sendJson(response, 400, {
+    sendJson(response, error.statusCode || 400, {
       error: error.message || "ไม่สามารถดึงข้อมูลเติมล่วงหน้าได้",
     });
   }
@@ -2749,6 +2828,7 @@ async function handleDraftSave(request, response) {
     if (cloudRun && payload.requestNo) {
       await ensureLocalCloudDocument({ documentKind: "expense_request", documentNo: payload.requestNo, localLoad: () => getSubmittedExpenseRequest(rootDir, payload.requestNo) });
     }
+    files.push(...await lineWorkflowEvidenceUploads(request,payload,"expense_request",files));
     const result = await documentDataAdapter.save({
       documentKind: "expense_request",
       documentNo: payload.requestNo || payload.draftId,
@@ -4321,10 +4401,36 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === "/api/internal/line-workflow/run" && request.method === "POST") {
+    try {
+      if (!lineWorkflow.enabled) throw Object.assign(new Error("Feature disabled"), {statusCode:404});
+      await verifyWorkerToken(String(request.headers.authorization || "").replace(/^Bearer /, ""), {audience:runtimeEnv.LINE_WORKFLOW_WORKER_AUDIENCE,email:runtimeEnv.LINE_WORKFLOW_WORKER_EMAIL});
+      sendJson(response, 200, await lineWorkflow.work());
+    } catch (error) { sendJson(response, error.statusCode || 503, {error:error.message}); }
+    return;
+  }
+
   if (!requireAuthenticatedRequest(request, response, url)) return;
 
   if (request.method === "POST" && url.pathname === "/api/webhooks/line") {
     await handleLineWebhook(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/assistant-invoice-imports") {
+    try {
+      sendJson(response, 200, await lineWorkflow.importAssistant({body: await readJsonBody(request), actor: request.auth}));
+    } catch (error) {sendJson(response, error.statusCode || 400, {error: error.message});}
+    return;
+  }
+
+  const batchRoute = url.pathname.match(/^\/api\/line-workflow-batches\/([^/]+)(?:\/(review|primary|confirm|run|resume|evidence)(?:\/([^/]+))?)?$/);
+  if (batchRoute) {
+    try {
+      const result = await lineWorkflow.api({ id: decodeURIComponent(batchRoute[1]), action: batchRoute[2], evidenceId: batchRoute[3], method: request.method, actor: request.auth, body: request.method === "GET" ? {} : await readJsonBody(request) });
+      if (result.original) { response.writeHead(200, {"content-type":result.original.contentType,"cache-control":"private, no-store","x-content-type-options":"nosniff"}); response.end(result.original.bytes); }
+      else sendJson(response, 200, result);
+    } catch (error) { sendJson(response, error.statusCode || 400, {error:error.message}); }
     return;
   }
 
@@ -5053,7 +5159,7 @@ const server = createServer(async (request, response) => {
         .replace("/api/workflow-transactions/", "")
         .replace("/prefill", ""));
       if (!ensurePermission(request, response, ACTIONS.DOCUMENT_READ)) return;
-      await handleWorkflowTransactionPrefill(transactionNo, url, response);
+      await handleWorkflowTransactionPrefill(transactionNo, url, response, request);
       return;
     }
 

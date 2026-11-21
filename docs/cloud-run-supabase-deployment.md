@@ -121,7 +121,7 @@ docker run --rm -p 8080:8080 \
   -e SWEET_HOUSE_SESSION_SECRET="LOCAL_TEST_SECRET" \
   -e SWEET_HOUSE_AUTH_MODE=line \
   sweet-house:cloud-run
-curl -fsS http://localhost:8080/healthz
+curl -fsS http://localhost:8080/api/healthz
 ```
 
 ห้ามใช้ service key จริงใน shell history หรือ image test; ให้ใช้ Secret Manager

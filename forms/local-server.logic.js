@@ -4179,6 +4179,7 @@ async function persistWorkflowTransaction(rootDir, transaction, childDocuments =
 
 async function startWorkflowTransaction({
   rootDir,
+  templateSnapshot = null,
   templateId,
   accountingMonth,
   title,
@@ -4186,7 +4187,7 @@ async function startWorkflowTransaction({
   allocation = null,
   now = () => new Date().toISOString(),
 }) {
-  const template = await getWorkflowTemplate(rootDir, templateId);
+  const template = templateSnapshot || await getWorkflowTemplate(rootDir, templateId);
   if (!template) {
     throw new Error("ไม่พบ template ที่ระบุ");
   }

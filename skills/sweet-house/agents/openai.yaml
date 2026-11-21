@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sweet House · เมนูลัด"
+  short_description: "เมนูลัดเอกสาร ใบกำกับภาษี และ workflow สวีทเฮาส์"
+  default_prompt: "ใช้ $sweet-house แสดงเมนูงานของสวีทเฮาส์ให้ฉันเลือก"

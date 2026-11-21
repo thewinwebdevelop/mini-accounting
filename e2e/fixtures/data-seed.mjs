@@ -12,6 +12,7 @@ export async function createFixtureData({ rootDir, runId }) {
   try { return JSON.parse(await readFile(manifestPath, "utf8")); } catch {}
   const users = Object.fromEntries(Object.entries(PERSONAS).map(([key, user]) => [key, {
     ...user,
+    lineUserId: user.userId,
     status: key === "pending" ? "pending" : key === "inactive" ? "inactive" : "active",
   }]));
   const manifest = {

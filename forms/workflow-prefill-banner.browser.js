@@ -71,6 +71,7 @@
       linesPatchKey = "lines",
       applyLines = () => {},
       onApplied = () => {},
+      onInvoiceEvidence = () => {},
       banner = document.querySelector("#workflowPrefillBanner"),
       groupsContainer = document.querySelector("#workflowPrefillGroups"),
       applyButton = document.querySelector("#workflowPrefillApply"),
@@ -158,6 +159,24 @@
       if (!nextPrefill) return;
       prefill = nextPrefill;
       renderPrefillBanner(nextPrefill);
+      // Controllers call load only for a new, never-saved step. Invoice data
+      // has already been reviewed, so populate it without another apply click.
+      if (nextPrefill.autoApplyConfirmed) {
+        onInvoiceEvidence(nextPrefill.invoiceEvidenceCount || 0);
+        if(nextPrefill.invoiceEvidenceCount){let note=form.querySelector('[data-invoice-evidence-note]');if(!note){note=document.createElement('p');note.dataset.invoiceEvidenceNote='true';banner.after(note);}note.textContent=`ระบบจะแนบหลักฐานต้นฉบับ ${nextPrefill.invoiceEvidenceCount} ไฟล์ให้อัตโนมัติเมื่อบันทึก`;}
+
+        try {
+          const groups = nextPrefill.availableGroups || [];
+          const patch = window.WorkflowPrefillLogic?.applyWorkflowPrefillGroups?.(nextPrefill.context, documentKind, groups) || {};
+          applyPrefillPatch(patch, groups);
+          for (const [name, value] of Object.entries(nextPrefill.invoiceDefaults || {})) {
+            const control = form.elements[name];
+            if (control && value !== undefined) control.value = value;
+          }
+          onApplied();
+          banner.hidden = true;
+        } catch { /* Native mapping may require manual amount review; retain the banner. */ }
+      }
     }
 
     applyButton?.addEventListener("click", () => {

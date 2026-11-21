@@ -492,7 +492,8 @@ window.addEventListener("DOMContentLoaded", async () => {
         size: file.size,
         type: file.type || "application/octet-stream",
       }));
-      return [key, [...existing, ...files]];
+      const pending=key==='otherEvidence'&&!state.receiptNo&&state.pendingInvoiceEvidenceCount?Array.from({length:state.pendingInvoiceEvidenceCount},()=>({originalName:'หลักฐานจาก LINE (จะแนบเมื่อบันทึก)'})):[];
+      return [key, [...existing, ...files,...pending]];
     }));
   }
 
@@ -641,6 +642,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       lineItems.replaceChildren();
       for (const line of lines) addStockLine(line);
     },
+    onInvoiceEvidence: count => { state.pendingInvoiceEvidenceCount=count; },
     onApplied: () => updatePreview(),
   });
 
