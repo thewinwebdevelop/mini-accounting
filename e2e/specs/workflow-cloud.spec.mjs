@@ -102,6 +102,7 @@ test.describe("workflow cloud runtime mocked", () => {
 
     const list = new WorkflowTransactionsPage(page);
     await list.open();
+    await page.locator("#transactionStatusFilter").selectOption("all");
     const row = page.locator("#transactionRows tr").filter({ hasText: transaction.transactionNo });
     await expect(row).toContainText("เสร็จสมบูรณ์");
     await expect(row).not.toContainText("กำลังดำเนินการ");
@@ -165,6 +166,7 @@ test.describe("workflow cloud runtime mocked", () => {
     const reopened = await openAsOwner(restarted);
     const list = new WorkflowTransactionsPage(reopened.page);
     await list.open();
+    await reopened.page.locator("#transactionStatusFilter").selectOption("all");
     const row = reopened.page.locator("#transactionRows tr").filter({ hasText: transaction.transactionNo });
     const displayedStatus = cancelResponse.body.status === "cancelled" ? "ยกเลิกแล้ว" : "รอดำเนินการยกเลิก";
     await expect(row).toContainText(displayedStatus);
@@ -277,6 +279,7 @@ test.describe("workflow cloud runtime mocked", () => {
     const reloaded = new WorkflowTransactionPage(reopened.page, transaction.transactionNo);
     const list = new WorkflowTransactionsPage(reopened.page);
     await list.open();
+    await reopened.page.locator("#transactionStatusFilter").selectOption("all");
     const row = reopened.page.locator("#transactionRows tr").filter({ hasText: "Cloud close persistence" });
     await expect(row).toContainText("เสร็จสมบูรณ์");
     await expect(row).not.toContainText("กำลังดำเนินการ");

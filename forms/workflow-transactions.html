@@ -309,6 +309,16 @@
         </label>
       </div>
       <div class="section-body" style="padding: 0;">
+        <div class="field" style="padding: 14px; max-width: 280px;">
+          <label for="transactionStatusFilter">กรองตามสถานะ</label>
+          <select id="transactionStatusFilter">
+            <option value="in_progress" selected>กำลังดำเนินการ</option>
+            <option value="completed">เสร็จสมบูรณ์</option>
+            <option value="cancellation_pending">รอดำเนินการยกเลิก</option>
+            <option value="cancelled">ยกเลิกแล้ว</option>
+            <option value="all">ทั้งหมด</option>
+          </select>
+        </div>
         <table>
           <thead>
             <tr>
