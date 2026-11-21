@@ -153,3 +153,22 @@ test.describe("workflow local journeys", () => {
     expect(await page.locator("#childDocumentFiles .file-link").evaluateAll((links) => links.map((link) => new URL(link.href).pathname))).toEqual(linksBefore);
   });
 });
+
+test("transaction scope shows only my transactions and survives reload", async ({ authenticatedPage: page }) => {
+  await page.route("**/api/workflow-transactions", route => route.fulfill({ json: { transactions: [
+    { transactionNo: "TXN-2026-11-9001", title: "My transaction", ownerUserId: "employee-a", status: "in_progress" },
+    { transactionNo: "TXN-2026-11-9002", title: "Other transaction", ownerUserId: "employee-b", status: "completed" },
+    { transactionNo: "TXN-2026-11-9003", title: "Legacy transaction", status: "in_progress" },
+  ] } }));
+  await page.goto("/workflow-transactions");
+  await expect(page.locator("#transactionRows")).toContainText("Other transaction");
+  await page.getByLabel("แสดงรายการ").selectOption("mine");
+  await expect(page.locator("#transactionRows tr")).toHaveCount(1);
+  await expect(page.locator("#transactionRows")).toContainText("My transaction");
+  await page.reload();
+  await expect(page.getByLabel("แสดงรายการ")).toHaveValue("mine");
+  await expect(page.locator("#transactionRows tr")).toHaveCount(1);
+  await expect(page.locator("#transactionRows")).toContainText("My transaction");
+  await page.getByLabel("แสดงรายการ").selectOption("all");
+  await expect(page.locator("#transactionRows tr")).toHaveCount(3);
+});

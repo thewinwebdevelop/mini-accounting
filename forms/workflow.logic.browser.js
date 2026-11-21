@@ -369,6 +369,7 @@ function documentKindLabelFor(documentKind) {
 // ---------------------------------------------------------------------------
 
 const transactionsListState = {
+  userId: "",
   templates: [],
   transactions: [],
 };
@@ -467,21 +468,32 @@ function collectStartTransactionPayload() {
   };
 }
 
+function renderFilteredTransactions() {
+  const scope = document.querySelector("#transactionScope")?.value || "all";
+  const transactions = transactionsListState.transactions.filter(transaction => (
+    scope !== "mine" || !!transactionsListState.userId
+      && (transaction.ownerUserId || transaction.payload?.ownerUserId) === transactionsListState.userId
+  ));
+  renderTransactionRows(document.querySelector("#transactionRows"), transactions);
+}
+
 async function loadTransactionsPageData() {
   const root = document.querySelector("#transactionsPage");
   const templatesUrl = (root && root.dataset.templatesUrl) || "/api/workflow-templates";
   const transactionsUrl = (root && root.dataset.transactionsUrl) || "/api/workflow-transactions";
 
-  const [templatesResult, transactionsResult] = await Promise.all([
+  const [templatesResult, transactionsResult, session] = await Promise.all([
     fetchJson(templatesUrl),
     fetchJson(transactionsUrl),
+    fetchJson("/api/auth/me"),
   ]);
 
+  transactionsListState.userId = session.user?.userId || "";
   transactionsListState.templates = templatesResult.templates || [];
   transactionsListState.transactions = transactionsResult.transactions || [];
 
   renderStartTemplateOptions(document.querySelector("#startTemplateSelect"), transactionsListState.templates);
-  renderTransactionRows(document.querySelector("#transactionRows"), transactionsListState.transactions);
+  renderFilteredTransactions();
 }
 
 async function startTransaction() {
@@ -507,6 +519,17 @@ function initTransactionsPage() {
   const form = document.querySelector("#startTransactionForm");
   const startButton = document.querySelector("#startTransactionButton");
   const statusBox = document.querySelector("#startTransactionStatus");
+
+  const scope = document.querySelector("#transactionScope");
+  if (scope) {
+    scope.value = getQueryParam("scope") === "mine" ? "mine" : "all";
+    scope.addEventListener("change", () => {
+      const url = new URL(location.href);
+      url.searchParams.set("scope", scope.value);
+      history.replaceState(null, "", url);
+      renderFilteredTransactions();
+    });
+  }
 
   if (form) form.addEventListener("submit", (event) => event.preventDefault());
 

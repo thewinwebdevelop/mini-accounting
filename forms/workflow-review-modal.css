@@ -50,3 +50,11 @@
   .workflow-review-fields { grid-template-columns: 1fr; }
   .workflow-review-card { padding: 16px; }
 }
+
+.review-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid #cbd2d9; }
+.review-tabs button { padding: 8px 12px; background: transparent; color: #526677; border: 0; border-bottom: 3px solid transparent; font: inherit; cursor: pointer; }
+.review-tabs button[aria-selected="true"] { color: #0f766e; border-bottom-color: currentColor; font-weight: 700; }
+#reviewPdf canvas { width: 100%; height: auto; border: 1px solid #cbd2d9; margin-top: 8px; }
+#reviewPdf [data-pagination] { margin: 8px 0; }
+#reviewPdf [hidden] { display: none; }
+#reviewPdf [role="status"]:empty { display: none; }

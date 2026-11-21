@@ -89,8 +89,10 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function setStatus(message, kind = "") {
+    statusBox.setAttribute("role", kind === "error" ? "alert" : "status");
     statusBox.className = `status-box active ${kind}`;
     statusBox.textContent = message;
+    if (kind === "error") statusBox.scrollIntoView?.({ block: "nearest" });
   }
 
   function clearStatus() {
@@ -493,21 +495,37 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function saveWorkflowDocumentSubmission() {
+  async function saveWorkflowDocumentSubmission({ submitting = false } = {}) {
     clearStatus();
     const payload = collectPayload();
     const errors = logic.validateWorkflowDocumentPayload(payload);
     if (errors.length) throw new Error(errors.join("\n"));
 
-    const result = await api("/api/workflow-documents", {
-      method: "POST",
-      body: buildMultipartPayload(payload),
-    });
+    const hasUpload = !!form.querySelector('[name="evidence_evidence"]')?.files?.length;
+    const body = buildMultipartPayload(payload);
+    let result;
+    try {
+      result = await api("/api/workflow-documents", { method: "POST", body });
+    } catch (error) {
+      if (!hasUpload) throw error;
+      const retry = submitting
+        ? "ยังไม่ได้ส่งอนุมัติ กดส่งตรวจอนุมัติอีกครั้งได้โดยใช้ไฟล์เดิม"
+        : "กดบันทึกเอกสารอีกครั้งได้โดยใช้ไฟล์เดิม";
+      const reason = error instanceof TypeError ? "ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต" : error.message;
+      throw new Error(`อัปโหลดไฟล์แนบไม่สำเร็จ
+${retry}
+${reason}`);
+    }
 
     adoptAuthoritativeResult(result);
     formDirty = false;
     let vendorPresetError = "";
     try { await vendorPicker?.saveVendorPresetIfRequested(); } catch (error) { vendorPresetError = `บันทึกเอกสารแล้ว แต่บันทึกผู้ขายไม่สำเร็จ: ${error.message}`; }
+    if (Array.isArray(result.rawFiles)) {
+      const previous = state.existingEvidenceFiles;
+      state.existingEvidenceFiles = result.rawFiles.map(name => previous.find(file => file?.name === name) || name);
+      renderExistingEvidenceFiles(state.existingEvidenceFiles);
+    }
     clearSubmittedUploads();
     setStatus(vendorPresetError || `บันทึกเอกสาร ${state.documentNo} แล้ว\nPDF ${(result.pdfFiles || []).length} ไฟล์`, vendorPresetError ? "error" : "success");
   }
@@ -520,6 +538,7 @@ window.addEventListener("DOMContentLoaded", () => {
     return {
       mode,
       documentLabel: definition?.label || state.documentKind,
+      detailUrl: `/api/workflow-documents/${encodeURIComponent(state.documentKind)}/${encodeURIComponent(state.documentNo)}`,
       documentNo: state.documentNo,
       fields: [
         { label: "ชื่อเอกสาร", value: payload.title },
@@ -545,6 +564,9 @@ window.addEventListener("DOMContentLoaded", () => {
   async function transitionWorkflowDocument(action, reason = "") {
     if (!state.documentNo) return;
     clearStatus();
+    if (action === "submit" && (formDirty || form.querySelector('[name="evidence_evidence"]')?.files?.length)) {
+      await saveWorkflowDocumentSubmission({ submitting: true });
+    }
     const body = action === "complete"
       ? { completedBy: "" }
       : action === "reject"

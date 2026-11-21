@@ -499,13 +499,16 @@ function withWorkflowCancellationSnapshot(transaction, snapshot) {
   };
 }
 
-async function persistCloudWorkflowTransactionMutationNow(transactionNo, { retryMutation, snapshot = null } = {}) {
+async function persistCloudWorkflowTransactionMutationNow(transactionNo, { retryMutation, snapshot = null, driveSync } = {}) {
   if (!cloudRun) return null;
   let transaction = await getWorkflowTransaction(rootDir, transactionNo);
   let expectedSourceHash = takeCloudDocumentSourceHash("workflow_transaction", transactionNo);
   if (!transaction) throw new Error("ไม่พบธุรกรรม");
   transaction = withWorkflowCancellationSnapshot(transaction, snapshot);
   for (let attempt = 0; ; attempt += 1) {
+    // On a version conflict retain the upload result and merge it into the
+    // latest transaction. Retrying the upload could duplicate Drive files.
+    if (driveSync) transaction = { ...transaction, driveSync };
     try {
       await documentDataAdapter.save({
         documentKind: "workflow_transaction",
@@ -558,6 +561,7 @@ async function persistCloudDocumentMutation({ documentKind, documentNo, result, 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -1954,13 +1958,14 @@ async function handleWorkflowDocumentSubmission(request, response) {
     // draft. Never trust a client-supplied company object for this header.
     const company = await resolveCompanySettings();
     const payload = buildWorkflowDocumentPayload({ ...data, company, ...serverOwnedFields });
+    const { payload: savedPayload, ...saved } = await saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver });
     const result = await documentDataAdapter.save({
       documentKind: payload.documentKind,
       documentNo: payload.documentNo,
-      payload,
+      payload: savedPayload,
       expectedSourceHash,
       createOnly: !requestedDocumentNo,
-      localSave: () => saveWorkflowDocument({ rootDir, payload, uploads: files, vendorResolver }),
+      localSave: async () => saved,
     });
 
     sendJson(response, 200, omitAbsoluteFolderPath(result));
@@ -2458,6 +2463,7 @@ async function handleWorkflowTransactionDriveSync(transactionNo, response) {
   try {
     await ensureLocalCloudWorkflowTransaction(transactionNo);
     const result = await syncWorkflowTransactionToDrive({ rootDir, transactionNo });
+    await persistCloudWorkflowTransactionMutation(transactionNo, { driveSync: result });
     sendJson(response, 200, result);
   } catch (error) {
     sendWorkflowMutationError(response, error, "ไม่สามารถซิงก์ธุรกรรมไปยัง Google Drive ได้");
@@ -2828,7 +2834,7 @@ async function handleSubmittedExpenseRequestGet(requestNo, response) {
       localLoad: () => getSubmittedExpenseRequest(rootDir, requestNo),
     });
     const result = await documentDataAdapter.get({ localResult, documentKind: "expense_request", documentNo: requestNo });
-    sendJson(response, 200, result);
+    sendJson(response, 200, result && localResult?.pdfFiles?.length ? { ...result, pdfFiles: localResult.pdfFiles } : result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load expense request" });
   }
@@ -2842,7 +2848,7 @@ async function handleSubmittedSubstituteReceiptGet(receiptNo, response) {
       localLoad: () => getSubmittedSubstituteReceipt(rootDir, receiptNo),
     });
     const result = await documentDataAdapter.get({ localResult, documentKind: "substitute_receipt", documentNo: receiptNo });
-    sendJson(response, 200, result);
+    sendJson(response, 200, result && localResult?.pdfFiles?.length ? { ...result, pdfFiles: localResult.pdfFiles } : result);
   } catch (error) {
     sendJson(response, error.statusCode || (error.code === "INVALID_DOCUMENT_NUMBER" ? 400 : 404), { ...(error.code ? { code: error.code } : {}), error: error.message || "Cannot load substitute receipt" });
   }

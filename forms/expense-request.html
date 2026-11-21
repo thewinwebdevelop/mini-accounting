@@ -2015,6 +2015,7 @@
       return {
         mode,
         documentLabel: "ใบเบิกจ่าย",
+        detailUrl: `/api/expense-requests/${encodeURIComponent(currentRequestNo)}`,
         documentNo: currentRequestNo || nextRequestInfo.requestNo || "ฉบับใหม่",
         fields: [
           { label: "วันที่เอกสาร", value: data.expenseDate },

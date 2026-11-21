@@ -1,3 +1,4 @@
+import { checkApprovalPreview } from "../pages/approval-preview.mjs";
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
 import { SubstituteReceiptPage } from "../pages/substitute-receipt.page.mjs";
@@ -41,10 +42,16 @@ for (const receiptType of ["general_expense", "stock_purchase"]) {
     const submitted = await receipt.submit();
     expect(submitted.status).toBe("pending_approval");
     const accounting = await SubstituteReceiptPage.accountingPage(browser, localApp);
+    await accounting.setViewportSize(authenticatedPage.viewportSize());
     try {
       const review = new SubstituteReceiptPage(accounting, draft.receiptNo, { runId: localApp.runId, workerIndex: testInfo.workerIndex });
       await review.open();
-      await review.approve();
+      await accounting.locator("#approveReceipt").click();
+      if (receiptType === "general_expense") await checkApprovalPreview(accounting, draft.receiptNo);
+      const approved = accounting.waitForResponse(response => response.url().endsWith(`/${draft.receiptNo}/approve`));
+      await accounting.locator("#workflowReviewConfirm").click();
+      expect((await approved).ok()).toBe(true);
+      await review.reload();
       if (receiptType === "stock_purchase") {
         const retryAccounting = await SubstituteReceiptPage.accountingPage(browser, localApp);
         try {

@@ -3278,6 +3278,7 @@ async function saveWorkflowDocumentUnlocked({ rootDir, payload, uploads = [], ex
   }
 
   return {
+    payload: finalPayload,
     documentKind: finalPayload.documentKind,
     documentNo: finalPayload.documentNo,
     status: finalPayload.status,
@@ -4856,16 +4857,13 @@ async function refreshWorkflowTransaction({
   await assertWorkflowCancellationBarrier(rootDir, transaction);
 
   const childDocuments = await findWorkflowChildDocuments(rootDir, transactionNo);
-  const updated = {
-    ...deriveWorkflowProgress(transaction, childDocuments),
-    updatedAt: now(),
-  };
-
-  await withWorkflowMutationGate(rootDir, transactionNo, async () => {
+  const updated = await withWorkflowMutationGate(rootDir, transactionNo, async () => {
     const latest = await getWorkflowTransaction(rootDir, transactionNo);
     if (!latest) throw new Error("ไม่พบธุรกรรม");
     await assertWorkflowCancellationBarrier(rootDir, latest);
-    await persistWorkflowTransaction(rootDir, updated, childDocuments);
+    const refreshed = { ...deriveWorkflowProgress(latest, childDocuments), updatedAt: now() };
+    await persistWorkflowTransaction(rootDir, refreshed, childDocuments);
+    return refreshed;
   });
 
   // childDocuments is derived, not persisted state (see persistWorkflowTransaction
@@ -5431,10 +5429,12 @@ async function runWorkflowTransactionDriveSync({ rootDir, transactionNo, driveUp
     };
 
     await withWorkflowMutationGate(rootDir, transactionNo, async () => {
-      await assertWorkflowCancellationBarrier(rootDir, transaction);
+      const latest = await getWorkflowTransaction(rootDir, transactionNo);
+      if (!latest) throw new Error("ไม่พบธุรกรรม");
+      await assertWorkflowCancellationBarrier(rootDir, latest);
       await persistWorkflowTransaction(
         rootDir,
-        { ...transaction, driveSync: metadata, updatedAt: finishedAt },
+        { ...latest, driveSync: metadata, updatedAt: finishedAt },
         childDocuments,
       );
     });

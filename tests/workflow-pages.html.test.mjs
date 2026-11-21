@@ -438,6 +438,7 @@ test("saving without picking any document raises a Thai validation error and doe
 // GET/POST /api/workflow-transactions.
 function createTransactionsStubFetch({ templates, transactions, onStart }) {
   return async (url, options = {}) => {
+    if (url === "/api/auth/me") return { ok: true, json: async () => ({ user: { userId: "employee-a" } }) };
     if (url.includes("/api/workflow-templates")) {
       return { ok: true, json: async () => ({ templates }) };
     }

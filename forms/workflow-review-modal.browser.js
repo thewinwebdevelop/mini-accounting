@@ -30,12 +30,28 @@
           return `<li>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>` : escapeHtml(name)}</li>`;
         }).join("")}</ul></div>`
       : '<div class="workflow-review-section"><h3>ไฟล์แนบ</h3><p>ไม่มีไฟล์แนบ</p></div>';
-    container.innerHTML = `
+    const summary = `
       <div class="workflow-review-heading"><strong>${escapeHtml(displayValue(model.documentLabel))}</strong><span>${escapeHtml(displayValue(model.documentNo))}</span></div>
       <dl class="workflow-review-fields">${fieldMarkup}</dl>
       ${lineMarkup}
       ${fileMarkup}
     `;
+    container.innerHTML = model.mode !== "approve" ? summary : `
+      <div class="review-tabs" role="tablist" aria-label="ตรวจสอบเอกสาร">
+        <button id="reviewSummaryTab" role="tab" type="button" aria-selected="true" aria-controls="reviewSummary">ข้อมูลสรุป</button>
+        <button id="reviewPdfTab" role="tab" type="button" aria-selected="false" aria-controls="reviewPdf" tabindex="-1">PDF ฉบับเต็ม</button>
+      </div>
+      <div id="reviewSummary" role="tabpanel" aria-labelledby="reviewSummaryTab">${summary}</div>
+      <div id="reviewPdf" role="tabpanel" aria-labelledby="reviewPdfTab" hidden>
+        <p role="status"></p>
+        <button type="button" class="button secondary" data-retry-pdf hidden>ลองโหลด PDF อีกครั้ง</button>
+        <a data-open-pdf target="_blank" rel="noopener" hidden>เปิด PDF เต็มจอ</a>
+        <div data-pagination hidden>
+          <button type="button" class="button secondary" data-previous disabled>หน้าก่อนหน้า</button>
+          <button type="button" class="button secondary" data-next disabled>หน้าถัดไป</button>
+        </div>
+        <canvas role="img" hidden></canvas>
+      </div>`;
   }
 
   function create(options = {}) {
@@ -50,7 +66,85 @@
     const reasonError = options.reasonError;
     let pending = null;
 
+    let preview = null;
+
+    function clearPreview() {
+      preview?.abort();
+      preview = null;
+    }
+
+    async function loadPreview() {
+      if (preview || !pending) return;
+      const controller = new AbortController();
+      preview = controller;
+      const panel = content.querySelector("#reviewPdf");
+      const status = panel.querySelector('[role="status"]');
+      const retry = panel.querySelector("[data-retry-pdf]");
+      retry.hidden = true;
+      status.textContent = "กำลังโหลด PDF…";
+      try {
+        const options = { cache: "no-store", signal: controller.signal };
+        const response = await fetch(pending.detailUrl, options);
+        if (!response.ok) throw new Error();
+        const record = await response.json();
+        const files = (record.pdfFiles || record.payload?.pdfFiles || []).filter(file => file?.url);
+        const file = files.find(file => /audit-packet\.pdf$/i.test(file.name)) || files[0];
+        if (!file) throw new Error();
+        const url = new URL(file.url, location.origin);
+        if (url.origin !== location.origin) throw new Error();
+        const pdf = await fetch(url, options);
+        if (!pdf.ok) throw new Error();
+        const blob = await pdf.blob();
+        if (await blob.slice(0, 5).text() !== "%PDF-") throw new Error();
+        if (controller.signal.aborted) return;
+        const link = panel.querySelector("[data-open-pdf]");
+        link.href = url.href;
+        link.hidden = false;
+        const { showPdf } = await import("/workflow-pdf-preview.mjs");
+        await showPdf(panel, blob, controller.signal);
+      } catch {
+        if (!controller.signal.aborted) {
+          status.textContent = "โหลด PDF ไม่สำเร็จ";
+          retry.hidden = false;
+        }
+      }
+    }
+
+    function selectTab(tab) {
+      const showPdf = tab.id === "reviewPdfTab";
+      for (const button of content.querySelectorAll('[role="tab"]')) {
+        const selected = tab === button;
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        content.querySelector("#" + button.getAttribute("aria-controls")).hidden = !selected;
+      }
+      if (showPdf) loadPreview();
+    }
+
+    content?.addEventListener("click", event => {
+      const tab = event.target.closest('[role="tab"]');
+      if (tab) selectTab(tab);
+      if (event.target.closest("[data-retry-pdf]")) {
+        clearPreview();
+        loadPreview();
+      }
+    });
+    content?.addEventListener("keydown", event => {
+      if (event.target.getAttribute("role") !== "tab") return;
+      const tabs = Array.from(content.querySelectorAll('[role="tab"]'));
+      let next;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") next = tabs.find(tab => tab !== event.target);
+      if (event.key === "Home") next = tabs[0];
+      if (event.key === "End") next = tabs[1];
+      if (next) {
+        event.preventDefault();
+        next.focus();
+        selectTab(next);
+      }
+    });
+
     function close() {
+      clearPreview();
       if (dialog) dialog.hidden = true;
       if (reasonField) reasonField.hidden = true;
       if (reasonInput) reasonInput.value = "";
@@ -59,6 +153,7 @@
     }
 
     function open(model) {
+      clearPreview();
       pending = model;
       if (title) title.textContent = model.mode === "approve" ? "ตรวจสอบเอกสารก่อนอนุมัติ" : "ตรวจสอบเอกสารก่อนส่งตรวจอนุมัติ";
       renderReview(content, model);

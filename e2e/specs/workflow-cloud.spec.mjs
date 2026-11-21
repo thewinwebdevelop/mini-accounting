@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
 import { WorkflowTransactionsPage, WorkflowTransactionPage } from "../pages/workflow.page.mjs";
+import { WorkflowDocumentPage } from "../pages/workflow-document.page.mjs";
 import { createTestSession } from "../fixtures/auth.fixture.mjs";
 import { createRequire } from "node:module";
 
@@ -16,6 +17,30 @@ async function openCloudWorkflow(page, transactionNo) {
 }
 
 test.describe("workflow cloud runtime mocked", () => {
+  test("submitted voucher retains its evidence metadata in Supabase", async ({ browser, cloudRuntime }) => {
+    const context = await browser.newContext({ baseURL: cloudRuntime.baseUrl });
+    await context.addCookies([{ name: "sweet_house_session", value: cloudRuntime.sessionToken, url: cloudRuntime.baseUrl }]);
+    try {
+      const page = await context.newPage();
+      const voucher = new WorkflowDocumentPage(page, "payment_voucher");
+      await voucher.open();
+      await voucher.fill({ title: "Cloud voucher", purpose: "Payment", vendor: "Fixture Supplies", beforeVat: "800", vatMode: "manual", vatAmount: "0", withholdingTax: "0" });
+      await voucher.save();
+      await page.locator('[name=evidence_evidence]').setInputFiles({
+        name: "slip.png", mimeType: "image/png",
+        buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAF0lEQVR4nGNkYPjPQAgwEVQxqmgAggAAzeIBF5UyoZcAAAAASUVORK5CYII=", "base64"),
+      });
+      await page.locator("#submitWorkflowDocument").click();
+      await page.locator("#workflowReviewConfirm").click();
+      await expect(page.locator("#workflowDocumentStatus")).toContainText("ตรวจอนุมัติแล้ว");
+      const record = cloudRuntime.cloudState.documents.get(`document:payment_voucher:${voucher.documentNo}`);
+      expect(record.payload.evidenceFiles.evidence).toMatchObject([{ originalName: "slip.png", storedName: "evidence_001.png" }]);
+      await voucher.reload();
+      await expect(page.locator("#existingEvidenceFiles")).toContainText("evidence_001.png");
+      await expect(page.locator("#documentStatusPreview")).toHaveText("รอตรวจอนุมัติ");
+    } finally { await context.close(); }
+  });
+
   test("transaction list derives completed steps when the Supabase parent status is stale", async ({ browser, cloudRuntime }) => {
     const secret = "e2e-test-session-secret-012345678901234567890123";
     const ownerToken = createTestSession({ ...cloudRuntime.users.owner, secret });
@@ -214,6 +239,37 @@ test.describe("workflow cloud runtime mocked", () => {
     expect(closed.completedAt).toBeTruthy();
     expect(cloudRuntime.cloudState.documents.get(sourceKey)?.payload?.completedAt).toBeTruthy();
     expect(cloudRuntime.cloudState.documents.get(sourceKey)?.status).toBe("completed");
+    // Simulate a workflow whose financial entry was synced by a prior instance.
+    const saved = cloudRuntime.cloudState.documents.get(sourceKey);
+    const spreadsheetUrl = "https://docs.google.com/spreadsheets/d/cloud-sheet/edit";
+    const payload = { ...saved.payload, sheetSync: {
+      syncStatus: "synced", sourceKey: `workflow_transaction:${transaction.transactionNo}`,
+      sourceDocumentKind: "expense_request", sourceDocumentNo: "REQ-2026-11-9999",
+      spreadsheetId: "cloud-sheet", spreadsheetUrl, sheetName: transaction.accountingMonth,
+      rowNumber: 4, syncedAt: closed.completedAt, updatedAt: closed.completedAt,
+    } };
+    cloudRuntime.cloudState.documents.set(sourceKey, { ...saved, payload, source_hash: canonicalHash(payload) });
+    await openCloudWorkflow(first.page, transaction.transactionNo);
+    await expect(first.page.locator("#sheetSyncStatus")).toContainText("REQ-2026-11-9999");
+    // This isolated runtime has no Google credentials. Its failed Drive result
+    // must survive reopening just as a successful upload does.
+    await first.page.locator("#syncDriveButton").click();
+    await expect(first.page.locator("#driveSyncStatus")).toContainText("ซิงก์ Google Drive ไม่สำเร็จ");
+    const driveStatus = await first.page.locator("#driveSyncStatus").innerText();
+    await openCloudWorkflow(first.page, transaction.transactionNo);
+    await expect(first.page.locator("#driveSyncStatus")).toHaveText(driveStatus);
+    await expect(first.page.locator("#sheetSyncStatus")).toContainText("REQ-2026-11-9999");
+    await expect(first.page.locator("#sheetSyncLink")).toHaveAttribute("href", spreadsheetUrl);
+
+    cloudRuntime.cloudState.driveCredentials = {
+      "google-drive-config": { clientId: "fixture", clientSecret: "fixture", driveBasePath: "workflow" },
+      "google-drive-token": { access_token: "fixture", refresh_token: "fixture", expiresAt: Date.now() + 3600000 },
+    };
+    await first.page.locator("#syncDriveButton").click();
+    await expect(first.page.locator("#driveSyncStatus")).toHaveText("ซิงก์ Google Drive สำเร็จแล้ว");
+    const driveLink = first.page.locator("#workflowDriveFolderLink");
+    await expect(driveLink).toHaveAttribute("href", /^https:\/\/drive\.google\.com\/drive\/folders\/fixture-folder-/);
+    const driveUrl = await driveLink.getAttribute("href");
     await first.context.close();
 
     const restarted = await cloudRuntime.restartApp();
@@ -227,6 +283,10 @@ test.describe("workflow cloud runtime mocked", () => {
     await row.getByRole("link", { name: "เปิดธุรกรรม" }).click();
     await expect(reopened.page.locator("#completeTransactionButton")).toHaveText("ปิดงานธุรกรรมแล้ว");
     expect(await reloaded.detail()).toMatchObject({ status: "completed", completedAt: closed.completedAt });
+    await openCloudWorkflow(reopened.page, transaction.transactionNo);
+    await expect(reopened.page.locator("#driveSyncStatus")).toHaveText("ซิงก์ Google Drive สำเร็จแล้ว");
+    await expect(reopened.page.locator("#workflowDriveFolderLink")).toHaveAttribute("href", driveUrl);
+    await expect(reopened.page.locator("#sheetSyncLink")).toHaveAttribute("href", spreadsheetUrl);
     await reopened.context.close();
     await restarted.stop();
   });

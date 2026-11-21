@@ -870,6 +870,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     return {
       mode,
       documentLabel: "ใบรับรองแทนใบเสร็จรับเงิน",
+      detailUrl: `/api/substitute-receipts/${encodeURIComponent(state.receiptNo)}`,
       documentNo: state.receiptNo || "ฉบับใหม่",
       fields: [
         { label: "วันที่เอกสาร", value: payload.receiptDate },

@@ -6,6 +6,7 @@ const ENDPOINTS = {
   supabase: [
     ["GET", "/rest/v1/fixture_probe", "none"], ["GET", "/rest/v1/e2e_documents", "none"], ["POST", "/rest/v1/e2e_documents", "none"],
     ["GET", "/rest/v1/e2e_reservations", "none"], ["POST", "/rest/v1/e2e_reservations", "none"],
+    ["GET", "/rest/v1/integration_credentials", "drive-credentials"],
     ["GET", "/rest/v1/app_users", "app-users"], ["POST", "/rest/v1/app_users", "app-users"],
     ["POST", "/rest/v1/rpc/allocate_workflow_transaction_number", "none"], ["POST", "/rest/v1/rpc/allocate_accounting_document_number", "none"], ["POST", "/rest/v1/rpc/compare_and_swap_document", "none"], ["POST", "/rest/v1/rpc/commit_document_file_manifest", "none"], ["POST", "/rest/v1/documents", "on_conflict=source_key"], ["GET", "/rest/v1/documents", "query"],
     ["POST", "/rest/v1/document_files", "on_conflict=source_key"], ["GET", "/rest/v1/document_files", "query"], ["POST", "/rest/v1/storage_migration_records", "migration-conflict"],
@@ -24,6 +25,7 @@ function matchEndpoint(provider, method, pathname, search) {
   for (const [allowedMethod, route, queryRule] of ENDPOINTS[provider] || []) {
     if (allowedMethod !== method || (route instanceof RegExp ? !route.test(pathname) : route !== pathname)) continue;
     if (queryRule === "none" && search) continue;
+    if (queryRule === "drive-credentials" && !/^\?credential_key=eq\.google-drive-(config|token)&select=payload&limit=1$/.test(search)) continue;
     if (queryRule === "on_conflict=source_key" && search !== "?on_conflict=source_key") continue;
     if (queryRule === "migration-conflict" && search !== "?on_conflict=migration_name%2Csource_key" && search !== "?on_conflict=migration_name,source_key") continue;
     if (queryRule.startsWith("shopee-") && !validShopeeQuery(queryRule, search)) continue;
@@ -157,6 +159,14 @@ export async function createMockProviders({ profile = "local", runId = "run", st
           return json(response, 200, row ? [row] : []);
         }
         if (provider === "supabase" && ["/rest/v1/app_user_profiles", "/rest/v1/company_positions", "/rest/v1/company_settings"].includes(parsed.pathname)) return json(response, 200, []);
+        if (endpoint.queryRule === "drive-credentials") {
+          const key = parsed.searchParams.get("credential_key").slice(3);
+          const payload = state.driveCredentials?.[key];
+          return json(response, 200, payload ? [{ payload }] : []);
+        }
+        if (provider === "google" && endpoint.queryRule === "drive-create" && !scripted) {
+          return json(response, 200, { id: `fixture-folder-${requests.length}`, name: parseJson(body).name });
+        }
         if (provider === "google" && endpoint.queryRule === "upload-init") {
           const uploadId = `upload-${state.uploadSessions.size + 1}`;
           state.uploadSessions.set(uploadId, { body: parseJson(body), fileId: parsed.pathname.split("/").at(-1) });

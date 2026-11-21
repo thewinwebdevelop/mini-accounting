@@ -597,6 +597,7 @@
       return {
         mode: "approve",
         documentLabel: "ใบเบิกจ่าย",
+        detailUrl: `/api/expense-requests/${encodeURIComponent(request.requestNo || payload.requestNo)}`,
         documentNo: request.requestNo || payload.requestNo || "",
         fields: [
           { label: "วันที่เอกสาร", value: payload.expenseDate },

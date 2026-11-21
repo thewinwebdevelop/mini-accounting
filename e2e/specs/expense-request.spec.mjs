@@ -1,3 +1,4 @@
+import { checkApprovalPreview } from "../pages/approval-preview.mjs";
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
 import { ExpenseRequestPage } from "../pages/expense-request.page.mjs";
@@ -36,15 +37,25 @@ test.describe("expense request journeys", () => {
     const number = (await request.detail()).requestNo;
     await request.submit();
     const accounting = await ExpenseRequestPage.accountingPage(browser, localApp);
+    await accounting.setViewportSize(authenticatedPage.viewportSize());
     try {
       const accountingRequest = new ExpenseRequestPage(accounting, number);
       await accountingRequest.open();
       await accountingRequest.reject("needs correction");
       expect((await accountingRequest.detail()).status).toBe("draft");
       await request.reload();
+      await expect(authenticatedPage.locator("#requestTitle")).toHaveValue("E2E expense lifecycle");
       await request.submit();
       await accountingRequest.reload();
-      await accountingRequest.approve();
+      await accounting.locator("#approveRequest").click();
+      await checkApprovalPreview(accounting, number, { auditPacket: true });
+      await accounting.locator("#workflowReviewCancel").click();
+      await accounting.goto("/expense-requests");
+      await accounting.locator(`[data-approve="${number}"]`).click();
+      await checkApprovalPreview(accounting, number, { auditPacket: true });
+      const approved = accounting.waitForResponse(response => response.url().endsWith(`/${number}/approve`));
+      await accounting.locator("#workflowReviewConfirm").click();
+      expect((await approved).ok()).toBe(true);
       await accountingRequest.complete();
       const completed = await accountingRequest.detail();
       expect(completed).toMatchObject({ requestNo: number, status: "completed", ownerUserId: "employee-a" });
