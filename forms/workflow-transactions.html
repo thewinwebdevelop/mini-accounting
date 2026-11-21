@@ -273,6 +273,7 @@
     data-templates-url="/api/workflow-templates"
     data-transactions-url="/api/workflow-transactions"
   >
+    <p><a class="button" href="/assistant-invoice-import">นำเข้าใบกำกับภาษีจากผู้ช่วย</a></p>
     <form class="section" id="startTransactionForm">
       <div class="section-header">
         <h2 class="section-title">เริ่ม Workflow ธุรกรรมใหม่</h2>
@@ -302,6 +303,16 @@
         <h2 class="section-title">ธุรกรรมทั้งหมด</h2>
       </div>
       <div class="section-body" style="padding: 0;">
+        <div class="field" style="padding: 14px; max-width: 280px;">
+          <label for="transactionStatusFilter">กรองตามสถานะ</label>
+          <select id="transactionStatusFilter">
+            <option value="in_progress" selected>กำลังดำเนินการ</option>
+            <option value="completed">เสร็จสมบูรณ์</option>
+            <option value="cancellation_pending">รอดำเนินการยกเลิก</option>
+            <option value="cancelled">ยกเลิกแล้ว</option>
+            <option value="all">ทั้งหมด</option>
+          </select>
+        </div>
         <table>
           <thead>
             <tr>

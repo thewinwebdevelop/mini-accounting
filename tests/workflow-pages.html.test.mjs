@@ -532,6 +532,43 @@ test("transactions page renders the template picker and the existing transaction
   assert.match(rowText, new RegExp(workflowLogic.getDocumentTypeDefinition("substitute_receipt").label));
 });
 
+test("transactions default to in-progress and filter every displayed status without losing rows", async () => {
+  const transactions = [
+    { transactionNo: "ACTIVE", status: "in_progress" },
+    { transactionNo: "DONE", status: "completed" },
+    { transactionNo: "PENDING", status: "cancellation_pending" },
+    { transactionNo: "CANCELLED", status: "cancelled" },
+    { transactionNo: "NORMALIZED", status: "cancelled", completedAt: "2026-11-20T00:00:00Z" },
+  ];
+  const { elements } = await setupTransactionsPageSandbox({ templates: [], transactions });
+  const numbers = () => elements.transactionRows.querySelectorAll("tr")
+    .filter((row) => row.children.length === 6).map((row) => row.children[1].textContent);
+  assert.deepEqual(numbers(), ["ACTIVE"]);
+  assert.equal(elements.transactionStatusFilter.value, "in_progress");
+  for (const [status, expected] of [
+    ["completed", ["DONE", "NORMALIZED"]],
+    ["cancellation_pending", ["PENDING"]],
+    ["cancelled", ["CANCELLED"]],
+    ["all", ["ACTIVE", "DONE", "PENDING", "CANCELLED", "NORMALIZED"]],
+    ["in_progress", ["ACTIVE"]],
+  ]) {
+    elements.transactionStatusFilter.value = status;
+    elements.transactionStatusFilter.dispatch("change");
+    assert.deepEqual(numbers(), expected);
+  }
+});
+
+test("transactions show an empty result when no rows match the selected status", async () => {
+  const { elements } = await setupTransactionsPageSandbox({
+    templates: [], transactions: [{ transactionNo: "DONE", status: "completed" }],
+  });
+  assert.match(elements.transactionRows.querySelector(".empty-row").textContent, /ไม่พบธุรกรรม/);
+  assert.equal(elements.transactionRows.querySelector(".empty-row").colSpan, 6);
+  elements.transactionStatusFilter.value = "all";
+  elements.transactionStatusFilter.dispatch("change");
+  assert.equal(elements.transactionRows.querySelectorAll("tr")[0].children[1].textContent, "DONE");
+});
+
 test("starting a transaction posts templateId/accountingMonth/title and navigates to the new transaction's detail page", async () => {
   const templates = workflowLogic.getDefaultWorkflowTemplates();
   const target = templates[0];

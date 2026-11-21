@@ -5,6 +5,36 @@ import { test } from "../fixtures/playwright.fixture.mjs";
 import { WorkflowTemplatePage, WorkflowTransactionsPage, WorkflowTransactionPage } from "../pages/workflow.page.mjs";
 
 test.describe("workflow local journeys", () => {
+  test("filters transaction status and opens with in-progress selected", async ({ authenticatedPage: page }) => {
+    await page.route("**/api/workflow-transactions", async (route) => {
+      await route.fulfill({ json: { transactions: [
+        { transactionNo: "FILTER-ACTIVE", title: "Active workflow", status: "in_progress", steps: [] },
+        { transactionNo: "FILTER-DONE", title: "Completed workflow", status: "completed", steps: [] },
+        { transactionNo: "FILTER-CANCELLED", title: "Cancelled workflow", status: "cancelled", steps: [] },
+      ] } });
+    });
+    await new WorkflowTransactionsPage(page).open();
+    const filter = page.getByLabel("กรองตามสถานะ");
+    const links = page.locator("#transactionRows a");
+    await expect(filter).toHaveValue("in_progress");
+    await expect(links).toHaveCount(1);
+    await expect(page.locator("#transactionRows")).toContainText("FILTER-ACTIVE");
+    await filter.selectOption("completed");
+    await expect(links).toHaveCount(1);
+    await expect(page.locator("#transactionRows")).toContainText("FILTER-DONE");
+    await filter.selectOption("cancelled");
+    await expect(links).toHaveCount(1);
+    await expect(page.locator("#transactionRows")).toContainText("FILTER-CANCELLED");
+    await filter.selectOption("cancellation_pending");
+    await expect(links).toHaveCount(0);
+    await expect(page.locator("#transactionRows")).toContainText("ไม่พบธุรกรรม");
+    await filter.selectOption("all");
+    await expect(links).toHaveCount(3);
+    await page.reload();
+    await expect(filter).toHaveValue("in_progress");
+    await expect(links).toHaveCount(1);
+  });
+
   test("edits a template, reloads its ordered steps and preserves receipt type", async ({ ownerPage }) => {
     const templates = new WorkflowTemplatePage(ownerPage);
     await templates.open();
@@ -134,6 +164,7 @@ test.describe("workflow local journeys", () => {
     const cancellationBefore = requested.cancellation;
     const childBefore = requested.childDocuments.map(({ documentKind, documentNo, status, completedAt, workflowStepId }) => ({ documentKind, documentNo, status, completedAt, workflowStepId }));
     await list.open();
+    await page.locator("#transactionStatusFilter").selectOption("all");
     const row = page.locator("#transactionRows tr").filter({ hasText: created.transactionNo });
     await expect(row).toContainText(requested.status === "cancelled" ? "ยกเลิกแล้ว" : "รอดำเนินการยกเลิก");
     await expect(row).not.toContainText("กำลังดำเนินการ");

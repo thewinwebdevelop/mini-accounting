@@ -409,21 +409,23 @@ function currentStepLabelForTransaction(transaction) {
   return documentKindLabelFor(step.documentKind);
 }
 
-function renderTransactionRows(list, transactions) {
+function renderTransactionRows(list, transactions, status = "in_progress") {
   list.replaceChildren();
+  const matchingTransactions = transactions.map(normalizeTransactionForRendering)
+    .filter((transaction) => status === "all" || transaction.status === status);
 
-  if (!transactions.length) {
+  if (!matchingTransactions.length) {
     const emptyRow = document.createElement("tr");
     const emptyCell = document.createElement("td");
     emptyCell.className = "empty-row";
-    emptyCell.textContent = "ยังไม่มีธุรกรรม";
+    emptyCell.colSpan = 6;
+    emptyCell.textContent = transactions.length ? "ไม่พบธุรกรรมในสถานะที่เลือก" : "ยังไม่มีธุรกรรม";
     emptyRow.appendChild(emptyCell);
     list.appendChild(emptyRow);
     return;
   }
 
-  for (const transaction of transactions) {
-    const renderedTransaction = normalizeTransactionForRendering(transaction);
+  for (const renderedTransaction of matchingTransactions) {
     const row = document.createElement("tr");
 
     const statusCell = document.createElement("td");
@@ -481,7 +483,8 @@ async function loadTransactionsPageData() {
   transactionsListState.transactions = transactionsResult.transactions || [];
 
   renderStartTemplateOptions(document.querySelector("#startTemplateSelect"), transactionsListState.templates);
-  renderTransactionRows(document.querySelector("#transactionRows"), transactionsListState.transactions);
+  renderTransactionRows(document.querySelector("#transactionRows"), transactionsListState.transactions,
+    document.querySelector("#transactionStatusFilter").value);
 }
 
 async function startTransaction() {
@@ -507,6 +510,11 @@ function initTransactionsPage() {
   const form = document.querySelector("#startTransactionForm");
   const startButton = document.querySelector("#startTransactionButton");
   const statusBox = document.querySelector("#startTransactionStatus");
+  const statusFilter = document.querySelector("#transactionStatusFilter");
+  statusFilter.value = "in_progress";
+  statusFilter.addEventListener("change", () => {
+    renderTransactionRows(document.querySelector("#transactionRows"), transactionsListState.transactions, statusFilter.value);
+  });
 
   if (form) form.addEventListener("submit", (event) => event.preventDefault());
 
