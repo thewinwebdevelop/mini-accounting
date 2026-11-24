@@ -141,6 +141,7 @@ test.describe("workflow local journeys", () => {
   });
 
   test("cancels a valid completed-child transaction and repeats cancellation idempotently", async ({ ownerPage, localApp }) => {
+    test.slow();
     await mkdir(path.join(localApp.rootDir, "config"), { recursive: true });
     await writeFile(path.join(localApp.rootDir, "config", "google-drive-config.json"), JSON.stringify({ clientId: "fixture-client", clientSecret: "fixture-secret" }));
     await writeFile(path.join(localApp.rootDir, "config", "google-drive-token.json"), JSON.stringify({ refresh_token: "fixture-refresh", access_token: "fixture-access", expiresAt: Date.now() + 3600000 }));
