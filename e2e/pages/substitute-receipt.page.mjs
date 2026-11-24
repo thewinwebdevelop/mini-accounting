@@ -10,7 +10,7 @@ export class SubstituteReceiptPage {
   async ensureStockSku() {
     let stockSkus = (await json(await this.page.request.get("/api/inventory/stock-skus"))).stockSkus || [];
     const suffix = `${this.runId}-${this.workerIndex}`.replace(/[^a-zA-Z0-9-]/g, "-");
-    const expectedSku = `E2E-SKU-${suffix}`;
+    const expectedSku = `E2E-SKU-${suffix}`.toUpperCase();
     const existing = stockSkus.find((sku) => sku.sku === expectedSku);
     if (existing) { this.preparedStockSkus = [existing]; return this.preparedStockSkus; }
     let categories = (await json(await this.page.request.get("/api/inventory/categories"))).categories || [];

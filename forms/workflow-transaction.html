@@ -260,6 +260,13 @@
     }
     .drive-sync-document .title { font-weight: 800; }
     .status.sync_failed { color: #991b1b; background: #fee2e2; }
+    @media (max-width: 800px) {
+      .topbar { flex-wrap: wrap; position: static; }
+      .topbar-info { min-width: 0; overflow-wrap: anywhere; }
+      .topbar > .topbar-actions { flex: 1 0 100%; flex-wrap: wrap; }
+      .topbar > .topbar-actions .button { white-space: normal; text-align: center; }
+    }
+
     @media (max-width: 640px) {
       .checklist-item { flex-wrap: wrap; }
     }

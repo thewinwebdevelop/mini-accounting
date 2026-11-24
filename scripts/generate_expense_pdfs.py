@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 
-from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, Spacer
 
@@ -27,19 +26,19 @@ def signature_table(payload):
     return shared_signatures([
         ("ผู้ขอเบิก", payload.get("requesterName")),
         ("ผู้ตรวจเอกสารบัญชี", ""), ("ผู้อนุมัติ", ""), ("ผู้จ่ายเงิน", ""),
-    ], width=269 * mm, compact=True)
+    ], compact=True)
 
 
 def build_reimbursement_story(payload):
     lines = payload.get("expenseLines") or []
     story = [
-        document_header(payload, "ใบเบิกจ่ายค่าใช้จ่าย", width=269 * mm),
+        document_header(payload, "ใบเบิกจ่ายค่าใช้จ่าย"),
         detail_grid([
             ("ผู้ขอเบิก", payload.get("requesterName")),
             ("ผู้รับเงิน/ผู้ขาย", payload.get("paymentTargetName")),
             ("ประเภทคำขอ", payload.get("requestTypeLabel")),
             ("วัตถุประสงค์ทางธุรกิจ", payload.get("businessPurpose")),
-        ], width=269 * mm),
+        ]),
         paragraph("รายการค่าใช้จ่าย", "DocHeading"),
     ]
 
@@ -48,7 +47,6 @@ def build_reimbursement_story(payload):
         paragraph("วันที่"),
         paragraph("หมวด"),
         paragraph("รายละเอียด"),
-        paragraph("ผู้ขาย"),
         paragraph("ก่อน VAT"),
         paragraph("VAT"),
         paragraph("หัก ณ ที่จ่าย"),
@@ -62,7 +60,6 @@ def build_reimbursement_story(payload):
             paragraph(line.get("date")),
             paragraph(line.get("category")),
             paragraph(line.get("description")),
-            paragraph(line.get("vendor")),
             money_paragraph(line.get("amountBeforeVat")),
             money_paragraph(line.get("vatAmount")),
             money_paragraph(line.get("withholdingTax")),
@@ -72,8 +69,8 @@ def build_reimbursement_story(payload):
     story.extend([
         styled_table(
             expense_rows,
-            col_widths=[12 * mm, 25 * mm, 32 * mm, 64 * mm, 38 * mm, 26 * mm, 20 * mm, 26 * mm, 26 * mm],
-            align_right_cols=[5, 6, 7, 8],
+            col_widths=[width * mm for width in (12, 24, 20, 39, 23, 20, 21, 23)],
+            align_right_cols=[4, 5, 6, 7],
             compact=True,
         ),
         reimbursement_summary(payload),
@@ -90,7 +87,7 @@ def reimbursement_summary(payload):
         ("ยอดรวม", totals.get("grossAmount")),
         ("หัก ณ ที่จ่าย", totals.get("withholdingTax")),
         ("ยอดจ่ายสุทธิ (บาท)", totals.get("netPayment")),
-    ], width=269 * mm, note="")
+    ])
 
 
 def build_audit_story(payload, raw_dir):
@@ -161,7 +158,6 @@ def build_reimbursement_outputs(payload, output_dir, raw_dir):
         "ใบเบิกจ่ายค่าใช้จ่าย",
         payload,
         build_reimbursement_story(payload),
-        page_size=landscape(A4),
     )
     audit_metadata = build_audit_packet_with_annexes(
         audit_path,
