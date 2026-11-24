@@ -49,9 +49,9 @@
 
 ## 4. รายการค่าใช้จ่าย
 
-| ลำดับ | วันที่ | หมวด | รายละเอียด | ผู้ขาย | ยอดก่อน VAT | VAT | ยอดรวม | หัก ณ ที่จ่าย | ยอดจ่ายสุทธิ |
-|---:|---|---|---|---|---:|---:|---:|---:|---:|
-| {{line_no}} | {{line_date}} | {{category}} | {{description}} | {{line_vendor}} | {{amount_before_vat}} | {{vat_amount}} | {{gross_amount}} | {{withholding_tax}} | {{net_payment}} |
+| ลำดับ | วันที่ | หมวด | รายละเอียด | ยอดก่อน VAT | VAT | ยอดรวม | หัก ณ ที่จ่าย | ยอดจ่ายสุทธิ |
+|---:|---|---|---|---:|---:|---:|---:|---:|
+| {{line_no}} | {{line_date}} | {{category}} | {{description}} | {{amount_before_vat}} | {{vat_amount}} | {{gross_amount}} | {{withholding_tax}} | {{net_payment}} |
 
 ## 5. สรุปภาษีและบัญชี
 

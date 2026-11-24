@@ -217,7 +217,7 @@ function formatPayloadMarkdown(payload) {
   const lines = payload.expenseLines
     .map(
       (line, index) =>
-        `| ${index + 1} | ${line.date || ""} | ${line.category || ""} | ${line.description || ""} | ${line.vendor || ""} | ${money(toCents(line.amountBeforeVat))} | ${money(toCents(line.vatAmount))} | ${money(toCents(line.withholdingTax))} | |`,
+        `| ${index + 1} | ${line.date || ""} | ${line.category || ""} | ${line.description || ""} | ${money(toCents(line.amountBeforeVat))} | ${money(toCents(line.vatAmount))} | ${money(toCents(line.withholdingTax))} | |`,
     )
     .join("\n");
 
@@ -240,8 +240,8 @@ function formatPayloadMarkdown(payload) {
 
 ## รายการค่าใช้จ่าย
 
-| ลำดับ | วันที่ | หมวด | รายละเอียด | ผู้ขาย | ก่อน VAT | VAT | หัก ณ ที่จ่าย | หมายเหตุ |
-|---:|---|---|---|---|---:|---:|---:|---|
+| ลำดับ | วันที่ | หมวด | รายละเอียด | ก่อน VAT | VAT | หัก ณ ที่จ่าย | หมายเหตุ |
+|---:|---|---|---|---:|---:|---:|---|
 ${lines}
 
 ## สรุปยอด

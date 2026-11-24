@@ -107,7 +107,7 @@ export class ExpenseRequestPage {
     const rawUrl = detail.rawFiles?.[0]?.url || detail.rawFiles?.[0]?.path;
     const auditUrl = detail.auditPacket?.url || detail.auditPacketUrl || detail.auditPacketFiles?.[0]?.url || detail.pdfFiles?.[1]?.url;
     const [pdf, raw, audit] = await Promise.all([pdfUrl, rawUrl, auditUrl].map((url) => this.page.request.get(url)));
-    return { pdfBody: await pdf.text(), rawUrl, auditBody: await audit.text() };
+    return { pdfBody: await pdf.body(), rawUrl, auditBody: await audit.text() };
   }
 
   async assertMobileActions() {

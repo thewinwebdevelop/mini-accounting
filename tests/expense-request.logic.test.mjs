@@ -321,7 +321,7 @@ test("formatPayloadMarkdown lists stored raw filenames for uploaded evidence", (
     requesterName: "คุณตัวอย่าง",
     businessPurpose: "ค่าส่งสินค้าให้ลูกค้า",
     folderPath: "documents/2026/09/เบิกจ่าย/REQ-2026-09-0003_ค่าส่งพัสดุ",
-    expenseLines: [],
+    expenseLines: [{ description: "กล่องพัสดุ", vendor: "OmittedVendor" }],
     totals: {
       amountBeforeVat: "0.00",
       vatAmount: "0.00",
@@ -339,6 +339,8 @@ test("formatPayloadMarkdown lists stored raw filenames for uploaded evidence", (
     },
   });
 
+  assert.match(markdown, /กล่องพัสดุ/);
+  assert.doesNotMatch(markdown, /OmittedVendor|\| ผู้ขาย \|/);
   assert.match(markdown, /หจก\.สวีทเฮาส์ เดซี่/);
   assert.match(markdown, /0103569007277/);
   assert.match(markdown, /A2_tax-invoice_001\.jpg, A2_tax-invoice_002\.pdf/);

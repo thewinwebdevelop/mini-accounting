@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { checkApprovalPreview } from "../pages/approval-preview.mjs";
 import { expect } from "@playwright/test";
 import { test } from "../fixtures/playwright.fixture.mjs";
@@ -8,6 +9,7 @@ test.describe("expense request journeys", () => {
     const request = new ExpenseRequestPage(authenticatedPage);
     await request.open();
     await request.fill({ title: "E2E expense draft", purpose: "Fixture operating supplies", vendor: "Fixture Supplies", beforeVat: "1000", vat: "70", withholding: "30", stockSku: true });
+    await authenticatedPage.locator('[name="lineVendor"]').last().fill("OmittedVendor");
     await request.addEvidence("receipt", "expense-receipt.pdf", "%PDF-1.4 fixture evidence");
     await request.saveDraft();
     const saved = await request.detail();
@@ -24,7 +26,23 @@ test.describe("expense request journeys", () => {
     const submitted = await request.detail();
     expect(submitted.pdfFiles?.length).toBeGreaterThan(0);
     const files = await request.fileAssertions();
-    expect(files.pdfBody).toContain("%PDF");
+    const pages = JSON.parse(execFileSync(process.env.SWEET_HOUSE_PYTHON_BIN || "python3", ["-c", `
+import io, json, sys
+from pypdf import PdfReader
+pages = PdfReader(io.BytesIO(sys.stdin.buffer.read())).pages
+print(json.dumps([dict(width=float(p.mediabox.width), height=float(p.mediabox.height),
+                       text=p.extract_text()) for p in pages]))
+`], { input: files.pdfBody, encoding: "utf8" }));
+    expect(pages.length).toBeGreaterThan(0);
+    for (const page of pages) {
+      expect(page.width).toBeCloseTo(595.28, 1);
+      expect(page.height).toBeCloseTo(841.89, 1);
+    }
+    const text = pages.map(page => page.text).join("\n");
+    expect(text).toContain("Fixture Supplies");
+    expect(text).toContain("Fixture expense line");
+    expect(text).not.toContain("OmittedVendor");
+    expect(text.split(/\s+/)).not.toContain("ผู้ขาย");
     expect(files.auditBody).toContain("%PDF");
     expect(new URL(files.rawUrl, localApp.baseUrl).pathname).toContain("/api/expense-requests/");
   });
