@@ -213,6 +213,7 @@ export class WorkflowTransactionPage {
   async cancelWithConfirmation() {
     await this.page.locator("#cancelTransactionButton").click();
     await expect(this.page.locator("#cancellationDialog")).toBeVisible();
+    await expect(this.page.locator("#confirmCancellationButton")).toBeInViewport({ ratio: 1 });
     await this.page.locator("#confirmCancellationButton").click();
     await expect(this.page.locator("#cancellationSummary")).toBeVisible();
     return this.detail();
