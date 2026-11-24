@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       E2E_RUN_ID: ci-${{ github.run_id }}
